@@ -307,25 +307,29 @@ public class KeychainManager {
         let laContext = LAContext()
         laContext.localizedReason = prompt
 
+        var authError: NSError?
+        let sema = DispatchSemaphore(value: 0)
+        var authSuccess = false
+        laContext.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: prompt) { success, error in
+            authSuccess = success
+            authError = error as NSError?
+            sema.signal()
+        }
+        _ = sema.wait(timeout: .now() + 30)
+
+        guard authSuccess else {
+            throw authError ?? NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Touch ID authentication failed or cancelled."])
+        }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: KeychainManager.privateServiceName,
             kSecAttrAccount as String: label,
-            kSecReturnData as String: true,
-            kSecUseAuthenticationContext as String: laContext
+            kSecReturnData as String: true
         ]
 
         var result: AnyObject?
-        var status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status != errSecSuccess {
-            let fallbackQuery: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: KeychainManager.privateServiceName,
-                kSecAttrAccount as String: label,
-                kSecReturnData as String: true
-            ]
-            status = SecItemCopyMatching(fallbackQuery as CFDictionary, &result)
-        }
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess, let resultData = result as? Data else {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Keychain item lookup failed: \(status)"])
         }
