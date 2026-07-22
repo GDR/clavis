@@ -23,15 +23,33 @@
             version = "0.1.0";
             src = ./.;
 
-            nativeBuildInputs = [ pkgs.swift pkgs.swiftpm ];
-            buildInputs = [ appleSdk ];
+            dontConfigure = true;
+            dontFixup = true;
 
             buildPhase = ''
               export HOME=$TMPDIR
-              if [ -z "$SDKROOT" ] && [ -d /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk ]; then
+              export DEVELOPER_DIR="${builtins.getEnv "APPLE_XCODE_DEVELOPER_DIR"}"
+
+              if [ -z "$DEVELOPER_DIR" ]; then
+                if [ -d "/Applications/Xcode.app/Contents/Developer" ]; then
+                  export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+                elif [ -d "/Applications/Xcode-beta.app/Contents/Developer" ]; then
+                  export DEVELOPER_DIR="/Applications/Xcode-beta.app/Contents/Developer"
+                elif [ -d "/Applications/Xcode-26.app/Contents/Developer" ]; then
+                  export DEVELOPER_DIR="/Applications/Xcode-26.app/Contents/Developer"
+                fi
+              fi
+
+              if [ -n "$DEVELOPER_DIR" ] && [ -x /usr/bin/xcrun ]; then
+                export SDKROOT="$(DEVELOPER_DIR="$DEVELOPER_DIR" /usr/bin/xcrun --sdk macosx --show-sdk-path)"
+                export PATH="$DEVELOPER_DIR/usr/bin:/usr/bin:$PATH"
+              elif [ -x /usr/bin/xcrun ]; then
+                export SDKROOT="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
+              elif [ -d /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk ]; then
                 export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
               fi
-              swift build -c release --disable-sandbox
+
+              /usr/bin/xcrun swift build -c release --disable-sandbox
             '';
 
             installPhase = ''
@@ -55,21 +73,40 @@
         devShells.default = pkgs.mkShell {
           name = "clavis-dev-shell";
 
-          buildInputs = with pkgs; [
-            swift
-            swiftpm
+          packages = with pkgs; [
             git
+            cmake
+            ninja
+            pkg-config
+            swiftformat
+            swiftlint
             sops
             age
-          ] ++ (if isDarwin then [ appleSdk ] else []);
+          ];
 
           shellHook = ''
-            echo "🔑 Clavis Dev Environment"
-            if [ -z "$SDKROOT" ] && [ -d /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk ]; then
-              export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+            export DEVELOPER_DIR="${builtins.getEnv "APPLE_XCODE_DEVELOPER_DIR"}"
+
+            if [ -z "$DEVELOPER_DIR" ]; then
+              if [ -d "/Applications/Xcode.app/Contents/Developer" ]; then
+                export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+              elif [ -d "/Applications/Xcode-26.app/Contents/Developer" ]; then
+                export DEVELOPER_DIR="/Applications/Xcode-26.app/Contents/Developer"
+              fi
             fi
-            echo "Run 'swift build' to build Clavis and age-plugin-clavis."
-            echo "Run 'swift test' to run unit tests."
+
+            if [ -n "$DEVELOPER_DIR" ] && [ -x /usr/bin/xcrun ]; then
+              export SDKROOT="$(DEVELOPER_DIR="$DEVELOPER_DIR" /usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null)"
+              export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
+            elif [ -x /usr/bin/xcrun ]; then
+              export SDKROOT="$(/usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null)"
+            fi
+
+            echo "🔑 Clavis Dev Environment"
+            echo "Xcode:     $(/usr/bin/xcodebuild -version 2>/dev/null | head -1 || echo 'N/A')"
+            echo "SDK:       $(/usr/bin/xcrun --sdk macosx --show-sdk-version 2>/dev/null || echo 'N/A')"
+            echo "SDKROOT:   $SDKROOT"
+            echo "Swift:     $(/usr/bin/xcrun swift --version 2>/dev/null | head -1 || echo 'N/A')"
           '';
         };
       }
