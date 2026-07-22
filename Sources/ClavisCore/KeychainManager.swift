@@ -10,14 +10,43 @@ public class SessionCacheManager {
     private var cache: [String: (key: Curve25519.Signing.PrivateKey, expiresAt: Date)] = [:]
     private let lock = NSLock()
 
-    public var currentTimeout: SessionTimeout = .never
+    private var _currentTimeout: SessionTimeout = .never
+    public var currentTimeout: SessionTimeout {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _currentTimeout
+        }
+        set {
+            lock.lock()
+            let oldTimeout = _currentTimeout
+            _currentTimeout = newValue
+            lock.unlock()
+
+            let shouldClear: Bool
+            if newValue == .never {
+                shouldClear = true
+            } else if oldTimeout == .never {
+                shouldClear = false
+            } else {
+                let oldInterval = oldTimeout.timeInterval ?? .infinity
+                let newInterval = newValue.timeInterval ?? .infinity
+                shouldClear = newInterval < oldInterval
+            }
+
+            if shouldClear {
+                clearCache()
+            }
+        }
+    }
 
     private init() {
         DistributedNotificationCenter.default().addObserver(
             self,
             selector: #selector(clearCache),
             name: NSNotification.Name("com.apple.screenIsLocked"),
-            object: nil
+            object: nil,
+            suspensionBehavior: .deliverImmediately
         )
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
@@ -33,9 +62,16 @@ public class SessionCacheManager {
         cache.removeAll()
     }
 
+    public func remove(label: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        cache.removeValue(forKey: label)
+    }
+
     public func get(label: String) -> Curve25519.Signing.PrivateKey? {
         lock.lock()
         defer { lock.unlock() }
+        guard _currentTimeout != .never else { return nil }
         guard let entry = cache[label] else { return nil }
         if Date() > entry.expiresAt {
             cache.removeValue(forKey: label)
@@ -45,10 +81,14 @@ public class SessionCacheManager {
     }
 
     public func set(label: String, key: Curve25519.Signing.PrivateKey) {
-        guard let timeout = currentTimeout.timeInterval else { return }
+        lock.lock()
+        let timeout = _currentTimeout.timeInterval
+        lock.unlock()
+        guard let validTimeout = timeout else { return }
+
         lock.lock()
         defer { lock.unlock() }
-        cache[label] = (key, Date().addingTimeInterval(timeout))
+        cache[label] = (key, Date().addingTimeInterval(validTimeout))
     }
 
     public var cachedCount: Int {
@@ -79,12 +119,27 @@ public class KeychainManager {
         guard seedData.count == 32 else {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid Ed25519 seed length (must be 32 bytes)"])
         }
-        let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: seedData)
+        var mutableSeed = seedData
+        defer {
+            mutableSeed.withUnsafeMutableBytes { ptr in
+                if let baseAddress = ptr.baseAddress {
+                    memset_s(baseAddress, ptr.count, 0, ptr.count)
+                }
+            }
+        }
+        let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: mutableSeed)
         return try storeKey(label: label, privateKey: privateKey)
     }
 
     private func storeKey(label: String, privateKey: Curve25519.Signing.PrivateKey) throws -> Ed25519KeyInfo {
-        let rawSeed = privateKey.rawRepresentation
+        var rawSeed = privateKey.rawRepresentation
+        defer {
+            rawSeed.withUnsafeMutableBytes { ptr in
+                if let baseAddress = ptr.baseAddress {
+                    memset_s(baseAddress, ptr.count, 0, ptr.count)
+                }
+            }
+        }
         
         // 1. Create Touch ID access control object for private key seed
         var error: Unmanaged<CFError>?
@@ -97,6 +152,13 @@ public class KeychainManager {
             throw error?.takeRetainedValue() ?? NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create access control"])
         }
 
+        let deletePrivateQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: KeychainManager.privateServiceName,
+            kSecAttrAccount as String: label
+        ]
+        SecItemDelete(deletePrivateQuery as CFDictionary)
+
         let privateQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: KeychainManager.privateServiceName,
@@ -105,7 +167,6 @@ public class KeychainManager {
             kSecAttrAccessControl as String: accessControl
         ]
 
-        SecItemDelete(privateQuery as CFDictionary)
         let privateStatus = SecItemAdd(privateQuery as CFDictionary, nil)
         guard privateStatus == errSecSuccess else {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(privateStatus), userInfo: [NSLocalizedDescriptionKey: "Failed to store private key in Keychain: \(privateStatus)"])
@@ -146,7 +207,16 @@ public class KeychainManager {
         if status == errSecItemNotFound {
             return []
         }
-        guard status == errSecSuccess, let items = result as? [Data] else {
+        guard status == errSecSuccess, let result = result else {
+            return []
+        }
+
+        let items: [Data]
+        if let array = result as? [Data] {
+            items = array
+        } else if let singleData = result as? Data {
+            items = [singleData]
+        } else {
             return []
         }
 
@@ -176,7 +246,7 @@ public class KeychainManager {
         ]
         SecItemDelete(publicQuery as CFDictionary)
 
-        SessionCacheManager.shared.clearCache()
+        SessionCacheManager.shared.remove(label: label)
     }
 
     // Retrieve private key seed with Touch ID / Apple Watch / Password fallback authentication
@@ -198,11 +268,20 @@ public class KeychainManager {
 
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else {
+        guard status == errSecSuccess, let resultData = result as? Data else {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Keychain item lookup failed: \(status)"])
         }
 
-        let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: data)
+        var sensitiveData = resultData
+        defer {
+            sensitiveData.withUnsafeMutableBytes { ptr in
+                if let baseAddress = ptr.baseAddress {
+                    memset_s(baseAddress, ptr.count, 0, ptr.count)
+                }
+            }
+        }
+
+        let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: sensitiveData)
         SessionCacheManager.shared.set(label: label, key: privateKey)
         return privateKey
     }
