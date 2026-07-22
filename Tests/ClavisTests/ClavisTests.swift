@@ -312,4 +312,106 @@ final class ClavisTests: XCTestCase {
             XCTAssertEqual(decoded.label, "dummy")
         }
     }
+
+    // MARK: - 8. Challenger Stress & Edge Case Tests
+
+    func testBirationalMap1000RandomKeys() throws {
+        for _ in 0..<1000 {
+            var seed = Data(count: 32)
+            _ = seed.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+
+            let x25519Priv = try Ed25519AgeConverter.ed25519SeedToX25519PrivateKey(seed: seed)
+            let expectedX25519PubKey = x25519Priv.publicKey.rawRepresentation
+
+            let ed25519Priv = try Curve25519.Signing.PrivateKey(rawRepresentation: seed)
+            let ed25519PubKey = ed25519Priv.publicKey.rawRepresentation
+
+            guard let convertedX25519PubKey = Ed25519AgeConverter.ed25519PublicKeyToX25519PublicKey(ed25519PubKey: ed25519PubKey) else {
+                XCTFail("ed25519PublicKeyToX25519PublicKey returned nil for random key")
+                return
+            }
+
+            XCTAssertEqual(convertedX25519PubKey, expectedX25519PubKey)
+        }
+    }
+
+    func testBirationalMapMathematicalEdgeCases() {
+        // y = 1 (denom = 0 in (1+y)/(1-y))
+        var y1PubKey = Data(repeating: 0, count: 32)
+        y1PubKey[0] = 1
+        XCTAssertNil(Ed25519AgeConverter.ed25519PublicKeyToX25519PublicKey(ed25519PubKey: y1PubKey))
+
+        // y >= p (p = 2^255 - 19)
+        var yPPubKey = Data([
+            0xED, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F
+        ])
+        XCTAssertNil(Ed25519AgeConverter.ed25519PublicKeyToX25519PublicKey(ed25519PubKey: yPPubKey))
+
+        // Wrong length pubkey
+        XCTAssertNil(Ed25519AgeConverter.ed25519PublicKeyToX25519PublicKey(ed25519PubKey: Data(repeating: 0x42, count: 16)))
+        XCTAssertNil(Ed25519AgeConverter.ed25519PublicKeyToX25519PublicKey(ed25519PubKey: Data(repeating: 0x42, count: 33)))
+    }
+
+    func testBech32Fuzzing1000Mutations() throws {
+        let alphabet = Array("qpzry9x8gf2tvdw0s3jn54khce6mua7l")
+        for _ in 0..<1000 {
+            var randomData = Data(count: 32)
+            _ = randomData.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+            let encoded = Bech32.encode(hrp: "age1clavis", data: randomData)
+
+            // Mutate 1 character in encoded string
+            var chars = Array(encoded)
+            let mutateIdx = Int.random(in: 0..<chars.count)
+            let origChar = chars[mutateIdx]
+            if let altChar = alphabet.first(where: { $0 != origChar }) {
+                chars[mutateIdx] = altChar
+            }
+            let mutatedString = String(chars)
+
+            XCTAssertThrowsError(try Bech32.decode(bech32String: mutatedString), "Mutated string \(mutatedString) should fail decoding")
+        }
+    }
+
+    func testSessionCacheHighConcurrencyStress() {
+        let cache = SessionCacheManager.shared
+        cache.clearCache()
+        cache.currentTimeout = .oneHour
+
+        let sampleKeys = (0..<10).map { _ in Curve25519.Signing.PrivateKey() }
+
+        DispatchQueue.concurrentPerform(iterations: 10000) { i in
+            let label = "key-\(i % 10)"
+            let op = i % 5
+            switch op {
+            case 0:
+                cache.set(label: label, key: sampleKeys[i % 10])
+            case 1:
+                _ = cache.get(label: label)
+            case 2:
+                _ = cache.cachedCount
+            case 3:
+                cache.currentTimeout = (i % 2 == 0) ? .fiveMinutes : .never
+            case 4:
+                cache.clearCache()
+            default:
+                break
+            }
+        }
+    }
+
+    func testSessionCacheSetDoubleLockWindow() {
+        let cache = SessionCacheManager.shared
+        cache.clearCache()
+        cache.currentTimeout = .never
+
+        let key = Curve25519.Signing.PrivateKey()
+        // Setting a key when timeout is .never should not store/return key
+        cache.set(label: "double-lock-test", key: key)
+        XCTAssertNil(cache.get(label: "double-lock-test"))
+        XCTAssertEqual(cache.cachedCount, 0)
+    }
 }
+
