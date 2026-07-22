@@ -54,13 +54,8 @@ public struct AgePluginCrypto {
         let recipientData: Data
         if recipientString.hasPrefix("age1") {
             let decoded = try Bech32.decode(bech32String: recipientString)
-            if let converted = Ed25519AgeConverter.ed25519PublicKeyToX25519PublicKey(ed25519PubKey: decoded.data) {
-                recipientData = converted
-            } else if decoded.data.count == 32 {
-                recipientData = decoded.data
-            } else {
-                throw AgePluginError.invalidRecipient
-            }
+            guard decoded.data.count == 32 else { throw AgePluginError.invalidRecipient }
+            recipientData = decoded.data
         } else if let raw = Data(base64Lenient: recipientString), raw.count == 32 {
             recipientData = raw
         } else {

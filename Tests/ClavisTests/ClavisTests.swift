@@ -410,12 +410,155 @@ final class ClavisTests: XCTestCase {
 
         let key = Curve25519.Signing.PrivateKey()
         // Setting a key when timeout is .never should not store/return key
-        cache.set(label: "double-lock-test", key: key)
+                cache.set(label: "double-lock-test", key: key)
         XCTAssertNil(cache.get(label: "double-lock-test"))
         XCTAssertEqual(cache.cachedCount, 0)
     }
 
-    // MARK: - 9. Age Plugin CLI Adapter IPC Tests
+    // MARK: - 9. SSHAgentServer Socket Protocol Tests
+
+    private func socketReadFullBytes(from sock: Int32, count: Int) -> Data? {
+        var data = Data(count: count)
+        var bytesRead = 0
+        let success = data.withUnsafeMutableBytes { ptr -> Bool in
+            guard let base = ptr.baseAddress else { return false }
+            while bytesRead < count {
+                let res = read(sock, base.advanced(by: bytesRead), count - bytesRead)
+                if res <= 0 { return false }
+                bytesRead += res
+            }
+            return true
+        }
+        return success ? data : nil
+    }
+
+    func testSSHAgentServerRequestIdentitiesSocket() throws {
+        let tmpDir = NSTemporaryDirectory()
+        let testSockPath = (tmpDir as NSString).appendingPathComponent("clavis-req-ident.sock")
+        let server = SSHAgentServer(socketPath: testSockPath)
+        try server.start()
+        defer { server.stop() }
+
+        let clientSock = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(clientSock, 0)
+        defer { close(clientSock) }
+
+        var nosigpipe = 1
+        setsockopt(clientSock, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout.size(ofValue: nosigpipe)))
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = testSockPath.utf8CString
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            let raw = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: CChar.self)
+            for (i, byte) in pathBytes.enumerated() { raw[i] = byte }
+        }
+        let addrLen = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
+
+        let connectResult = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(clientSock, $0, addrLen)
+            }
+        }
+        XCTAssertEqual(connectResult, 0)
+
+        // SSH2_AGENTC_REQUEST_IDENTITIES packet: 4 bytes len (1), 1 byte msg (11)
+        let request = Data([0x00, 0x00, 0x00, 0x01, 11])
+        _ = request.withUnsafeBytes { write(clientSock, $0.baseAddress!, request.count) }
+
+        // Read response header (4 bytes len)
+        guard let lenData = socketReadFullBytes(from: clientSock, count: 4) else {
+            XCTFail("Failed to read length header from agent socket")
+            return
+        }
+        var respLenVal: UInt32 = 0
+        _ = withUnsafeMutableBytes(of: &respLenVal) { lenData.copyBytes(to: $0) }
+        let respLen = Int(UInt32(bigEndian: respLenVal))
+        XCTAssertGreaterThan(respLen, 0)
+
+        guard let payload = socketReadFullBytes(from: clientSock, count: respLen) else {
+            XCTFail("Failed to read response payload from agent socket")
+            return
+        }
+
+        XCTAssertGreaterThanOrEqual(payload.count, 5)
+        XCTAssertEqual(payload[0], 12) // SSH2_AGENT_IDENTITIES_ANSWER
+    }
+
+    func testSSHAgentServerSignRequestMissingFlags() throws {
+        let tmpDir = NSTemporaryDirectory()
+        let testSockPath = (tmpDir as NSString).appendingPathComponent("clavis-sign-req.sock")
+        let server = SSHAgentServer(socketPath: testSockPath)
+        try server.start()
+        defer { server.stop() }
+
+        let clientSock = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(clientSock, 0)
+        defer { close(clientSock) }
+
+        var nosigpipe = 1
+        setsockopt(clientSock, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout.size(ofValue: nosigpipe)))
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = testSockPath.utf8CString
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            let raw = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: CChar.self)
+            for (i, byte) in pathBytes.enumerated() { raw[i] = byte }
+        }
+        let addrLen = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
+
+        let connectResult = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(clientSock, $0, addrLen)
+            }
+        }
+        XCTAssertEqual(connectResult, 0)
+
+        // SSH2_AGENTC_SIGN_REQUEST packet missing 4-byte flags
+        var payloadData = Data([13]) // msg 13
+        payloadData.appendWireData(Data("keyblob".utf8))
+        payloadData.appendWireData(Data("datatosign".utf8))
+        // Omitting 4-byte flags intentionally
+
+        var packet = Data()
+        var len = UInt32(payloadData.count).bigEndian
+        Swift.withUnsafeBytes(of: &len) { packet.append(contentsOf: $0) }
+        packet.append(payloadData)
+
+        _ = packet.withUnsafeBytes { write(clientSock, $0.baseAddress!, packet.count) }
+
+        guard let lenData = socketReadFullBytes(from: clientSock, count: 4) else {
+            XCTFail("Failed to read length header from agent socket")
+            return
+        }
+        var respLenVal: UInt32 = 0
+        _ = withUnsafeMutableBytes(of: &respLenVal) { lenData.copyBytes(to: $0) }
+        let respLen = Int(UInt32(bigEndian: respLenVal))
+        XCTAssertEqual(respLen, 1)
+
+        guard let responsePayload = socketReadFullBytes(from: clientSock, count: respLen) else {
+            XCTFail("Failed to read response payload from agent socket")
+            return
+        }
+
+        XCTAssertEqual(responsePayload[0], 5) // SSH_AGENT_FAILURE
+    }
+
+    func testDataReaderUnalignedAccess() {
+        var data = Data([0xFF]) // 1 byte prefix to make offset unaligned (1)
+        let num: UInt32 = 0x12345678
+        var bigNum = num.bigEndian
+        Swift.withUnsafeBytes(of: &bigNum) { data.append(contentsOf: $0) }
+
+        // Skip prefix byte
+        let slice = data.subdata(in: 1..<data.count)
+        var unalignedReader = DataReader(data: slice)
+        let val = unalignedReader.readUInt32()
+        XCTAssertEqual(val, 0x12345678)
+    }
+
+    // MARK: - 10. Age Plugin CLI Adapter IPC Tests
 
     func testAgePluginParseRecipientPublicKey() throws {
         let pubKeyData = Data(repeating: 0x33, count: 32)
@@ -464,18 +607,19 @@ final class ClavisTests: XCTestCase {
     }
 
     func testAgePluginIdentityV1IPCRoundTrip() throws {
-        // 1. Generate identity in Keychain
-        let label = "age-unittest-key-\(UUID().uuidString)"
-        let keyInfo = try KeychainManager.shared.generateKey(label: label)
-        defer { try? KeychainManager.shared.deleteKey(label: label) }
+        let label = "age-unittest-key"
+        let edPriv = Curve25519.Signing.PrivateKey()
+        let keyInfo = Ed25519KeyInfo(
+            label: label,
+            publicKeyOpenSSH: "ssh-ed25519 AAA test",
+            publicKeyBlob: Data(),
+            fingerprint: "SHA256:test"
+        )
 
-        // Derive recipient X25519 public key
-        let edPriv = try KeychainManager.shared.fetchPrivateKey(label: label, prompt: "unittest")
         let x25519Priv = try Ed25519AgeConverter.ed25519SeedToX25519PrivateKey(seed: edPriv.rawRepresentation)
         let x25519Pub = x25519Priv.publicKey.rawRepresentation
         let recipientStr = Bech32.encode(hrp: "age1clavis", data: x25519Pub)
 
-        // 2. Wrap file key via recipient-V1
         let originalFileKey = Data(repeating: 0x99, count: 32)
         var wrapOutputs: [String] = []
         let wrapInputs = [
@@ -506,7 +650,6 @@ final class ClavisTests: XCTestCase {
         XCTAssertEqual(parts.count, 5)
         let epkB64 = String(parts[4])
 
-        // 3. Unwrap file key via identity-V1
         var unwrapOutputs: [String] = []
         let unwrapInputs = [
             "-> add-identity \(label)",
@@ -522,7 +665,9 @@ final class ClavisTests: XCTestCase {
                 defer { unwrapIdx += 1 }
                 return unwrapInputs[unwrapIdx]
             },
-            outputHandler: { unwrapOutputs.append($0) }
+            outputHandler: { unwrapOutputs.append($0) },
+            fetchKeys: { [keyInfo] },
+            fetchPrivateKey: { _, _ in edPriv }
         )
 
         XCTAssertTrue(unwrapOutputs.contains("-> file-key 0"))
@@ -530,5 +675,3 @@ final class ClavisTests: XCTestCase {
         XCTAssertEqual(unwrapOutputs.last, "-> ok")
     }
 }
-
-

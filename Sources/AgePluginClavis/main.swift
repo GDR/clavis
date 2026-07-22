@@ -66,31 +66,8 @@ public struct AgePluginClavis {
                 } else if action == "done" {
                     for (fileKeyIndex, fileKey) in fileKeys.enumerated() {
                         for recipientStr in recipients {
-                            guard let recipientPubKey = parseRecipientPublicKey(recipientStr) else {
-                                outputHandler("-> error recipient \(recipientStr) Invalid age recipient")
-                                continue
-                            }
-
                             do {
-                                let epkPriv = Curve25519.KeyAgreement.PrivateKey()
-                                let epkPub = epkPriv.publicKey.rawRepresentation
-                                let epkB64 = epkPub.base64EncodedString()
-
-                                let recipientKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: recipientPubKey)
-                                let sharedSecret = try epkPriv.sharedSecretFromKeyAgreement(with: recipientKey)
-
-                                let salt = epkPub + recipientPubKey
-                                let hkdfKey = sharedSecret.hkdfDerivedSymmetricKey(
-                                    using: SHA256.self,
-                                    salt: salt,
-                                    sharedInfo: Data("age-encryption.org/v1/X25519".utf8),
-                                    outputByteCount: 32
-                                )
-
-                                let nonce = try ChaChaPoly.Nonce(data: Data(repeating: 0, count: 12))
-                                let sealedBox = try ChaChaPoly.seal(fileKey, using: hkdfKey, nonce: nonce)
-                                let wrappedKeyPayload = sealedBox.ciphertext + sealedBox.tag
-
+                                let (epkB64, wrappedKeyPayload) = try AgePluginCrypto.wrapFileKey(fileKey: fileKey, recipientString: recipientStr)
                                 outputHandler("-> recipient-stanza \(fileKeyIndex) clavis \(epkB64)")
                                 formatBase64(wrappedKeyPayload, outputHandler: outputHandler)
                             } catch {
@@ -108,7 +85,11 @@ public struct AgePluginClavis {
 
     public static func handleIdentityV1(
         inputProvider: () -> String? = { readLine() },
-        outputHandler: (String) -> Void = { print($0) }
+        outputHandler: (String) -> Void = { print($0) },
+        fetchKeys: () throws -> [Ed25519KeyInfo] = { try KeychainManager.shared.listKeys() },
+        fetchPrivateKey: (String, String) throws -> Curve25519.Signing.PrivateKey = { label, prompt in
+            try KeychainManager.shared.fetchPrivateKey(label: label, prompt: prompt)
+        }
     ) {
         var identities: [String] = []
         var stanzas: [(index: Int, epkB64: String, wrappedKey: Data)] = []
@@ -155,12 +136,18 @@ public struct AgePluginClavis {
                         b64String += cleanLine
                     }
 
-                    if stanzaType == "clavis", let wrappedData = Data(base64Encoded: b64String) {
+                    if stanzaType == "clavis", let wrappedData = Data(base64Lenient: b64String) {
                         stanzas.append((index: fileKeyIndex, epkB64: epkB64, wrappedKey: wrappedData))
                     }
                 } else if (action == "unwrap-file-key" || action == "done") && !isDone {
                     isDone = true
-                    unwrapStanzas(stanzas: stanzas, identities: identities, outputHandler: outputHandler)
+                    unwrapStanzas(
+                        stanzas: stanzas,
+                        identities: identities,
+                        outputHandler: outputHandler,
+                        fetchKeys: fetchKeys,
+                        fetchPrivateKey: fetchPrivateKey
+                    )
                     outputHandler("-> ok")
                     fflush(stdout)
                     break
@@ -194,13 +181,15 @@ public struct AgePluginClavis {
     private static func unwrapStanzas(
         stanzas: [(index: Int, epkB64: String, wrappedKey: Data)],
         identities: [String],
-        outputHandler: (String) -> Void
+        outputHandler: (String) -> Void,
+        fetchKeys: () throws -> [Ed25519KeyInfo],
+        fetchPrivateKey: (String, String) throws -> Curve25519.Signing.PrivateKey
     ) {
         guard !stanzas.isEmpty else { return }
 
         let keyInfos: [Ed25519KeyInfo]
         do {
-            keyInfos = try KeychainManager.shared.listKeys()
+            keyInfos = try fetchKeys()
         } catch {
             outputHandler("-> error identity Failed to list Keychain keys")
             return
@@ -212,41 +201,19 @@ public struct AgePluginClavis {
         }
 
         for stanza in stanzas {
-            guard let epkPub = Data(base64Encoded: stanza.epkB64), epkPub.count == 32 else {
-                outputHandler("-> error identity Invalid ephemeral public key in stanza")
-                continue
-            }
-
             var unwrapped = false
 
             for keyInfo in keyInfos {
                 do {
-                    let edPrivateKey = try KeychainManager.shared.fetchPrivateKey(
-                        label: keyInfo.label,
-                        prompt: "Touch ID to unwrap age file key"
+                    let edPrivateKey = try fetchPrivateKey(
+                        keyInfo.label,
+                        "Touch ID to unwrap age file key"
                     )
-                    let seed = edPrivateKey.rawRepresentation
-                    let x25519Priv = try Ed25519AgeConverter.ed25519SeedToX25519PrivateKey(seed: seed)
-                    let identityX25519PubKey = x25519Priv.publicKey.rawRepresentation
-
-                    let epkKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: epkPub)
-                    let sharedSecret = try x25519Priv.sharedSecretFromKeyAgreement(with: epkKey)
-
-                    let salt = epkPub + identityX25519PubKey
-                    let hkdfKey = sharedSecret.hkdfDerivedSymmetricKey(
-                        using: SHA256.self,
-                        salt: salt,
-                        sharedInfo: Data("age-encryption.org/v1/X25519".utf8),
-                        outputByteCount: 32
+                    let fileKey = try AgePluginCrypto.unwrapFileKey(
+                        wrappedKey: stanza.wrappedKey,
+                        epkB64: stanza.epkB64,
+                        ed25519Seed: edPrivateKey.rawRepresentation
                     )
-
-                    guard stanza.wrappedKey.count >= 16 else { continue }
-                    let ciphertext = stanza.wrappedKey.prefix(stanza.wrappedKey.count - 16)
-                    let tag = stanza.wrappedKey.suffix(16)
-                    let nonce = try ChaChaPoly.Nonce(data: Data(repeating: 0, count: 12))
-                    let sealedBox = try ChaChaPoly.SealedBox(nonce: nonce, ciphertext: ciphertext, tag: tag)
-
-                    let fileKey = try ChaChaPoly.open(sealedBox, using: hkdfKey)
 
                     outputHandler("-> file-key \(stanza.index)")
                     formatBase64(fileKey, outputHandler: outputHandler)
