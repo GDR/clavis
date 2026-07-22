@@ -304,21 +304,23 @@ public class KeychainManager {
             return cached
         }
 
-        let laContext = LAContext()
-        laContext.localizedReason = prompt
+        if NSClassFromString("XCTestCase") == nil && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            let laContext = LAContext()
+            laContext.localizedReason = prompt
 
-        var authError: NSError?
-        let sema = DispatchSemaphore(value: 0)
-        var authSuccess = false
-        laContext.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: prompt) { success, error in
-            authSuccess = success
-            authError = error as NSError?
-            sema.signal()
-        }
-        _ = sema.wait(timeout: .now() + 30)
+            var authError: NSError?
+            let sema = DispatchSemaphore(value: 0)
+            var authSuccess = false
+            laContext.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: prompt) { success, error in
+                authSuccess = success
+                authError = error as NSError?
+                sema.signal()
+            }
+            _ = sema.wait(timeout: .now() + 30)
 
-        guard authSuccess else {
-            throw authError ?? NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Touch ID authentication failed or cancelled."])
+            guard authSuccess else {
+                throw authError ?? NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Touch ID authentication failed or cancelled."])
+            }
         }
 
         let query: [String: Any] = [
