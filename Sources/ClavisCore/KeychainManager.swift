@@ -167,22 +167,19 @@ public class KeychainManager {
             kSecAttrAccessControl as String: accessControl
         ]
 
-        let privateStatus = SecItemAdd(privateQuery as CFDictionary, nil)
+        var privateStatus = SecItemAdd(privateQuery as CFDictionary, nil)
         if privateStatus != errSecSuccess {
-            if privateStatus == -34018 {
-                // Fallback for un-entitled binaries: store with kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-                let fallbackQuery: [String: Any] = [
-                    kSecClass as String: kSecClassGenericPassword,
-                    kSecAttrService as String: KeychainManager.privateServiceName,
-                    kSecAttrAccount as String: label,
-                    kSecValueData as String: rawSeed,
-                    kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-                ]
-                let fallbackStatus = SecItemAdd(fallbackQuery as CFDictionary, nil)
-                guard fallbackStatus == errSecSuccess else {
-                    throw NSError(domain: NSOSStatusErrorDomain, code: Int(fallbackStatus), userInfo: [NSLocalizedDescriptionKey: "Failed to store private key in Keychain: \(fallbackStatus)"])
-                }
-            } else {
+            // Un-entitled process fallback: store with kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            SecItemDelete(deletePrivateQuery as CFDictionary)
+            let fallbackQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: KeychainManager.privateServiceName,
+                kSecAttrAccount as String: label,
+                kSecValueData as String: rawSeed,
+                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            ]
+            privateStatus = SecItemAdd(fallbackQuery as CFDictionary, nil)
+            guard privateStatus == errSecSuccess else {
                 throw NSError(domain: NSOSStatusErrorDomain, code: Int(privateStatus), userInfo: [NSLocalizedDescriptionKey: "Failed to store private key in Keychain: \(privateStatus)"])
             }
         }
