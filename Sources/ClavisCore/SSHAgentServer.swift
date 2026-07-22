@@ -94,11 +94,14 @@ public class SSHAgentServer {
     }
 
     public func stop() {
-        isRunning = false
-        let sock = serverSocket
+        stateLock.lock()
+        _isRunning = false
+        let sock = _serverSocket
+        _serverSocket = -1
+        stateLock.unlock()
+
         if sock >= 0 {
             close(sock)
-            serverSocket = -1
         }
         try? FileManager.default.removeItem(atPath: socketPath)
     }
@@ -113,8 +116,8 @@ public class SSHAgentServer {
             guard listeningSock >= 0 else { break }
             let clientSocket = accept(listeningSock, nil, nil)
             if clientSocket >= 0 {
-                var nosigpipe = 1
-                setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout.size(ofValue: nosigpipe)))
+                var optval: Int32 = 1
+                setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &optval, socklen_t(MemoryLayout<Int32>.size))
                 queue.async {
                     self.handleClient(socket: clientSocket)
                 }
@@ -185,7 +188,7 @@ public class SSHAgentServer {
         return true
     }
 
-    private func processAgentRequest(payload: Data) -> Data {
+    internal func processAgentRequest(payload: Data) -> Data {
         guard !payload.isEmpty else { return Data([5]) } // SSH_AGENT_FAILURE (5)
         let msgType = payload[0]
 
@@ -199,7 +202,7 @@ public class SSHAgentServer {
         }
     }
 
-    private func handleRequestIdentities() -> Data {
+    internal func handleRequestIdentities() -> Data {
         let keys = (try? KeychainManager.shared.listKeys()) ?? []
         var response = Data()
         response.append(12) // SSH2_AGENT_IDENTITIES_ANSWER
@@ -214,7 +217,7 @@ public class SSHAgentServer {
         return response
     }
 
-    private func handleSignRequest(payload: Data) -> Data {
+    internal func handleSignRequest(payload: Data) -> Data {
         var reader = DataReader(data: payload)
         guard let keyBlob = reader.readWireData(),
               let dataToSign = reader.readWireData(),
@@ -259,7 +262,7 @@ public struct DataReader {
     public mutating func readUInt32() -> UInt32? {
         guard offset + 4 <= data.count else { return nil }
         var value: UInt32 = 0
-        withUnsafeMutableBytes(of: &value) { ptr in
+        _ = withUnsafeMutableBytes(of: &value) { ptr in
             data.copyBytes(to: ptr, from: offset..<offset+4)
         }
         offset += 4
