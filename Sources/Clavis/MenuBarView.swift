@@ -91,18 +91,38 @@ struct MenuBarView: View {
             Divider()
 
             // Session Cache & Lock Section
-            HStack {
-                Text("Cache: \(appState.cachedKeysCount) unlocked")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Spacer()
-                Button("Lock Now") {
-                    appState.lockNow()
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Timeout:")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Picker("", selection: Binding(
+                        get: { appState.selectedTimeout },
+                        set: { appState.setTimeout($0) }
+                    )) {
+                        ForEach(SessionTimeout.allCases) { timeout in
+                            Text(timeout.rawValue).tag(timeout)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .controlSize(.small)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .tint(.red)
-                .disabled(appState.cachedKeysCount == 0)
+
+                HStack {
+                    Text("Cache: \(appState.cachedKeysCount) unlocked")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Lock All Keys") {
+                        appState.lockNow()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(.red)
+                    .disabled(appState.cachedKeysCount == 0)
+                }
             }
 
             Divider()

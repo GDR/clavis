@@ -76,16 +76,16 @@ struct KeyListView: View {
                 Text("Session Auto-Lock Timeout:")
                     .font(.subheadline)
                     .fontWeight(.medium)
-                Picker("", selection: $appState.selectedTimeout) {
+                Picker("", selection: Binding(
+                    get: { appState.selectedTimeout },
+                    set: { appState.setTimeout($0) }
+                )) {
                     ForEach(SessionTimeout.allCases) { timeout in
                         Text(timeout.rawValue).tag(timeout)
                     }
                 }
                 .pickerStyle(.menu)
                 .frame(width: 180)
-                .onChange(of: appState.selectedTimeout) { newValue in
-                    SessionCacheManager.shared.currentTimeout = newValue
-                }
 
                 Spacer()
 
@@ -137,6 +137,17 @@ struct KeyListView: View {
                                     .font(.caption)
                                     .fontDesign(.monospaced)
                                 Spacer()
+
+                                Button(action: {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(key.fingerprint, forType: .string)
+                                    statusMessage = "Fingerprint for '\(key.label)' copied to clipboard!"
+                                }) {
+                                    Image(systemName: "doc.on.doc")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Copy SHA256 Fingerprint")
                             }
 
                             HStack {
@@ -159,6 +170,7 @@ struct KeyListView: View {
                                         .font(.caption)
                                 }
                                 .buttonStyle(.borderless)
+                                .help("Copy OpenSSH Public Key")
                             }
                         }
                         .padding(.vertical, 6)

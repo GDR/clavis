@@ -7,6 +7,12 @@ struct ClavisApp: App {
     @StateObject private var appState = AppState.shared
 
     init() {
+        let isDaemon = CommandLine.arguments.contains("--daemon")
+        if isDaemon {
+            DispatchQueue.main.async {
+                NSApp.setActivationPolicy(.accessory)
+            }
+        }
         do {
             try SSHAgentServer.sharedInstance.start()
         } catch {
@@ -72,8 +78,10 @@ public class AppState: ObservableObject {
     @Published public var selectedTimeout: SessionTimeout = .never
     @Published public var cachedKeysCount: Int = 0
     @Published public var errorMessage: String? = nil
+    @Published public var isDaemonMode: Bool = false
 
     private init() {
+        self.isDaemonMode = CommandLine.arguments.contains("--daemon")
         refresh()
     }
 
@@ -82,10 +90,17 @@ public class AppState: ObservableObject {
             keys = try KeychainManager.shared.listKeys()
             isSocketActive = SSHAgentServer.sharedInstance.isSocketActive
             cachedKeysCount = SessionCacheManager.shared.cachedCount
+            selectedTimeout = SessionCacheManager.shared.currentTimeout
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    public func setTimeout(_ timeout: SessionTimeout) {
+        SessionCacheManager.shared.currentTimeout = timeout
+        selectedTimeout = timeout
+        refresh()
     }
 
     public func lockNow() {
@@ -101,3 +116,4 @@ public class AppState: ObservableObject {
 public extension SSHAgentServer {
     static let sharedInstance = SSHAgentServer()
 }
+

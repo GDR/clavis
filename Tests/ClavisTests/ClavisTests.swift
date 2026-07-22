@@ -2,6 +2,7 @@ import XCTest
 import CryptoKit
 @testable import ClavisCore
 @testable import AgePluginClavis
+@testable import Clavis
 
 final class ClavisTests: XCTestCase {
 
@@ -745,5 +746,38 @@ final class ClavisTests: XCTestCase {
         XCTAssertThrowsError(try AgePluginCrypto.wrapFileKey(fileKey: fileKey, recipientString: "invalid-recipient"))
         XCTAssertThrowsError(try AgePluginCrypto.unwrapFileKey(wrappedKey: wrappedKeyData, epkB64: "invalid-epk", ed25519Seed: seed))
         XCTAssertThrowsError(try AgePluginCrypto.unwrapFileKey(wrappedKey: Data([1, 2, 3]), epkB64: epkB64, ed25519Seed: seed))
+    }
+
+    // MARK: - 12. Milestone 4 GUI & Daemon Tests
+
+    @MainActor
+    func testAppStateInitializationAndDaemonFlag() {
+        let appState = AppState.shared
+        XCTAssertNotNil(appState)
+
+        // Test setTimeout method syncs with SessionCacheManager
+        appState.setTimeout(.fiveMinutes)
+        XCTAssertEqual(SessionCacheManager.shared.currentTimeout, .fiveMinutes)
+        XCTAssertEqual(appState.selectedTimeout, .fiveMinutes)
+
+        appState.setTimeout(.never)
+        XCTAssertEqual(SessionCacheManager.shared.currentTimeout, .never)
+        XCTAssertEqual(appState.selectedTimeout, .never)
+
+        // Test lockNow clears cache and refreshes state
+        SessionCacheManager.shared.set(label: "test-lock", key: Curve25519.Signing.PrivateKey())
+        appState.lockNow()
+        XCTAssertEqual(SessionCacheManager.shared.cachedCount, 0)
+        XCTAssertEqual(appState.cachedKeysCount, 0)
+
+        // Test clearError
+        appState.clearError()
+        XCTAssertNil(appState.errorMessage)
+    }
+
+    @MainActor
+    func testDaemonModeFlagParsing() {
+        let isDaemonMode = CommandLine.arguments.contains("--daemon")
+        XCTAssertEqual(AppState.shared.isDaemonMode, isDaemonMode)
     }
 }
