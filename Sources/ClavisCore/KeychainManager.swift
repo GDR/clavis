@@ -141,6 +141,9 @@ public class KeychainManager {
     // Generate new Ed25519 Key and save private seed (guarded by Touch ID) and public metadata (unencrypted)
     @discardableResult
     public func generateKey(label: String) throws -> Ed25519KeyInfo {
+        if try fetchKeyInfo(label: label) != nil {
+            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key with label '\(label)' already exists. Delete it first before generating a new key with this label."])
+        }
         let privateKey = Curve25519.Signing.PrivateKey()
         return try storeKey(label: label, privateKey: privateKey)
     }
@@ -148,6 +151,9 @@ public class KeychainManager {
     // Import existing Ed25519 seed (32 bytes)
     @discardableResult
     public func importKey(label: String, seedData: Data) throws -> Ed25519KeyInfo {
+        if try fetchKeyInfo(label: label) != nil {
+            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key with label '\(label)' already exists. Delete it first before importing a new key with this label."])
+        }
         guard seedData.count == 32 else {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid Ed25519 seed length (must be 32 bytes)"])
         }
