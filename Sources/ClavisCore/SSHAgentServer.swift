@@ -53,6 +53,10 @@ public class SSHAgentServer {
         guard sock >= 0 else {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Failed to create socket"])
         }
+
+        var nosigpipe = 1
+        setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout.size(ofValue: nosigpipe)))
+
         self.serverSocket = sock
 
         var addr = sockaddr_un()
@@ -131,20 +135,25 @@ public class SSHAgentServer {
             if msgLength <= 0 || msgLength > 65536 { break }
 
             var payload = Data(count: msgLength)
-            let success = payload.withUnsafeMutableBytes { ptr -> Bool in
+            let readSuccess = payload.withUnsafeMutableBytes { ptr -> Bool in
                 guard let base = ptr.baseAddress else { return false }
                 return readFullBytes(from: clientSocket, buffer: base, count: msgLength)
             }
-            if !success { break }
+            if !readSuccess { break }
 
             let response = processAgentRequest(payload: payload)
             var responseLen = UInt32(response.count).bigEndian
-            Swift.withUnsafeBytes(of: &responseLen) { ptr in
-                _ = write(clientSocket, ptr.baseAddress!, 4)
+            let writeHeaderSuccess = Swift.withUnsafeBytes(of: &responseLen) { ptr -> Bool in
+                guard let base = ptr.baseAddress else { return false }
+                return writeFullBytes(to: clientSocket, buffer: base, count: 4)
             }
-            _ = response.withUnsafeBytes { ptr in
-                write(clientSocket, ptr.baseAddress!, response.count)
+            if !writeHeaderSuccess { break }
+
+            let writePayloadSuccess = response.withUnsafeBytes { ptr -> Bool in
+                guard let base = ptr.baseAddress else { return false }
+                return writeFullBytes(to: clientSocket, buffer: base, count: response.count)
             }
+            if !writePayloadSuccess { break }
         }
     }
 
@@ -152,8 +161,26 @@ public class SSHAgentServer {
         var bytesRead = 0
         while bytesRead < count {
             let result = read(fd, buffer.advanced(by: bytesRead), count - bytesRead)
-            if result <= 0 { return false }
+            if result < 0 {
+                if errno == EINTR { continue }
+                return false
+            }
+            if result == 0 { return false }
             bytesRead += result
+        }
+        return true
+    }
+
+    private func writeFullBytes(to fd: Int32, buffer: UnsafeRawPointer, count: Int) -> Bool {
+        var bytesWritten = 0
+        while bytesWritten < count {
+            let result = write(fd, buffer.advanced(by: bytesWritten), count - bytesWritten)
+            if result < 0 {
+                if errno == EINTR { continue }
+                return false
+            }
+            if result == 0 { return false }
+            bytesWritten += result
         }
         return true
     }
@@ -190,14 +217,14 @@ public class SSHAgentServer {
     private func handleSignRequest(payload: Data) -> Data {
         var reader = DataReader(data: payload)
         guard let keyBlob = reader.readWireData(),
-              let dataToSign = reader.readWireData() else {
-            return Data([5])
+              let dataToSign = reader.readWireData(),
+              let _ = reader.readUInt32() else { // Consumes 4-byte flags parameter
+            return Data([5]) // SSH_AGENT_FAILURE
         }
-        _ = reader.readUInt32() // Consume uint32 flags parameter
 
         let keys = (try? KeychainManager.shared.listKeys()) ?? []
         guard let matchingKey = keys.first(where: { $0.publicKeyBlob == keyBlob }) else {
-            return Data([5])
+            return Data([5]) // SSH_AGENT_FAILURE
         }
 
         do {
@@ -231,17 +258,18 @@ public struct DataReader {
 
     public mutating func readUInt32() -> UInt32? {
         guard offset + 4 <= data.count else { return nil }
-        let value = data.subdata(in: offset..<offset+4).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+        var value: UInt32 = 0
+        withUnsafeMutableBytes(of: &value) { ptr in
+            data.copyBytes(to: ptr, from: offset..<offset+4)
+        }
         offset += 4
-        return value
+        return UInt32(bigEndian: value)
     }
 
     public mutating func readWireData() -> Data? {
-        guard offset + 4 <= data.count else { return nil }
-        let length = Int(data.subdata(in: offset..<offset+4).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
-        offset += 4
-
-        guard offset + length <= data.count else { return nil }
+        guard let length32 = readUInt32() else { return nil }
+        let length = Int(length32)
+        guard length >= 0, offset + length <= data.count else { return nil }
         let result = data.subdata(in: offset..<offset+length)
         offset += length
         return result
