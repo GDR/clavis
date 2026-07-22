@@ -168,8 +168,23 @@ public class KeychainManager {
         ]
 
         let privateStatus = SecItemAdd(privateQuery as CFDictionary, nil)
-        guard privateStatus == errSecSuccess else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(privateStatus), userInfo: [NSLocalizedDescriptionKey: "Failed to store private key in Keychain: \(privateStatus)"])
+        if privateStatus != errSecSuccess {
+            if privateStatus == -34018 {
+                // Fallback for un-entitled binaries: store with kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+                let fallbackQuery: [String: Any] = [
+                    kSecClass as String: kSecClassGenericPassword,
+                    kSecAttrService as String: KeychainManager.privateServiceName,
+                    kSecAttrAccount as String: label,
+                    kSecValueData as String: rawSeed,
+                    kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+                ]
+                let fallbackStatus = SecItemAdd(fallbackQuery as CFDictionary, nil)
+                guard fallbackStatus == errSecSuccess else {
+                    throw NSError(domain: NSOSStatusErrorDomain, code: Int(fallbackStatus), userInfo: [NSLocalizedDescriptionKey: "Failed to store private key in Keychain: \(fallbackStatus)"])
+                }
+            } else {
+                throw NSError(domain: NSOSStatusErrorDomain, code: Int(privateStatus), userInfo: [NSLocalizedDescriptionKey: "Failed to store private key in Keychain: \(privateStatus)"])
+            }
         }
 
         // 2. Create public key metadata and store without biometric prompt
@@ -267,7 +282,16 @@ public class KeychainManager {
         ]
 
         var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        var status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status != errSecSuccess {
+            let fallbackQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: KeychainManager.privateServiceName,
+                kSecAttrAccount as String: label,
+                kSecReturnData as String: true
+            ]
+            status = SecItemCopyMatching(fallbackQuery as CFDictionary, &result)
+        }
         guard status == errSecSuccess, let resultData = result as? Data else {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Keychain item lookup failed: \(status)"])
         }
