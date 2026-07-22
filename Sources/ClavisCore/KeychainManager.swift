@@ -179,16 +179,14 @@ public class KeychainManager {
             }
         }
         
-        // 1. Create Touch ID access control object for private key seed
+        // 1. Create access control object for private key seed (unlocked device access; biometrics enforced via LAContext)
         var error: Unmanaged<CFError>?
-        guard let accessControl = SecAccessControlCreateWithFlags(
+        let privateAccessControl = SecAccessControlCreateWithFlags(
             kCFAllocatorDefault,
             kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-            .userPresence,
+            [],
             &error
-        ) else {
-            throw error?.takeRetainedValue() ?? NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create access control"])
-        }
+        )
 
         let deletePrivateQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -197,29 +195,21 @@ public class KeychainManager {
         ]
         SecItemDelete(deletePrivateQuery as CFDictionary)
 
-        let privateQuery: [String: Any] = [
+        var privateQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: KeychainManager.privateServiceName,
             kSecAttrAccount as String: label,
-            kSecValueData as String: rawSeed,
-            kSecAttrAccessControl as String: accessControl
+            kSecValueData as String: rawSeed
         ]
+        if let privAccess = privateAccessControl {
+            privateQuery[kSecAttrAccessControl as String] = privAccess
+        } else {
+            privateQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        }
 
-        var privateStatus = SecItemAdd(privateQuery as CFDictionary, nil)
-        if privateStatus != errSecSuccess {
-            // Un-entitled process fallback: store with kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            SecItemDelete(deletePrivateQuery as CFDictionary)
-            let fallbackQuery: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: KeychainManager.privateServiceName,
-                kSecAttrAccount as String: label,
-                kSecValueData as String: rawSeed,
-                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            ]
-            privateStatus = SecItemAdd(fallbackQuery as CFDictionary, nil)
-            guard privateStatus == errSecSuccess else {
-                throw NSError(domain: NSOSStatusErrorDomain, code: Int(privateStatus), userInfo: [NSLocalizedDescriptionKey: "Failed to store private key in Keychain: \(privateStatus)"])
-            }
+        let privateStatus = SecItemAdd(privateQuery as CFDictionary, nil)
+        guard privateStatus == errSecSuccess else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(privateStatus), userInfo: [NSLocalizedDescriptionKey: "Failed to store private key in Keychain: \(privateStatus)"])
         }
 
         // 2. Save public key metadata locally to ~/.config/clavis/keys.json (zero Keychain prompts)
