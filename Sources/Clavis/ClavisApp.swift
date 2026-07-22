@@ -2,6 +2,7 @@ import SwiftUI
 import ClavisCore
 
 @main
+@MainActor
 struct ClavisApp: App {
     @StateObject private var appState = AppState.shared
 
@@ -81,6 +82,7 @@ public class AppState: ObservableObject {
             keys = try KeychainManager.shared.listKeys()
             isSocketActive = SSHAgentServer.sharedInstance.isSocketActive
             cachedKeysCount = SessionCacheManager.shared.cachedCount
+            errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -89,6 +91,10 @@ public class AppState: ObservableObject {
     public func lockNow() {
         SessionCacheManager.shared.clearCache()
         refresh()
+    }
+
+    public func clearError() {
+        errorMessage = nil
     }
 }
 

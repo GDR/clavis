@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import ClavisCore
 
+@MainActor
 struct KeyListView: View {
     @EnvironmentObject var appState: AppState
 
@@ -35,10 +36,30 @@ struct KeyListView: View {
                 .buttonStyle(.bordered)
             }
 
+            // Error Message Banner (appState.errorMessage)
+            if let errorMessage = appState.errorMessage {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.red)
+                    Text(errorMessage)
+                        .font(.subheadline)
+                        .foregroundColor(.red)
+                    Spacer()
+                    Button("Dismiss") { appState.clearError() }
+                        .buttonStyle(.borderless)
+                }
+                .padding(8)
+                .background(Color.red.opacity(0.15))
+                .cornerRadius(6)
+            }
+
+            // Success / Status Message Banner
             if let message = statusMessage {
                 HStack {
                     Image(systemName: "info.circle.fill")
+                        .foregroundColor(.accentColor)
                     Text(message)
+                        .font(.subheadline)
                     Spacer()
                     Button("Dismiss") { statusMessage = nil }
                         .buttonStyle(.borderless)
@@ -209,7 +230,8 @@ struct KeyListView: View {
             appState.refresh()
             statusMessage = "Successfully generated key '\(label)' in Keychain with Touch ID protection."
         } catch {
-            statusMessage = "Failed to generate key: \(error.localizedDescription)"
+            statusMessage = nil
+            appState.errorMessage = "Failed to generate key: \(error.localizedDescription)"
         }
         showingGenerateSheet = false
         newKeyLabel = ""
@@ -218,7 +240,8 @@ struct KeyListView: View {
     private func importKey() {
         let label = newKeyLabel.trimmingCharacters(in: .whitespaces)
         guard !label.isEmpty, let seedData = Data(hexString: importSeedHex.trimmingCharacters(in: .whitespaces)) else {
-            statusMessage = "Invalid hex seed string (must be 64 hex characters / 32 bytes)."
+            statusMessage = nil
+            appState.errorMessage = "Invalid hex seed string (must be 64 hex characters / 32 bytes)."
             return
         }
         do {
@@ -226,7 +249,8 @@ struct KeyListView: View {
             appState.refresh()
             statusMessage = "Successfully imported seed for '\(label)' into Keychain."
         } catch {
-            statusMessage = "Failed to import key: \(error.localizedDescription)"
+            statusMessage = nil
+            appState.errorMessage = "Failed to import key: \(error.localizedDescription)"
         }
         showingImportSheet = false
         newKeyLabel = ""
@@ -239,7 +263,8 @@ struct KeyListView: View {
             appState.refresh()
             statusMessage = "Deleted key '\(label)'."
         } catch {
-            statusMessage = "Failed to delete key: \(error.localizedDescription)"
+            statusMessage = nil
+            appState.errorMessage = "Failed to delete key: \(error.localizedDescription)"
         }
     }
 }

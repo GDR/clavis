@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import ClavisCore
 
+@MainActor
 struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openWindow) var openWindow
@@ -23,6 +24,27 @@ struct MenuBarView: View {
                 Spacer()
             }
             .padding(.bottom, 4)
+
+            // Error Banner
+            if let errorMsg = appState.errorMessage {
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.red)
+                    Text(errorMsg)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .lineLimit(3)
+                    Spacer()
+                    Button(action: { appState.clearError() }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(8)
+                .background(Color.red.opacity(0.15))
+                .cornerRadius(6)
+            }
 
             Divider()
 
