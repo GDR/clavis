@@ -22,6 +22,7 @@ struct ClavisApp: App {
     }
 }
 
+@MainActor
 public class WindowManager: NSObject, NSWindowDelegate {
     public static let shared = WindowManager()
     private var keyManagerWindow: NSWindow?
@@ -61,6 +62,7 @@ public class WindowManager: NSObject, NSWindowDelegate {
     }
 }
 
+@MainActor
 public class AppState: ObservableObject {
     public static let shared = AppState()
 
