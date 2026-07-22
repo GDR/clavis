@@ -14,24 +14,23 @@
           config.allowUnfree = true;
         };
         isDarwin = pkgs.stdenv.isDarwin;
+        appleSdk = if isDarwin then (pkgs.apple-sdk_26 or pkgs.apple-sdk_15) else null;
       in
-      {
-        packages = rec {
+      rec {
+        packages = {
           clavis = if isDarwin then pkgs.stdenv.mkDerivation {
             pname = "clavis";
             version = "0.1.0";
             src = ./.;
 
             nativeBuildInputs = [ pkgs.swift pkgs.swiftpm ];
-            buildInputs = with pkgs.darwin.apple_sdk.frameworks; [
-              Security
-              LocalAuthentication
-              AppKit
-              Foundation
-            ];
+            buildInputs = [ appleSdk ];
 
             buildPhase = ''
               export HOME=$TMPDIR
+              if [ -z "$SDKROOT" ] && [ -d /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk ]; then
+                export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+              fi
               swift build -c release --disable-sandbox
             '';
 
@@ -42,7 +41,15 @@
             '';
           } else pkgs.hello;
 
-          default = clavis;
+          default = packages.clavis;
+        };
+
+        apps = {
+          clavis = flake-utils.lib.mkApp {
+            drv = packages.clavis;
+            name = "clavis";
+          };
+          default = apps.clavis;
         };
 
         devShells.default = pkgs.mkShell {
@@ -54,15 +61,13 @@
             git
             sops
             age
-          ] ++ (if isDarwin then (with pkgs.darwin.apple_sdk.frameworks; [
-            Security
-            LocalAuthentication
-            AppKit
-            Foundation
-          ]) else []);
+          ] ++ (if isDarwin then [ appleSdk ] else []);
 
           shellHook = ''
             echo "🔑 Clavis Dev Environment"
+            if [ -z "$SDKROOT" ] && [ -d /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk ]; then
+              export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+            fi
             echo "Run 'swift build' to build Clavis and age-plugin-clavis."
             echo "Run 'swift test' to run unit tests."
           '';
