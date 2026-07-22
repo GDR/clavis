@@ -1,6 +1,7 @@
 import XCTest
 import CryptoKit
 @testable import ClavisCore
+@testable import AgePluginClavis
 
 final class ClavisTests: XCTestCase {
 
@@ -413,5 +414,121 @@ final class ClavisTests: XCTestCase {
         XCTAssertNil(cache.get(label: "double-lock-test"))
         XCTAssertEqual(cache.cachedCount, 0)
     }
+
+    // MARK: - 9. Age Plugin CLI Adapter IPC Tests
+
+    func testAgePluginParseRecipientPublicKey() throws {
+        let pubKeyData = Data(repeating: 0x33, count: 32)
+        let bech32Recipient = Bech32.encode(hrp: "age1clavis", data: pubKeyData)
+
+        let parsedFromBech32 = AgePluginClavis.parseRecipientPublicKey(bech32Recipient)
+        XCTAssertEqual(parsedFromBech32, pubKeyData)
+
+        let hexRecipient = pubKeyData.map { String(format: "%02hhx", $0) }.joined()
+        let parsedFromHex = AgePluginClavis.parseRecipientPublicKey(hexRecipient)
+        XCTAssertEqual(parsedFromHex, pubKeyData)
+
+        XCTAssertNil(AgePluginClavis.parseRecipientPublicKey("invalid_recipient_str"))
+    }
+
+    func testAgePluginRecipientV1IPC() throws {
+        let recipientKey = Curve25519.KeyAgreement.PrivateKey().publicKey.rawRepresentation
+        let recipientStr = Bech32.encode(hrp: "age1clavis", data: recipientKey)
+        let fileKey = Data(repeating: 0x77, count: 32)
+        let fileKeyB64 = fileKey.base64EncodedString()
+
+        let inputs = [
+            "-> add-recipient \(recipientStr)",
+            "-> wrap-file-key",
+            fileKeyB64,
+            "-> done"
+        ]
+
+        var inputIndex = 0
+        let inputProvider: () -> String? = {
+            guard inputIndex < inputs.count else { return nil }
+            let line = inputs[inputIndex]
+            inputIndex += 1
+            return line
+        }
+
+        var outputs: [String] = []
+        let outputHandler: (String) -> Void = { line in
+            outputs.append(line)
+        }
+
+        AgePluginClavis.handleRecipientV1(inputProvider: inputProvider, outputHandler: outputHandler)
+
+        XCTAssertTrue(outputs.contains(where: { $0.hasPrefix("-> recipient-stanza 0 clavis ") }))
+        XCTAssertEqual(outputs.last, "-> ok")
+    }
+
+    func testAgePluginIdentityV1IPCRoundTrip() throws {
+        // 1. Generate identity in Keychain
+        let label = "age-unittest-key-\(UUID().uuidString)"
+        let keyInfo = try KeychainManager.shared.generateKey(label: label)
+        defer { try? KeychainManager.shared.deleteKey(label: label) }
+
+        // Derive recipient X25519 public key
+        let edPriv = try KeychainManager.shared.fetchPrivateKey(label: label, prompt: "unittest")
+        let x25519Priv = try Ed25519AgeConverter.ed25519SeedToX25519PrivateKey(seed: edPriv.rawRepresentation)
+        let x25519Pub = x25519Priv.publicKey.rawRepresentation
+        let recipientStr = Bech32.encode(hrp: "age1clavis", data: x25519Pub)
+
+        // 2. Wrap file key via recipient-V1
+        let originalFileKey = Data(repeating: 0x99, count: 32)
+        var wrapOutputs: [String] = []
+        let wrapInputs = [
+            "-> add-recipient \(recipientStr)",
+            "-> wrap-file-key",
+            originalFileKey.base64EncodedString(),
+            "-> done"
+        ]
+        var wrapIdx = 0
+        AgePluginClavis.handleRecipientV1(
+            inputProvider: {
+                guard wrapIdx < wrapInputs.count else { return nil }
+                defer { wrapIdx += 1 }
+                return wrapInputs[wrapIdx]
+            },
+            outputHandler: { wrapOutputs.append($0) }
+        )
+
+        guard let stanzaHeaderIdx = wrapOutputs.firstIndex(where: { $0.hasPrefix("-> recipient-stanza 0 clavis ") }) else {
+            XCTFail("recipient-stanza line not found in wrap outputs")
+            return
+        }
+
+        let headerLine = wrapOutputs[stanzaHeaderIdx]
+        let stanzaBodyLine = wrapOutputs[stanzaHeaderIdx + 1]
+
+        let parts = headerLine.split(separator: " ")
+        XCTAssertEqual(parts.count, 5)
+        let epkB64 = String(parts[4])
+
+        // 3. Unwrap file key via identity-V1
+        var unwrapOutputs: [String] = []
+        let unwrapInputs = [
+            "-> add-identity \(label)",
+            "-> recipient-stanza 0 clavis \(epkB64)",
+            stanzaBodyLine,
+            "-> unwrap-file-key",
+            "-> done"
+        ]
+        var unwrapIdx = 0
+        AgePluginClavis.handleIdentityV1(
+            inputProvider: {
+                guard unwrapIdx < unwrapInputs.count else { return nil }
+                defer { unwrapIdx += 1 }
+                return unwrapInputs[unwrapIdx]
+            },
+            outputHandler: { unwrapOutputs.append($0) }
+        )
+
+        XCTAssertTrue(unwrapOutputs.contains("-> file-key 0"))
+        XCTAssertTrue(unwrapOutputs.contains(originalFileKey.base64EncodedString()))
+        XCTAssertEqual(unwrapOutputs.last, "-> ok")
+    }
 }
+
 

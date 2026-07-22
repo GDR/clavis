@@ -37,7 +37,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ClavisTests",
-            dependencies: ["ClavisCore"],
+            dependencies: ["ClavisCore", "AgePluginClavis"],
             path: "Tests/ClavisTests"
         )
     ]
