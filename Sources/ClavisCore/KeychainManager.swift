@@ -99,6 +99,38 @@ public class SessionCacheManager {
     }
 }
 
+public struct PublicKeyStore {
+    private static var storageURL: URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let dir = home.appendingPathComponent(".config/clavis", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("keys.json")
+    }
+
+    public static func loadAll() -> [Ed25519KeyInfo] {
+        guard let data = try? Data(contentsOf: storageURL),
+              let keys = try? JSONDecoder().decode([Ed25519KeyInfo].self, from: data) else {
+            return []
+        }
+        return keys.sorted(by: { $0.label < $1.label })
+    }
+
+    public static func save(_ info: Ed25519KeyInfo) {
+        var current = loadAll().filter { $0.label != info.label }
+        current.append(info)
+        if let data = try? JSONEncoder().encode(current) {
+            try? data.write(to: storageURL, options: .atomic)
+        }
+    }
+
+    public static func remove(label: String) {
+        let current = loadAll().filter { $0.label != label }
+        if let data = try? JSONEncoder().encode(current) {
+            try? data.write(to: storageURL, options: .atomic)
+        }
+    }
+}
+
 public class KeychainManager {
     public static let privateServiceName = "com.clavis.ed25519"
     public static let publicServiceName = "com.clavis.ed25519.pub"
@@ -184,111 +216,28 @@ public class KeychainManager {
             }
         }
 
-        // 2. Create public key metadata and store without biometric or password prompts
+        // 2. Save public key metadata locally to ~/.config/clavis/keys.json (zero Keychain prompts)
         let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey)
-        let encodedKeyInfo = try JSONEncoder().encode(keyInfo)
+        PublicKeyStore.save(keyInfo)
 
-        var pubError: Unmanaged<CFError>?
-        let publicAccessControl = SecAccessControlCreateWithFlags(
-            kCFAllocatorDefault,
-            kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            [],
-            &pubError
-        )
-
-        var publicQuery: [String: Any] = [
+        // Clean up any legacy publicServiceName Keychain items to prevent SecurityAgent popups
+        let pubDeleteQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: KeychainManager.publicServiceName,
-            kSecAttrAccount as String: label,
-            kSecValueData as String: encodedKeyInfo
+            kSecAttrAccount as String: label
         ]
-        if let pubAccess = publicAccessControl {
-            publicQuery[kSecAttrAccessControl as String] = pubAccess
-        } else {
-            publicQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        }
-
-        SecItemDelete(publicQuery as CFDictionary)
-        let publicStatus = SecItemAdd(publicQuery as CFDictionary, nil)
-        guard publicStatus == errSecSuccess else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(publicStatus), userInfo: [NSLocalizedDescriptionKey: "Failed to store public key metadata: \(publicStatus)"])
-        }
+        SecItemDelete(pubDeleteQuery as CFDictionary)
 
         return keyInfo
     }
 
-    // List all public key metadata WITHOUT triggering Touch ID prompts
+    // List all public key metadata WITHOUT triggering Touch ID or Keychain prompts
     public func listKeys() throws -> [Ed25519KeyInfo] {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: KeychainManager.publicServiceName,
-            kSecMatchLimit as String: kSecMatchLimitAll,
-            kSecReturnData as String: true,
-            kSecReturnAttributes as String: true
-        ]
-
-        var result: AnyObject?
-        var status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound || status != errSecSuccess {
-            // Fallback: search by privateServiceName attributes (no Touch ID prompt triggered)
-            let privQuery: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: KeychainManager.privateServiceName,
-                kSecMatchLimit as String: kSecMatchLimitAll,
-                kSecReturnAttributes as String: true
-            ]
-            status = SecItemCopyMatching(privQuery as CFDictionary, &result)
-            if status == errSecSuccess, let array = result as? [[String: Any]] {
-                var keys: [Ed25519KeyInfo] = []
-                for dict in array {
-                    if let label = dict[kSecAttrAccount as String] as? String {
-                        if let keyInfo = try? fetchKeyInfo(label: label) {
-                            keys.append(keyInfo)
-                        }
-                    }
-                }
-                return keys.sorted(by: { $0.label < $1.label })
-            }
-            return []
-        }
-
-        let items: [Data]
-        if let arrayData = result as? [Data] {
-            items = arrayData
-        } else if let array = result as? [Any] {
-            items = array.compactMap { item in
-                if let d = item as? Data { return d }
-                if let dict = item as? [String: Any] { return dict[kSecValueData as String] as? Data }
-                if let nsDict = item as? NSDictionary { return nsDict[kSecValueData as String] as? Data }
-                return nil
-            }
-        } else if let singleData = result as? Data {
-            items = [singleData]
-        } else {
-            items = []
-        }
-
-        var keys: [Ed25519KeyInfo] = []
-        let decoder = JSONDecoder()
-        for data in items {
-            if let info = try? decoder.decode(Ed25519KeyInfo.self, from: data) {
-                keys.append(info)
-            }
-        }
-        return keys.sorted(by: { $0.label < $1.label })
+        return PublicKeyStore.loadAll()
     }
 
     public func fetchKeyInfo(label: String) throws -> Ed25519KeyInfo? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: KeychainManager.publicServiceName,
-            kSecAttrAccount as String: label,
-            kSecReturnData as String: true
-        ]
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        return try? JSONDecoder().decode(Ed25519KeyInfo.self, from: data)
+        return PublicKeyStore.loadAll().first(where: { $0.label == label })
     }
 
     // Delete key (both private seed and public metadata)
@@ -307,6 +256,7 @@ public class KeychainManager {
         ]
         SecItemDelete(publicQuery as CFDictionary)
 
+        PublicKeyStore.remove(label: label)
         SessionCacheManager.shared.remove(label: label)
     }
 
