@@ -184,17 +184,29 @@ public class KeychainManager {
             }
         }
 
-        // 2. Create public key metadata and store without biometric prompt
+        // 2. Create public key metadata and store without biometric or password prompts
         let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey)
         let encodedKeyInfo = try JSONEncoder().encode(keyInfo)
 
-        let publicQuery: [String: Any] = [
+        var pubError: Unmanaged<CFError>?
+        let publicAccessControl = SecAccessControlCreateWithFlags(
+            kCFAllocatorDefault,
+            kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            [],
+            &pubError
+        )
+
+        var publicQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: KeychainManager.publicServiceName,
             kSecAttrAccount as String: label,
-            kSecValueData as String: encodedKeyInfo,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            kSecValueData as String: encodedKeyInfo
         ]
+        if let pubAccess = publicAccessControl {
+            publicQuery[kSecAttrAccessControl as String] = pubAccess
+        } else {
+            publicQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        }
 
         SecItemDelete(publicQuery as CFDictionary)
         let publicStatus = SecItemAdd(publicQuery as CFDictionary, nil)
