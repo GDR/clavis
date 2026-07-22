@@ -211,25 +211,49 @@ public class KeychainManager {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: KeychainManager.publicServiceName,
             kSecMatchLimit as String: kSecMatchLimitAll,
-            kSecReturnData as String: true
+            kSecReturnData as String: true,
+            kSecReturnAttributes as String: true
         ]
 
         var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound {
-            return []
-        }
-        guard status == errSecSuccess, let result = result else {
+        var status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound || status != errSecSuccess {
+            // Fallback: search by privateServiceName attributes (no Touch ID prompt triggered)
+            let privQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: KeychainManager.privateServiceName,
+                kSecMatchLimit as String: kSecMatchLimitAll,
+                kSecReturnAttributes as String: true
+            ]
+            status = SecItemCopyMatching(privQuery as CFDictionary, &result)
+            if status == errSecSuccess, let array = result as? [[String: Any]] {
+                var keys: [Ed25519KeyInfo] = []
+                for dict in array {
+                    if let label = dict[kSecAttrAccount as String] as? String {
+                        if let keyInfo = try? fetchKeyInfo(label: label) {
+                            keys.append(keyInfo)
+                        }
+                    }
+                }
+                return keys.sorted(by: { $0.label < $1.label })
+            }
             return []
         }
 
         let items: [Data]
-        if let array = result as? [Data] {
-            items = array
+        if let arrayData = result as? [Data] {
+            items = arrayData
+        } else if let array = result as? [Any] {
+            items = array.compactMap { item in
+                if let d = item as? Data { return d }
+                if let dict = item as? [String: Any] { return dict[kSecValueData as String] as? Data }
+                if let nsDict = item as? NSDictionary { return nsDict[kSecValueData as String] as? Data }
+                return nil
+            }
         } else if let singleData = result as? Data {
             items = [singleData]
         } else {
-            return []
+            items = []
         }
 
         var keys: [Ed25519KeyInfo] = []
@@ -240,6 +264,19 @@ public class KeychainManager {
             }
         }
         return keys.sorted(by: { $0.label < $1.label })
+    }
+
+    public func fetchKeyInfo(label: String) throws -> Ed25519KeyInfo? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: KeychainManager.publicServiceName,
+            kSecAttrAccount as String: label,
+            kSecReturnData as String: true
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        return try? JSONDecoder().decode(Ed25519KeyInfo.self, from: data)
     }
 
     // Delete key (both private seed and public metadata)

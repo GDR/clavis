@@ -780,4 +780,30 @@ final class ClavisTests: XCTestCase {
         let isDaemonMode = CommandLine.arguments.contains("--daemon")
         XCTAssertEqual(AppState.shared.isDaemonMode, isDaemonMode)
     }
+
+    // MARK: - 13. CLIService Subcommand Tests
+
+    func testCLIServiceHelpCommand() {
+        let resHelp = CLIService.handle(args: ["clavis", "help"])
+        XCTAssertNotNil(resHelp)
+        XCTAssertEqual(resHelp?.exitCode, 0)
+        XCTAssertTrue(resHelp?.output.contains("Clavis") ?? false)
+
+        let resDashH = CLIService.handle(args: ["clavis", "-h"])
+        XCTAssertEqual(resDashH?.exitCode, 0)
+
+        let resNoArgs = CLIService.handle(args: ["clavis"])
+        XCTAssertNil(resNoArgs)
+    }
+
+    func testCLIServiceImportValidation() {
+        let invalidSeedRes = CLIService.handle(args: ["clavis", "import", "mykey", "invalidhex"])
+        XCTAssertNotNil(invalidSeedRes)
+        XCTAssertEqual(invalidSeedRes?.exitCode, 1)
+        XCTAssertEqual(invalidSeedRes?.error, "Invalid hex seed string (must be 64 hex characters / 32 bytes).")
+
+        let missingArgsRes = CLIService.handle(args: ["clavis", "generate"])
+        XCTAssertEqual(missingArgsRes?.exitCode, 1)
+        XCTAssertEqual(missingArgsRes?.error, "Usage: clavis generate <label>")
+    }
 }

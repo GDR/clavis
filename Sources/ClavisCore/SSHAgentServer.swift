@@ -2,6 +2,8 @@ import Foundation
 import Network
 
 public class SSHAgentServer {
+    public static let shared = SSHAgentServer()
+    public static let sharedInstance = shared
     public static let defaultSocketPath = NSString(string: "~/.ssh/clavis.sock").expandingTildeInPath
 
     private let socketPath: String

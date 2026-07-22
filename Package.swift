@@ -12,6 +12,10 @@ let package = Package(
             targets: ["ClavisCore"]
         ),
         .executable(
+            name: "clavis-cli",
+            targets: ["ClavisCLI"]
+        ),
+        .executable(
             name: "Clavis",
             targets: ["Clavis"]
         ),
@@ -26,6 +30,11 @@ let package = Package(
             path: "Sources/ClavisCore"
         ),
         .executableTarget(
+            name: "ClavisCLI",
+            dependencies: ["ClavisCore"],
+            path: "Sources/ClavisCLI"
+        ),
+        .executableTarget(
             name: "Clavis",
             dependencies: ["ClavisCore"],
             path: "Sources/Clavis"
@@ -37,7 +46,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ClavisTests",
-            dependencies: ["ClavisCore", "AgePluginClavis", "Clavis"],
+            dependencies: ["ClavisCore", "AgePluginClavis", "ClavisCLI", "Clavis"],
             path: "Tests/ClavisTests"
         )
     ]
