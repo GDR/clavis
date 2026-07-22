@@ -19,12 +19,45 @@ struct ClavisApp: App {
                 .environmentObject(appState)
         }
         .menuBarExtraStyle(.window)
+    }
+}
 
-        WindowGroup("Clavis Key Manager") {
-            KeyListView()
-                .environmentObject(appState)
-                .frame(minWidth: 650, minHeight: 450)
+public class WindowManager: NSObject, NSWindowDelegate {
+    public static let shared = WindowManager()
+    private var keyManagerWindow: NSWindow?
+
+    public func openKeyManager() {
+        NSApp.setActivationPolicy(.regular)
+
+        if let window = keyManagerWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
         }
+
+        let keyListView = KeyListView().environmentObject(AppState.shared)
+        let hostingController = NSHostingController(rootView: keyListView)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Clavis Key Manager"
+        window.contentViewController = hostingController
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+
+        self.keyManagerWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    public func windowWillClose(_ notification: Notification) {
+        keyManagerWindow = nil
+        NSApp.setActivationPolicy(.accessory)
     }
 }
 

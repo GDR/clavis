@@ -15,9 +15,7 @@ public class SSHAgentServer {
 
     public func start() throws {
         let fileManager = FileManager.default
-        if fileManager.fileExists(atPath: socketPath) {
-            try fileManager.removeItem(atPath: socketPath)
-        }
+        unlink(socketPath)
 
         let dir = (socketPath as NSString).deletingLastPathComponent
         if !fileManager.fileExists(atPath: dir) {

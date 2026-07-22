@@ -88,8 +88,7 @@ struct MenuBarView: View {
             // Action Buttons
             HStack {
                 Button(action: {
-                    openWindow(id: "Clavis Key Manager")
-                    NSApp.activate(ignoringOtherApps: true)
+                    WindowManager.shared.openKeyManager()
                 }) {
                     Label("Manage Keys...", systemImage: "slider.horizontal.3")
                 }
