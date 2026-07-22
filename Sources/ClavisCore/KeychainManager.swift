@@ -279,15 +279,18 @@ public class KeychainManager {
             var authError: NSError?
             let sema = DispatchSemaphore(value: 0)
             var authSuccess = false
-            laContext.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: prompt) { success, error in
-                authSuccess = success
-                authError = error as NSError?
-                sema.signal()
+
+            DispatchQueue.main.async {
+                laContext.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: prompt) { success, error in
+                    authSuccess = success
+                    authError = error as NSError?
+                    sema.signal()
+                }
             }
-            _ = sema.wait(timeout: .now() + 30)
+            _ = sema.wait(timeout: .now() + 60)
 
             guard authSuccess else {
-                throw authError ?? NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Touch ID authentication failed or cancelled."])
+                throw authError ?? NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Touch ID authentication failed or cancelled: \(authError?.localizedDescription ?? "unknown error")"])
             }
         }
 
