@@ -12,16 +12,12 @@ let package = Package(
             targets: ["ClavisCore"]
         ),
         .executable(
-            name: "clavis",
-            targets: ["ClavisCLI"]
+            name: "Clavis",
+            targets: ["Clavis"]
         ),
         .executable(
             name: "clavis-cli",
             targets: ["ClavisCLI"]
-        ),
-        .executable(
-            name: "ClavisGUI",
-            targets: ["Clavis"]
         ),
         .executable(
             name: "age-plugin-clavis",
