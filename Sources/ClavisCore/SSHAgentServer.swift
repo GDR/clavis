@@ -196,7 +196,7 @@ public class SSHAgentServer {
         case 11: // SSH2_AGENTC_REQUEST_IDENTITIES
             return handleRequestIdentities()
         case 13: // SSH2_AGENTC_SIGN_REQUEST
-            return handleSignRequest(payload: payload.dropFirst())
+            return handleSignRequest(payload: Data(payload.dropFirst()))
         default:
             return Data([5]) // SSH_AGENT_FAILURE
         }
@@ -253,14 +253,15 @@ public class SSHAgentServer {
 
 public struct DataReader {
     private let data: Data
-    private var offset: Int = 0
+    private var offset: Int
 
     public init(data: Data) {
         self.data = data
+        self.offset = data.startIndex
     }
 
     public mutating func readUInt32() -> UInt32? {
-        guard offset + 4 <= data.count else { return nil }
+        guard offset + 4 <= data.endIndex else { return nil }
         var value: UInt32 = 0
         _ = withUnsafeMutableBytes(of: &value) { ptr in
             data.copyBytes(to: ptr, from: offset..<offset+4)
@@ -272,8 +273,8 @@ public struct DataReader {
     public mutating func readWireData() -> Data? {
         guard let length32 = readUInt32() else { return nil }
         let length = Int(length32)
-        guard length >= 0, offset + length <= data.count else { return nil }
-        let result = data.subdata(in: offset..<offset+length)
+        guard length >= 0, offset + length <= data.endIndex else { return nil }
+        let result = Data(data.subdata(in: offset..<offset+length))
         offset += length
         return result
     }

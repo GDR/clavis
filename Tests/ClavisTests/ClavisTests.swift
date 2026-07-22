@@ -674,4 +674,76 @@ final class ClavisTests: XCTestCase {
         XCTAssertTrue(unwrapOutputs.contains(originalFileKey.base64EncodedString()))
         XCTAssertEqual(unwrapOutputs.last, "-> ok")
     }
+
+    // MARK: - 11. Milestone 2 & Milestone 3 Direct Unit Tests
+
+    func testSSHAgentServerRequestIdentities() throws {
+        let server = SSHAgentServer()
+        let requestPayload = Data([11]) // SSH2_AGENTC_REQUEST_IDENTITIES
+        let response = server.processAgentRequest(payload: requestPayload)
+
+        XCTAssertFalse(response.isEmpty)
+        XCTAssertEqual(response[0], 12) // SSH2_AGENT_IDENTITIES_ANSWER
+
+        // Key count is 4 bytes big endian starting at index 1
+        XCTAssertGreaterThanOrEqual(response.count, 5)
+        let keyCount = response.subdata(in: 1..<5).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+        XCTAssertGreaterThanOrEqual(keyCount, 0)
+    }
+
+    func testSSHAgentServerSignRequestParsing() throws {
+        let server = SSHAgentServer()
+
+        // 1. Invalid payload: empty or unknown msg type
+        XCTAssertEqual(server.processAgentRequest(payload: Data()), Data([5]))
+        XCTAssertEqual(server.processAgentRequest(payload: Data([99])), Data([5]))
+
+        // 2. Msg type 13 with truncated payload (missing flags)
+        var truncatedPayload = Data([13])
+        truncatedPayload.appendWireString("fake-key-blob")
+        truncatedPayload.appendWireString("data-to-sign")
+        // Missing 4-byte flags parameter
+        XCTAssertEqual(server.processAgentRequest(payload: truncatedPayload), Data([5]))
+
+        // 3. Msg type 13 with valid wire framing and flags but non-existent keyBlob
+        var validFramedPayload = Data([13])
+        validFramedPayload.appendWireString("non-existent-key-blob")
+        validFramedPayload.appendWireString("hello world")
+        var flags: UInt32 = 0
+        Swift.withUnsafeBytes(of: &flags) { validFramedPayload.append(contentsOf: $0) }
+        XCTAssertEqual(server.processAgentRequest(payload: validFramedPayload), Data([5]))
+    }
+
+    func testAgePluginStanzaParsingAndEncoding() throws {
+        // 1. Test AgeStanza IPC encoding & parsing
+        let originalStanza = AgeStanza(fileIndex: 0, tag: "clavis", epk: "testEPKBase64", wrappedKey: Data([0x01, 0x02, 0x03, 0x04]))
+        let encodedIPC = originalStanza.encodeIPC()
+        XCTAssertTrue(encodedIPC.hasPrefix("-> recipient-stanza 0 clavis testEPKBase64\n"))
+
+        let lines = encodedIPC.split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines.count, 2)
+
+        let parsedStanza = AgeStanza.parseIPC(header: lines[0], body: lines[1])
+        XCTAssertNotNil(parsedStanza)
+        XCTAssertEqual(parsedStanza, originalStanza)
+
+        // 2. Test AgePluginCrypto wrap & unwrap roundtrip
+        let seed = Data(repeating: 0x42, count: 32)
+        let x25519Priv = try Ed25519AgeConverter.ed25519SeedToX25519PrivateKey(seed: seed)
+        let recipientStr = Ed25519AgeConverter.ageRecipient(forPublicKey: x25519Priv.publicKey.rawRepresentation)
+
+        let fileKey = Data([0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0, 0x00])
+        let (epkB64, wrappedKeyData) = try AgePluginCrypto.wrapFileKey(fileKey: fileKey, recipientString: recipientStr)
+
+        XCTAssertFalse(epkB64.isEmpty)
+        XCTAssertGreaterThan(wrappedKeyData.count, 16)
+
+        let unwrappedFileKey = try AgePluginCrypto.unwrapFileKey(wrappedKey: wrappedKeyData, epkB64: epkB64, ed25519Seed: seed)
+        XCTAssertEqual(unwrappedFileKey, fileKey)
+
+        // 3. Test invalid parameters handling
+        XCTAssertThrowsError(try AgePluginCrypto.wrapFileKey(fileKey: fileKey, recipientString: "invalid-recipient"))
+        XCTAssertThrowsError(try AgePluginCrypto.unwrapFileKey(wrappedKey: wrappedKeyData, epkB64: "invalid-epk", ed25519Seed: seed))
+        XCTAssertThrowsError(try AgePluginCrypto.unwrapFileKey(wrappedKey: Data([1, 2, 3]), epkB64: epkB64, ed25519Seed: seed))
+    }
 }
