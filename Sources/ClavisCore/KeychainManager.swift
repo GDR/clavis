@@ -307,7 +307,7 @@ public class KeychainManager {
             var authSuccess = false
 
             DispatchQueue.main.async {
-                laContext.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: prompt) { success, error in
+                laContext.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: prompt) { success, error in
                     authSuccess = success
                     authError = error as NSError?
                     sema.signal()
