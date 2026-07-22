@@ -66,30 +66,14 @@
         apps = {
           clavis = flake-utils.lib.mkApp {
             drv = pkgs.writeShellScriptBin "clavis" ''
-              TMP_BIN="$(mktemp -d)/Clavis"
-              cp "${packages.clavis}/bin/clavis" "$TMP_BIN"
-              chmod +w "$TMP_BIN"
-              if [ -x /usr/bin/codesign ] && [ -f "${./Entitlements.plist}" ]; then
-                /usr/bin/codesign --force --deep --sign - --entitlements "${./Entitlements.plist}" "$TMP_BIN" 2>/dev/null || true
-              fi
-              exec "$TMP_BIN" "$@"
+              exec "${packages.clavis}/bin/clavis" "$@"
             '';
             name = "clavis";
           };
 
           cli = flake-utils.lib.mkApp {
             drv = pkgs.writeShellScriptBin "clavis-cli" ''
-              TMP_BIN="$(mktemp -d)/clavis-cli"
-              if [ -f "${packages.clavis}/bin/clavis-cli" ]; then
-                cp "${packages.clavis}/bin/clavis-cli" "$TMP_BIN"
-              else
-                cp "${packages.clavis}/bin/clavis" "$TMP_BIN"
-              fi
-              chmod +w "$TMP_BIN"
-              if [ -x /usr/bin/codesign ] && [ -f "${./Entitlements.plist}" ]; then
-                /usr/bin/codesign --force --deep --sign - --entitlements "${./Entitlements.plist}" "$TMP_BIN" 2>/dev/null || true
-              fi
-              exec "$TMP_BIN" "$@"
+              exec "${packages.clavis}/bin/clavis-cli" "$@"
             '';
             name = "clavis-cli";
           };
