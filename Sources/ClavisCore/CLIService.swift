@@ -97,6 +97,14 @@ public struct CLIService {
                 return CLICommandResult(exitCode: 1, output: "", error: "Failed to export public key: \(error.localizedDescription)")
             }
 
+        case "logs":
+            let logURL = ClavisLogger.logFileURL
+            if let content = try? String(contentsOf: logURL, encoding: .utf8) {
+                return CLICommandResult(exitCode: 0, output: content)
+            } else {
+                return CLICommandResult(exitCode: 0, output: "No log file found at \(logURL.path)")
+            }
+
         case "--help", "-h", "help":
             let helpMsg = """
             Clavis — Native macOS Ed25519 Keychain & SSH Agent Daemon
@@ -107,6 +115,7 @@ public struct CLIService {
               clavis list                     List all stored keys and OpenSSH public keys
               clavis export-pub <label>       Print the OpenSSH public key for <label>
               clavis delete <label>           Delete key pair from Keychain
+              clavis logs                     Print live Touch ID and authentication logs
               clavis daemon / --daemon       Run SSH Agent socket daemon in background
               clavis                          Launch SwiftUI Key Manager GUI
             """

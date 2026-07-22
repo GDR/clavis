@@ -193,6 +193,7 @@ public class SSHAgentServer {
     internal func processAgentRequest(payload: Data) -> Data {
         guard !payload.isEmpty else { return Data([5]) } // SSH_AGENT_FAILURE (5)
         let msgType = payload[0]
+        ClavisLogger.log("SSH_AGENT_REQ", "Received SSH Agent request type \(msgType)")
 
         switch msgType {
         case 11: // SSH2_AGENTC_REQUEST_IDENTITIES
@@ -200,11 +201,13 @@ public class SSHAgentServer {
         case 13: // SSH2_AGENTC_SIGN_REQUEST
             return handleSignRequest(payload: Data(payload.dropFirst()))
         default:
+            ClavisLogger.log("SSH_AGENT_REQ", "Unsupported SSH Agent request type \(msgType)")
             return Data([5]) // SSH_AGENT_FAILURE
         }
     }
 
     internal func handleRequestIdentities() -> Data {
+        ClavisLogger.log("SSH_AGENT_IDENTITIES", "Listing active SSH identities...")
         let keys = (try? KeychainManager.shared.listKeys()) ?? []
         var response = Data()
         response.append(12) // SSH2_AGENT_IDENTITIES_ANSWER
@@ -216,6 +219,7 @@ public class SSHAgentServer {
             response.appendWireData(key.publicKeyBlob)
             response.appendWireString(key.label)
         }
+        ClavisLogger.log("SSH_AGENT_IDENTITIES", "Returned \(keys.count) identity(ies) (0 Touch ID prompts).")
         return response
     }
 
@@ -224,14 +228,17 @@ public class SSHAgentServer {
         guard let keyBlob = reader.readWireData(),
               let dataToSign = reader.readWireData(),
               let _ = reader.readUInt32() else { // Consumes 4-byte flags parameter
+            ClavisLogger.log("SSH_AGENT_SIGN", "Failed to parse sign request wire payload.")
             return Data([5]) // SSH_AGENT_FAILURE
         }
 
         let keys = (try? KeychainManager.shared.listKeys()) ?? []
         guard let matchingKey = keys.first(where: { $0.publicKeyBlob == keyBlob }) else {
+            ClavisLogger.log("SSH_AGENT_SIGN", "No matching key found for requested public key blob.")
             return Data([5]) // SSH_AGENT_FAILURE
         }
 
+        ClavisLogger.log("SSH_AGENT_SIGN", "Initiating signature for key '\(matchingKey.label)'...")
         do {
             let signature = try KeychainManager.shared.sign(
                 label: matchingKey.label,
@@ -246,8 +253,10 @@ public class SSHAgentServer {
             var response = Data()
             response.append(14) // SSH2_AGENT_SIGN_RESPONSE
             response.appendWireData(sigBlob)
+            ClavisLogger.log("SSH_AGENT_SIGN", "Signature completed successfully for '\(matchingKey.label)'.")
             return response
         } catch {
+            ClavisLogger.log("SSH_AGENT_SIGN", "Signature failed for '\(matchingKey.label)': \(error.localizedDescription)")
             return Data([5]) // SSH_AGENT_FAILURE
         }
     }

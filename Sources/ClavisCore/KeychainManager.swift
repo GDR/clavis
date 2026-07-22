@@ -131,6 +131,66 @@ public struct PublicKeyStore {
     }
 }
 
+public struct ClavisLogger {
+    public static var logFileURL: URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let dir = home.appendingPathComponent(".config/clavis", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("clavis.log")
+    }
+
+    public static func log(_ category: String, _ message: String) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        let timestamp = formatter.string(from: Date())
+        let line = "[\(timestamp)] [\(category)] \(message)\n"
+        print(line, terminator: "")
+        if let data = line.data(using: .utf8) {
+            if let handle = try? FileHandle(forWritingTo: logFileURL) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                handle.closeFile()
+            } else {
+                try? data.write(to: logFileURL, options: .atomic)
+            }
+        }
+    }
+}
+
+public struct SeedStore {
+    private static var seedsDirectory: URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let dir = home.appendingPathComponent(".config/clavis/seeds", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        return dir
+    }
+
+    public static func seedFileURL(label: String) -> URL {
+        let safeLabel = label.replacingOccurrences(of: "/", with: "_")
+        return seedsDirectory.appendingPathComponent("\(safeLabel).key")
+    }
+
+    public static func save(label: String, seedData: Data) throws {
+        let url = seedFileURL(label: label)
+        try seedData.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        ClavisLogger.log("SEED_STORE", "Saved private seed for '\(label)' to \(url.path) (POSIX 0600)")
+    }
+
+    public static func load(label: String) -> Data? {
+        let url = seedFileURL(label: label)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        ClavisLogger.log("SEED_STORE", "Loaded private seed for '\(label)' from local storage \(url.path)")
+        return data
+    }
+
+    public static func remove(label: String) {
+        let url = seedFileURL(label: label)
+        try? FileManager.default.removeItem(at: url)
+        ClavisLogger.log("SEED_STORE", "Removed seed file for '\(label)' at \(url.path)")
+    }
+}
+
 public class KeychainManager {
     public static let privateServiceName = "com.clavis.ed25519"
     public static let publicServiceName = "com.clavis.ed25519.pub"
@@ -170,6 +230,7 @@ public class KeychainManager {
     }
 
     private func storeKey(label: String, privateKey: Curve25519.Signing.PrivateKey) throws -> Ed25519KeyInfo {
+        ClavisLogger.log("KEYCHAIN_WRITE", "Storing private seed for '\(label)'...")
         var rawSeed = privateKey.rawRepresentation
         defer {
             rawSeed.withUnsafeMutableBytes { ptr in
@@ -179,15 +240,10 @@ public class KeychainManager {
             }
         }
         
-        // 1. Create access control object for private key seed (unlocked device access; biometrics enforced via LAContext)
-        var error: Unmanaged<CFError>?
-        let privateAccessControl = SecAccessControlCreateWithFlags(
-            kCFAllocatorDefault,
-            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-            [],
-            &error
-        )
+        // Save private seed securely in SeedStore (POSIX mode 0600)
+        try SeedStore.save(label: label, seedData: rawSeed)
 
+        // Delete legacy Keychain items
         let deletePrivateQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: KeychainManager.privateServiceName,
@@ -195,40 +251,22 @@ public class KeychainManager {
         ]
         SecItemDelete(deletePrivateQuery as CFDictionary)
 
-        var privateQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: KeychainManager.privateServiceName,
-            kSecAttrAccount as String: label,
-            kSecValueData as String: rawSeed
-        ]
-        if let privAccess = privateAccessControl {
-            privateQuery[kSecAttrAccessControl as String] = privAccess
-        } else {
-            privateQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        }
-
-        let privateStatus = SecItemAdd(privateQuery as CFDictionary, nil)
-        guard privateStatus == errSecSuccess else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(privateStatus), userInfo: [NSLocalizedDescriptionKey: "Failed to store private key in Keychain: \(privateStatus)"])
-        }
-
-        // 2. Save public key metadata locally to ~/.config/clavis/keys.json (zero Keychain prompts)
-        let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey)
-        PublicKeyStore.save(keyInfo)
-
-        // Clean up any legacy publicServiceName Keychain items to prevent SecurityAgent popups
-        let pubDeleteQuery: [String: Any] = [
+        let deletePublicQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: KeychainManager.publicServiceName,
             kSecAttrAccount as String: label
         ]
-        SecItemDelete(pubDeleteQuery as CFDictionary)
+        SecItemDelete(deletePublicQuery as CFDictionary)
 
+        // Save public key metadata
+        let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey)
+        PublicKeyStore.save(keyInfo)
         return keyInfo
     }
 
     // List all public key metadata WITHOUT triggering Touch ID or Keychain prompts
     public func listKeys() throws -> [Ed25519KeyInfo] {
+        ClavisLogger.log("KEY_LIST", "Fetching key list from local store...")
         return PublicKeyStore.loadAll()
     }
 
@@ -238,31 +276,29 @@ public class KeychainManager {
 
     // Delete key (both private seed and public metadata)
     public func deleteKey(label: String) throws {
+        ClavisLogger.log("KEY_DELETE", "Deleting key '\(label)'...")
+        SeedStore.remove(label: label)
+        PublicKeyStore.remove(label: label)
+        SessionCacheManager.shared.remove(label: label)
+
         let privateQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: KeychainManager.privateServiceName,
             kSecAttrAccount as String: label
         ]
         SecItemDelete(privateQuery as CFDictionary)
-
-        let publicQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: KeychainManager.publicServiceName,
-            kSecAttrAccount as String: label
-        ]
-        SecItemDelete(publicQuery as CFDictionary)
-
-        PublicKeyStore.remove(label: label)
-        SessionCacheManager.shared.remove(label: label)
     }
 
     // Retrieve private key seed with Touch ID / Apple Watch / Password fallback authentication
     public func fetchPrivateKey(label: String, prompt: String) throws -> Curve25519.Signing.PrivateKey {
+        ClavisLogger.log("FETCH_KEY", "Access request for key '\(label)'")
         if let cached = SessionCacheManager.shared.get(label: label) {
+            ClavisLogger.log("SESSION_CACHE", "Serving key '\(label)' from active session cache (0 prompts)")
             return cached
         }
 
         if NSClassFromString("XCTestCase") == nil && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            ClavisLogger.log("TOUCH_ID_PROMPT", "Displaying Touch ID prompt: \"\(prompt)\"")
             let laContext = LAContext()
             laContext.localizedReason = prompt
 
@@ -279,35 +315,52 @@ public class KeychainManager {
             }
             _ = sema.wait(timeout: .now() + 60)
 
-            guard authSuccess else {
+            if authSuccess {
+                ClavisLogger.log("TOUCH_ID_RESULT", "Touch ID fingerprint authentication SUCCESS")
+            } else {
+                ClavisLogger.log("TOUCH_ID_RESULT", "Touch ID FAILED: \(authError?.localizedDescription ?? "user cancelled")")
                 throw authError ?? NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Touch ID authentication failed or cancelled: \(authError?.localizedDescription ?? "unknown error")"])
             }
         }
 
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: KeychainManager.privateServiceName,
-            kSecAttrAccount as String: label,
-            kSecReturnData as String: true
-        ]
+        // Fetch private seed from SeedStore (with fallback migration from legacy Keychain)
+        var seedData = SeedStore.load(label: label)
+        if seedData == nil {
+            ClavisLogger.log("KEYCHAIN_QUERY", "Seed not in local SeedStore, checking legacy Keychain for '\(label)'...")
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: KeychainManager.privateServiceName,
+                kSecAttrAccount as String: label,
+                kSecReturnData as String: true
+            ]
 
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let resultData = result as? Data else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Keychain item lookup failed: \(status)"])
+            var result: AnyObject?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            ClavisLogger.log("KEYCHAIN_RESULT", "SecItemCopyMatching returned status \(status) (\(status == 0 ? "errSecSuccess" : "errSecItemNotFound"))")
+            if status == errSecSuccess, let resultData = result as? Data {
+                seedData = resultData
+                try? SeedStore.save(label: label, seedData: resultData)
+                SecItemDelete(query as CFDictionary)
+                ClavisLogger.log("KEYCHAIN_MIGRATE", "Migrated legacy Keychain item '\(label)' to SeedStore and deleted Keychain copy.")
+            }
         }
 
-        var sensitiveData = resultData
+        guard let sensitiveData = seedData else {
+            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Private key seed not found for label '\(label)'"])
+        }
+
+        var mutableData = sensitiveData
         defer {
-            sensitiveData.withUnsafeMutableBytes { ptr in
+            mutableData.withUnsafeMutableBytes { ptr in
                 if let baseAddress = ptr.baseAddress {
                     memset_s(baseAddress, ptr.count, 0, ptr.count)
                 }
             }
         }
 
-        let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: sensitiveData)
+        let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: mutableData)
         SessionCacheManager.shared.set(label: label, key: privateKey)
+        ClavisLogger.log("FETCH_KEY_SUCCESS", "Key '\(label)' loaded and placed into session cache.")
         return privateKey
     }
 
