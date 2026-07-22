@@ -55,11 +55,8 @@
             installPhase = ''
               mkdir -p $out/bin
               cp .build/release/Clavis $out/bin/clavis 2>/dev/null || true
+              cp .build/release/clavis-cli $out/bin/clavis-cli 2>/dev/null || true
               cp .build/release/age-plugin-clavis $out/bin/age-plugin-clavis 2>/dev/null || true
-              if [ -x /usr/bin/codesign ] && [ -f Entitlements.plist ]; then
-                /usr/bin/codesign --force --deep --sign - --entitlements Entitlements.plist $out/bin/clavis 2>/dev/null || true
-                /usr/bin/codesign --force --deep --sign - --entitlements Entitlements.plist $out/bin/age-plugin-clavis 2>/dev/null || true
-              fi
             '';
           } else pkgs.hello;
 
@@ -69,15 +66,34 @@
         apps = {
           clavis = flake-utils.lib.mkApp {
             drv = pkgs.writeShellScriptBin "clavis" ''
-              if [ -f Entitlements.plist ] && [ -x .build/release/Clavis ]; then
-                /usr/bin/codesign --force --deep --sign - --entitlements Entitlements.plist .build/release/Clavis 2>/dev/null || true
-                exec .build/release/Clavis "$@"
-              else
-                exec ${packages.clavis}/bin/clavis "$@"
+              TMP_BIN="$(mktemp -d)/Clavis"
+              cp "${packages.clavis}/bin/clavis" "$TMP_BIN"
+              chmod +w "$TMP_BIN"
+              if [ -x /usr/bin/codesign ] && [ -f "${./Entitlements.plist}" ]; then
+                /usr/bin/codesign --force --deep --sign - --entitlements "${./Entitlements.plist}" "$TMP_BIN" 2>/dev/null || true
               fi
+              exec "$TMP_BIN" "$@"
             '';
             name = "clavis";
           };
+
+          cli = flake-utils.lib.mkApp {
+            drv = pkgs.writeShellScriptBin "clavis-cli" ''
+              TMP_BIN="$(mktemp -d)/clavis-cli"
+              if [ -f "${packages.clavis}/bin/clavis-cli" ]; then
+                cp "${packages.clavis}/bin/clavis-cli" "$TMP_BIN"
+              else
+                cp "${packages.clavis}/bin/clavis" "$TMP_BIN"
+              fi
+              chmod +w "$TMP_BIN"
+              if [ -x /usr/bin/codesign ] && [ -f "${./Entitlements.plist}" ]; then
+                /usr/bin/codesign --force --deep --sign - --entitlements "${./Entitlements.plist}" "$TMP_BIN" 2>/dev/null || true
+              fi
+              exec "$TMP_BIN" "$@"
+            '';
+            name = "clavis-cli";
+          };
+
           default = apps.clavis;
         };
 
