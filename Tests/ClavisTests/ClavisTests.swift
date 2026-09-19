@@ -17,6 +17,7 @@ final class ClavisTests: XCTestCase {
 
         PublicKeyStore.customStorageURL = testRootURL.appendingPathComponent("keys.json")
         ClavisLogger.customLogFileURL = testRootURL.appendingPathComponent("clavis.log")
+        ClavisLogger.customMaximumLogFileSize = nil
         SeedStore.customSeedsDirectory = testRootURL.appendingPathComponent("seeds", isDirectory: true)
         SeedStore.customMasterKEKURL = testRootURL.appendingPathComponent("master.kek")
         SeedStore.useSoftwareMasterKeyForTesting = true
@@ -27,6 +28,7 @@ final class ClavisTests: XCTestCase {
         SeedStore.resetMasterKeyCacheForTesting()
         PublicKeyStore.customStorageURL = nil
         ClavisLogger.customLogFileURL = nil
+        ClavisLogger.customMaximumLogFileSize = nil
         SeedStore.customSeedsDirectory = nil
         SeedStore.customMasterKEKURL = nil
         SeedStore.useSoftwareMasterKeyForTesting = false
@@ -252,6 +254,31 @@ final class ClavisTests: XCTestCase {
 
         server.stop()
         XCTAssertFalse(server.isSocketActive)
+    }
+
+    func testLoggerUsesPrivatePermissionsAndRotates() throws {
+        ClavisLogger.customMaximumLogFileSize = 256
+        for index in 0..<8 {
+            ClavisLogger.log("TEST", "entry-\(index)-\(String(repeating: "x", count: 80))")
+        }
+
+        let logURL = try XCTUnwrap(ClavisLogger.customLogFileURL)
+        let logAttributes = try FileManager.default.attributesOfItem(atPath: logURL.path)
+        XCTAssertEqual((logAttributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+
+        let directoryAttributes = try FileManager.default.attributesOfItem(atPath: logURL.deletingLastPathComponent().path)
+        XCTAssertEqual((directoryAttributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: "\(logURL.path).1"))
+    }
+
+    func testLoggerEscapesEmbeddedNewlines() throws {
+        ClavisLogger.log("TEST\nFORGED", "message\r\n[AUTH] forged")
+
+        let logURL = try XCTUnwrap(ClavisLogger.customLogFileURL)
+        let contents = try String(contentsOf: logURL, encoding: .utf8)
+        XCTAssertEqual(contents.split(separator: "\n").count, 1)
+        XCTAssertTrue(contents.contains("TEST\\nFORGED"))
+        XCTAssertTrue(contents.contains("message\\r\\n[AUTH] forged"))
     }
 
     // MARK: - 7. Milestone 1 Expanded Unit Tests
