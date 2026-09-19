@@ -806,4 +806,29 @@ final class ClavisTests: XCTestCase {
         XCTAssertEqual(missingArgsRes?.exitCode, 1)
         XCTAssertEqual(missingArgsRes?.error, "Usage: clavis generate <label>")
     }
+
+    func testSingleInstanceLockAcquireAndRelease() {
+        let lock = SingleInstanceLock.shared
+        lock.release()
+
+        XCTAssertTrue(lock.acquire())
+        XCTAssertTrue(lock.acquire())
+
+        let fd = open(SingleInstanceLock.lockFileURL.path, O_RDWR)
+        if fd >= 0 {
+            let flockRes = flock(fd, LOCK_EX | LOCK_NB)
+            XCTAssertEqual(flockRes, -1)
+            XCTAssertEqual(errno, EWOULDBLOCK)
+            close(fd)
+        }
+
+        lock.release()
+        let fd2 = open(SingleInstanceLock.lockFileURL.path, O_RDWR)
+        if fd2 >= 0 {
+            let flockRes2 = flock(fd2, LOCK_EX | LOCK_NB)
+            XCTAssertEqual(flockRes2, 0)
+            flock(fd2, LOCK_UN)
+            close(fd2)
+        }
+    }
 }

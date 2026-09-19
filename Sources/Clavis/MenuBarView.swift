@@ -144,6 +144,7 @@ struct MenuBarView: View {
                 shortcut: "⌘Q",
                 isDestructive: true
             ) {
+                SingleInstanceLock.shared.release()
                 SSHAgentServer.sharedInstance.stop()
                 NSApplication.shared.terminate(nil)
             }
