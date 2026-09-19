@@ -9,7 +9,9 @@ public class SessionCacheManager {
     private var unlockedSessions: [String: Date] = [:]
     private let lock = NSLock()
 
-    private var _currentTimeout: SessionTimeout = .never
+    private static let userDefaultsKey = "com.clavis.sessionTimeout"
+
+    private var _currentTimeout: SessionTimeout
     public var currentTimeout: SessionTimeout {
         get {
             lock.lock()
@@ -20,6 +22,7 @@ public class SessionCacheManager {
             lock.lock()
             let oldTimeout = _currentTimeout
             _currentTimeout = newValue
+            UserDefaults.standard.set(newValue.rawValue, forKey: Self.userDefaultsKey)
             lock.unlock()
 
             let shouldClear: Bool
@@ -40,6 +43,13 @@ public class SessionCacheManager {
     }
 
     private init() {
+        if let saved = UserDefaults.standard.string(forKey: Self.userDefaultsKey),
+           let timeout = SessionTimeout(rawValue: saved) {
+            self._currentTimeout = timeout
+        } else {
+            self._currentTimeout = .fiveMinutes
+        }
+
         DistributedNotificationCenter.default().addObserver(
             self,
             selector: #selector(clearCache),

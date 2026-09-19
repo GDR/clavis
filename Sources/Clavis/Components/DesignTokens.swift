@@ -5,6 +5,7 @@ public enum DesignTokens {
     public static let windowBackground = Color(nsColor: NSColor(calibratedRed: 0.09, green: 0.09, blue: 0.10, alpha: 0.50))
     public static let sidebarBackground = Color(nsColor: NSColor(calibratedRed: 0.12, green: 0.12, blue: 0.14, alpha: 0.45))
     public static let inspectorBackground = Color(nsColor: NSColor(calibratedRed: 0.10, green: 0.10, blue: 0.12, alpha: 0.50))
+    public static let menuBarBackground = Color(nsColor: NSColor(calibratedRed: 0.11, green: 0.11, blue: 0.13, alpha: 0.55))
     public static let cardBackground = Color(nsColor: NSColor(calibratedWhite: 1.0, alpha: 0.05))
     public static let cardBorder = Color(nsColor: NSColor(calibratedWhite: 1.0, alpha: 0.08))
 

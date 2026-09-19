@@ -8,7 +8,7 @@ struct MenuBarView: View {
     @State private var copiedLabel: String? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             // Header: Agent Status & Lock All
             HStack(alignment: .center) {
                 HStack(spacing: 8) {
@@ -16,36 +16,34 @@ struct MenuBarView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Clavis Agent")
                             .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.primary)
                         Text(appState.isSocketActive ? "\(appState.keys.count) identities ready" : "Agent offline")
                             .font(.system(size: 11))
-                            .foregroundColor(DesignTokens.textSecondary)
+                            .foregroundColor(.secondary)
                     }
                 }
 
                 Spacer()
 
-                Button(action: {
-                    appState.lockNow()
-                }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "lock.fill")
-                            .font(.system(size: 10))
-                        Text("Lock All")
-                            .font(.system(size: 11, weight: .medium))
+                if appState.cachedKeysCount > 0 {
+                    Button(action: {
+                        appState.lockNow()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "lock.fill")
+                                .font(.system(size: 10))
+                            Text("Lock All")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.red.opacity(0.15))
+                        .foregroundColor(.red)
+                        .clipShape(Capsule())
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.red.opacity(0.12))
-                    .foregroundColor(appState.cachedKeysCount > 0 ? .red : DesignTokens.textSecondary)
-                    .clipShape(Capsule())
-                    .overlay(
-                        Capsule()
-                            .stroke(appState.cachedKeysCount > 0 ? Color.red.opacity(0.3) : DesignTokens.cardBorder, lineWidth: 0.8)
-                    )
+                    .buttonStyle(.plain)
+                    .focusable(false)
                 }
-                .buttonStyle(.plain)
-                .focusable(false)
-                .disabled(appState.cachedKeysCount == 0)
             }
             .padding(.horizontal, 4)
             .padding(.top, 2)
@@ -73,28 +71,28 @@ struct MenuBarView: View {
                 .cornerRadius(6)
             }
 
-            Divider().background(DesignTokens.cardBorder)
+            Divider()
 
             // Identities Section
-            VStack(alignment: .leading, spacing: 6) {
-                Text("IDENTITIES")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(DesignTokens.textTertiary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Identities")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
                     .padding(.horizontal, 4)
 
                 if appState.keys.isEmpty {
-                    VStack(spacing: 6) {
+                    VStack(spacing: 4) {
                         Text("No keys available")
                             .font(.caption)
-                            .foregroundColor(DesignTokens.textSecondary)
+                            .foregroundColor(.secondary)
                         Text("Use 'New Key…' to generate an identity.")
                             .font(.caption2)
-                            .foregroundColor(DesignTokens.textTertiary)
+                            .foregroundColor(.secondary.opacity(0.8))
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
+                    .padding(.vertical, 10)
                 } else {
-                    VStack(spacing: 6) {
+                    VStack(spacing: 2) {
                         ForEach(appState.keys.prefix(4)) { key in
                             MenuBarIdentityRow(
                                 key: key,
@@ -106,10 +104,10 @@ struct MenuBarView: View {
                 }
             }
 
-            Divider().background(DesignTokens.cardBorder)
+            Divider()
 
-            // Menu Items (Figma frame 39:878 - 39:894)
-            VStack(spacing: 2) {
+            // Menu Items (Control Center action style)
+            VStack(spacing: 1) {
                 MenuBarActionItem(
                     title: "New Key…",
                     icon: "plus",
@@ -143,7 +141,7 @@ struct MenuBarView: View {
                 }
             }
 
-            Divider().background(DesignTokens.cardBorder)
+            Divider()
 
             // Quit Action
             MenuBarActionItem(
@@ -157,8 +155,16 @@ struct MenuBarView: View {
                 NSApplication.shared.terminate(nil)
             }
         }
-        .padding(12)
-        .frame(width: 340)
+        .padding(14)
+        .frame(width: 320)
+        .background(
+            VisualEffectView(material: .popover, blendingMode: .behindWindow)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+        )
         .onAppear {
             appState.refresh()
         }
@@ -188,18 +194,27 @@ private struct MenuBarIdentityRow: View {
     @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(key.isHardware ? Color.green : Color.blue)
+                    .frame(width: 26, height: 26)
+                Image(systemName: key.isHardware ? "lock.shield.fill" : "key.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(key.label)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.primary)
                         .lineLimit(1)
                     KeyBadge(isHardware: key.isHardware)
                 }
                 Text(key.displayIdentifier)
                     .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(DesignTokens.textSecondary)
+                    .foregroundColor(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -215,35 +230,22 @@ private struct MenuBarIdentityRow: View {
                     Text(isCopied ? "Copied" : "Copy")
                         .font(.system(size: 11, weight: .medium))
                 }
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 9)
                 .padding(.vertical, 4)
-                .background(
-                    Capsule()
-                        .fill(isCopied ? DesignTokens.accentGreen.opacity(0.18) : Color.white.opacity(0.10))
-                        .background(.ultraThinMaterial, in: Capsule())
-                )
-                .overlay(
-                    Capsule()
-                        .stroke(
-                            isCopied ? DesignTokens.accentGreen.opacity(0.40) : Color.white.opacity(0.18),
-                            lineWidth: 0.8
-                        )
-                )
-                .foregroundColor(isCopied ? DesignTokens.accentGreen : Color.white.opacity(0.92))
+                .background(isCopied ? Color.green.opacity(0.20) : Color.primary.opacity(0.08))
+                .foregroundColor(isCopied ? .green : .primary)
+                .clipShape(Capsule())
             }
             .buttonStyle(.plain)
             .focusable(false)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 5)
         .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(isHovered ? 0.5 : 0.3))
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(DesignTokens.cardBorder, lineWidth: 0.8)
-        )
+        .contentShape(Rectangle())
         .onHover { isHovered = $0 }
     }
 }
@@ -261,22 +263,24 @@ private struct MenuBarActionItem: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: icon)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(isDestructive ? .red : DesignTokens.textSecondary)
+                    .font(.system(size: 12))
+                    .foregroundColor(isDestructive ? .red : .secondary)
                     .frame(width: 16)
                 Text(title)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 12, weight: .regular))
                     .foregroundColor(isDestructive ? .red : .primary)
                 Spacer()
-                Text(shortcut)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(DesignTokens.textTertiary)
+                if !shortcut.isEmpty {
+                    Text(shortcut)
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 5)
             .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isHovered ? (isDestructive ? Color.red.opacity(0.15) : Color(nsColor: .controlBackgroundColor).opacity(0.6)) : Color.clear)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isHovered ? (isDestructive ? Color.red.opacity(0.12) : Color.primary.opacity(0.08)) : Color.clear)
             )
             .contentShape(Rectangle())
         }

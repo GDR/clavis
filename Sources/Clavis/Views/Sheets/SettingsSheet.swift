@@ -1,148 +1,115 @@
 import SwiftUI
 import ClavisCore
 
-public struct SettingsSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @ObservedObject var appState: AppState
-
+public struct SettingsView: View {
+    @EnvironmentObject var appState: AppState
     @State private var copiedEnv = false
 
-    public init(appState: AppState) {
-        self.appState = appState
-    }
+    public init() {}
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            // Header
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Settings")
-                        .font(.title2)
-                        .fontWeight(.bold)
-                    Text("Configure agent startup, biometric session cache, and SSH integration.")
-                        .font(.subheadline)
-                        .foregroundColor(DesignTokens.textSecondary)
+        ScrollView {
+            VStack(spacing: 16) {
+                // System Startup Section
+                SettingsGroup(title: "SYSTEM STARTUP") {
+                    SettingsRow(
+                        icon: "power",
+                        iconColor: Color(red: 0.0, green: 0.48, blue: 1.0),
+                        title: "Launch at Login",
+                        subtitle: "Automatically start Clavis daemon on user login"
+                    ) {
+                        Toggle("", isOn: Binding(
+                            get: { appState.launchAtLogin },
+                            set: { appState.setLaunchAtLogin($0) }
+                        ))
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                    }
                 }
-                Spacer()
-                Image(systemName: "gearshape.fill")
-                    .font(.system(size: 28))
-                    .foregroundColor(DesignTokens.textSecondary.opacity(0.4))
-            }
 
-            Divider().background(DesignTokens.cardBorder)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    // System Startup Section
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("SYSTEM STARTUP")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(DesignTokens.textTertiary)
-
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(alignment: .center) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text("Launch at Login (Auto Start)")
-                                        .font(.system(size: 13, weight: .medium))
-                                    Text("Automatically start Clavis daemon on user login so SSH & age are always ready.")
-                                        .font(.caption2)
-                                        .foregroundColor(DesignTokens.textSecondary)
-                                }
-                                Spacer()
-                                Toggle("", isOn: Binding(
-                                    get: { appState.launchAtLogin },
-                                    set: { appState.setLaunchAtLogin($0) }
-                                ))
-                                .toggleStyle(.switch)
-                                .tint(DesignTokens.accentBlue)
+                // Security & Session Timeout Section
+                SettingsGroup(title: "SECURITY & CACHE") {
+                    SettingsRow(
+                        icon: "timer",
+                        iconColor: Color(red: 1.0, green: 0.58, blue: 0.0),
+                        title: "Session Timeout",
+                        subtitle: "Require Touch ID authentication after inactivity"
+                    ) {
+                        Picker("", selection: Binding(
+                            get: { appState.selectedTimeout },
+                            set: { appState.setTimeout($0) }
+                        )) {
+                            ForEach(SessionTimeout.allCases) { timeout in
+                                Text(timeout.rawValue).tag(timeout)
                             }
                         }
-                        .padding(14)
-                        .glassCard(cornerRadius: 10)
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .frame(width: 150)
                     }
 
-                    // Security & Session Timeout Section
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("SECURITY & BIOMETRIC CACHE")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(DesignTokens.textTertiary)
+                    Divider()
 
-                        VStack(alignment: .leading, spacing: 14) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Session Timeout")
-                                    .font(.system(size: 13, weight: .medium))
-                                Text("How long keys remain unlocked in memory before requiring Touch ID again.")
-                                    .font(.caption2)
-                                    .foregroundColor(DesignTokens.textSecondary)
+                    SettingsRow(
+                        icon: "lock.shield.fill",
+                        iconColor: Color(red: 0.20, green: 0.78, blue: 0.35),
+                        title: "Auto-Lock on Sleep",
+                        subtitle: "Keys are purged from memory when macOS locks or sleeps"
+                    ) {
+                        Text("Active")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DesignTokens.accentGreen)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(DesignTokens.accentGreen.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
 
-                                Picker("", selection: Binding(
-                                    get: { appState.selectedTimeout },
-                                    set: { appState.setTimeout($0) }
-                                )) {
-                                    ForEach(SessionTimeout.allCases) { timeout in
-                                        Text(timeout.rawValue).tag(timeout)
-                                    }
-                                }
-                                .pickerStyle(.segmented)
-                                .padding(.top, 4)
-                            }
+                    Divider()
 
-                            Divider().background(DesignTokens.cardBorder)
-
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Lock Screen & Sleep Auto-Lock")
-                                        .font(.system(size: 12, weight: .medium))
-                                    Text("Keys are purged from memory immediately when macOS locks or sleeps.")
-                                        .font(.caption2)
-                                        .foregroundColor(DesignTokens.textSecondary)
-                                }
-                                Spacer()
-                                Image(systemName: "checkmark.shield.fill")
-                                    .foregroundColor(DesignTokens.accentGreen)
-                                    .font(.title3)
-                            }
-
-                            Divider().background(DesignTokens.cardBorder)
-
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Active Cache Status")
-                                        .font(.system(size: 12, weight: .medium))
-                                    Text("\(appState.cachedKeysCount) key(s) currently unlocked in memory")
-                                        .font(.caption2)
-                                        .foregroundColor(appState.cachedKeysCount > 0 ? DesignTokens.accentGreen : DesignTokens.textSecondary)
-                                }
-                                Spacer()
-                                Button("Lock All Now") {
-                                    appState.lockNow()
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .disabled(appState.cachedKeysCount == 0)
-                            }
+                    SettingsRow(
+                        icon: "key.fill",
+                        iconColor: Color(red: 0.68, green: 0.32, blue: 0.88),
+                        title: "Active Cache Status",
+                        subtitle: "\(appState.cachedKeysCount) key(s) currently unlocked in memory"
+                    ) {
+                        Button("Lock All") {
+                            appState.lockNow()
                         }
-                        .padding(14)
-                        .glassCard(cornerRadius: 10)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(appState.cachedKeysCount == 0)
                     }
+                }
 
-                    // Shell Environment Section
+                // SSH Integration Section
+                SettingsGroup(title: "SSH INTEGRATION") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("SHELL ENVIRONMENT & NIX")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(DesignTokens.textTertiary)
+                        SettingsRow(
+                            icon: "terminal.fill",
+                            iconColor: Color(red: 0.55, green: 0.58, blue: 0.62),
+                            title: "Agent Socket",
+                            subtitle: "~/.ssh/clavis.sock"
+                        ) {
+                            EmptyView()
+                        }
 
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("To use Clavis as your system-wide SSH agent in terminal:")
-                                .font(.caption2)
-                                .foregroundColor(DesignTokens.textSecondary)
+                        Divider()
 
-                            HStack {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Terminal Environment Variable")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.secondary)
+
+                            HStack(spacing: 8) {
                                 Text("export SSH_AUTH_SOCK=~/.ssh/clavis.sock")
-                                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                    .font(.system(size: 11, design: .monospaced))
                                     .foregroundColor(.primary)
                                     .lineLimit(1)
+                                    .textSelection(.enabled)
+
                                 Spacer()
+
                                 Button(action: {
                                     NSPasteboard.general.clearContents()
                                     NSPasteboard.general.setString("export SSH_AUTH_SOCK=~/.ssh/clavis.sock", forType: .string)
@@ -155,35 +122,97 @@ public struct SettingsSheet: View {
                                         Image(systemName: copiedEnv ? "checkmark" : "doc.on.doc")
                                         Text(copiedEnv ? "Copied" : "Copy")
                                     }
-                                    .font(.caption)
+                                    .font(.system(size: 11, weight: .medium))
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
                             }
-                            .padding(10)
-                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
-                            .cornerRadius(6)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                         }
-                        .padding(14)
-                        .glassCard(cornerRadius: 10)
+                        .padding(.top, 2)
                     }
                 }
             }
-
-            Divider().background(DesignTokens.cardBorder)
-
-            // Footer
-            HStack {
-                Spacer()
-                Button("Done") {
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(DesignTokens.accentBlue)
-                .keyboardShortcut(.defaultAction)
-            }
+            .padding(20)
         }
-        .padding(24)
-        .frame(width: 540, height: 600)
+        .frame(width: 480, height: 460)
+    }
+}
+
+// Backward-compatible wrapper for any sheet callers
+public struct SettingsSheet: View {
+    @ObservedObject var appState: AppState
+
+    public init(appState: AppState) {
+        self.appState = appState
+    }
+
+    public var body: some View {
+        SettingsView()
+            .environmentObject(appState)
+    }
+}
+
+private struct SettingsGroup<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 4)
+
+            VStack(spacing: 0) {
+                content()
+            }
+            .padding(12)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+            )
+        }
+    }
+}
+
+private struct SettingsRow<Trailing: View>: View {
+    let icon: String
+    let iconColor: Color
+    let title: String
+    let subtitle: String
+    @ViewBuilder let trailing: () -> Trailing
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(iconColor)
+                    .frame(width: 28, height: 28)
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.primary)
+                Text(subtitle)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            trailing()
+        }
+        .padding(.vertical, 4)
     }
 }

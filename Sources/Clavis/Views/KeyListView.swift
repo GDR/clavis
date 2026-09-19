@@ -168,7 +168,7 @@ struct KeyListView: View {
 
                                 // Settings Button
                                 Button(action: {
-                                    appState.showingSettings = true
+                                    WindowManager.shared.openSettings()
                                 }) {
                                     Image(systemName: "gearshape")
                                         .font(.system(size: 12, weight: .medium))
@@ -224,16 +224,13 @@ struct KeyListView: View {
         .sheet(isPresented: $showingImportSheet) {
             ImportKeySheet(appState: appState)
         }
-        .sheet(isPresented: $appState.showingSettings) {
-            SettingsSheet(appState: appState)
-        }
         .background {
             Group {
                 Button("") { showingCreateSheet = true }
                     .keyboardShortcut("n", modifiers: .command)
                 Button("") { showingImportSheet = true }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
-                Button("") { appState.showingSettings = true }
+                Button("") { WindowManager.shared.openSettings() }
                     .keyboardShortcut(",", modifiers: .command)
             }
             .opacity(0)

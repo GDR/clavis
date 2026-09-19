@@ -267,6 +267,13 @@ public class KeychainManager {
                         throw authError ?? NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Touch ID authentication failed or cancelled"])
                     }
                 }
+
+                if let timeout = SessionCacheManager.shared.currentTimeout.timeInterval {
+                    SessionCacheManager.shared.unlockKey(label: key.label, duration: timeout)
+                    ClavisLogger.log("SESSION_CACHE", "Key '\(key.label)' (ECDSA P-256) cached for \(Int(timeout))s after Touch ID.")
+                }
+            } else {
+                ClavisLogger.log("SESSION_CACHE", "Serving key '\(key.label)' (ECDSA P-256) from active session cache (0 prompts)")
             }
 
             guard let storedData = SeedStore.load(label: key.label) else {
