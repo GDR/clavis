@@ -162,6 +162,11 @@ final class ClavisTests: XCTestCase {
         XCTAssertTrue(server.isSocketActive)
         XCTAssertTrue(FileManager.default.fileExists(atPath: testSockPath))
 
+        // Verify socket permissions are restricted to 0600
+        let attrs = try FileManager.default.attributesOfItem(atPath: testSockPath)
+        let perms = (attrs[.posixPermissions] as? NSNumber)?.intValue
+        XCTAssertEqual(perms, 0o600)
+
         server.stop()
         XCTAssertFalse(server.isSocketActive)
     }
