@@ -164,12 +164,12 @@ final class ClavisTests: XCTestCase {
         }
 
         cache.setInternal(label: "cached-key", buffer: buffer, timeoutOverride: 0.05)
-        XCTAssertNotNil(cache.get(label: "cached-key"))
+        XCTAssertNotNil(cache.getBuffer(label: "cached-key"))
         XCTAssertEqual(cache.cachedCount, 1)
 
         wait(for: [exp], timeout: 2.0)
 
-        XCTAssertNil(cache.get(label: "cached-key"))
+        XCTAssertNil(cache.getBuffer(label: "cached-key"))
         XCTAssertEqual(cache.cachedCount, 0)
     }
 
@@ -181,7 +181,7 @@ final class ClavisTests: XCTestCase {
         let key = Curve25519.Signing.PrivateKey()
         cache.set(label: "uncached-key", key: key)
 
-        XCTAssertNil(cache.get(label: "uncached-key"))
+        XCTAssertNil(cache.getBuffer(label: "uncached-key"))
         XCTAssertEqual(cache.cachedCount, 0)
     }
 
@@ -263,7 +263,7 @@ final class ClavisTests: XCTestCase {
         cache.clearCache()
 
         XCTAssertTrue(buffer.isWiped, "Buffer held by session cache must be wiped via memset_s on clearCache()")
-        XCTAssertNil(cache.get(label: "wipe-on-clear"))
+        XCTAssertNil(cache.getBuffer(label: "wipe-on-clear"))
         XCTAssertEqual(cache.cachedCount, 0)
     }
 
@@ -284,7 +284,7 @@ final class ClavisTests: XCTestCase {
         cache.remove(label: "wipe-on-remove")
 
         XCTAssertTrue(buffer.isWiped, "Buffer must be wiped when removed from session cache")
-        XCTAssertNil(cache.get(label: "wipe-on-remove"))
+        XCTAssertNil(cache.getBuffer(label: "wipe-on-remove"))
     }
 
     func testCachedP256SoftwareWiping() throws {
@@ -610,7 +610,7 @@ final class ClavisTests: XCTestCase {
         // Lowering timeout interval from 1 hour to 5 minutes purges cache
         cache.currentTimeout = .fiveMinutes
         XCTAssertEqual(cache.cachedCount, 0)
-        XCTAssertNil(cache.get(label: "timeout-purge-test"))
+        XCTAssertNil(cache.getBuffer(label: "timeout-purge-test"))
 
         // Add key again
         cache.set(label: "timeout-purge-test-2", key: key)
@@ -619,7 +619,7 @@ final class ClavisTests: XCTestCase {
         // Setting timeout to .never purges cache
         cache.currentTimeout = .never
         XCTAssertEqual(cache.cachedCount, 0)
-        XCTAssertNil(cache.get(label: "timeout-purge-test-2"))
+        XCTAssertNil(cache.getBuffer(label: "timeout-purge-test-2"))
 
         // Increasing timeout from 5 minutes to 1 hour should NOT purge cache
         cache.currentTimeout = .fiveMinutes
@@ -628,7 +628,7 @@ final class ClavisTests: XCTestCase {
 
         cache.currentTimeout = .oneHour
         XCTAssertEqual(cache.cachedCount, 1)
-        XCTAssertNotNil(cache.get(label: "timeout-keep-test"))
+        XCTAssertNotNil(cache.getBuffer(label: "timeout-keep-test"))
     }
 
     func testSessionCacheThreadSafety() {
@@ -642,7 +642,7 @@ final class ClavisTests: XCTestCase {
             if i % 4 == 0 {
                 cache.set(label: label, key: key)
             } else if i % 4 == 1 {
-                _ = cache.get(label: label)
+                _ = cache.getBuffer(label: label)
             } else if i % 4 == 2 {
                 _ = cache.cachedCount
             } else {
@@ -821,7 +821,7 @@ final class ClavisTests: XCTestCase {
             case 0:
                 cache.set(label: label, key: sampleKeys[i % 10])
             case 1:
-                _ = cache.get(label: label)
+                _ = cache.getBuffer(label: label)
             case 2:
                 _ = cache.cachedCount
             case 3:
@@ -842,7 +842,7 @@ final class ClavisTests: XCTestCase {
         let key = Curve25519.Signing.PrivateKey()
         // Setting a key when timeout is .never should not store/return key
                 cache.set(label: "double-lock-test", key: key)
-        XCTAssertNil(cache.get(label: "double-lock-test"))
+        XCTAssertNil(cache.getBuffer(label: "double-lock-test"))
         XCTAssertEqual(cache.cachedCount, 0)
     }
 
@@ -859,7 +859,7 @@ final class ClavisTests: XCTestCase {
             expectedGeneration: generation
         )
         XCTAssertFalse(stored)
-        XCTAssertNil(cache.get(label: "stale-authentication"))
+        XCTAssertNil(cache.getBuffer(label: "stale-authentication"))
     }
 
     func testUnlockKeepsAlwaysPromptPolicy() async throws {

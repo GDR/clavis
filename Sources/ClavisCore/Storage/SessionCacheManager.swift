@@ -208,25 +208,7 @@ public class SessionCacheManager {
         rescheduleCleanupTimerLocked()
     }
 
-    public func get(label: String) -> Curve25519.Signing.PrivateKey? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard _currentTimeout != .never else { return nil }
-        guard let entry = cache[label] else { return nil }
-        let now = Date()
-        let monoNow = DispatchTime.now()
-        if now > entry.expiresAt || monoNow >= entry.monotonicDeadline {
-            entry.buffer.wipe()
-            cache.removeValue(forKey: label)
-            rescheduleCleanupTimerLocked()
-            return nil
-        }
-        return entry.buffer.withUnsafeBytes { raw in
-            try? Curve25519.Signing.PrivateKey(rawRepresentation: raw)
-        } ?? nil
-    }
-
-    public func getBuffer(label: String) -> SecureBuffer? {
+    func getBuffer(label: String) -> SecureBuffer? {
         lock.lock()
         defer { lock.unlock() }
         guard _currentTimeout != .never else { return nil }
@@ -255,7 +237,7 @@ public class SessionCacheManager {
     }
 
     @discardableResult
-    public func set(
+    func set(
         label: String,
         buffer: SecureBuffer,
         expectedGeneration: UInt64? = nil
@@ -292,7 +274,7 @@ public class SessionCacheManager {
     }
 
     @discardableResult
-    public func set(
+    func set(
         label: String,
         key: Curve25519.Signing.PrivateKey,
         expectedGeneration: UInt64? = nil
@@ -466,17 +448,17 @@ public class SessionCacheManager {
     }
 }
 
-public enum CachedP256SigningKey {
+enum CachedP256SigningKey {
     case software(SecureBuffer)
     case secureEnclave(SecureEnclave.P256.Signing.PrivateKey)
 
-    public func wipe() {
+    func wipe() {
         if case .software(let buffer) = self {
             buffer.wipe()
         }
     }
 
-    public func signature(for data: Data) throws -> P256.Signing.ECDSASignature {
+    func signature(for data: Data) throws -> P256.Signing.ECDSASignature {
         switch self {
         case .software(let buffer):
             let res = try buffer.withUnsafeBytes { raw -> P256.Signing.ECDSASignature in

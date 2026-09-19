@@ -9,9 +9,9 @@ import Darwin
 /// Apple does not document exclusion of locked pages from system-level hibernation images.
 /// CryptoKit, Security framework, and higher-level runtimes may hold internal transient representations
 /// outside our buffer's control; zeroing here is best-effort for caller-owned representations.
-public final class SecureBuffer: @unchecked Sendable {
+final class SecureBuffer: @unchecked Sendable {
     private var pointer: UnsafeMutableRawPointer?
-    public let count: Int
+    let count: Int
     private let allocationSize: Int
     private var _isLocked: Bool = false
     private let lock = NSLock()
@@ -24,7 +24,7 @@ public final class SecureBuffer: @unchecked Sendable {
     /// Notification hook invoked outside buffer lock at most once after memory is zeroed and freed.
     let onWipe: (@Sendable () -> Void)?
 
-    public var isLocked: Bool {
+    var isLocked: Bool {
         lock.lock()
         defer { lock.unlock() }
         return _isLocked
@@ -32,7 +32,7 @@ public final class SecureBuffer: @unchecked Sendable {
 
     /// Primary designated initializer.
     /// Fails closed: if `mlock` fails, the allocated buffer is zeroed, freed, and initialization fails (returns `nil`).
-    public init?(
+    init?(
         count: Int,
         mlockFn: (UnsafeRawPointer?, Int) -> Int32 = Darwin.mlock,
         onAfterMemsetBeforeFree: (@Sendable (UnsafeRawBufferPointer) -> Void)? = nil,
@@ -77,7 +77,7 @@ public final class SecureBuffer: @unchecked Sendable {
         self._isLocked = true
     }
 
-    public convenience init?(
+    convenience init?(
         bytes: UnsafeRawPointer,
         count: Int,
         mlockFn: (UnsafeRawPointer?, Int) -> Int32 = Darwin.mlock,
@@ -89,7 +89,7 @@ public final class SecureBuffer: @unchecked Sendable {
         base.copyMemory(from: bytes, byteCount: count)
     }
 
-    public convenience init?(
+    convenience init?(
         data: Data,
         mlockFn: (UnsafeRawPointer?, Int) -> Int32 = Darwin.mlock,
         onAfterMemsetBeforeFree: (@Sendable (UnsafeRawBufferPointer) -> Void)? = nil,
@@ -108,7 +108,7 @@ public final class SecureBuffer: @unchecked Sendable {
     /// Consumes the provided `Data`, copying its content into locked memory and attempting best-effort
     /// in-place zeroing of the caller's `Data` buffer before clearing the container.
     /// The caller's `Data` is wiped in a `defer` block whether initialization succeeds or fails.
-    public convenience init?(
+    convenience init?(
         consuming data: inout Data,
         mlockFn: (UnsafeRawPointer?, Int) -> Int32 = Darwin.mlock,
         onAfterMemsetBeforeFree: (@Sendable (UnsafeRawBufferPointer) -> Void)? = nil,
@@ -134,7 +134,7 @@ public final class SecureBuffer: @unchecked Sendable {
     }
 
     /// Access the secret bytes within a scoped closure.
-    public func withUnsafeBytes<R>(_ body: (UnsafeRawBufferPointer) throws -> R) rethrows -> R? {
+    func withUnsafeBytes<R>(_ body: (UnsafeRawBufferPointer) throws -> R) rethrows -> R? {
         lock.lock()
         defer { lock.unlock() }
         guard let base = pointer else { return nil }
@@ -143,7 +143,7 @@ public final class SecureBuffer: @unchecked Sendable {
     }
 
     /// Explicitly zero out and unlock memory promptly.
-    public func wipe() {
+    func wipe() {
         var shouldNotifyWipe = false
         lock.lock()
         defer {
@@ -178,7 +178,7 @@ public final class SecureBuffer: @unchecked Sendable {
         }
     }
 
-    public var isWiped: Bool {
+    var isWiped: Bool {
         lock.lock()
         defer { lock.unlock() }
         return pointer == nil
