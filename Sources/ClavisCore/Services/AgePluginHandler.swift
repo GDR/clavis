@@ -82,7 +82,7 @@ public struct AgePluginCrypto {
         return (epkB64: epkData.base64EncodedString(), wrappedKey: wrappedKey)
     }
 
-    public static func unwrapFileKey(wrappedKey: Data, epkB64: String, ed25519Seed: Data) throws -> Data {
+    public static func unwrapFileKey(wrappedKey: Data, epkB64: String, seedBytes: UnsafeRawBufferPointer) throws -> Data {
         guard let epkData = Data(base64Lenient: epkB64), epkData.count == 32 else {
             throw AgePluginError.invalidEphemeralKey
         }
@@ -90,7 +90,7 @@ public struct AgePluginCrypto {
             throw AgePluginError.invalidWrappedKey
         }
 
-        let x25519PrivKey = try Ed25519AgeConverter.ed25519SeedToX25519PrivateKey(seed: ed25519Seed)
+        let x25519PrivKey = try Ed25519AgeConverter.ed25519SeedToX25519PrivateKey(seedBytes: seedBytes)
         let recPubKeyData = x25519PrivKey.publicKey.rawRepresentation
 
         let epkPubKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: epkData)
@@ -113,6 +113,12 @@ public struct AgePluginCrypto {
             return fileKey
         } catch {
             throw AgePluginError.decryptionFailed
+        }
+    }
+
+    public static func unwrapFileKey(wrappedKey: Data, epkB64: String, ed25519Seed: Data) throws -> Data {
+        try ed25519Seed.withUnsafeBytes { raw in
+            try unwrapFileKey(wrappedKey: wrappedKey, epkB64: epkB64, seedBytes: raw)
         }
     }
 }

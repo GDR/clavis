@@ -153,13 +153,22 @@ final class ClavisTests: XCTestCase {
         cache.clearCache()
         cache.currentTimeout = .fiveMinutes
 
+        let exp = expectation(description: "Key must expire and be wiped by active timer")
         let key = Curve25519.Signing.PrivateKey()
-        cache.set(label: "cached-key", key: key)
+        var raw = key.rawRepresentation
+        guard let buffer = SecureBuffer(consuming: &raw, onWipe: {
+            exp.fulfill()
+        }) else {
+            XCTFail("Allocation failed")
+            return
+        }
 
+        cache.setInternal(label: "cached-key", buffer: buffer, timeoutOverride: 0.05)
         XCTAssertNotNil(cache.get(label: "cached-key"))
         XCTAssertEqual(cache.cachedCount, 1)
 
-        cache.clearCache()
+        wait(for: [exp], timeout: 2.0)
+
         XCTAssertNil(cache.get(label: "cached-key"))
         XCTAssertEqual(cache.cachedCount, 0)
     }
@@ -173,6 +182,25 @@ final class ClavisTests: XCTestCase {
         cache.set(label: "uncached-key", key: key)
 
         XCTAssertNil(cache.get(label: "uncached-key"))
+        XCTAssertEqual(cache.cachedCount, 0)
+    }
+
+    func testSessionCacheDisabledPerformsSingleShotAndWipes() throws {
+        let cache = makeSessionCache()
+        cache.clearCache()
+        cache.currentTimeout = .never // Cache off
+
+        let keyManager = makeKeyManager(sessionCache: cache)
+        let keyLabel = "never-cache-\(UUID().uuidString)"
+        _ = try keyManager.generateKey(label: keyLabel)
+
+        // Sign should succeed under .never without placing anything into sessionCache
+        let sampleData = "hello world".data(using: .utf8)!
+        let signature = try keyManager.sign(label: keyLabel, data: sampleData, prompt: "Sign under never")
+        XCTAssertFalse(signature.isEmpty)
+
+        // Session cache must remain completely empty
+        XCTAssertNil(cache.getBuffer(label: keyLabel))
         XCTAssertEqual(cache.cachedCount, 0)
     }
 
@@ -283,14 +311,34 @@ final class ClavisTests: XCTestCase {
     }
 
     func testSecureBufferFailClosedOnMlockFailure() {
-        // When mlock fails (e.g. process limit or unsupported environment), init must return nil
         let failingMlock: (UnsafeRawPointer?, Int) -> Int32 = { _, _ in -1 }
+        final class TestFlag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _val: Bool = false
+            var value: Bool {
+                get { lock.lock(); defer { lock.unlock() }; return _val }
+                set { lock.lock(); defer { lock.unlock() }; _val = newValue }
+            }
+        }
 
-        XCTAssertNil(SecureBuffer(count: 32, mlockFn: failingMlock), "SecureBuffer must fail-closed if mlock fails")
-        XCTAssertNil(SecureBuffer(data: Data([1, 2, 3]), mlockFn: failingMlock), "SecureBuffer(data:) must fail-closed if mlock fails")
+        let callbackTriggered = TestFlag()
+        let onWipeTriggered = TestFlag()
+
+        XCTAssertNil(
+            SecureBuffer(
+                count: 32,
+                mlockFn: failingMlock,
+                onAfterMemsetBeforeFree: { _ in callbackTriggered.value = true },
+                onWipe: { onWipeTriggered.value = true }
+            ),
+            "SecureBuffer must fail-closed if mlock fails"
+        )
+        XCTAssertTrue(callbackTriggered.value, "Fail-closed branch must invoke onAfterMemsetBeforeFree before free")
+        XCTAssertTrue(onWipeTriggered.value, "Fail-closed branch must invoke onWipe")
 
         var testData = Data([4, 5, 6])
         XCTAssertNil(SecureBuffer(consuming: &testData, mlockFn: failingMlock), "SecureBuffer(consuming:) must fail-closed if mlock fails")
+        XCTAssertTrue(testData.isEmpty, "Consuming init must empty source Data even when mlock fails")
     }
 
     func testSecureBufferConsumingZeroesInputData() {
@@ -308,31 +356,52 @@ final class ClavisTests: XCTestCase {
     }
 
     func testSecureBufferMemoryZeroedBeforeFree() {
+        final class TestFlag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _val: Bool = false
+            var value: Bool {
+                get { lock.lock(); defer { lock.unlock() }; return _val }
+                set { lock.lock(); defer { lock.unlock() }; _val = newValue }
+            }
+        }
         let originalBytes: [UInt8] = [0xDE, 0xAD, 0xBE, 0xEF]
-        guard let buffer = SecureBuffer(data: Data(originalBytes)) else {
+        let zeroCheckSucceeded = TestFlag()
+
+        guard let buffer = SecureBuffer(
+            data: Data(originalBytes),
+            onAfterMemsetBeforeFree: { inspectedBytes in
+                if Array(inspectedBytes) == [0x00, 0x00, 0x00, 0x00] {
+                    zeroCheckSucceeded.value = true
+                }
+            }
+        ) else {
             XCTFail("Failed to allocate SecureBuffer")
             return
         }
 
-        // Overwrite bytes via memset_s while keeping pointer valid to verify memory contents
-        buffer.wipeMemoryOnly()
-        let zeroedBytes = buffer.withUnsafeBytes { Array($0) }
-        XCTAssertEqual(zeroedBytes, [0x00, 0x00, 0x00, 0x00], "Memory must be filled with zeroes by memset_s")
-
         buffer.wipe()
+        XCTAssertTrue(zeroCheckSucceeded.value, "onAfterMemsetBeforeFree must verify memory is zeroed before free")
         XCTAssertTrue(buffer.isWiped)
     }
 
     func testSecureBufferDeinitTriggersWipe() {
-        var wasWiped = false
-        do {
-            let buffer = SecureBuffer(data: Data([1, 2, 3, 4]))
-            buffer?.onWipe = {
-                wasWiped = true
+        final class TestFlag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _val: Bool = false
+            var value: Bool {
+                get { lock.lock(); defer { lock.unlock() }; return _val }
+                set { lock.lock(); defer { lock.unlock() }; _val = newValue }
             }
-            XCTAssertFalse(wasWiped)
         }
-        XCTAssertTrue(wasWiped, "SecureBuffer deinit must trigger wipe()")
+        let wasWiped = TestFlag()
+        do {
+            let buffer = SecureBuffer(data: Data([1, 2, 3, 4]), onWipe: {
+                wasWiped.value = true
+            })
+            XCTAssertFalse(wasWiped.value)
+            _ = buffer?.count
+        }
+        XCTAssertTrue(wasWiped.value, "SecureBuffer deinit must trigger wipe()")
     }
 
     func testSessionCacheActiveMonotonicTTLWipe() {
@@ -340,21 +409,24 @@ final class ClavisTests: XCTestCase {
         cache.clearCache()
         cache.currentTimeout = .fiveMinutes
 
+        let exp = expectation(description: "Buffer must be wiped by active monotonic timer")
         let key = Curve25519.Signing.PrivateKey()
-        // Override timeout with 50ms for deterministic test
-        cache.set(label: "active-ttl-test", key: key, timeoutOverride: 0.05)
-
-        guard let buffer = cache.getBuffer(label: "active-ttl-test") else {
-            XCTFail("Buffer should be in cache")
+        var raw = key.rawRepresentation
+        guard let buffer = SecureBuffer(consuming: &raw, onWipe: {
+            exp.fulfill()
+        }) else {
+            XCTFail("Buffer allocation failed")
             return
         }
+
+        cache.setInternal(label: "active-ttl-test", buffer: buffer, timeoutOverride: 0.05)
         XCTAssertFalse(buffer.isWiped)
         XCTAssertEqual(cache.cachedCount, 1)
 
-        // Wait 150ms for active monotonic timer to fire
-        Thread.sleep(forTimeInterval: 0.15)
+        // Wait for timer to execute wipe promptly after deadline
+        wait(for: [exp], timeout: 2.0)
 
-        // The buffer MUST be wiped automatically by the timer without calling get()
+        // Must be wiped BEFORE checking cachedCount
         XCTAssertTrue(buffer.isWiped, "Buffer must be wiped by active monotonic timer upon TTL expiration")
         XCTAssertEqual(cache.cachedCount, 0, "Cache count must reflect expired entry")
     }
@@ -396,6 +468,27 @@ final class ClavisTests: XCTestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(0.15))
         XCTAssertTrue(buf2.isWiped, "Buffer must be wiped upon screenIsLocked notification")
         XCTAssertEqual(cache.cachedCount, 0)
+    }
+
+    func testDirectAgeFileKeyUnwrap() throws {
+        let keyManager = makeKeyManager()
+        let label = "age-direct-\(UUID().uuidString)"
+        let keyInfo = try keyManager.generateKey(label: label)
+
+        let originalFileKey = Data((0..<32).map { UInt8($0) })
+        let (epkB64, wrappedKey) = try AgePluginCrypto.wrapFileKey(
+            fileKey: originalFileKey,
+            recipientString: keyInfo.ageRecipient
+        )
+
+        let unwrapped = try keyManager.unwrapAgeFileKey(
+            label: label,
+            prompt: "Unwrap age file key",
+            wrappedKey: wrappedKey,
+            epkB64: epkB64
+        )
+
+        XCTAssertEqual(unwrapped, originalFileKey)
     }
 
     // MARK: - 4. Ed25519 to X25519 & Bech32 Age Conversion Tests
@@ -1096,7 +1189,9 @@ final class ClavisTests: XCTestCase {
             },
             outputHandler: { unwrapOutputs.append($0) },
             fetchKeys: { [keyInfo] },
-            fetchPrivateKey: { _, _ in edPriv }
+            unwrapKey: { _, _, wrappedKey, epkB64 in
+                try AgePluginCrypto.unwrapFileKey(wrappedKey: wrappedKey, epkB64: epkB64, ed25519Seed: edPriv.rawRepresentation)
+            }
         )
 
         XCTAssertTrue(unwrapOutputs.contains("-> file-key 0"))
@@ -1144,9 +1239,9 @@ final class ClavisTests: XCTestCase {
             },
             outputHandler: { outputs.append($0) },
             fetchKeys: { [p256Key, otherEdKey] },
-            fetchPrivateKey: { label, _ in
+            unwrapKey: { label, _, _, _ in
                 requestedKeys.append(label)
-                return Curve25519.Signing.PrivateKey()
+                return Data()
             }
         )
 

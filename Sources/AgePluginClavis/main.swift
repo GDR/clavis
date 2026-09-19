@@ -87,8 +87,8 @@ public struct AgePluginClavis {
         inputProvider: () -> String? = { readLine() },
         outputHandler: (String) -> Void = { print($0) },
         fetchKeys: () throws -> [Ed25519KeyInfo] = { try KeychainManager.shared.listKeys() },
-        fetchPrivateKey: (String, String) throws -> Curve25519.Signing.PrivateKey = { label, prompt in
-            try KeychainManager.shared.fetchPrivateKey(label: label, prompt: prompt)
+        unwrapKey: (String, String, Data, String) throws -> Data = { label, prompt, wrappedKey, epkB64 in
+            try KeychainManager.shared.unwrapAgeFileKey(label: label, prompt: prompt, wrappedKey: wrappedKey, epkB64: epkB64)
         }
     ) {
         var identities: [String] = []
@@ -146,7 +146,7 @@ public struct AgePluginClavis {
                         identities: identities,
                         outputHandler: outputHandler,
                         fetchKeys: fetchKeys,
-                        fetchPrivateKey: fetchPrivateKey
+                        unwrapKey: unwrapKey
                     )
                     outputHandler("-> ok")
                     fflush(stdout)
@@ -183,7 +183,7 @@ public struct AgePluginClavis {
         identities: [String],
         outputHandler: (String) -> Void,
         fetchKeys: () throws -> [Ed25519KeyInfo],
-        fetchPrivateKey: (String, String) throws -> Curve25519.Signing.PrivateKey
+        unwrapKey: (String, String, Data, String) throws -> Data
     ) {
         guard !stanzas.isEmpty else { return }
 
@@ -222,14 +222,11 @@ public struct AgePluginClavis {
 
             for keyInfo in candidateKeys {
                 do {
-                    let edPrivateKey = try fetchPrivateKey(
+                    let fileKey = try unwrapKey(
                         keyInfo.label,
-                        "Touch ID to unwrap age file key using '\(keyInfo.label)'"
-                    )
-                    let fileKey = try AgePluginCrypto.unwrapFileKey(
-                        wrappedKey: stanza.wrappedKey,
-                        epkB64: stanza.epkB64,
-                        ed25519Seed: edPrivateKey.rawRepresentation
+                        "Touch ID to unwrap age file key using '\(keyInfo.label)'",
+                        stanza.wrappedKey,
+                        stanza.epkB64
                     )
 
                     outputHandler("-> file-key \(stanza.index)")

@@ -2,34 +2,45 @@ import Foundation
 import CryptoKit
 
 public struct Ed25519AgeConverter {
-    // Converts 32-byte Ed25519 seed to 32-byte X25519 KeyAgreement PrivateKey
-    public static func ed25519SeedToX25519PrivateKey(seed: Data) throws -> Curve25519.KeyAgreement.PrivateKey {
-        guard seed.count == 32 else {
+    // Converts 32-byte Ed25519 seed buffer to 32-byte X25519 KeyAgreement PrivateKey without allocating Data
+    public static func ed25519SeedToX25519PrivateKey(seedBytes: UnsafeRawBufferPointer) throws -> Curve25519.KeyAgreement.PrivateKey {
+        guard seedBytes.count == 32 else {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid seed length"])
         }
 
-        var seedCopy = seed
+        var hasher = SHA512()
+        hasher.update(bufferPointer: seedBytes)
+        let digest = hasher.finalize()
+
+        var clamped = [UInt8](repeating: 0, count: 32)
         defer {
-            seedCopy.withUnsafeMutableBytes { ptr in
-                if let baseAddress = ptr.baseAddress {
-                    memset_s(baseAddress, ptr.count, 0, ptr.count)
+            clamped.withUnsafeMutableBytes { ptr in
+                if let base = ptr.baseAddress {
+                    _ = memset_s(base, ptr.count, 0, ptr.count)
                 }
             }
         }
-        
-        let hash = SHA512.hash(data: seedCopy)
-        var clamped = Array(hash.prefix(32))
-        defer {
-            for i in 0..<clamped.count {
-                clamped[i] = 0
+
+        digest.withUnsafeBytes { hashBytes in
+            for i in 0..<32 {
+                clamped[i] = hashBytes[i]
             }
         }
-        
+
         clamped[0] &= 248
         clamped[31] &= 127
         clamped[31] |= 64
 
-        return try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: Data(clamped))
+        return try clamped.withUnsafeBytes { rawClamped in
+            try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: rawClamped)
+        }
+    }
+
+    // Converts 32-byte Ed25519 seed to 32-byte X25519 KeyAgreement PrivateKey
+    public static func ed25519SeedToX25519PrivateKey(seed: Data) throws -> Curve25519.KeyAgreement.PrivateKey {
+        try seed.withUnsafeBytes { raw in
+            try ed25519SeedToX25519PrivateKey(seedBytes: raw)
+        }
     }
 
     // Converts Ed25519 public key (32 bytes) to X25519 public key (32 bytes)

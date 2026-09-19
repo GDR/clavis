@@ -72,6 +72,15 @@ public class SessionCacheManager {
             self._currentTimeout = .fiveMinutes
         }
 
+        // Single persistent timer created and resumed once for the entire lifetime of SessionCacheManager
+        let timer = DispatchSource.makeTimerSource(queue: timerQueue)
+        timer.setEventHandler { [weak self] in
+            self?.purgeExpiredEntries()
+        }
+        timer.schedule(deadline: .distantFuture)
+        timer.resume()
+        self.cleanupTimer = timer
+
         if observeSystemEvents {
             DistributedNotificationCenter.default().addObserver(
                 self,
@@ -90,16 +99,34 @@ public class SessionCacheManager {
     }
 
     deinit {
+        // 1. Exclude new timer operations
+        cleanupTimer?.setEventHandler(handler: nil)
+
+        // 2. Promptly wipe all remaining secrets from RAM
+        for (_, entry) in cache {
+            entry.buffer.wipe()
+        }
+        for (_, entry) in p256Cache {
+            entry.key.wipe()
+        }
+        cache.removeAll()
+        p256Cache.removeAll()
+        unlockedSessions.removeAll()
+
+        // 3. Cancel timer
         cleanupTimer?.cancel()
         cleanupTimer = nil
+
+        // 4. Deregister all notification observers
+        DistributedNotificationCenter.default().removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     @objc public func clearCache() {
         lock.lock()
         defer { lock.unlock() }
         generation &+= 1
-        cleanupTimer?.cancel()
-        cleanupTimer = nil
+        cleanupTimer?.schedule(deadline: .distantFuture)
 
         for (_, entry) in cache {
             entry.buffer.wipe()
@@ -231,6 +258,15 @@ public class SessionCacheManager {
     public func set(
         label: String,
         buffer: SecureBuffer,
+        expectedGeneration: UInt64? = nil
+    ) -> Bool {
+        setInternal(label: label, buffer: buffer, expectedGeneration: expectedGeneration, timeoutOverride: nil)
+    }
+
+    @discardableResult
+    func setInternal(
+        label: String,
+        buffer: SecureBuffer,
         expectedGeneration: UInt64? = nil,
         timeoutOverride: TimeInterval? = nil
     ) -> Bool {
@@ -259,6 +295,15 @@ public class SessionCacheManager {
     public func set(
         label: String,
         key: Curve25519.Signing.PrivateKey,
+        expectedGeneration: UInt64? = nil
+    ) -> Bool {
+        setInternal(label: label, key: key, expectedGeneration: expectedGeneration, timeoutOverride: nil)
+    }
+
+    @discardableResult
+    func setInternal(
+        label: String,
+        key: Curve25519.Signing.PrivateKey,
         expectedGeneration: UInt64? = nil,
         timeoutOverride: TimeInterval? = nil
     ) -> Bool {
@@ -266,12 +311,12 @@ public class SessionCacheManager {
         defer {
             raw.withUnsafeMutableBytes { ptr in
                 if let base = ptr.baseAddress {
-                    memset_s(base, ptr.count, 0, ptr.count)
+                    _ = memset_s(base, ptr.count, 0, ptr.count)
                 }
             }
         }
         guard let buffer = SecureBuffer(data: raw) else { return false }
-        return set(label: label, buffer: buffer, expectedGeneration: expectedGeneration, timeoutOverride: timeoutOverride)
+        return setInternal(label: label, buffer: buffer, expectedGeneration: expectedGeneration, timeoutOverride: timeoutOverride)
     }
 
     func getP256(label: String) -> CachedP256SigningKey? {
@@ -292,6 +337,15 @@ public class SessionCacheManager {
 
     @discardableResult
     func setP256(
+        label: String,
+        key: CachedP256SigningKey,
+        expectedGeneration: UInt64? = nil
+    ) -> Bool {
+        setP256Internal(label: label, key: key, expectedGeneration: expectedGeneration, timeoutOverride: nil)
+    }
+
+    @discardableResult
+    func setP256Internal(
         label: String,
         key: CachedP256SigningKey,
         expectedGeneration: UInt64? = nil,
@@ -404,18 +458,11 @@ public class SessionCacheManager {
             }
         }
 
-        cleanupTimer?.cancel()
-        cleanupTimer = nil
-
-        guard let deadline = earliestDeadline else { return }
-
-        let timer = DispatchSource.makeTimerSource(queue: timerQueue)
-        timer.setEventHandler { [weak self] in
-            self?.purgeExpiredEntries()
+        if let deadline = earliestDeadline {
+            cleanupTimer?.schedule(deadline: deadline)
+        } else {
+            cleanupTimer?.schedule(deadline: .distantFuture)
         }
-        timer.schedule(deadline: deadline)
-        timer.resume()
-        cleanupTimer = timer
     }
 }
 

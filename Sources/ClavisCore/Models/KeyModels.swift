@@ -15,8 +15,12 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
     }
 
     public var ageRecipient: String {
-        guard isAgeCompatible else { return "" }
-        return Ed25519AgeConverter.ageRecipient(forPublicKey: publicKeyBlob)
+        guard isAgeCompatible, publicKeyBlob.count >= 32 else { return "" }
+        let ed25519Pub = publicKeyBlob.suffix(32)
+        guard let x25519Pub = Ed25519AgeConverter.ed25519PublicKeyToX25519PublicKey(ed25519PubKey: Data(ed25519Pub)) else {
+            return ""
+        }
+        return Ed25519AgeConverter.ageRecipient(forPublicKey: x25519Pub)
     }
 
     public var displayIdentifier: String {
