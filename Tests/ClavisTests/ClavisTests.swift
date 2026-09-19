@@ -681,6 +681,57 @@ final class ClavisTests: XCTestCase {
         XCTAssertEqual(unwrapOutputs.last, "-> ok")
     }
 
+    func testAgePluginIdentityV1SkipsIncompatibleOrMismatchedKeys() throws {
+        let p256Key = Ed25519KeyInfo(
+            label: "p256_se_key",
+            publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA... p256_se_key",
+            publicKeyBlob: Data([1, 2, 3]),
+            fingerprint: "SHA256:fake",
+            createdAt: Date(),
+            algorithmName: "ECDSA P-256",
+            storage: .secureEnclave
+        )
+        let otherEdKey = Ed25519KeyInfo(
+            label: "other_ed_key",
+            publicKeyOpenSSH: "ssh-ed25519 AAAA... other_ed_key",
+            publicKeyBlob: Data([4, 5, 6]),
+            fingerprint: "SHA256:other",
+            createdAt: Date(),
+            algorithmName: "Ed25519",
+            storage: .keychain
+        )
+
+        var requestedKeys: [String] = []
+        var outputs: [String] = []
+
+        let unwrapInputs = [
+            "-> add-identity target_key",
+            "-> recipient-stanza 0 clavis ZmFrZS1lcGs=",
+            "ZmFrZS13cmFwcGVk",
+            "-> unwrap-file-key",
+            "-> done"
+        ]
+        var inputIdx = 0
+
+        AgePluginClavis.handleIdentityV1(
+            inputProvider: {
+                guard inputIdx < unwrapInputs.count else { return nil }
+                defer { inputIdx += 1 }
+                return unwrapInputs[inputIdx]
+            },
+            outputHandler: { outputs.append($0) },
+            fetchKeys: { [p256Key, otherEdKey] },
+            fetchPrivateKey: { label, _ in
+                requestedKeys.append(label)
+                return Curve25519.Signing.PrivateKey()
+            }
+        )
+
+        // Neither the P256 key (incompatible) nor the mismatched Ed key should have prompted Touch ID
+        XCTAssertTrue(requestedKeys.isEmpty, "Incompatible or mismatched keys must not trigger Touch ID prompts")
+        XCTAssertTrue(outputs.contains { $0.contains("No matching age-compatible keys") || $0.contains("Failed to unwrap stanza") })
+    }
+
     // MARK: - 11. Milestone 2 & Milestone 3 Direct Unit Tests
 
     func testSSHAgentServerRequestIdentities() throws {

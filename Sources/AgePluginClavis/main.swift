@@ -187,27 +187,44 @@ public struct AgePluginClavis {
     ) {
         guard !stanzas.isEmpty else { return }
 
-        let keyInfos: [Ed25519KeyInfo]
+        let allKeys: [Ed25519KeyInfo]
         do {
-            keyInfos = try fetchKeys()
+            allKeys = try fetchKeys()
         } catch {
             outputHandler("-> error identity Failed to list Keychain keys")
             return
         }
 
-        if keyInfos.isEmpty {
-            outputHandler("-> error identity No keys found in Keychain")
+        // Only consider age-compatible (Ed25519) keys
+        let ageCompatibleKeys = allKeys.filter { $0.isAgeCompatible }
+
+        // If specific identities were supplied by caller (age -i identity.txt), filter strictly by them
+        let candidateKeys: [Ed25519KeyInfo]
+        if !identities.isEmpty {
+            candidateKeys = ageCompatibleKeys.filter { key in
+                identities.contains { id in
+                    id.caseInsensitiveCompare(key.label) == .orderedSame ||
+                    id == key.ageRecipient ||
+                    id.contains(key.label)
+                }
+            }
+        } else {
+            candidateKeys = ageCompatibleKeys
+        }
+
+        if candidateKeys.isEmpty {
+            outputHandler("-> error identity No matching age-compatible keys found in Clavis")
             return
         }
 
         for stanza in stanzas {
             var unwrapped = false
 
-            for keyInfo in keyInfos {
+            for keyInfo in candidateKeys {
                 do {
                     let edPrivateKey = try fetchPrivateKey(
                         keyInfo.label,
-                        "Touch ID to unwrap age file key"
+                        "Touch ID to unwrap age file key using '\(keyInfo.label)'"
                     )
                     let fileKey = try AgePluginCrypto.unwrapFileKey(
                         wrappedKey: stanza.wrappedKey,
