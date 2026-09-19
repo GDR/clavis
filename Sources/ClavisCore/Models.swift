@@ -7,14 +7,92 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
     public let publicKeyBlob: Data
     public let fingerprint: String
     public let createdAt: Date
+    public let algorithmName: String?
+    public let storage: KeyStorageType?
 
-    public init(label: String, publicKeyOpenSSH: String, publicKeyBlob: Data, fingerprint: String, createdAt: Date = Date()) {
+    public var isAgeCompatible: Bool {
+        algorithm == "Ed25519" && storageType == .keychain
+    }
+
+    public var ageRecipient: String {
+        guard isAgeCompatible else { return "" }
+        return Ed25519AgeConverter.ageRecipient(forPublicKey: publicKeyBlob)
+    }
+
+    public var displayIdentifier: String {
+        if isAgeCompatible && !ageRecipient.isEmpty {
+            return ageRecipient
+        }
+        return publicKeyOpenSSH
+    }
+
+    public var algorithm: String {
+        if let name = algorithmName {
+            return name
+        }
+        if publicKeyOpenSSH.hasPrefix("ecdsa-sha2-") {
+            return "ECDSA P-256"
+        } else if publicKeyOpenSSH.hasPrefix("ssh-rsa") {
+            return "RSA 4096"
+        }
+        return "Ed25519"
+    }
+
+    public var storageType: KeyStorageType {
+        storage ?? .keychain
+    }
+
+    public var isHardware: Bool {
+        storageType == .secureEnclave
+    }
+
+    public var badgeTitle: String {
+        isHardware ? "Hardware" : "Software"
+    }
+
+    public init(
+        label: String,
+        publicKeyOpenSSH: String,
+        publicKeyBlob: Data,
+        fingerprint: String,
+        createdAt: Date = Date(),
+        algorithmName: String? = nil,
+        storage: KeyStorageType? = nil
+    ) {
         self.label = label
         self.publicKeyOpenSSH = publicKeyOpenSSH
         self.publicKeyBlob = publicKeyBlob
         self.fingerprint = fingerprint
         self.createdAt = createdAt
+        self.algorithmName = algorithmName
+        self.storage = storage
     }
+}
+
+public enum KeyAlgorithm: String, CaseIterable, Identifiable, Codable {
+    case ed25519 = "Ed25519"
+    case ecdsaP256 = "ECDSA P-256"
+    case rsa4096 = "RSA 4096"
+
+    public var id: String { rawValue }
+
+    public var description: String {
+        switch self {
+        case .ed25519:
+            return "Deterministic Edwards-curve (Fast, 256-bit security)"
+        case .ecdsaP256:
+            return "NIST P-256 curve (Hardware & Secure Enclave ready)"
+        case .rsa4096:
+            return "4096-bit RSA (Legacy server compatibility)"
+        }
+    }
+}
+
+public enum KeyStorageType: String, CaseIterable, Identifiable, Codable {
+    case keychain = "Login Keychain"
+    case secureEnclave = "Secure Enclave"
+
+    public var id: String { rawValue }
 }
 
 public enum SessionTimeout: String, CaseIterable, Identifiable, Codable {

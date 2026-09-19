@@ -6,267 +6,246 @@ import ClavisCore
 struct KeyListView: View {
     @EnvironmentObject var appState: AppState
 
-    @State private var showingGenerateSheet = false
-    @State private var showingImportSheet = false
-    @State private var newKeyLabel = ""
-    @State private var importSeedHex = ""
+    @State private var selectedKeyId: String? = nil
+    @State private var showingCreateSheet: Bool = false
+    @State private var showingImportSheet: Bool = false
+    @State private var showingAddPopover: Bool = false
     @State private var statusMessage: String? = nil
 
+    private var selectedKey: Ed25519KeyInfo? {
+        if let id = selectedKeyId {
+            return appState.keys.first(where: { $0.id == id })
+        }
+        return appState.keys.first
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // Header Bar
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Clavis Key Manager")
-                        .font(.title2)
-                        .bold()
-                    Text("Secure Ed25519 keys guarded by macOS Keychain & Touch ID")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-                Button(action: { showingGenerateSheet = true }) {
-                    Label("Generate Key", systemImage: "plus.circle.fill")
-                }
-                .buttonStyle(.borderedProminent)
+        ZStack {
+            // Full-window base frosted blur ensures no 1px gaps or unblurred subpixel seams anywhere
+            VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow)
+                .ignoresSafeArea()
 
-                Button(action: { showingImportSheet = true }) {
-                    Label("Import Seed", systemImage: "square.and.arrow.down")
-                }
-                .buttonStyle(.bordered)
-            }
+            HStack(spacing: 0) {
+                // Sidebar: Key List Pane (318px)
+                ZStack(alignment: .topLeading) {
+                    // Sidebar Frosted Glass
+                    VisualEffectView(material: .sidebar, blendingMode: .behindWindow)
+                        .ignoresSafeArea()
 
-            // Error Message Banner (appState.errorMessage)
-            if let errorMessage = appState.errorMessage {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.red)
-                    Text(errorMessage)
-                        .font(.subheadline)
-                        .foregroundColor(.red)
-                    Spacer()
-                    Button("Dismiss") { appState.clearError() }
-                        .buttonStyle(.borderless)
-                }
-                .padding(8)
-                .background(Color.red.opacity(0.15))
-                .cornerRadius(6)
-            }
+                    // Translucent dark tint to preserve contrast
+                    DesignTokens.sidebarBackground
+                        .ignoresSafeArea()
 
-            // Success / Status Message Banner
-            if let message = statusMessage {
-                HStack {
-                    Image(systemName: "info.circle.fill")
-                        .foregroundColor(.accentColor)
-                    Text(message)
-                        .font(.subheadline)
-                    Spacer()
-                    Button("Dismiss") { statusMessage = nil }
-                        .buttonStyle(.borderless)
-                }
-                .padding(8)
-                .background(Color.accentColor.opacity(0.1))
-                .cornerRadius(6)
-            }
+                    // Ambient Liquid Glass Glow (iridescent cyan/purple blobs)
+                    ZStack {
+                        Circle()
+                            .fill(DesignTokens.sidebarTintBlue)
+                            .frame(width: 310, height: 310)
+                            .blur(radius: 60)
+                            .offset(x: -100, y: -40)
 
-            Divider()
-
-            // Session Cache Settings
-            HStack {
-                Text("Session Auto-Lock Timeout:")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                Picker("", selection: Binding(
-                    get: { appState.selectedTimeout },
-                    set: { appState.setTimeout($0) }
-                )) {
-                    ForEach(SessionTimeout.allCases) { timeout in
-                        Text(timeout.rawValue).tag(timeout)
+                        Circle()
+                            .fill(DesignTokens.sidebarTintViolet)
+                            .frame(width: 270, height: 270)
+                            .blur(radius: 60)
+                            .offset(x: 100, y: 300)
                     }
-                }
-                .pickerStyle(.menu)
-                .frame(width: 180)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
 
-                Spacer()
+                    VStack(alignment: .leading, spacing: 12) {
+                        // Title header — top padding to clear macOS window controls (traffic lights)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Keys")
+                                .font(.system(size: 24, weight: .semibold))
+                                .foregroundColor(.primary)
+                            Text("\(appState.keys.count) \(appState.keys.count == 1 ? "identity" : "identities") available")
+                                .font(.system(size: 12))
+                                .foregroundColor(DesignTokens.textSecondary)
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.top, 44)
 
-                Button("Lock All Keys") {
-                    appState.lockNow()
-                    statusMessage = "All cached keys purged from memory."
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-            }
-            .padding(.vertical, 4)
+                        // Key List
+                        if appState.keys.isEmpty {
+                            Spacer()
+                        } else {
+                            ScrollView {
+                                LazyVStack(spacing: 8) {
+                                    ForEach(appState.keys) { key in
+                                        let isSelected = (selectedKey?.id == key.id)
+                                        let isUnlocked = appState.isKeyUnlocked(label: key.label)
 
-            // Key Table
-            if appState.keys.isEmpty {
-                VStack(spacing: 12) {
-                    Spacer()
-                    Image(systemName: "key.icu.fill")
-                        .font(.system(size: 48))
-                        .foregroundColor(.secondary)
-                    Text("No Ed25519 Keys Found")
-                        .font(.headline)
-                    Text("Click 'Generate Key' to create a Touch ID guarded Ed25519 key.")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    ForEach(appState.keys) { key in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text(key.label)
-                                    .font(.headline)
-                                Spacer()
-                                Button("Delete", role: .destructive) {
-                                    deleteKey(label: key.label)
+                                        HStack(spacing: 10) {
+                                            // Status dot
+                                            StatusDot(isActive: isUnlocked)
+
+                                            // Key label & algorithm
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text(key.label)
+                                                    .font(.system(size: 13, weight: .semibold))
+                                                    .foregroundColor(isSelected ? .white : .primary)
+                                                    .lineLimit(1)
+                                                Text(key.isAgeCompatible ? "\(key.algorithm) · agenix" : key.algorithm)
+                                                    .font(.system(size: 11))
+                                                    .foregroundColor(isSelected ? Color.white.opacity(0.8) : DesignTokens.textSecondary)
+                                                    .lineLimit(1)
+                                            }
+
+                                            Spacer()
+
+                                            // Hardware / Software badge
+                                            KeyBadge(isHardware: key.isHardware)
+                                        }
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 10)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 10)
+                                                .fill(isSelected ? DesignTokens.accentBlue : Color.clear)
+                                        )
+                                        .contentShape(RoundedRectangle(cornerRadius: 10))
+                                        .onTapGesture {
+                                            selectedKeyId = key.id
+                                        }
+                                    }
                                 }
-                                .buttonStyle(.borderless)
-                                .foregroundColor(.red)
-                            }
-
-                            HStack {
-                                Text("Fingerprint:")
-                                    .font(.caption)
-                                    .fontWeight(.semibold)
-                                    .foregroundColor(.secondary)
-                                Text(key.fingerprint)
-                                    .font(.caption)
-                                    .fontDesign(.monospaced)
-                                Spacer()
-
-                                Button(action: {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(key.fingerprint, forType: .string)
-                                    statusMessage = "Fingerprint for '\(key.label)' copied to clipboard!"
-                                }) {
-                                    Image(systemName: "doc.on.doc")
-                                        .font(.caption)
-                                }
-                                .buttonStyle(.borderless)
-                                .help("Copy SHA256 Fingerprint")
-                            }
-
-                            HStack {
-                                Text("OpenSSH:")
-                                    .font(.caption)
-                                    .fontWeight(.semibold)
-                                    .foregroundColor(.secondary)
-                                Text(key.publicKeyOpenSSH)
-                                    .font(.caption2)
-                                    .fontDesign(.monospaced)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                
-                                Button(action: {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(key.publicKeyOpenSSH, forType: .string)
-                                    statusMessage = "Public key for '\(key.label)' copied to clipboard!"
-                                }) {
-                                    Image(systemName: "doc.on.doc")
-                                        .font(.caption)
-                                }
-                                .buttonStyle(.borderless)
-                                .help("Copy OpenSSH Public Key")
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 6)
                             }
                         }
-                        .padding(.vertical, 6)
                     }
                 }
-                .listStyle(.inset)
-            }
-        }
-        .padding(20)
-        .onAppear {
-            appState.refresh()
-        }
-        .sheet(isPresented: $showingGenerateSheet) {
-            VStack(spacing: 16) {
-                Text("Generate Ed25519 Key")
-                    .font(.headline)
-                TextField("Key Label (e.g. github_id)", text: $newKeyLabel)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 300)
+                .frame(width: 318)
+                .frame(maxHeight: .infinity)
+                .overlay(alignment: .trailing) {
+                    // 1px separator as an overlay so it never creates a layout gap or transparent slit
+                    Rectangle()
+                        .fill(Color.white.opacity(0.10))
+                        .frame(width: 1)
+                        .ignoresSafeArea()
+                }
 
-                HStack {
-                    Button("Cancel") {
-                        showingGenerateSheet = false
-                        newKeyLabel = ""
+                // Right Pane: Key Detail Inspector (Flexible, ~562px)
+                ZStack(alignment: .top) {
+                    // Translucent slate tint
+                    DesignTokens.inspectorBackground
+                        .ignoresSafeArea()
+
+                    VStack(spacing: 0) {
+                        // Top Toolbar matching Figma node 39:185 & 39:191
+                        HStack {
+                            Spacer()
+
+                            // Figma Liquid Glass Button Group
+                            LiquidGlassButtonGroup {
+                                // Add Key Button (+)
+                                Button(action: {
+                                    showingAddPopover.toggle()
+                                }) {
+                                    Image(systemName: "plus")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundColor(Color.white.opacity(0.85))
+                                        .frame(width: 28, height: 28)
+                                        .contentShape(Circle())
+                                }
+                                .buttonStyle(.plain)
+                                .liquidGlassCircle(size: 28)
+                                .focusable(false)
+                                .help("Add or Import Key")
+                                .popover(isPresented: $showingAddPopover, arrowEdge: .bottom) {
+                                    AddKeyPopoverView(
+                                        onNewKey: {
+                                            showingAddPopover = false
+                                            showingCreateSheet = true
+                                        },
+                                        onImportKey: {
+                                            showingAddPopover = false
+                                            showingImportSheet = true
+                                        }
+                                    )
+                                }
+
+                                // Lock All Button
+                                Button(action: {
+                                    appState.lockNow()
+                                    statusMessage = "All cached keys locked."
+                                }) {
+                                    Image(systemName: "lock.fill")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundColor(appState.cachedKeysCount > 0 ? DesignTokens.accentGreen : Color.white.opacity(0.55))
+                                        .frame(width: 28, height: 28)
+                                        .contentShape(Circle())
+                                }
+                                .buttonStyle(.plain)
+                                .liquidGlassCircle(size: 28)
+                                .focusable(false)
+                                .disabled(appState.cachedKeysCount == 0)
+                                .help(appState.cachedKeysCount > 0 ? "Lock All Keys" : "No Unlocked Keys")
+                            }
+                            .padding(.trailing, 20)
+                            .padding(.top, 10)
+                        }
+                        .frame(height: 48)
+
+                        // Inspector Details or Empty State
+                        if let key = selectedKey {
+                            KeyDetailInspectorView(
+                                key: key,
+                                appState: appState,
+                                onDelete: {
+                                    deleteKey(label: key.label)
+                                }
+                            )
+                        } else {
+                            VStack(spacing: 12) {
+                                Image(systemName: "key.fill")
+                                    .font(.system(size: 48))
+                                    .foregroundColor(DesignTokens.textSecondary.opacity(0.4))
+                                Text("No Key Selected")
+                                    .font(.title3)
+                                    .foregroundColor(DesignTokens.textSecondary)
+                                Text("Select an identity from the sidebar to inspect its public credentials and security attributes.")
+                                    .font(.caption)
+                                    .foregroundColor(DesignTokens.textTertiary)
+                                    .multilineTextAlignment(.center)
+                                    .frame(maxWidth: 300)
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
                     }
-                    Button("Generate") {
-                        generateKey()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(newKeyLabel.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(24)
+            .ignoresSafeArea()
+        }
+        .ignoresSafeArea()
+        .sheet(isPresented: $showingCreateSheet) {
+            CreateKeySheet(appState: appState)
         }
         .sheet(isPresented: $showingImportSheet) {
-            VStack(spacing: 16) {
-                Text("Import Ed25519 Private Seed")
-                    .font(.headline)
-                TextField("Key Label (e.g. work_id)", text: $newKeyLabel)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 340)
-
-                SecureField("32-Byte Raw Seed (Hex)", text: $importSeedHex)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 340)
-
-                HStack {
-                    Button("Cancel") {
-                        showingImportSheet = false
-                        newKeyLabel = ""
-                        importSeedHex = ""
-                    }
-                    Button("Import") {
-                        importKey()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(newKeyLabel.isEmpty || importSeedHex.isEmpty)
-                }
+            ImportKeySheet(appState: appState)
+        }
+        .background {
+            Group {
+                Button("") { showingCreateSheet = true }
+                    .keyboardShortcut("n", modifiers: .command)
+                Button("") { showingImportSheet = true }
+                    .keyboardShortcut("i", modifiers: [.command, .shift])
             }
-            .padding(24)
+            .opacity(0)
+            .allowsHitTesting(false)
         }
-    }
-
-    private func generateKey() {
-        let label = newKeyLabel.trimmingCharacters(in: .whitespaces)
-        guard !label.isEmpty else { return }
-        do {
-            try KeychainManager.shared.generateKey(label: label)
+        .onAppear {
             appState.refresh()
-            statusMessage = "Successfully generated key '\(label)' in Keychain with Touch ID protection."
-        } catch {
-            statusMessage = nil
-            appState.errorMessage = "Failed to generate key: \(error.localizedDescription)"
+            if selectedKeyId == nil, let firstKey = appState.keys.first {
+                selectedKeyId = firstKey.id
+            }
         }
-        showingGenerateSheet = false
-        newKeyLabel = ""
-    }
-
-    private func importKey() {
-        let label = newKeyLabel.trimmingCharacters(in: .whitespaces)
-        guard !label.isEmpty, let seedData = Data(hexString: importSeedHex.trimmingCharacters(in: .whitespaces)) else {
-            statusMessage = nil
-            appState.errorMessage = "Invalid hex seed string (must be 64 hex characters / 32 bytes)."
-            return
+        .onChange(of: appState.keys) { newKeys in
+            if selectedKeyId == nil || !newKeys.contains(where: { $0.id == selectedKeyId }) {
+                selectedKeyId = newKeys.first?.id
+            }
         }
-        do {
-            try KeychainManager.shared.importKey(label: label, seedData: seedData)
-            appState.refresh()
-            statusMessage = "Successfully imported seed for '\(label)' into Keychain."
-        } catch {
-            statusMessage = nil
-            appState.errorMessage = "Failed to import key: \(error.localizedDescription)"
-        }
-        showingImportSheet = false
-        newKeyLabel = ""
-        importSeedHex = ""
     }
 
     private func deleteKey(label: String) {
@@ -275,7 +254,6 @@ struct KeyListView: View {
             appState.refresh()
             statusMessage = "Deleted key '\(label)'."
         } catch {
-            statusMessage = nil
             appState.errorMessage = "Failed to delete key: \(error.localizedDescription)"
         }
     }

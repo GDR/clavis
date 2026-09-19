@@ -8,6 +8,7 @@ public class SessionCacheManager {
     public static let shared = SessionCacheManager()
 
     private var cache: [String: (key: Curve25519.Signing.PrivateKey, expiresAt: Date)] = [:]
+    private var unlockedSessions: [String: Date] = [:]
     private let lock = NSLock()
 
     private var _currentTimeout: SessionTimeout = .never
@@ -60,12 +61,46 @@ public class SessionCacheManager {
         lock.lock()
         defer { lock.unlock() }
         cache.removeAll()
+        unlockedSessions.removeAll()
     }
 
     public func remove(label: String) {
         lock.lock()
         defer { lock.unlock() }
         cache.removeValue(forKey: label)
+        unlockedSessions.removeValue(forKey: label)
+    }
+
+    public func isKeyUnlocked(label: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let now = Date()
+        if let entry = cache[label], entry.expiresAt > now {
+            return true
+        }
+        if let expiresAt = unlockedSessions[label], expiresAt > now {
+            return true
+        }
+        return false
+    }
+
+    public func remainingTime(label: String) -> TimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
+        let now = Date()
+        if let entry = cache[label], entry.expiresAt > now {
+            return entry.expiresAt.timeIntervalSince(now)
+        }
+        if let expiresAt = unlockedSessions[label], expiresAt > now {
+            return expiresAt.timeIntervalSince(now)
+        }
+        return nil
+    }
+
+    public func unlockKey(label: String, duration: TimeInterval = 900) {
+        lock.lock()
+        defer { lock.unlock() }
+        unlockedSessions[label] = Date().addingTimeInterval(duration)
     }
 
     public func get(label: String) -> Curve25519.Signing.PrivateKey? {
@@ -88,14 +123,24 @@ public class SessionCacheManager {
 
         lock.lock()
         defer { lock.unlock() }
-        cache[label] = (key, Date().addingTimeInterval(validTimeout))
+        let expires = Date().addingTimeInterval(validTimeout)
+        cache[label] = (key, expires)
+        unlockedSessions[label] = expires
     }
 
     public var cachedCount: Int {
         lock.lock()
         defer { lock.unlock() }
+        guard _currentTimeout != .never else { return 0 }
         let now = Date()
-        return cache.values.filter { $0.expiresAt > now }.count
+        var activeLabels = Set<String>()
+        for (lbl, entry) in cache where entry.expiresAt > now {
+            activeLabels.insert(lbl)
+        }
+        for (lbl, expiresAt) in unlockedSessions where expiresAt > now {
+            activeLabels.insert(lbl)
+        }
+        return activeLabels.count
     }
 }
 
@@ -198,19 +243,51 @@ public class KeychainManager {
 
     private init() {}
 
-    // Generate new Ed25519 Key and save private seed (guarded by Touch ID) and public metadata (unencrypted)
+    // Generate new Key and save private seed (guarded by Touch ID) and public metadata (unencrypted)
     @discardableResult
-    public func generateKey(label: String) throws -> Ed25519KeyInfo {
+    public func generateKey(label: String, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
         if try fetchKeyInfo(label: label) != nil {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key with label '\(label)' already exists. Delete it first before generating a new key with this label."])
         }
+
+        if algorithm == "ECDSA P-256" {
+            let privateKey = P256.Signing.PrivateKey()
+            let rawSeed = privateKey.rawRepresentation
+            try SeedStore.save(label: label, seedData: rawSeed)
+
+            let pubKeyData = privateKey.publicKey.x963Representation // 65 bytes uncompressed point
+            let keyType = "ecdsa-sha2-nistp256"
+            let curveId = "nistp256"
+
+            var blob = Data()
+            blob.appendWireString(keyType)
+            blob.appendWireString(curveId)
+            blob.appendWireData(pubKeyData)
+
+            let b64 = blob.base64EncodedString()
+            let openSSH = "\(keyType) \(b64) \(label)"
+            let fingerprint = "SHA256:" + Data(SHA256.hash(data: blob)).base64EncodedString().replacingOccurrences(of: "=", with: "")
+
+            let keyInfo = Ed25519KeyInfo(
+                label: label,
+                publicKeyOpenSSH: openSSH,
+                publicKeyBlob: blob,
+                fingerprint: fingerprint,
+                createdAt: Date(),
+                algorithmName: algorithm,
+                storage: storageType
+            )
+            PublicKeyStore.save(keyInfo)
+            return keyInfo
+        }
+
         let privateKey = Curve25519.Signing.PrivateKey()
-        return try storeKey(label: label, privateKey: privateKey)
+        return try storeKey(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType)
     }
 
     // Import existing Ed25519 seed (32 bytes)
     @discardableResult
-    public func importKey(label: String, seedData: Data) throws -> Ed25519KeyInfo {
+    public func importKey(label: String, seedData: Data, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
         if try fetchKeyInfo(label: label) != nil {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key with label '\(label)' already exists. Delete it first before importing a new key with this label."])
         }
@@ -226,10 +303,10 @@ public class KeychainManager {
             }
         }
         let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: mutableSeed)
-        return try storeKey(label: label, privateKey: privateKey)
+        return try storeKey(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType)
     }
 
-    private func storeKey(label: String, privateKey: Curve25519.Signing.PrivateKey) throws -> Ed25519KeyInfo {
+    private func storeKey(label: String, privateKey: Curve25519.Signing.PrivateKey, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
         ClavisLogger.log("KEYCHAIN_WRITE", "Storing private seed for '\(label)'...")
         var rawSeed = privateKey.rawRepresentation
         defer {
@@ -259,7 +336,7 @@ public class KeychainManager {
         SecItemDelete(deletePublicQuery as CFDictionary)
 
         // Save public key metadata
-        let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey)
+        let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType)
         PublicKeyStore.save(keyInfo)
         return keyInfo
     }
@@ -370,8 +447,42 @@ public class KeychainManager {
         return try privateKey.signature(for: data)
     }
 
+    // Unlock a key with Touch ID / password and place in session cache
+    public func unlock(label: String, prompt: String? = nil) async throws {
+        let reason = prompt ?? "Touch ID to unlock '\(label)'"
+
+        if NSClassFromString("XCTestCase") == nil && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            let laContext = LAContext()
+            laContext.localizedReason = reason
+            let success = try await laContext.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
+            guard success else {
+                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Touch ID authentication failed or cancelled"])
+            }
+        }
+
+        if SessionCacheManager.shared.currentTimeout == .never {
+            SessionCacheManager.shared.currentTimeout = .fifteenMinutes
+        }
+
+        let timeout = SessionCacheManager.shared.currentTimeout.timeInterval ?? 900
+        SessionCacheManager.shared.unlockKey(label: label, duration: timeout)
+
+        if let seedData = SeedStore.load(label: label), seedData.count == 32 {
+            if let privateKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: seedData) {
+                SessionCacheManager.shared.set(label: label, key: privateKey)
+            }
+        }
+        ClavisLogger.log("KEY_UNLOCK", "Key '\(label)' unlocked successfully for \(Int(timeout))s.")
+    }
+
+    // Lock a key immediately
+    public func lockKey(label: String) {
+        SessionCacheManager.shared.remove(label: label)
+        ClavisLogger.log("KEY_LOCK", "Key '\(label)' locked.")
+    }
+
     // Convert Curve25519.Signing.PrivateKey to OpenSSH public key format & wire representation
-    public func makeKeyInfo(label: String, privateKey: Curve25519.Signing.PrivateKey) throws -> Ed25519KeyInfo {
+    public func makeKeyInfo(label: String, privateKey: Curve25519.Signing.PrivateKey, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
         let pubKeyData = privateKey.publicKey.rawRepresentation
         let keyType = "ssh-ed25519"
 
@@ -383,7 +494,7 @@ public class KeychainManager {
         let openSSH = "\(keyType) \(b64) \(label)"
 
         let fingerprint = "SHA256:" + Data(SHA256.hash(data: blob)).base64EncodedString().replacingOccurrences(of: "=", with: "")
-        return Ed25519KeyInfo(label: label, publicKeyOpenSSH: openSSH, publicKeyBlob: blob, fingerprint: fingerprint, createdAt: Date())
+        return Ed25519KeyInfo(label: label, publicKeyOpenSSH: openSSH, publicKeyBlob: blob, fingerprint: fingerprint, createdAt: Date(), algorithmName: algorithm, storage: storageType)
     }
 }
 

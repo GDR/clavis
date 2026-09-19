@@ -47,12 +47,24 @@ public class WindowManager: NSObject, NSWindowDelegate {
         let hostingController = NSHostingController(rootView: keyListView)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            contentRect: NSRect(x: 0, y: 0, width: 880, height: 720),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        window.title = "Clavis Key Manager"
+        window.title = "Clavis"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.titlebarSeparatorStyle = .none
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
+        window.isMovableByWindowBackground = true
+
+        hostingController.view.wantsLayer = true
+        hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
+
+        window.minSize = NSSize(width: 820, height: 640)
         window.contentViewController = hostingController
         window.center()
         window.isReleasedWhenClosed = false
@@ -106,6 +118,16 @@ public class AppState: ObservableObject {
     public func lockNow() {
         SessionCacheManager.shared.clearCache()
         refresh()
+    }
+
+    public func isKeyUnlocked(label: String) -> Bool {
+        SessionCacheManager.shared.isKeyUnlocked(label: label)
+    }
+
+    public func remainingTimeFormatted(label: String) -> String? {
+        guard let remaining = SessionCacheManager.shared.remainingTime(label: label) else { return nil }
+        let mins = max(1, Int(ceil(remaining / 60)))
+        return "\(mins) min remaining"
     }
 
     public func clearError() {

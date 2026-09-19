@@ -103,6 +103,7 @@ public class SSHAgentServer {
         stateLock.unlock()
 
         if sock >= 0 {
+            shutdown(sock, SHUT_RDWR)
             close(sock)
         }
         try? FileManager.default.removeItem(atPath: socketPath)
