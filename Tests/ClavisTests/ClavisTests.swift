@@ -899,4 +899,93 @@ final class ClavisTests: XCTestCase {
         XCTAssertFalse(mgr.isEnabled)
         XCTAssertFalse(FileManager.default.fileExists(atPath: tempPlistURL.path))
     }
+
+    func testSeedStoreEnvelopeEncryptionCycle() throws {
+        let label = "test_envelope_\(UUID().uuidString)"
+        defer { SeedStore.remove(label: label) }
+
+        var randomSeed = Data(count: 32)
+        _ = randomSeed.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+
+        try SeedStore.save(label: label, seedData: randomSeed)
+        let loaded = SeedStore.load(label: label)
+
+        XCTAssertEqual(loaded, randomSeed)
+    }
+
+    func testSeedStoreEncryptedFileFormat() throws {
+        let label = "test_format_\(UUID().uuidString)"
+        defer { SeedStore.remove(label: label) }
+
+        let secretBytes = Data([0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04,
+                                0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+                                0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00,
+                                0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0])
+        try SeedStore.save(label: label, seedData: secretBytes)
+
+        let fileURL = SeedStore.seedFileURL(label: label)
+        let fileData = try Data(contentsOf: fileURL)
+
+        // Must start with magic header "CLV1" (0x43, 0x4C, 0x56, 0x01)
+        XCTAssertEqual(fileData.prefix(4), Data([0x43, 0x4C, 0x56, 0x01]))
+
+        // Must include 65-byte P-256 public key + at least 28-byte ChaChaPoly box
+        XCTAssertGreaterThanOrEqual(fileData.count, 4 + 65 + 28)
+
+        // Raw secret bytes must NOT appear anywhere in the ciphertext
+        XCTAssertNil(fileData.range(of: secretBytes))
+    }
+
+    func testSeedStoreLegacyPlaintextMigration() throws {
+        let label = "test_legacy_\(UUID().uuidString)"
+        defer { SeedStore.remove(label: label) }
+
+        let legacySeed = Data(repeating: 0x7A, count: 32)
+        let fileURL = SeedStore.seedFileURL(label: label)
+
+        // Write raw unencrypted seed directly to disk (simulating pre-envelope legacy Clavis)
+        try legacySeed.write(to: fileURL, options: .atomic)
+        XCTAssertEqual(try Data(contentsOf: fileURL), legacySeed)
+
+        // Loading should return the plaintext seed AND automatically migrate the file to CLV1
+        let loaded = SeedStore.load(label: label)
+        XCTAssertEqual(loaded, legacySeed)
+
+        // Verify that file on disk is now an encrypted envelope
+        let migratedFileData = try Data(contentsOf: fileURL)
+        XCTAssertEqual(migratedFileData.prefix(4), Data([0x43, 0x4C, 0x56, 0x01]))
+        XCTAssertNil(migratedFileData.range(of: legacySeed))
+
+        // Subsequent load should successfully decrypt from the new envelope
+        let reloaded = SeedStore.load(label: label)
+        XCTAssertEqual(reloaded, legacySeed)
+    }
+
+    func testSeedStoreTamperedCiphertextFails() throws {
+        let label = "test_tamper_\(UUID().uuidString)"
+        defer { SeedStore.remove(label: label) }
+
+        let seed = Data(repeating: 0x33, count: 32)
+        try SeedStore.save(label: label, seedData: seed)
+
+        let fileURL = SeedStore.seedFileURL(label: label)
+        var fileData = try Data(contentsOf: fileURL)
+
+        // Flip a bit in the encrypted payload (past the 69-byte header)
+        fileData[75] ^= 0xFF
+        try fileData.write(to: fileURL, options: .atomic)
+
+        // ChaChaPoly MAC authentication must reject tampered data and return nil
+        let loaded = SeedStore.load(label: label)
+        XCTAssertNil(loaded)
+    }
+
+    func testSeedStorePathSanitization() {
+        let maliciousLabel = "../../etc/passwd"
+        let url = SeedStore.seedFileURL(label: maliciousLabel)
+
+        XCTAssertFalse(url.path.contains(".."))
+        XCTAssertFalse(url.path.contains("/etc/passwd"))
+        XCTAssertTrue(url.path.hasSuffix("____etc_passwd.key"))
+    }
 }
