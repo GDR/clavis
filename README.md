@@ -24,8 +24,14 @@
 ```
 
 The build script signs every release executable with the hardened runtime and
-the required entitlements, then verifies each signature. It uses an available
-development certificate or falls back to an ad-hoc signature for local use.
+the required entitlements, then verifies each signature. It fails closed when
+no development certificate is available. A specific certificate can be selected
+with `CLAVIS_SIGN_IDENTITY`.
+
+For an explicitly local, non-distributable build without a certificate, opt in
+to ad-hoc signing with `CLAVIS_ALLOW_ADHOC_SIGNING=1 ./build.sh`. The Nix package
+is likewise ad-hoc signed for local nix-darwin / Home Manager installation and
+must not be treated as a trusted release artifact.
 
 ### 2. Build using Nix
 ```bash
