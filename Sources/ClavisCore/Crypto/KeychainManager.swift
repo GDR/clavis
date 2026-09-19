@@ -7,12 +7,21 @@ import AppKit
 public class KeychainManager {
     public static let privateServiceName = "com.clavis.ed25519"
     public static let publicServiceName = "com.clavis.ed25519.pub"
-    public static let shared = KeychainManager()
+    public static let shared = KeychainManager(migrateLegacyStorage: true)
 
     private let authenticator: UserAuthenticating
+    private let privateKeyStore: PrivateKeyStoring
 
-    init(authenticator: UserAuthenticating = LocalUserAuthenticator()) {
+    init(
+        authenticator: UserAuthenticating = LocalUserAuthenticator(),
+        privateKeyStore: PrivateKeyStoring = KeychainPrivateKeyStore(),
+        migrateLegacyStorage: Bool = false
+    ) {
         self.authenticator = authenticator
+        self.privateKeyStore = privateKeyStore
+        if migrateLegacyStorage {
+            migrateLegacySeedFiles()
+        }
     }
 
     // Generate new Key and save private seed (guarded by Touch ID) and public metadata (unencrypted)
@@ -28,12 +37,13 @@ public class KeychainManager {
                 guard SecureEnclave.isAvailable else {
                     throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Apple Secure Enclave is not available on this device."])
                 }
-                let seKey = try SecureEnclave.P256.Signing.PrivateKey()
-                try SeedStore.save(label: label, seedData: seKey.dataRepresentation)
+                let accessControl = try PrivateKeyAccessControl.make(flags: [.privateKeyUsage, .userPresence])
+                let seKey = try SecureEnclave.P256.Signing.PrivateKey(accessControl: accessControl)
+                try privateKeyStore.save(label: label, data: seKey.dataRepresentation)
                 pubKeyData = seKey.publicKey.x963Representation
             } else {
                 let privateKey = P256.Signing.PrivateKey()
-                try SeedStore.save(label: label, seedData: privateKey.rawRepresentation)
+                try privateKeyStore.save(label: label, data: privateKey.rawRepresentation)
                 pubKeyData = privateKey.publicKey.x963Representation
             }
 
@@ -98,16 +108,7 @@ public class KeychainManager {
             }
         }
         
-        // Save private seed securely in SeedStore (POSIX mode 0600)
-        try SeedStore.save(label: label, seedData: rawSeed)
-
-        // Delete legacy Keychain items
-        let deletePrivateQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: KeychainManager.privateServiceName,
-            kSecAttrAccount as String: label
-        ]
-        SecItemDelete(deletePrivateQuery as CFDictionary)
+        try privateKeyStore.save(label: label, data: rawSeed)
 
         let deletePublicQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -136,15 +137,9 @@ public class KeychainManager {
     public func deleteKey(label: String) throws {
         ClavisLogger.log("KEY_DELETE", "Deleting key '\(label)'...")
         SeedStore.remove(label: label)
+        try privateKeyStore.remove(label: label)
         PublicKeyStore.remove(label: label)
         SessionCacheManager.shared.remove(label: label)
-
-        let privateQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: KeychainManager.privateServiceName,
-            kSecAttrAccount as String: label
-        ]
-        SecItemDelete(privateQuery as CFDictionary)
     }
 
     // Retrieve private key seed with Touch ID / Apple Watch / Password fallback authentication
@@ -157,52 +152,30 @@ public class KeychainManager {
 
         ClavisLogger.log("TOUCH_ID_PROMPT", "Displaying user authentication prompt: \"\(prompt)\"")
         do {
-            try authenticator.authenticate(reason: prompt)
+            let context = try authenticator.authenticate(reason: prompt)
             ClavisLogger.log("TOUCH_ID_RESULT", "User authentication SUCCESS")
+
+            guard let sensitiveData = try privateKeyStore.load(label: label, context: context, prompt: prompt) else {
+                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Private key seed not found for label '\(label)'"])
+            }
+
+            var mutableData = sensitiveData
+            defer {
+                mutableData.withUnsafeMutableBytes { ptr in
+                    if let baseAddress = ptr.baseAddress {
+                        memset_s(baseAddress, ptr.count, 0, ptr.count)
+                    }
+                }
+            }
+
+            let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: mutableData)
+            SessionCacheManager.shared.set(label: label, key: privateKey)
+            ClavisLogger.log("FETCH_KEY_SUCCESS", "Key '\(label)' loaded from Keychain and placed into session cache.")
+            return privateKey
         } catch {
             ClavisLogger.log("TOUCH_ID_RESULT", "User authentication FAILED: \(error.localizedDescription)")
             throw error
         }
-
-        // Fetch private seed from SeedStore (with fallback migration from legacy Keychain)
-        var seedData = SeedStore.load(label: label)
-        if seedData == nil {
-            ClavisLogger.log("KEYCHAIN_QUERY", "Seed not in local SeedStore, checking legacy Keychain for '\(label)'...")
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: KeychainManager.privateServiceName,
-                kSecAttrAccount as String: label,
-                kSecReturnData as String: true
-            ]
-
-            var result: AnyObject?
-            let status = SecItemCopyMatching(query as CFDictionary, &result)
-            ClavisLogger.log("KEYCHAIN_RESULT", "SecItemCopyMatching returned status \(status) (\(status == 0 ? "errSecSuccess" : "errSecItemNotFound"))")
-            if status == errSecSuccess, let resultData = result as? Data {
-                seedData = resultData
-                try? SeedStore.save(label: label, seedData: resultData)
-                SecItemDelete(query as CFDictionary)
-                ClavisLogger.log("KEYCHAIN_MIGRATE", "Migrated legacy Keychain item '\(label)' to SeedStore and deleted Keychain copy.")
-            }
-        }
-
-        guard let sensitiveData = seedData else {
-            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Private key seed not found for label '\(label)'"])
-        }
-
-        var mutableData = sensitiveData
-        defer {
-            mutableData.withUnsafeMutableBytes { ptr in
-                if let baseAddress = ptr.baseAddress {
-                    memset_s(baseAddress, ptr.count, 0, ptr.count)
-                }
-            }
-        }
-
-        let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: mutableData)
-        SessionCacheManager.shared.set(label: label, key: privateKey)
-        ClavisLogger.log("FETCH_KEY_SUCCESS", "Key '\(label)' loaded and placed into session cache.")
-        return privateKey
     }
 
     // Sign challenge data using Ed25519 private key
@@ -235,29 +208,29 @@ public class KeychainManager {
     // Sign challenge data for SSH Agent returning wire format signature blob
     public func signSSH(key: Ed25519KeyInfo, data: Data, prompt: String) throws -> Data {
         if key.algorithm == "ECDSA P-256" {
-            if !SessionCacheManager.shared.isKeyUnlocked(label: key.label) {
-                try authenticator.authenticate(reason: prompt)
-
-                if let timeout = SessionCacheManager.shared.currentTimeout.timeInterval {
-                    SessionCacheManager.shared.unlockKey(label: key.label, duration: timeout)
-                    ClavisLogger.log("SESSION_CACHE", "Key '\(key.label)' (ECDSA P-256) cached for \(Int(timeout))s after Touch ID.")
-                }
-            } else {
+            let signingKey: CachedP256SigningKey
+            if let cachedKey = SessionCacheManager.shared.getP256(label: key.label) {
                 ClavisLogger.log("SESSION_CACHE", "Serving key '\(key.label)' (ECDSA P-256) from active session cache (0 prompts)")
-            }
-
-            guard let storedData = SeedStore.load(label: key.label) else {
-                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key data not found for '\(key.label)'"])
-            }
-
-            let ecdsaSig: P256.Signing.ECDSASignature
-            if key.storageType == .secureEnclave {
-                let seKey = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: storedData)
-                ecdsaSig = try seKey.signature(for: data)
+                signingKey = cachedKey
             } else {
-                let swKey = try P256.Signing.PrivateKey(rawRepresentation: storedData)
-                ecdsaSig = try swKey.signature(for: data)
+                let context = try authenticator.authenticate(reason: prompt)
+                guard let storedData = try privateKeyStore.load(label: key.label, context: context, prompt: prompt) else {
+                    throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key data not found for '\(key.label)'"])
+                }
+
+                if key.storageType == .secureEnclave {
+                    let seKey = try SecureEnclave.P256.Signing.PrivateKey(
+                        dataRepresentation: storedData,
+                        authenticationContext: context
+                    )
+                    signingKey = .secureEnclave(seKey)
+                } else {
+                    signingKey = .software(try P256.Signing.PrivateKey(rawRepresentation: storedData))
+                }
+                SessionCacheManager.shared.setP256(label: key.label, key: signingKey)
             }
+
+            let ecdsaSig = try signingKey.signature(for: data)
 
             let rawSig = ecdsaSig.rawRepresentation
             let r = rawSig.prefix(32)
@@ -284,17 +257,31 @@ public class KeychainManager {
     public func unlock(label: String, prompt: String? = nil) async throws {
         let reason = prompt ?? "Touch ID to unlock '\(label)'"
 
-        try await authenticator.authenticate(reason: reason)
+        let context = try await authenticator.authenticate(reason: reason)
 
         if SessionCacheManager.shared.currentTimeout == .never {
             SessionCacheManager.shared.currentTimeout = .fifteenMinutes
         }
 
         let timeout = SessionCacheManager.shared.currentTimeout.timeInterval ?? 900
-        SessionCacheManager.shared.unlockKey(label: label, duration: timeout)
+        guard let keyInfo = try fetchKeyInfo(label: label),
+              let storedData = try privateKeyStore.load(label: label, context: context, prompt: reason) else {
+            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Private key not found for '\(label)'"])
+        }
 
-        if let seedData = SeedStore.load(label: label), seedData.count == 32 {
-            if let privateKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: seedData) {
+        if keyInfo.algorithm == "ECDSA P-256" {
+            let signingKey: CachedP256SigningKey
+            if keyInfo.storageType == .secureEnclave {
+                signingKey = .secureEnclave(try SecureEnclave.P256.Signing.PrivateKey(
+                    dataRepresentation: storedData,
+                    authenticationContext: context
+                ))
+            } else {
+                signingKey = .software(try P256.Signing.PrivateKey(rawRepresentation: storedData))
+            }
+            SessionCacheManager.shared.setP256(label: label, key: signingKey)
+        } else if storedData.count == 32 {
+            if let privateKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: storedData) {
                 SessionCacheManager.shared.set(label: label, key: privateKey)
             }
         }
@@ -321,5 +308,24 @@ public class KeychainManager {
 
         let fingerprint = "SHA256:" + Data(SHA256.hash(data: blob)).base64EncodedString().replacingOccurrences(of: "=", with: "")
         return Ed25519KeyInfo(label: label, publicKeyOpenSSH: openSSH, publicKeyBlob: blob, fingerprint: fingerprint, createdAt: Date(), algorithmName: algorithm, storage: storageType)
+    }
+
+    private func migrateLegacySeedFiles() {
+        for keyInfo in PublicKeyStore.loadAll() where SeedStore.hasSeedFile(label: keyInfo.label) {
+            do {
+                if !privateKeyStore.contains(label: keyInfo.label) {
+                    guard let keyData = SeedStore.load(label: keyInfo.label) else {
+                        ClavisLogger.log("KEYCHAIN_MIGRATE", "Could not decrypt legacy seed for '\(keyInfo.label)'; keeping the original file.")
+                        continue
+                    }
+                    try privateKeyStore.save(label: keyInfo.label, data: keyData)
+                }
+                SeedStore.remove(label: keyInfo.label)
+                ClavisLogger.log("KEYCHAIN_MIGRATE", "Migrated '\(keyInfo.label)' from disk storage to a user-presence Keychain item.")
+            } catch {
+                ClavisLogger.log("KEYCHAIN_MIGRATE", "Failed to migrate '\(keyInfo.label)': \(error.localizedDescription)")
+            }
+        }
+        SeedStore.removeMasterKeyIfUnused()
     }
 }

@@ -28,6 +28,10 @@ public struct SeedStore {
         return seedsDirectory.appendingPathComponent("\(safeLabel).key")
     }
 
+    public static func hasSeedFile(label: String) -> Bool {
+        FileManager.default.fileExists(atPath: seedFileURL(label: label).path)
+    }
+
     // MARK: - Master KEK Management
 
     private enum MasterKey {
@@ -212,5 +216,22 @@ public struct SeedStore {
         let url = seedFileURL(label: label)
         try? FileManager.default.removeItem(at: url)
         ClavisLogger.log("SEED_STORE", "Removed seed file for '\(label)' at \(url.path)")
+    }
+
+    public static func removeMasterKeyIfUnused() {
+        let fileManager = FileManager.default
+        let remainingSeedFiles = (try? fileManager.contentsOfDirectory(
+            at: seedsDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ))?.contains(where: { $0.pathExtension == "key" }) ?? false
+
+        guard !remainingSeedFiles else { return }
+
+        masterKeyLock.lock()
+        cachedMasterKey = nil
+        masterKeyLock.unlock()
+        try? fileManager.removeItem(at: masterKEKURL)
+        ClavisLogger.log("SEED_STORE", "Removed legacy Master KEK after the last seed migrated to Keychain.")
     }
 }

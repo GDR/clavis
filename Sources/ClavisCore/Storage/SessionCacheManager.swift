@@ -6,6 +6,7 @@ public class SessionCacheManager {
     public static let shared = SessionCacheManager()
 
     private var cache: [String: (key: Curve25519.Signing.PrivateKey, expiresAt: Date)] = [:]
+    private var p256Cache: [String: (key: CachedP256SigningKey, expiresAt: Date)] = [:]
     private var unlockedSessions: [String: Date] = [:]
     private let lock = NSLock()
 
@@ -69,6 +70,7 @@ public class SessionCacheManager {
         lock.lock()
         defer { lock.unlock() }
         cache.removeAll()
+        p256Cache.removeAll()
         unlockedSessions.removeAll()
     }
 
@@ -76,6 +78,7 @@ public class SessionCacheManager {
         lock.lock()
         defer { lock.unlock() }
         cache.removeValue(forKey: label)
+        p256Cache.removeValue(forKey: label)
         unlockedSessions.removeValue(forKey: label)
     }
 
@@ -84,6 +87,9 @@ public class SessionCacheManager {
         defer { lock.unlock() }
         let now = Date()
         if let entry = cache[label], entry.expiresAt > now {
+            return true
+        }
+        if let entry = p256Cache[label], entry.expiresAt > now {
             return true
         }
         if let expiresAt = unlockedSessions[label], expiresAt > now {
@@ -97,6 +103,9 @@ public class SessionCacheManager {
         defer { lock.unlock() }
         let now = Date()
         if let entry = cache[label], entry.expiresAt > now {
+            return entry.expiresAt.timeIntervalSince(now)
+        }
+        if let entry = p256Cache[label], entry.expiresAt > now {
             return entry.expiresAt.timeIntervalSince(now)
         }
         if let expiresAt = unlockedSessions[label], expiresAt > now {
@@ -136,6 +145,27 @@ public class SessionCacheManager {
         unlockedSessions[label] = expires
     }
 
+    func getP256(label: String) -> CachedP256SigningKey? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard _currentTimeout != .never else { return nil }
+        guard let entry = p256Cache[label] else { return nil }
+        if Date() > entry.expiresAt {
+            p256Cache.removeValue(forKey: label)
+            return nil
+        }
+        return entry.key
+    }
+
+    func setP256(label: String, key: CachedP256SigningKey) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let timeout = _currentTimeout.timeInterval else { return }
+        let expires = Date().addingTimeInterval(timeout)
+        p256Cache[label] = (key, expires)
+        unlockedSessions[label] = expires
+    }
+
     public var cachedCount: Int {
         lock.lock()
         defer { lock.unlock() }
@@ -145,9 +175,26 @@ public class SessionCacheManager {
         for (lbl, entry) in cache where entry.expiresAt > now {
             activeLabels.insert(lbl)
         }
+        for (lbl, entry) in p256Cache where entry.expiresAt > now {
+            activeLabels.insert(lbl)
+        }
         for (lbl, expiresAt) in unlockedSessions where expiresAt > now {
             activeLabels.insert(lbl)
         }
         return activeLabels.count
+    }
+}
+
+enum CachedP256SigningKey {
+    case software(P256.Signing.PrivateKey)
+    case secureEnclave(SecureEnclave.P256.Signing.PrivateKey)
+
+    func signature(for data: Data) throws -> P256.Signing.ECDSASignature {
+        switch self {
+        case .software(let key):
+            return try key.signature(for: data)
+        case .secureEnclave(let key):
+            return try key.signature(for: data)
+        }
     }
 }
