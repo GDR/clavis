@@ -258,37 +258,3 @@ public class SSHAgentServer {
         }
     }
 }
-
-public struct DataReader {
-    private let data: Data
-    private var offset: Int
-
-    public init(data: Data) {
-        self.data = data
-        self.offset = data.startIndex
-    }
-
-    public mutating func readUInt32() -> UInt32? {
-        guard offset + 4 <= data.endIndex else { return nil }
-        var value: UInt32 = 0
-        _ = withUnsafeMutableBytes(of: &value) { ptr in
-            data.copyBytes(to: ptr, from: offset..<offset+4)
-        }
-        offset += 4
-        return UInt32(bigEndian: value)
-    }
-
-    public mutating func readWireData() -> Data? {
-        guard let length32 = readUInt32() else { return nil }
-        let length = Int(length32)
-        guard length >= 0, offset + length <= data.endIndex else { return nil }
-        let result = Data(data.subdata(in: offset..<offset+length))
-        offset += length
-        return result
-    }
-
-    public mutating func readWireString() -> String? {
-        guard let data = readWireData() else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-}
