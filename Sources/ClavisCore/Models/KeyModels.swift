@@ -76,18 +76,15 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
 public enum KeyAlgorithm: String, CaseIterable, Identifiable, Codable {
     case ed25519 = "Ed25519"
     case ecdsaP256 = "ECDSA P-256"
-    case rsa4096 = "RSA 4096"
 
     public var id: String { rawValue }
 
     public var description: String {
         switch self {
         case .ed25519:
-            return "Deterministic Edwards-curve (Fast, 256-bit security)"
+            return "Deterministic Edwards-curve (Fast, approximately 128-bit security)"
         case .ecdsaP256:
             return "NIST P-256 curve (Hardware & Secure Enclave ready)"
-        case .rsa4096:
-            return "4096-bit RSA (Legacy server compatibility)"
         }
     }
 }

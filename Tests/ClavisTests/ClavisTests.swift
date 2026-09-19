@@ -1672,6 +1672,36 @@ final class ClavisTests: XCTestCase {
         XCTAssertGreaterThan(innerData?.count ?? 0, 64)
     }
 
+    func testUnsupportedKeyConfigurationsFailClosed() throws {
+        let keyManager = makeKeyManager()
+
+        XCTAssertThrowsError(
+            try keyManager.generateKey(
+                label: "unsupported-rsa-\(UUID().uuidString)",
+                algorithm: "RSA 4096",
+                storageType: .keychain
+            )
+        )
+        XCTAssertThrowsError(
+            try keyManager.generateKey(
+                label: "unsupported-ed25519-enclave-\(UUID().uuidString)",
+                algorithm: "Ed25519",
+                storageType: .secureEnclave
+            )
+        )
+
+        var seed = Data(repeating: 0x42, count: 32)
+        XCTAssertThrowsError(
+            try keyManager.importKey(
+                label: "unsupported-import-\(UUID().uuidString)",
+                consuming: &seed,
+                algorithm: "ECDSA P-256",
+                storageType: .keychain
+            )
+        )
+        XCTAssertTrue(seed.isEmpty)
+    }
+
     func testSSHSigningCanRequirePerRequestAuthentication() throws {
         let cache = makeSessionCache()
         cache.currentTimeout = .oneHour

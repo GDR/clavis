@@ -36,6 +36,7 @@ public class KeychainManager {
     @discardableResult
     public func generateKey(label: String, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
         try validateLabel(label)
+        try validateGenerationConfiguration(algorithm: algorithm, storageType: storageType)
         if try fetchKeyInfo(label: label) != nil {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key with label '\(label)' already exists. Delete it first before generating a new key with this label."])
         }
@@ -97,6 +98,13 @@ public class KeychainManager {
             seedData.removeAll(keepingCapacity: false)
         }
         try validateLabel(label)
+        guard algorithm == "Ed25519", storageType == .keychain else {
+            throw NSError(
+                domain: "Clavis",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Imported seeds support only Ed25519 in Login Keychain storage."]
+            )
+        }
         if try fetchKeyInfo(label: label) != nil {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key with label '\(label)' already exists. Delete it first before importing a new key with this label."])
         }
@@ -107,6 +115,18 @@ public class KeychainManager {
             try Curve25519.Signing.PrivateKey(rawRepresentation: raw)
         }
         return try storeKey(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType)
+    }
+
+    private func validateGenerationConfiguration(algorithm: String, storageType: KeyStorageType) throws {
+        let isSupported = algorithm == "ECDSA P-256" ||
+            (algorithm == "Ed25519" && storageType == .keychain)
+        guard isSupported else {
+            throw NSError(
+                domain: "Clavis",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Unsupported key algorithm or storage combination: \(algorithm) / \(storageType.rawValue)."]
+            )
+        }
     }
 
     private func storeKey(label: String, privateKey: Curve25519.Signing.PrivateKey, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
