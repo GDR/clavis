@@ -1,5 +1,6 @@
 import SwiftUI
 import ClavisCore
+import CryptoKit
 
 public enum KeyPurpose: String, CaseIterable, Identifiable {
     case ssh = "SSH"
@@ -145,10 +146,19 @@ public struct CreateKeySheet: View {
                             Image(systemName: "key.fill")
                                 .foregroundColor(selectedStorage == .keychain ? DesignTokens.accentBlue : .secondary)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Login Keychain")
-                                    .font(.subheadline)
-                                    .fontWeight(.medium)
-                                Text("Hardware-backed by Touch ID or password. Exportable seed.")
+                                HStack(spacing: 6) {
+                                    Text("Login Keychain")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                    Text("SOFTWARE")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .padding(.horizontal, 4)
+                                        .padding(.vertical, 1)
+                                        .background(Color.white.opacity(0.10))
+                                        .foregroundColor(DesignTokens.textSecondary)
+                                        .cornerRadius(3)
+                                }
+                                Text("Software key in macOS Keychain. Touch ID guarded, exportable seed.")
                                     .font(.caption2)
                                     .foregroundColor(DesignTokens.textSecondary)
                             }
@@ -172,19 +182,30 @@ public struct CreateKeySheet: View {
                     .buttonStyle(.plain)
 
                     // Secure Enclave option
-                    let isSEDisabled = (selectedPurpose == .age)
                     Button(action: {
                         selectedStorage = .secureEnclave
                         selectedAlgorithm = .ecdsaP256
+                        if selectedPurpose == .age {
+                            selectedPurpose = .ssh
+                        }
                     }) {
                         HStack(alignment: .top, spacing: 8) {
                             Image(systemName: "cpu")
                                 .foregroundColor(selectedStorage == .secureEnclave ? DesignTokens.accentGreen : .secondary)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Secure Enclave")
-                                    .font(.subheadline)
-                                    .fontWeight(.medium)
-                                Text(isSEDisabled ? "Incompatible with age (SE only supports P-256)" : "Bound to Apple Silicon hardware. Non-exportable private key.")
+                                HStack(spacing: 6) {
+                                    Text("Secure Enclave")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                    Text("HARDWARE")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .padding(.horizontal, 4)
+                                        .padding(.vertical, 1)
+                                        .background(DesignTokens.accentGreen.opacity(0.20))
+                                        .foregroundColor(DesignTokens.accentGreen)
+                                        .cornerRadius(3)
+                                }
+                                Text("Bound to Apple Silicon hardware chip. Non-exportable private key (P-256).")
                                     .font(.caption2)
                                     .foregroundColor(DesignTokens.textSecondary)
                             }
@@ -204,10 +225,8 @@ public struct CreateKeySheet: View {
                             RoundedRectangle(cornerRadius: 8)
                                 .stroke(selectedStorage == .secureEnclave ? DesignTokens.accentGreen : DesignTokens.cardBorder, lineWidth: 1)
                         )
-                        .opacity(isSEDisabled ? 0.45 : 1.0)
                     }
                     .buttonStyle(.plain)
-                    .disabled(isSEDisabled)
                 }
             }
 
@@ -224,7 +243,14 @@ public struct CreateKeySheet: View {
                             let isAlgoDisabled = (selectedPurpose == .age && algo != .ed25519) || (selectedStorage == .secureEnclave && algo != .ecdsaP256)
                             Button(action: {
                                 selectedAlgorithm = algo
-                                if algo != .ecdsaP256 && selectedStorage == .secureEnclave {
+                                if algo == .ecdsaP256 {
+                                    if selectedPurpose == .age {
+                                        selectedPurpose = .ssh
+                                    }
+                                    if SecureEnclave.isAvailable {
+                                        selectedStorage = .secureEnclave
+                                    }
+                                } else if selectedStorage == .secureEnclave {
                                     selectedStorage = .keychain
                                 }
                             }) {

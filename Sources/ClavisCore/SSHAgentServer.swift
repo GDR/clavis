@@ -241,15 +241,11 @@ public class SSHAgentServer {
 
         ClavisLogger.log("SSH_AGENT_SIGN", "Initiating signature for key '\(matchingKey.label)'...")
         do {
-            let signature = try KeychainManager.shared.sign(
-                label: matchingKey.label,
+            let sigBlob = try KeychainManager.shared.signSSH(
+                key: matchingKey,
                 data: dataToSign,
                 prompt: "Touch ID to approve SSH signature for key '\(matchingKey.label)'"
             )
-
-            var sigBlob = Data()
-            sigBlob.appendWireString("ssh-ed25519")
-            sigBlob.appendWireData(signature)
 
             var response = Data()
             response.append(14) // SSH2_AGENT_SIGN_RESPONSE
@@ -289,5 +285,10 @@ public struct DataReader {
         let result = Data(data.subdata(in: offset..<offset+length))
         offset += length
         return result
+    }
+
+    public mutating func readWireString() -> String? {
+        guard let data = readWireData() else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 }

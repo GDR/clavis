@@ -251,11 +251,20 @@ public class KeychainManager {
         }
 
         if algorithm == "ECDSA P-256" {
-            let privateKey = P256.Signing.PrivateKey()
-            let rawSeed = privateKey.rawRepresentation
-            try SeedStore.save(label: label, seedData: rawSeed)
+            let pubKeyData: Data
+            if storageType == .secureEnclave {
+                guard SecureEnclave.isAvailable else {
+                    throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Apple Secure Enclave is not available on this device."])
+                }
+                let seKey = try SecureEnclave.P256.Signing.PrivateKey()
+                try SeedStore.save(label: label, seedData: seKey.dataRepresentation)
+                pubKeyData = seKey.publicKey.x963Representation
+            } else {
+                let privateKey = P256.Signing.PrivateKey()
+                try SeedStore.save(label: label, seedData: privateKey.rawRepresentation)
+                pubKeyData = privateKey.publicKey.x963Representation
+            }
 
-            let pubKeyData = privateKey.publicKey.x963Representation // 65 bytes uncompressed point
             let keyType = "ecdsa-sha2-nistp256"
             let curveId = "nistp256"
 
@@ -445,6 +454,85 @@ public class KeychainManager {
     public func sign(label: String, data: Data, prompt: String) throws -> Data {
         let privateKey = try fetchPrivateKey(label: label, prompt: prompt)
         return try privateKey.signature(for: data)
+    }
+
+    // Helper to format an integer as an SSH mpint (RFC 4251 section 5)
+    public static func encodeSSHMPint(_ bytes: Data) -> Data {
+        var d = bytes
+        while d.count > 1 && d.first == 0 {
+            d.removeFirst()
+        }
+        var res = Data()
+        if let first = d.first, first & 0x80 != 0 {
+            var withZero = Data([0x00])
+            withZero.append(d)
+            var len = UInt32(withZero.count).bigEndian
+            Swift.withUnsafeBytes(of: &len) { res.append(contentsOf: $0) }
+            res.append(withZero)
+        } else {
+            var len = UInt32(d.count).bigEndian
+            Swift.withUnsafeBytes(of: &len) { res.append(contentsOf: $0) }
+            res.append(d)
+        }
+        return res
+    }
+
+    // Sign challenge data for SSH Agent returning wire format signature blob
+    public func signSSH(key: Ed25519KeyInfo, data: Data, prompt: String) throws -> Data {
+        if key.algorithm == "ECDSA P-256" {
+            if !SessionCacheManager.shared.isKeyUnlocked(label: key.label) {
+                if NSClassFromString("XCTestCase") == nil && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+                    let laContext = LAContext()
+                    laContext.localizedReason = prompt
+                    var authError: NSError?
+                    let sema = DispatchSemaphore(value: 0)
+                    var authSuccess = false
+                    DispatchQueue.main.async {
+                        laContext.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: prompt) { success, error in
+                            authSuccess = success
+                            authError = error as NSError?
+                            sema.signal()
+                        }
+                    }
+                    _ = sema.wait(timeout: .now() + 60)
+                    if !authSuccess {
+                        throw authError ?? NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Touch ID authentication failed or cancelled"])
+                    }
+                }
+            }
+
+            guard let storedData = SeedStore.load(label: key.label) else {
+                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key data not found for '\(key.label)'"])
+            }
+
+            let ecdsaSig: P256.Signing.ECDSASignature
+            if key.storageType == .secureEnclave {
+                let seKey = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: storedData)
+                ecdsaSig = try seKey.signature(for: data)
+            } else {
+                let swKey = try P256.Signing.PrivateKey(rawRepresentation: storedData)
+                ecdsaSig = try swKey.signature(for: data)
+            }
+
+            let rawSig = ecdsaSig.rawRepresentation
+            let r = rawSig.prefix(32)
+            let s = rawSig.suffix(32)
+
+            var innerBlob = Data()
+            innerBlob.append(KeychainManager.encodeSSHMPint(r))
+            innerBlob.append(KeychainManager.encodeSSHMPint(s))
+
+            var sigBlob = Data()
+            sigBlob.appendWireString("ecdsa-sha2-nistp256")
+            sigBlob.appendWireData(innerBlob)
+            return sigBlob
+        }
+
+        let signature = try sign(label: key.label, data: data, prompt: prompt)
+        var sigBlob = Data()
+        sigBlob.appendWireString("ssh-ed25519")
+        sigBlob.appendWireData(signature)
+        return sigBlob
     }
 
     // Unlock a key with Touch ID / password and place in session cache

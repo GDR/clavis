@@ -839,4 +839,44 @@ final class ClavisTests: XCTestCase {
             close(fd2)
         }
     }
+
+    func testSSHMPintEncoding() {
+        let posBytes = Data([0x12, 0x34])
+        let encodedPos = KeychainManager.encodeSSHMPint(posBytes)
+        // 4 bytes len (2) + 2 bytes
+        XCTAssertEqual(encodedPos.count, 6)
+
+        // If high bit set, must prepend 0x00
+        let negBytes = Data([0x85, 0x12])
+        let encodedNeg = KeychainManager.encodeSSHMPint(negBytes)
+        // 4 bytes len (3) + 0x00 + 2 bytes
+        XCTAssertEqual(encodedNeg.count, 7)
+        XCTAssertEqual(encodedNeg[4], 0x00)
+        XCTAssertEqual(encodedNeg[5], 0x85)
+    }
+
+    func testP256KeyGenerationAndSSHSigning() throws {
+        let testLabel = "test_p256_\(UUID().uuidString)"
+        defer {
+            try? KeychainManager.shared.deleteKey(label: testLabel)
+        }
+
+        let storage: KeyStorageType = SecureEnclave.isAvailable ? .secureEnclave : .keychain
+        let keyInfo = try KeychainManager.shared.generateKey(label: testLabel, algorithm: "ECDSA P-256", storageType: storage)
+
+        XCTAssertEqual(keyInfo.algorithm, "ECDSA P-256")
+        XCTAssertEqual(keyInfo.isHardware, (storage == .secureEnclave))
+        XCTAssertTrue(keyInfo.publicKeyOpenSSH.hasPrefix("ecdsa-sha2-nistp256"))
+
+        let testData = "Test SSH challenge payload".data(using: .utf8)!
+        let sigBlob = try KeychainManager.shared.signSSH(key: keyInfo, data: testData, prompt: "Test prompt")
+
+        // Parse wire format: wire string "ecdsa-sha2-nistp256" + wire data
+        var reader = DataReader(data: sigBlob)
+        let sigAlgo = reader.readWireString()
+        XCTAssertEqual(sigAlgo, "ecdsa-sha2-nistp256")
+        let innerData = reader.readWireData()
+        XCTAssertNotNil(innerData)
+        XCTAssertGreaterThan(innerData?.count ?? 0, 64)
+    }
 }
