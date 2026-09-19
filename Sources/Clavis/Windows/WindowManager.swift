@@ -47,6 +47,11 @@ public class WindowManager: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    public func openSettings() {
+        openKeyManager()
+        AppState.shared.showingSettings = true
+    }
+
     public func windowWillClose(_ notification: Notification) {
         keyManagerWindow = nil
         NSApp.setActivationPolicy(.accessory)

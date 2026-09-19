@@ -165,6 +165,21 @@ struct KeyListView: View {
                                 .focusable(false)
                                 .disabled(appState.cachedKeysCount == 0)
                                 .help(appState.cachedKeysCount > 0 ? "Lock All Keys" : "No Unlocked Keys")
+
+                                // Settings Button
+                                Button(action: {
+                                    appState.showingSettings = true
+                                }) {
+                                    Image(systemName: "gearshape")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundColor(Color.white.opacity(0.85))
+                                        .frame(width: 28, height: 28)
+                                        .contentShape(Circle())
+                                }
+                                .buttonStyle(.plain)
+                                .liquidGlassCircle(size: 28)
+                                .focusable(false)
+                                .help("Settings (Auto Start, Timeout, Nix)")
                             }
                             .padding(.trailing, 20)
                             .padding(.top, 10)
@@ -209,12 +224,17 @@ struct KeyListView: View {
         .sheet(isPresented: $showingImportSheet) {
             ImportKeySheet(appState: appState)
         }
+        .sheet(isPresented: $appState.showingSettings) {
+            SettingsSheet(appState: appState)
+        }
         .background {
             Group {
                 Button("") { showingCreateSheet = true }
                     .keyboardShortcut("n", modifiers: .command)
                 Button("") { showingImportSheet = true }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
+                Button("") { appState.showingSettings = true }
+                    .keyboardShortcut(",", modifiers: .command)
             }
             .opacity(0)
             .allowsHitTesting(false)

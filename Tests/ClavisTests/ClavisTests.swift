@@ -879,4 +879,24 @@ final class ClavisTests: XCTestCase {
         XCTAssertNotNil(innerData)
         XCTAssertGreaterThan(innerData?.count ?? 0, 64)
     }
+
+    func testLaunchAtLoginManager() {
+        let tempPlistURL = FileManager.default.temporaryDirectory.appendingPathComponent("clavis_launch_\(UUID().uuidString).plist")
+        LaunchAtLoginManager.customLaunchAgentURL = tempPlistURL
+        defer {
+            LaunchAtLoginManager.customLaunchAgentURL = nil
+            try? FileManager.default.removeItem(at: tempPlistURL)
+        }
+
+        let mgr = LaunchAtLoginManager.shared
+        XCTAssertFalse(mgr.isEnabled)
+
+        mgr.setLaunchAtLogin(enabled: true)
+        XCTAssertTrue(mgr.isEnabled)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempPlistURL.path))
+
+        mgr.setLaunchAtLogin(enabled: false)
+        XCTAssertFalse(mgr.isEnabled)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempPlistURL.path))
+    }
 }

@@ -11,6 +11,8 @@ public class AppState: ObservableObject {
     @Published public var cachedKeysCount: Int = 0
     @Published public var errorMessage: String? = nil
     @Published public var isDaemonMode: Bool = false
+    @Published public var launchAtLogin: Bool = false
+    @Published public var showingSettings: Bool = false
 
     private init() {
         self.isDaemonMode = CommandLine.arguments.contains("--daemon")
@@ -23,10 +25,16 @@ public class AppState: ObservableObject {
             isSocketActive = SSHAgentServer.sharedInstance.isSocketActive
             cachedKeysCount = SessionCacheManager.shared.cachedCount
             selectedTimeout = SessionCacheManager.shared.currentTimeout
+            launchAtLogin = LaunchAtLoginManager.shared.isEnabled
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    public func setLaunchAtLogin(_ enabled: Bool) {
+        LaunchAtLoginManager.shared.setLaunchAtLogin(enabled: enabled)
+        launchAtLogin = enabled
     }
 
     public func setTimeout(_ timeout: SessionTimeout) {

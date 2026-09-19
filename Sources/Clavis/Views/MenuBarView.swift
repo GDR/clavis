@@ -133,6 +133,14 @@ struct MenuBarView: View {
                 ) {
                     WindowManager.shared.openKeyManager()
                 }
+
+                MenuBarActionItem(
+                    title: "Settings…",
+                    icon: "gearshape",
+                    shortcut: "⌘,"
+                ) {
+                    WindowManager.shared.openSettings()
+                }
             }
 
             Divider().background(DesignTokens.cardBorder)
