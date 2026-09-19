@@ -8,9 +8,9 @@
 
 - **Native macOS SwiftUI & AppKit**: Built directly using `CryptoKit`, `Security`, and `LocalAuthentication` frameworks.
 - **Unencrypted Public Key Listing**: `ssh-add -l` and `SSH2_AGENTC_REQUEST_IDENTITIES` respond instantly **without triggering Touch ID prompts**.
-- **Touch ID Gated Signing**: Biometric prompts trigger strictly when signature challenges are received (`SSH2_AGENTC_SIGN_REQUEST` or `age` decryption).
+- **Touch ID Gated Signing**: Every SSH-agent signature request requires fresh user authentication and displays the requesting executable path. Age decryption can reuse the configured session cache.
 - **Clamshell & Lid-Closed Fallback**: Supports Apple Watch double-click and macOS User Password fallback (`.deviceOwnerAuthentication`).
-- **In-Memory Session Cache & Auto-Lock**: Configurable cache TTL (Off, 5 min, 15 min, 1 hour). Automatically purges keys from memory when the screen locks, workspace sleeps, or upon clicking "Lock Now".
+- **In-Memory Session Cache & Auto-Lock**: Configurable cache TTL (Off, 5 min, 15 min, 1 hour) for scoped application and age operations. SSH-agent signing deliberately bypasses this cache. Cached material is purged when the screen locks, workspace sleeps, or upon clicking "Lock Now".
 - **`age-plugin-clavis` Integration**: CLI tool that translates Ed25519 keys to X25519 Montgomery keys for `age` and `sops-nix` secret decryption.
 - **Flake Integration**: Ready for Nix Flakes on macOS (`nix build`, `nix develop`).
 

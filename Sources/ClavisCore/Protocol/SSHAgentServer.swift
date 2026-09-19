@@ -134,11 +134,15 @@ public class SSHAgentServer {
     }
 
     public static func getProcessName(pid: pid_t) -> String? {
+        guard let fullPath = getProcessPath(pid: pid) else { return nil }
+        return (fullPath as NSString).lastPathComponent
+    }
+
+    public static func getProcessPath(pid: pid_t) -> String? {
         var pathBuffer = [CChar](repeating: 0, count: 4096)
         let ret = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
         if ret > 0 {
-            let fullPath = String(cString: pathBuffer)
-            return (fullPath as NSString).lastPathComponent
+            return String(cString: pathBuffer)
         }
         return nil
     }
@@ -162,6 +166,7 @@ public class SSHAgentServer {
                 var peerPid: pid_t = 0
                 var pidLen = socklen_t(MemoryLayout<pid_t>.size)
                 let clientPid: pid_t? = (getsockopt(clientSocket, SOL_LOCAL, LOCAL_PEERPID, &peerPid, &pidLen) == 0 && peerPid > 0) ? peerPid : nil
+                let clientExecutablePath = clientPid.flatMap { SSHAgentServer.getProcessPath(pid: $0) }
 
                 var optval: Int32 = 1
                 setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &optval, socklen_t(MemoryLayout<Int32>.size))
@@ -175,7 +180,11 @@ public class SSHAgentServer {
                 configureTimeouts(for: clientSocket)
                 queue.async {
                     defer { self.releaseClientSlot() }
-                    self.handleClient(socket: clientSocket, clientPid: clientPid)
+                    self.handleClient(
+                        socket: clientSocket,
+                        clientPid: clientPid,
+                        clientExecutablePath: clientExecutablePath
+                    )
                 }
             }
         }
@@ -206,7 +215,11 @@ public class SSHAgentServer {
         setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, timeoutSize)
     }
 
-    private func handleClient(socket clientSocket: Int32, clientPid: pid_t? = nil) {
+    private func handleClient(
+        socket clientSocket: Int32,
+        clientPid: pid_t? = nil,
+        clientExecutablePath: String? = nil
+    ) {
         defer { close(clientSocket) }
 
         while isRunning {
@@ -225,7 +238,11 @@ public class SSHAgentServer {
             }
             if !readSuccess { break }
 
-            let response = processAgentRequest(payload: payload, clientPid: clientPid)
+            let response = processAgentRequest(
+                payload: payload,
+                clientPid: clientPid,
+                clientExecutablePath: clientExecutablePath
+            )
             var responseLen = UInt32(response.count).bigEndian
             let writeHeaderSuccess = Swift.withUnsafeBytes(of: &responseLen) { ptr -> Bool in
                 guard let base = ptr.baseAddress else { return false }
@@ -269,27 +286,37 @@ public class SSHAgentServer {
         return true
     }
 
-    internal func processAgentRequest(payload: Data, clientPid: pid_t? = nil) -> Data {
+    internal func processAgentRequest(
+        payload: Data,
+        clientPid: pid_t? = nil,
+        clientExecutablePath: String? = nil
+    ) -> Data {
         guard !payload.isEmpty else { return Data([5]) } // SSH_AGENT_FAILURE (5)
         let msgType = payload[0]
         ClavisLogger.log("SSH_AGENT_REQ", "Received SSH Agent request type \(msgType)")
 
         switch msgType {
         case 11: // SSH2_AGENTC_REQUEST_IDENTITIES
-            return handleRequestIdentities(clientPid: clientPid)
+            return handleRequestIdentities(clientPid: clientPid, clientExecutablePath: clientExecutablePath)
         case 13: // SSH2_AGENTC_SIGN_REQUEST
-            return handleSignRequest(payload: Data(payload.dropFirst()), clientPid: clientPid)
+            return handleSignRequest(
+                payload: Data(payload.dropFirst()),
+                clientPid: clientPid,
+                clientExecutablePath: clientExecutablePath
+            )
         default:
             ClavisLogger.log("SSH_AGENT_REQ", "Unsupported SSH Agent request type \(msgType)")
             return Data([5]) // SSH_AGENT_FAILURE
         }
     }
 
-    internal func handleRequestIdentities(clientPid: pid_t? = nil) -> Data {
+    internal func handleRequestIdentities(
+        clientPid: pid_t? = nil,
+        clientExecutablePath: String? = nil
+    ) -> Data {
         let clientDesc: String
-        if let pid = clientPid {
-            let procName = SSHAgentServer.getProcessName(pid: pid) ?? "PID \(pid)"
-            clientDesc = "\(procName) (PID \(pid))"
+        if let pid = clientPid, let path = clientExecutablePath ?? SSHAgentServer.getProcessPath(pid: pid) {
+            clientDesc = "\(Self.safeProcessPath(path)) (PID \(pid))"
         } else {
             clientDesc = "local process"
         }
@@ -309,7 +336,11 @@ public class SSHAgentServer {
         return response
     }
 
-    internal func handleSignRequest(payload: Data, clientPid: pid_t? = nil) -> Data {
+    internal func handleSignRequest(
+        payload: Data,
+        clientPid: pid_t? = nil,
+        clientExecutablePath: String? = nil
+    ) -> Data {
         var reader = DataReader(data: payload)
         guard let keyBlob = reader.readWireData(),
               let dataToSign = reader.readWireData(),
@@ -324,13 +355,12 @@ public class SSHAgentServer {
             return Data([5]) // SSH_AGENT_FAILURE
         }
 
-        let clientDesc: String
-        if let pid = clientPid {
-            let procName = SSHAgentServer.getProcessName(pid: pid) ?? "PID \(pid)"
-            clientDesc = "\(procName) (PID \(pid))"
-        } else {
-            clientDesc = "local process"
+        guard let pid = clientPid,
+              let processPath = clientExecutablePath ?? SSHAgentServer.getProcessPath(pid: pid) else {
+            ClavisLogger.log("SSH_AGENT_AUTH", "Rejected signing request because peer process attribution was unavailable.")
+            return Data([5])
         }
+        let clientDesc = "\(Self.safeProcessPath(processPath)) (PID \(pid))"
 
         let prompt = "Touch ID to approve SSH signature for key '\(matchingKey.label)' requested by \(clientDesc)"
         ClavisLogger.log("SSH_AGENT_SIGN", "Initiating signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
@@ -338,7 +368,8 @@ public class SSHAgentServer {
             let sigBlob = try KeychainManager.shared.signSSH(
                 key: matchingKey,
                 data: dataToSign,
-                prompt: prompt
+                prompt: prompt,
+                useCache: false
             )
 
             var response = Data()
@@ -350,5 +381,12 @@ public class SSHAgentServer {
             ClavisLogger.log("SSH_AGENT_SIGN", "Signature failed for '\(matchingKey.label)' (\(clientDesc)): \(error.localizedDescription)")
             return Data([5]) // SSH_AGENT_FAILURE
         }
+    }
+
+    private static func safeProcessPath(_ path: String) -> String {
+        let sanitized = path.unicodeScalars.map { scalar -> Character in
+            CharacterSet.controlCharacters.contains(scalar) ? "?" : Character(String(scalar))
+        }
+        return String(sanitized.prefix(512))
     }
 }

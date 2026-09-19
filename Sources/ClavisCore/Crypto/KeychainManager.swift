@@ -159,12 +159,13 @@ public class KeychainManager {
     private func withEd25519Seed<T>(
         label: String,
         prompt: String,
+        useCache: Bool,
         operation: (UnsafeRawBufferPointer) throws -> T
     ) throws -> T {
         ClavisLogger.log("FETCH_KEY", "Access request for key '\(label)'")
 
         // 1. Check session cache
-        if let result = try sessionCache.withCachedBuffer(label: label, operation: operation) {
+        if useCache, let result = try sessionCache.withCachedBuffer(label: label, operation: operation) {
             ClavisLogger.log("SESSION_CACHE", "Served key '\(label)' from active session cache (0 prompts)")
             return result
         }
@@ -203,7 +204,7 @@ public class KeychainManager {
                 throw SessionCacheError.invalidated
             }
 
-            if sessionCache.currentTimeout != .never {
+            if useCache && sessionCache.currentTimeout != .never {
                 let result = try sessionCache.setAndWithBuffer(
                     label: label,
                     buffer: secureBuffer,
@@ -217,7 +218,7 @@ public class KeychainManager {
                 defer {
                     secureBuffer.wipe()
                 }
-                ClavisLogger.log("FETCH_KEY_SUCCESS", "Key '\(label)' loaded from Keychain for single-shot operation (cache disabled).")
+                ClavisLogger.log("FETCH_KEY_SUCCESS", "Key '\(label)' loaded from Keychain for a single-shot operation.")
 
                 return try sessionCache.performIfGenerationCurrent(cacheGeneration) {
                     guard let result = try secureBuffer.withUnsafeBytes(operation) else {
@@ -233,8 +234,8 @@ public class KeychainManager {
     }
 
     // Sign challenge data using Ed25519 private key within scoped seed buffer
-    public func sign(label: String, data: Data, prompt: String) throws -> Data {
-        try withEd25519Seed(label: label, prompt: prompt) { seedBytes in
+    public func sign(label: String, data: Data, prompt: String, useCache: Bool = true) throws -> Data {
+        try withEd25519Seed(label: label, prompt: prompt, useCache: useCache) { seedBytes in
             let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: seedBytes)
             return try privateKey.signature(for: data)
         }
@@ -242,7 +243,7 @@ public class KeychainManager {
 
     // Unwrap age file key directly using Ed25519 seed bytes without allocating intermediate Data or PrivateKey
     public func unwrapAgeFileKey(label: String, prompt: String, wrappedKey: Data, epkB64: String) throws -> Data {
-        try withEd25519Seed(label: label, prompt: prompt) { seedBytes in
+        try withEd25519Seed(label: label, prompt: prompt, useCache: true) { seedBytes in
             try AgePluginCrypto.unwrapFileKey(
                 wrappedKey: wrappedKey,
                 epkB64: epkB64,
@@ -273,7 +274,7 @@ public class KeychainManager {
     }
 
     // Sign challenge data for SSH Agent returning wire format signature blob
-    public func signSSH(key: Ed25519KeyInfo, data: Data, prompt: String) throws -> Data {
+    public func signSSH(key: Ed25519KeyInfo, data: Data, prompt: String, useCache: Bool = true) throws -> Data {
         if key.algorithm == "ECDSA P-256" {
             var localKeyToWipe: CachedP256SigningKey? = nil
             defer {
@@ -281,7 +282,7 @@ public class KeychainManager {
             }
 
             let ecdsaSig: P256.Signing.ECDSASignature
-            if let cachedSignature = try sessionCache.withCachedP256(
+            if useCache, let cachedSignature = try sessionCache.withCachedP256(
                 label: key.label,
                 operation: { try $0.signature(for: data) }
             ) {
@@ -329,7 +330,7 @@ public class KeychainManager {
                     throw SessionCacheError.invalidated
                 }
 
-                if sessionCache.currentTimeout != .never {
+                if useCache && sessionCache.currentTimeout != .never {
                     // Ownership transfers to the cache even if the first
                     // operation throws after insertion.
                     localKeyToWipe = nil
@@ -360,7 +361,7 @@ public class KeychainManager {
             return sigBlob
         }
 
-        let signature = try sign(label: key.label, data: data, prompt: prompt)
+        let signature = try sign(label: key.label, data: data, prompt: prompt, useCache: useCache)
         var sigBlob = Data()
         sigBlob.appendWireString("ssh-ed25519")
         sigBlob.appendWireData(signature)

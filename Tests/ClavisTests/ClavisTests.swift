@@ -48,6 +48,33 @@ final class ClavisTests: XCTestCase {
         }
     }
 
+    private final class CountingAuthenticator: UserAuthenticating {
+        private let lock = NSLock()
+        private var count = 0
+
+        var authenticationCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return count
+        }
+
+        func authenticate(reason: String) throws -> LAContext {
+            recordAuthentication()
+            return LAContext()
+        }
+
+        func authenticate(reason: String) async throws -> LAContext {
+            recordAuthentication()
+            return LAContext()
+        }
+
+        private func recordAuthentication() {
+            lock.lock()
+            count += 1
+            lock.unlock()
+        }
+    }
+
     private final class InMemoryPrivateKeyStore: PrivateKeyStoring {
         private var values: [String: Data] = [:]
         private let lock = NSLock()
@@ -86,12 +113,13 @@ final class ClavisTests: XCTestCase {
 
     private func makeKeyManager(
         sessionCache: SessionCacheManager? = nil,
+        authenticator: UserAuthenticating = AllowingAuthenticator(),
         secureBufferFactory: @escaping (inout Data) -> SecureBuffer? = { data in
             SecureBuffer(consuming: &data)
         }
     ) -> KeychainManager {
         KeychainManager(
-            authenticator: AllowingAuthenticator(),
+            authenticator: authenticator,
             privateKeyStore: InMemoryPrivateKeyStore(),
             sessionCache: sessionCache ?? makeSessionCache(),
             secureBufferFactory: secureBufferFactory
@@ -1642,6 +1670,43 @@ final class ClavisTests: XCTestCase {
         let innerData = reader.readWireData()
         XCTAssertNotNil(innerData)
         XCTAssertGreaterThan(innerData?.count ?? 0, 64)
+    }
+
+    func testSSHSigningCanRequirePerRequestAuthentication() throws {
+        let cache = makeSessionCache()
+        cache.currentTimeout = .oneHour
+        let authenticator = CountingAuthenticator()
+        let keyManager = makeKeyManager(sessionCache: cache, authenticator: authenticator)
+        let label = "ssh-single-shot-\(UUID().uuidString)"
+        defer { try? keyManager.deleteKey(label: label) }
+        let keyInfo = try keyManager.generateKey(label: label)
+        let payload = Data("ssh challenge".utf8)
+
+        _ = try keyManager.signSSH(
+            key: keyInfo,
+            data: payload,
+            prompt: "First request",
+            useCache: false
+        )
+        _ = try keyManager.signSSH(
+            key: keyInfo,
+            data: payload,
+            prompt: "Second request",
+            useCache: false
+        )
+
+        XCTAssertEqual(authenticator.authenticationCount, 2)
+        XCTAssertEqual(cache.cachedCount, 0)
+    }
+
+    func testSSHClientAttributionUsesExecutablePath() {
+        let path = SSHAgentServer.getProcessPath(pid: getpid())
+        XCTAssertNotNil(path)
+        XCTAssertTrue(path?.hasPrefix("/") == true)
+        XCTAssertEqual(
+            SSHAgentServer.getProcessName(pid: getpid()),
+            path.map { ($0 as NSString).lastPathComponent }
+        )
     }
 
     func testLaunchAtLoginManager() {
