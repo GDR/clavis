@@ -7,13 +7,22 @@ public class SSHAgentServer {
     public static let defaultSocketPath = NSString(string: "~/.ssh/clavis.sock").expandingTildeInPath
 
     private let socketPath: String
+    private let maxConcurrentClients: Int
+    private let clientIdleTimeout: TimeInterval
     private let stateLock = NSLock()
     private var _serverSocket: Int32 = -1
     private var _isRunning = false
+    private var _activeClientCount = 0
     private let queue = DispatchQueue(label: "com.clavis.ssh-agent", attributes: .concurrent)
 
-    public init(socketPath: String = SSHAgentServer.defaultSocketPath) {
+    public init(
+        socketPath: String = SSHAgentServer.defaultSocketPath,
+        maxConcurrentClients: Int = 32,
+        clientIdleTimeout: TimeInterval = 30
+    ) {
         self.socketPath = socketPath
+        self.maxConcurrentClients = max(1, maxConcurrentClients)
+        self.clientIdleTimeout = max(0.1, clientIdleTimeout)
     }
 
     private var isRunning: Bool {
@@ -118,6 +127,12 @@ public class SSHAgentServer {
         return isRunning && serverSocket >= 0
     }
 
+    internal var activeClientCount: Int {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return _activeClientCount
+    }
+
     public static func getProcessName(pid: pid_t) -> String? {
         var pathBuffer = [CChar](repeating: 0, count: 4096)
         let ret = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
@@ -150,11 +165,45 @@ public class SSHAgentServer {
 
                 var optval: Int32 = 1
                 setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &optval, socklen_t(MemoryLayout<Int32>.size))
+
+                guard reserveClientSlot() else {
+                    ClavisLogger.log("SSH_AGENT_LIMIT", "Rejected connection because the concurrent client limit was reached.")
+                    close(clientSocket)
+                    continue
+                }
+
+                configureTimeouts(for: clientSocket)
                 queue.async {
+                    defer { self.releaseClientSlot() }
                     self.handleClient(socket: clientSocket, clientPid: clientPid)
                 }
             }
         }
+    }
+
+    private func reserveClientSlot() -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard _activeClientCount < maxConcurrentClients else { return false }
+        _activeClientCount += 1
+        return true
+    }
+
+    private func releaseClientSlot() {
+        stateLock.lock()
+        _activeClientCount = max(0, _activeClientCount - 1)
+        stateLock.unlock()
+    }
+
+    private func configureTimeouts(for socket: Int32) {
+        let seconds = floor(clientIdleTimeout)
+        var timeout = timeval(
+            tv_sec: Int(seconds),
+            tv_usec: Int32((clientIdleTimeout - seconds) * 1_000_000)
+        )
+        let timeoutSize = socklen_t(MemoryLayout<timeval>.size)
+        setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, timeoutSize)
+        setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, timeoutSize)
     }
 
     private func handleClient(socket clientSocket: Int32, clientPid: pid_t? = nil) {

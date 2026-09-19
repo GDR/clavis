@@ -556,6 +556,64 @@ final class ClavisTests: XCTestCase {
         return success ? data : nil
     }
 
+    private func connectUnixSocket(path: String) throws -> Int32 {
+        let clientSocket = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard clientSocket >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = path.utf8CString
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            let raw = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: CChar.self)
+            for (index, byte) in pathBytes.enumerated() { raw[index] = byte }
+        }
+        let addrLength = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
+        let result = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(clientSocket, $0, addrLength)
+            }
+        }
+        guard result == 0 else {
+            let error = NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            close(clientSocket)
+            throw error
+        }
+        return clientSocket
+    }
+
+    func testSSHAgentServerBoundsIdleClients() throws {
+        let socketPath = testRootURL.appendingPathComponent("clavis-client-limit.sock").path
+        let server = SSHAgentServer(
+            socketPath: socketPath,
+            maxConcurrentClients: 1,
+            clientIdleTimeout: 0.2
+        )
+        try server.start()
+        defer { server.stop() }
+
+        let idleClient = try connectUnixSocket(path: socketPath)
+        defer { close(idleClient) }
+
+        let acceptanceDeadline = Date().addingTimeInterval(1)
+        while server.activeClientCount != 1 && Date() < acceptanceDeadline {
+            usleep(10_000)
+        }
+        XCTAssertEqual(server.activeClientCount, 1)
+
+        let rejectedClient = try connectUnixSocket(path: socketPath)
+        defer { close(rejectedClient) }
+        usleep(50_000)
+        XCTAssertNil(socketReadFullBytes(from: rejectedClient, count: 1))
+
+        let timeoutDeadline = Date().addingTimeInterval(1)
+        while server.activeClientCount != 0 && Date() < timeoutDeadline {
+            usleep(10_000)
+        }
+        XCTAssertEqual(server.activeClientCount, 0)
+    }
+
     func testSSHAgentServerRequestIdentitiesSocket() throws {
         let testSockPath = testRootURL.appendingPathComponent("clavis-req-ident.sock").path
         let server = SSHAgentServer(socketPath: testSockPath)
