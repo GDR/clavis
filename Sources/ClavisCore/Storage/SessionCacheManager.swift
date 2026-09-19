@@ -2,6 +2,20 @@ import Foundation
 import CryptoKit
 import AppKit
 
+public enum SessionCacheError: LocalizedError, Equatable {
+    case disabled
+    case invalidated
+
+    public var errorDescription: String? {
+        switch self {
+        case .disabled:
+            return "Session caching is disabled; choose a timeout before unlocking a key"
+        case .invalidated:
+            return "The key operation was cancelled because the session was locked"
+        }
+    }
+}
+
 public class SessionCacheManager {
     public static let shared = SessionCacheManager()
 
@@ -10,6 +24,7 @@ public class SessionCacheManager {
     private var unlockedSessions: [String: Date] = [:]
     private let lock = NSLock()
     private let defaults: UserDefaults
+    private var generation: UInt64 = 0
 
     private static let userDefaultsKey = "com.clavis.sessionTimeout"
 
@@ -73,6 +88,7 @@ public class SessionCacheManager {
     @objc public func clearCache() {
         lock.lock()
         defer { lock.unlock() }
+        generation &+= 1
         cache.removeAll()
         p256Cache.removeAll()
         unlockedSessions.removeAll()
@@ -81,6 +97,7 @@ public class SessionCacheManager {
     public func remove(label: String) {
         lock.lock()
         defer { lock.unlock() }
+        generation &+= 1
         cache.removeValue(forKey: label)
         p256Cache.removeValue(forKey: label)
         unlockedSessions.removeValue(forKey: label)
@@ -136,17 +153,34 @@ public class SessionCacheManager {
         return entry.key
     }
 
-    public func set(label: String, key: Curve25519.Signing.PrivateKey) {
-        lock.lock()
-        let timeout = _currentTimeout.timeInterval
-        lock.unlock()
-        guard let validTimeout = timeout else { return }
-
+    public func generationSnapshot() -> UInt64 {
         lock.lock()
         defer { lock.unlock() }
-        let expires = Date().addingTimeInterval(validTimeout)
+        return generation
+    }
+
+    public func isGenerationCurrent(_ expectedGeneration: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return generation == expectedGeneration
+    }
+
+    @discardableResult
+    public func set(
+        label: String,
+        key: Curve25519.Signing.PrivateKey,
+        expectedGeneration: UInt64? = nil
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if let expectedGeneration, expectedGeneration != generation {
+            return false
+        }
+        guard let timeout = _currentTimeout.timeInterval else { return true }
+        let expires = Date().addingTimeInterval(timeout)
         cache[label] = (key, expires)
         unlockedSessions[label] = expires
+        return true
     }
 
     func getP256(label: String) -> CachedP256SigningKey? {
@@ -161,13 +195,22 @@ public class SessionCacheManager {
         return entry.key
     }
 
-    func setP256(label: String, key: CachedP256SigningKey) {
+    @discardableResult
+    func setP256(
+        label: String,
+        key: CachedP256SigningKey,
+        expectedGeneration: UInt64? = nil
+    ) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard let timeout = _currentTimeout.timeInterval else { return }
+        if let expectedGeneration, expectedGeneration != generation {
+            return false
+        }
+        guard let timeout = _currentTimeout.timeInterval else { return true }
         let expires = Date().addingTimeInterval(timeout)
         p256Cache[label] = (key, expires)
         unlockedSessions[label] = expires
+        return true
     }
 
     public var cachedCount: Int {

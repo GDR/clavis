@@ -504,6 +504,41 @@ final class ClavisTests: XCTestCase {
         XCTAssertEqual(cache.cachedCount, 0)
     }
 
+    func testSessionCacheRejectsStoreAfterLock() {
+        let cache = makeSessionCache()
+        cache.currentTimeout = .fiveMinutes
+        let generation = cache.generationSnapshot()
+
+        cache.clearCache()
+
+        let stored = cache.set(
+            label: "stale-authentication",
+            key: Curve25519.Signing.PrivateKey(),
+            expectedGeneration: generation
+        )
+        XCTAssertFalse(stored)
+        XCTAssertNil(cache.get(label: "stale-authentication"))
+    }
+
+    func testUnlockKeepsAlwaysPromptPolicy() async throws {
+        let cache = makeSessionCache()
+        cache.currentTimeout = .never
+        let keyManager = makeKeyManager(sessionCache: cache)
+        let label = "always-prompt-\(UUID().uuidString)"
+        defer { try? keyManager.deleteKey(label: label) }
+        try keyManager.generateKey(label: label)
+
+        do {
+            try await keyManager.unlock(label: label)
+            XCTFail("Unlock should fail while session caching is disabled")
+        } catch {
+            XCTAssertEqual(error as? SessionCacheError, .disabled)
+        }
+
+        XCTAssertEqual(cache.currentTimeout, .never)
+        XCTAssertEqual(cache.cachedCount, 0)
+    }
+
     // MARK: - 9. SSHAgentServer Socket Protocol Tests
 
     private func socketReadFullBytes(from sock: Int32, count: Int) -> Data? {
