@@ -12,16 +12,21 @@ public class KeychainManager {
     private let authenticator: UserAuthenticating
     private let privateKeyStore: PrivateKeyStoring
     private let sessionCache: SessionCacheManager
+    private let secureBufferFactory: (inout Data) -> SecureBuffer?
 
     init(
         authenticator: UserAuthenticating = LocalUserAuthenticator(),
         privateKeyStore: PrivateKeyStoring = KeychainPrivateKeyStore(),
         sessionCache: SessionCacheManager = .shared,
+        secureBufferFactory: @escaping (inout Data) -> SecureBuffer? = { data in
+            SecureBuffer(consuming: &data)
+        },
         migrateLegacyStorage: Bool = false
     ) {
         self.authenticator = authenticator
         self.privateKeyStore = privateKeyStore
         self.sessionCache = sessionCache
+        self.secureBufferFactory = secureBufferFactory
         if migrateLegacyStorage {
             migrateLegacySeedFiles()
         }
@@ -193,7 +198,7 @@ public class KeychainManager {
                 }
             }
 
-            guard let secureBuffer = SecureBuffer(consuming: &sensitiveData) else {
+            guard let secureBuffer = secureBufferFactory(&sensitiveData) else {
                 throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(label)'"])
             }
 
@@ -328,7 +333,7 @@ public class KeychainManager {
                     )
                     signingKey = .secureEnclave(seKey)
                 } else {
-                    guard let buf = SecureBuffer(consuming: &storedData) else {
+                    guard let buf = secureBufferFactory(&storedData) else {
                         throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(key.label)'"])
                     }
                     signingKey = .software(buf)
@@ -417,7 +422,7 @@ public class KeychainManager {
                     authenticationContext: context
                 ))
             } else {
-                guard let buf = SecureBuffer(consuming: &storedData) else {
+                guard let buf = secureBufferFactory(&storedData) else {
                     throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(label)'"])
                 }
                 signingKey = .software(buf)
@@ -431,7 +436,7 @@ public class KeychainManager {
                 throw SessionCacheError.invalidated
             }
         } else if storedData.count == 32 {
-            guard let buf = SecureBuffer(consuming: &storedData) else {
+            guard let buf = secureBufferFactory(&storedData) else {
                 throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(label)'"])
             }
             guard sessionCache.set(

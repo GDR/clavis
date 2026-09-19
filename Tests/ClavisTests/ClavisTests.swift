@@ -84,11 +84,17 @@ final class ClavisTests: XCTestCase {
         return SessionCacheManager(defaults: defaults, observeSystemEvents: false)
     }
 
-    private func makeKeyManager(sessionCache: SessionCacheManager? = nil) -> KeychainManager {
+    private func makeKeyManager(
+        sessionCache: SessionCacheManager? = nil,
+        secureBufferFactory: @escaping (inout Data) -> SecureBuffer? = { data in
+            SecureBuffer(consuming: &data)
+        }
+    ) -> KeychainManager {
         KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: InMemoryPrivateKeyStore(),
-            sessionCache: sessionCache ?? makeSessionCache()
+            sessionCache: sessionCache ?? makeSessionCache(),
+            secureBufferFactory: secureBufferFactory
         )
     }
 
@@ -190,7 +196,15 @@ final class ClavisTests: XCTestCase {
         cache.clearCache()
         cache.currentTimeout = .never // Cache off
 
-        let keyManager = makeKeyManager(sessionCache: cache)
+        let wipeExpectation = expectation(description: "Single-shot buffer must be wiped")
+        let keyManager = makeKeyManager(
+            sessionCache: cache,
+            secureBufferFactory: { data in
+                SecureBuffer(consuming: &data, onWipe: {
+                    wipeExpectation.fulfill()
+                })
+            }
+        )
         let keyLabel = "never-cache-\(UUID().uuidString)"
         _ = try keyManager.generateKey(label: keyLabel)
 
@@ -198,6 +212,7 @@ final class ClavisTests: XCTestCase {
         let sampleData = "hello world".data(using: .utf8)!
         let signature = try keyManager.sign(label: keyLabel, data: sampleData, prompt: "Sign under never")
         XCTAssertFalse(signature.isEmpty)
+        wait(for: [wipeExpectation], timeout: 1.0)
 
         // Session cache must remain completely empty
         XCTAssertNil(cache.getBuffer(label: keyLabel))
