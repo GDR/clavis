@@ -224,6 +224,81 @@ public class SessionCacheManager {
         return entry.buffer
     }
 
+    /// Runs an operation against a cached seed while holding the cache lock.
+    /// A concurrent lock/expiry event therefore either happens before this
+    /// method starts, or waits until the already-started operation completes.
+    func withCachedBuffer<Result>(
+        label: String,
+        operation: (UnsafeRawBufferPointer) throws -> Result
+    ) throws -> Result? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard _currentTimeout != .never, let entry = cache[label] else {
+            return nil
+        }
+
+        let now = Date()
+        let monoNow = DispatchTime.now()
+        guard entry.expiresAt > now, entry.monotonicDeadline > monoNow else {
+            cache.removeValue(forKey: label)
+            unlockedSessions.removeValue(forKey: label)
+            generation &+= 1
+            entry.buffer.wipe()
+            rescheduleCleanupTimerLocked()
+            return nil
+        }
+
+        guard let result = try entry.buffer.withUnsafeBytes(operation) else {
+            throw SessionCacheError.invalidated
+        }
+        return result
+    }
+
+    /// Atomically validates the generation, stores a seed buffer, and starts
+    /// the first operation. Lock events cannot slip between those steps.
+    func setAndWithBuffer<Result>(
+        label: String,
+        buffer: SecureBuffer,
+        expectedGeneration: UInt64,
+        operation: (UnsafeRawBufferPointer) throws -> Result
+    ) throws -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard expectedGeneration == generation, let timeout = _currentTimeout.timeInterval else {
+            buffer.wipe()
+            throw SessionCacheError.invalidated
+        }
+
+        if let old = cache.removeValue(forKey: label) {
+            old.buffer.wipe()
+        }
+        let expires = Date().addingTimeInterval(timeout)
+        let deadline = DispatchTime.now() + timeout
+        cache[label] = (buffer, expires, deadline)
+        unlockedSessions[label] = (expires, deadline)
+        rescheduleCleanupTimerLocked()
+
+        guard let result = try buffer.withUnsafeBytes(operation) else {
+            throw SessionCacheError.invalidated
+        }
+        return result
+    }
+
+    /// Serializes a non-cached operation with session invalidation.
+    func performIfGenerationCurrent<Result>(
+        _ expectedGeneration: UInt64,
+        operation: () throws -> Result
+    ) throws -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        guard expectedGeneration == generation else {
+            throw SessionCacheError.invalidated
+        }
+        return try operation()
+    }
+
     public func generationSnapshot() -> UInt64 {
         lock.lock()
         defer { lock.unlock() }
@@ -315,6 +390,56 @@ public class SessionCacheManager {
             return nil
         }
         return entry.key
+    }
+
+    func withCachedP256<Result>(
+        label: String,
+        operation: (CachedP256SigningKey) throws -> Result
+    ) throws -> Result? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard _currentTimeout != .never, let entry = p256Cache[label] else {
+            return nil
+        }
+
+        let now = Date()
+        let monoNow = DispatchTime.now()
+        guard entry.expiresAt > now, entry.monotonicDeadline > monoNow else {
+            p256Cache.removeValue(forKey: label)
+            unlockedSessions.removeValue(forKey: label)
+            generation &+= 1
+            entry.key.wipe()
+            rescheduleCleanupTimerLocked()
+            return nil
+        }
+
+        return try operation(entry.key)
+    }
+
+    func setAndWithP256<Result>(
+        label: String,
+        key: CachedP256SigningKey,
+        expectedGeneration: UInt64,
+        operation: (CachedP256SigningKey) throws -> Result
+    ) throws -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard expectedGeneration == generation, let timeout = _currentTimeout.timeInterval else {
+            key.wipe()
+            throw SessionCacheError.invalidated
+        }
+
+        if let old = p256Cache.removeValue(forKey: label) {
+            old.key.wipe()
+        }
+        let expires = Date().addingTimeInterval(timeout)
+        let deadline = DispatchTime.now() + timeout
+        p256Cache[label] = (key, expires, deadline)
+        unlockedSessions[label] = (expires, deadline)
+        rescheduleCleanupTimerLocked()
+        return try operation(key)
     }
 
     @discardableResult

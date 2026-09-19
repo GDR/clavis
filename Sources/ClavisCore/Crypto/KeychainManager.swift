@@ -161,20 +161,13 @@ public class KeychainManager {
     ) throws -> T {
         ClavisLogger.log("FETCH_KEY", "Access request for key '\(label)'")
 
-        let cacheGeneration = sessionCache.generationSnapshot()
-
         // 1. Check session cache
-        if let cachedBuffer = sessionCache.getBuffer(label: label) {
-            guard sessionCache.isGenerationCurrent(cacheGeneration) else {
-                throw SessionCacheError.invalidated
-            }
-            ClavisLogger.log("SESSION_CACHE", "Serving key '\(label)' from active session cache (0 prompts)")
-            let res = try cachedBuffer.withUnsafeBytes(operation)
-            guard let result = res else {
-                throw SessionCacheError.invalidated
-            }
+        if let result = try sessionCache.withCachedBuffer(label: label, operation: operation) {
+            ClavisLogger.log("SESSION_CACHE", "Served key '\(label)' from active session cache (0 prompts)")
             return result
         }
+
+        let cacheGeneration = sessionCache.generationSnapshot()
 
         // 2. Cache miss: authenticate user
         ClavisLogger.log("TOUCH_ID_PROMPT", "Displaying user authentication prompt: \"\(prompt)\"")
@@ -209,24 +202,13 @@ public class KeychainManager {
             }
 
             if sessionCache.currentTimeout != .never {
-                guard sessionCache.set(
+                let result = try sessionCache.setAndWithBuffer(
                     label: label,
                     buffer: secureBuffer,
-                    expectedGeneration: cacheGeneration
-                ) else {
-                    secureBuffer.wipe()
-                    throw SessionCacheError.invalidated
-                }
+                    expectedGeneration: cacheGeneration,
+                    operation: operation
+                )
                 ClavisLogger.log("FETCH_KEY_SUCCESS", "Key '\(label)' loaded from Keychain and placed into session cache.")
-
-                guard sessionCache.isGenerationCurrent(cacheGeneration) else {
-                    throw SessionCacheError.invalidated
-                }
-
-                let res = try secureBuffer.withUnsafeBytes(operation)
-                guard let result = res else {
-                    throw SessionCacheError.invalidated
-                }
                 return result
             } else {
                 // Caching is disabled (.never): keep buffer purely local and wipe in defer
@@ -235,15 +217,12 @@ public class KeychainManager {
                 }
                 ClavisLogger.log("FETCH_KEY_SUCCESS", "Key '\(label)' loaded from Keychain for single-shot operation (cache disabled).")
 
-                guard sessionCache.isGenerationCurrent(cacheGeneration) else {
-                    throw SessionCacheError.invalidated
+                return try sessionCache.performIfGenerationCurrent(cacheGeneration) {
+                    guard let result = try secureBuffer.withUnsafeBytes(operation) else {
+                        throw SessionCacheError.invalidated
+                    }
+                    return result
                 }
-
-                let res = try secureBuffer.withUnsafeBytes(operation)
-                guard let result = res else {
-                    throw SessionCacheError.invalidated
-                }
-                return result
             }
         } catch {
             ClavisLogger.log("TOUCH_ID_RESULT", "User authentication FAILED: \(error.localizedDescription)")
@@ -294,20 +273,20 @@ public class KeychainManager {
     // Sign challenge data for SSH Agent returning wire format signature blob
     public func signSSH(key: Ed25519KeyInfo, data: Data, prompt: String) throws -> Data {
         if key.algorithm == "ECDSA P-256" {
-            let cacheGeneration = sessionCache.generationSnapshot()
             var localKeyToWipe: CachedP256SigningKey? = nil
             defer {
                 localKeyToWipe?.wipe()
             }
 
-            let signingKey: CachedP256SigningKey
-            if let cachedKey = sessionCache.getP256(label: key.label) {
-                guard sessionCache.isGenerationCurrent(cacheGeneration) else {
-                    throw SessionCacheError.invalidated
-                }
-                ClavisLogger.log("SESSION_CACHE", "Serving key '\(key.label)' (ECDSA P-256) from active session cache (0 prompts)")
-                signingKey = cachedKey
+            let ecdsaSig: P256.Signing.ECDSASignature
+            if let cachedSignature = try sessionCache.withCachedP256(
+                label: key.label,
+                operation: { try $0.signature(for: data) }
+            ) {
+                ClavisLogger.log("SESSION_CACHE", "Served key '\(key.label)' (ECDSA P-256) from active session cache (0 prompts)")
+                ecdsaSig = cachedSignature
             } else {
+                let cacheGeneration = sessionCache.generationSnapshot()
                 let context = try authenticator.authenticate(reason: prompt)
                 guard sessionCache.isGenerationCurrent(cacheGeneration) else {
                     throw SessionCacheError.invalidated
@@ -331,12 +310,16 @@ public class KeychainManager {
                         dataRepresentation: storedData,
                         authenticationContext: context
                     )
-                    signingKey = .secureEnclave(seKey)
+                    localKeyToWipe = .secureEnclave(seKey)
                 } else {
                     guard let buf = secureBufferFactory(&storedData) else {
                         throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(key.label)'"])
                     }
-                    signingKey = .software(buf)
+                    localKeyToWipe = .software(buf)
+                }
+
+                guard let signingKey = localKeyToWipe else {
+                    throw SessionCacheError.invalidated
                 }
 
                 guard sessionCache.isGenerationCurrent(cacheGeneration) else {
@@ -345,23 +328,21 @@ public class KeychainManager {
                 }
 
                 if sessionCache.currentTimeout != .never {
-                    guard sessionCache.setP256(
+                    // Ownership transfers to the cache even if the first
+                    // operation throws after insertion.
+                    localKeyToWipe = nil
+                    ecdsaSig = try sessionCache.setAndWithP256(
                         label: key.label,
                         key: signingKey,
-                        expectedGeneration: cacheGeneration
-                    ) else {
-                        signingKey.wipe()
-                        throw SessionCacheError.invalidated
-                    }
+                        expectedGeneration: cacheGeneration,
+                        operation: { try $0.signature(for: data) }
+                    )
                 } else {
-                    localKeyToWipe = signingKey
+                    ecdsaSig = try sessionCache.performIfGenerationCurrent(cacheGeneration) {
+                        try signingKey.signature(for: data)
+                    }
                 }
             }
-
-            guard sessionCache.isGenerationCurrent(cacheGeneration) else {
-                throw SessionCacheError.invalidated
-            }
-            let ecdsaSig = try signingKey.signature(for: data)
 
             let rawSig = ecdsaSig.rawRepresentation
             let r = rawSig.prefix(32)

@@ -899,6 +899,53 @@ final class ClavisTests: XCTestCase {
         XCTAssertNil(cache.getBuffer(label: "stale-authentication"))
     }
 
+    func testSessionCacheSerializesActiveOperationWithLock() throws {
+        let cache = makeSessionCache()
+        cache.currentTimeout = .fiveMinutes
+
+        var seed = Curve25519.Signing.PrivateKey().rawRepresentation
+        guard let buffer = SecureBuffer(consuming: &seed) else {
+            XCTFail("Failed to allocate secure buffer")
+            return
+        }
+        XCTAssertTrue(cache.set(label: "atomic-operation", buffer: buffer))
+
+        let operationStarted = expectation(description: "Cached operation started")
+        let operationCompleted = expectation(description: "Cached operation completed")
+        let allowOperationToFinish = DispatchSemaphore(value: 0)
+        let clearAttempted = DispatchSemaphore(value: 0)
+        let clearCompleted = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global().async {
+            _ = try? cache.withCachedBuffer(label: "atomic-operation") { _ in
+                operationStarted.fulfill()
+                _ = allowOperationToFinish.wait(timeout: .now() + 2)
+                return true
+            }
+            operationCompleted.fulfill()
+        }
+
+        wait(for: [operationStarted], timeout: 1)
+        DispatchQueue.global().async {
+            clearAttempted.signal()
+            cache.clearCache()
+            clearCompleted.signal()
+        }
+
+        XCTAssertEqual(clearAttempted.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(
+            clearCompleted.wait(timeout: .now() + 0.05),
+            .timedOut,
+            "Lock must wait for an operation that already holds the cache lock"
+        )
+
+        allowOperationToFinish.signal()
+        wait(for: [operationCompleted], timeout: 1)
+        XCTAssertEqual(clearCompleted.wait(timeout: .now() + 1), .success)
+        XCTAssertTrue(buffer.isWiped)
+        XCTAssertEqual(cache.cachedCount, 0)
+    }
+
     func testUnlockKeepsAlwaysPromptPolicy() async throws {
         let cache = makeSessionCache()
         cache.currentTimeout = .never
