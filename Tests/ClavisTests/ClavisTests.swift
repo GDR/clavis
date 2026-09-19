@@ -1212,6 +1212,46 @@ final class ClavisTests: XCTestCase {
         XCTAssertEqual(outputs.last, "-> ok")
     }
 
+    func testAgePluginRejectsOversizedIPCLine() {
+        let inputs = [
+            "-> wrap-file-key",
+            String(repeating: "A", count: AgePluginClavis.maximumIPCLineBytes + 1)
+        ]
+        var index = 0
+        var outputs: [String] = []
+
+        AgePluginClavis.handleRecipientV1(
+            inputProvider: {
+                guard index < inputs.count else { return nil }
+                defer { index += 1 }
+                return inputs[index]
+            },
+            outputHandler: { outputs.append($0) }
+        )
+
+        XCTAssertEqual(outputs, ["-> error protocol IPC input limit exceeded"])
+    }
+
+    func testAgePluginRejectsExcessiveIPCItems() {
+        var inputs = (0...AgePluginClavis.maximumIPCItems).map {
+            "-> add-recipient invalid-recipient-\($0)"
+        }
+        inputs.append("-> done")
+        var index = 0
+        var outputs: [String] = []
+
+        AgePluginClavis.handleRecipientV1(
+            inputProvider: {
+                guard index < inputs.count else { return nil }
+                defer { index += 1 }
+                return inputs[index]
+            },
+            outputHandler: { outputs.append($0) }
+        )
+
+        XCTAssertEqual(outputs, ["-> error protocol IPC input limit exceeded"])
+    }
+
     func testAgePluginIdentityV1IPCRoundTrip() throws {
         let label = "age-unittest-key"
         let edPriv = Curve25519.Signing.PrivateKey()
