@@ -20,12 +20,15 @@ public enum SessionCacheError: LocalizedError, Equatable {
 public class SessionCacheManager {
     public static let shared = SessionCacheManager()
 
-    private var cache: [String: (buffer: SecureBuffer, expiresAt: Date)] = [:]
-    private var p256Cache: [String: (key: CachedP256SigningKey, expiresAt: Date)] = [:]
-    private var unlockedSessions: [String: Date] = [:]
+    private var cache: [String: (buffer: SecureBuffer, expiresAt: Date, monotonicDeadline: DispatchTime)] = [:]
+    private var p256Cache: [String: (key: CachedP256SigningKey, expiresAt: Date, monotonicDeadline: DispatchTime)] = [:]
+    private var unlockedSessions: [String: (expiresAt: Date, monotonicDeadline: DispatchTime)] = [:]
     private let lock = NSLock()
     private let defaults: UserDefaults
     private var generation: UInt64 = 0
+
+    private let timerQueue = DispatchQueue(label: "com.clavis.sessioncache.timer", qos: .userInitiated)
+    private var cleanupTimer: DispatchSourceTimer?
 
     private static let userDefaultsKey = "com.clavis.sessionTimeout"
 
@@ -86,10 +89,18 @@ public class SessionCacheManager {
         }
     }
 
+    deinit {
+        cleanupTimer?.cancel()
+        cleanupTimer = nil
+    }
+
     @objc public func clearCache() {
         lock.lock()
         defer { lock.unlock() }
         generation &+= 1
+        cleanupTimer?.cancel()
+        cleanupTimer = nil
+
         for (_, entry) in cache {
             entry.buffer.wipe()
         }
@@ -112,16 +123,18 @@ public class SessionCacheManager {
             entry.key.wipe()
         }
         unlockedSessions.removeValue(forKey: label)
+        rescheduleCleanupTimerLocked()
     }
 
     public func isKeyUnlocked(label: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         let now = Date()
-        if let entry = cache[label], entry.expiresAt > now, !entry.buffer.isWiped {
+        let monoNow = DispatchTime.now()
+        if let entry = cache[label], entry.expiresAt > now, entry.monotonicDeadline > monoNow, !entry.buffer.isWiped {
             return true
         }
-        if let entry = p256Cache[label], entry.expiresAt > now {
+        if let entry = p256Cache[label], entry.expiresAt > now, entry.monotonicDeadline > monoNow {
             switch entry.key {
             case .software(let buf):
                 if !buf.isWiped { return true }
@@ -129,7 +142,7 @@ public class SessionCacheManager {
                 return true
             }
         }
-        if let expiresAt = unlockedSessions[label], expiresAt > now {
+        if let entry = unlockedSessions[label], entry.expiresAt > now, entry.monotonicDeadline > monoNow {
             return true
         }
         return false
@@ -139,10 +152,11 @@ public class SessionCacheManager {
         lock.lock()
         defer { lock.unlock() }
         let now = Date()
-        if let entry = cache[label], entry.expiresAt > now, !entry.buffer.isWiped {
+        let monoNow = DispatchTime.now()
+        if let entry = cache[label], entry.expiresAt > now, entry.monotonicDeadline > monoNow, !entry.buffer.isWiped {
             return entry.expiresAt.timeIntervalSince(now)
         }
-        if let entry = p256Cache[label], entry.expiresAt > now {
+        if let entry = p256Cache[label], entry.expiresAt > now, entry.monotonicDeadline > monoNow {
             switch entry.key {
             case .software(let buf):
                 if !buf.isWiped {
@@ -152,8 +166,8 @@ public class SessionCacheManager {
                 return entry.expiresAt.timeIntervalSince(now)
             }
         }
-        if let expiresAt = unlockedSessions[label], expiresAt > now {
-            return expiresAt.timeIntervalSince(now)
+        if let entry = unlockedSessions[label], entry.expiresAt > now, entry.monotonicDeadline > monoNow {
+            return entry.expiresAt.timeIntervalSince(now)
         }
         return nil
     }
@@ -161,7 +175,10 @@ public class SessionCacheManager {
     public func unlockKey(label: String, duration: TimeInterval = 900) {
         lock.lock()
         defer { lock.unlock() }
-        unlockedSessions[label] = Date().addingTimeInterval(duration)
+        let expires = Date().addingTimeInterval(duration)
+        let deadline = DispatchTime.now() + duration
+        unlockedSessions[label] = (expires, deadline)
+        rescheduleCleanupTimerLocked()
     }
 
     public func get(label: String) -> Curve25519.Signing.PrivateKey? {
@@ -169,9 +186,12 @@ public class SessionCacheManager {
         defer { lock.unlock() }
         guard _currentTimeout != .never else { return nil }
         guard let entry = cache[label] else { return nil }
-        if Date() > entry.expiresAt {
+        let now = Date()
+        let monoNow = DispatchTime.now()
+        if now > entry.expiresAt || monoNow >= entry.monotonicDeadline {
             entry.buffer.wipe()
             cache.removeValue(forKey: label)
+            rescheduleCleanupTimerLocked()
             return nil
         }
         return entry.buffer.withUnsafeBytes { raw in
@@ -184,9 +204,12 @@ public class SessionCacheManager {
         defer { lock.unlock() }
         guard _currentTimeout != .never else { return nil }
         guard let entry = cache[label] else { return nil }
-        if Date() > entry.expiresAt {
+        let now = Date()
+        let monoNow = DispatchTime.now()
+        if now > entry.expiresAt || monoNow >= entry.monotonicDeadline {
             entry.buffer.wipe()
             cache.removeValue(forKey: label)
+            rescheduleCleanupTimerLocked()
             return nil
         }
         return entry.buffer
@@ -208,7 +231,8 @@ public class SessionCacheManager {
     public func set(
         label: String,
         buffer: SecureBuffer,
-        expectedGeneration: UInt64? = nil
+        expectedGeneration: UInt64? = nil,
+        timeoutOverride: TimeInterval? = nil
     ) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -216,7 +240,7 @@ public class SessionCacheManager {
             buffer.wipe()
             return false
         }
-        guard let timeout = _currentTimeout.timeInterval else {
+        guard let timeout = timeoutOverride ?? _currentTimeout.timeInterval else {
             buffer.wipe()
             return true
         }
@@ -224,8 +248,10 @@ public class SessionCacheManager {
             old.buffer.wipe()
         }
         let expires = Date().addingTimeInterval(timeout)
-        cache[label] = (buffer, expires)
-        unlockedSessions[label] = expires
+        let deadline = DispatchTime.now() + timeout
+        cache[label] = (buffer, expires, deadline)
+        unlockedSessions[label] = (expires, deadline)
+        rescheduleCleanupTimerLocked()
         return true
     }
 
@@ -233,7 +259,8 @@ public class SessionCacheManager {
     public func set(
         label: String,
         key: Curve25519.Signing.PrivateKey,
-        expectedGeneration: UInt64? = nil
+        expectedGeneration: UInt64? = nil,
+        timeoutOverride: TimeInterval? = nil
     ) -> Bool {
         var raw = key.rawRepresentation
         defer {
@@ -244,7 +271,7 @@ public class SessionCacheManager {
             }
         }
         guard let buffer = SecureBuffer(data: raw) else { return false }
-        return set(label: label, buffer: buffer, expectedGeneration: expectedGeneration)
+        return set(label: label, buffer: buffer, expectedGeneration: expectedGeneration, timeoutOverride: timeoutOverride)
     }
 
     func getP256(label: String) -> CachedP256SigningKey? {
@@ -252,9 +279,12 @@ public class SessionCacheManager {
         defer { lock.unlock() }
         guard _currentTimeout != .never else { return nil }
         guard let entry = p256Cache[label] else { return nil }
-        if Date() > entry.expiresAt {
+        let now = Date()
+        let monoNow = DispatchTime.now()
+        if now > entry.expiresAt || monoNow >= entry.monotonicDeadline {
             entry.key.wipe()
             p256Cache.removeValue(forKey: label)
+            rescheduleCleanupTimerLocked()
             return nil
         }
         return entry.key
@@ -264,7 +294,8 @@ public class SessionCacheManager {
     func setP256(
         label: String,
         key: CachedP256SigningKey,
-        expectedGeneration: UInt64? = nil
+        expectedGeneration: UInt64? = nil,
+        timeoutOverride: TimeInterval? = nil
     ) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -272,7 +303,7 @@ public class SessionCacheManager {
             key.wipe()
             return false
         }
-        guard let timeout = _currentTimeout.timeInterval else {
+        guard let timeout = timeoutOverride ?? _currentTimeout.timeInterval else {
             key.wipe()
             return true
         }
@@ -280,8 +311,10 @@ public class SessionCacheManager {
             old.key.wipe()
         }
         let expires = Date().addingTimeInterval(timeout)
-        p256Cache[label] = (key, expires)
-        unlockedSessions[label] = expires
+        let deadline = DispatchTime.now() + timeout
+        p256Cache[label] = (key, expires, deadline)
+        unlockedSessions[label] = (expires, deadline)
+        rescheduleCleanupTimerLocked()
         return true
     }
 
@@ -290,11 +323,12 @@ public class SessionCacheManager {
         defer { lock.unlock() }
         guard _currentTimeout != .never else { return 0 }
         let now = Date()
+        let monoNow = DispatchTime.now()
         var activeLabels = Set<String>()
-        for (lbl, entry) in cache where entry.expiresAt > now && !entry.buffer.isWiped {
+        for (lbl, entry) in cache where entry.expiresAt > now && entry.monotonicDeadline > monoNow && !entry.buffer.isWiped {
             activeLabels.insert(lbl)
         }
-        for (lbl, entry) in p256Cache where entry.expiresAt > now {
+        for (lbl, entry) in p256Cache where entry.expiresAt > now && entry.monotonicDeadline > monoNow {
             switch entry.key {
             case .software(let buf):
                 if !buf.isWiped { activeLabels.insert(lbl) }
@@ -302,10 +336,86 @@ public class SessionCacheManager {
                 activeLabels.insert(lbl)
             }
         }
-        for (lbl, expiresAt) in unlockedSessions where expiresAt > now {
+        for (lbl, entry) in unlockedSessions where entry.expiresAt > now && entry.monotonicDeadline > monoNow {
             activeLabels.insert(lbl)
         }
         return activeLabels.count
+    }
+
+    public func purgeExpiredEntries() {
+        lock.lock()
+        defer { lock.unlock() }
+        rescheduleCleanupTimerLocked()
+    }
+
+    private func rescheduleCleanupTimerLocked() {
+        let now = DispatchTime.now()
+        var expiredBuffers: [SecureBuffer] = []
+        var expiredKeys: [CachedP256SigningKey] = []
+        var didEvict = false
+
+        for (label, entry) in cache where entry.monotonicDeadline <= now {
+            expiredBuffers.append(entry.buffer)
+            cache.removeValue(forKey: label)
+            didEvict = true
+        }
+        for (label, entry) in p256Cache where entry.monotonicDeadline <= now {
+            expiredKeys.append(entry.key)
+            p256Cache.removeValue(forKey: label)
+            didEvict = true
+        }
+        for (label, entry) in unlockedSessions where entry.monotonicDeadline <= now {
+            unlockedSessions.removeValue(forKey: label)
+            didEvict = true
+        }
+
+        if didEvict {
+            generation &+= 1
+        }
+
+        for buffer in expiredBuffers {
+            buffer.wipe()
+        }
+        for key in expiredKeys {
+            key.wipe()
+        }
+
+        var earliestDeadline: DispatchTime? = nil
+
+        for (_, entry) in cache {
+            if let current = earliestDeadline {
+                if entry.monotonicDeadline < current { earliestDeadline = entry.monotonicDeadline }
+            } else {
+                earliestDeadline = entry.monotonicDeadline
+            }
+        }
+        for (_, entry) in p256Cache {
+            if let current = earliestDeadline {
+                if entry.monotonicDeadline < current { earliestDeadline = entry.monotonicDeadline }
+            } else {
+                earliestDeadline = entry.monotonicDeadline
+            }
+        }
+        for (_, entry) in unlockedSessions {
+            if let current = earliestDeadline {
+                if entry.monotonicDeadline < current { earliestDeadline = entry.monotonicDeadline }
+            } else {
+                earliestDeadline = entry.monotonicDeadline
+            }
+        }
+
+        cleanupTimer?.cancel()
+        cleanupTimer = nil
+
+        guard let deadline = earliestDeadline else { return }
+
+        let timer = DispatchSource.makeTimerSource(queue: timerQueue)
+        timer.setEventHandler { [weak self] in
+            self?.purgeExpiredEntries()
+        }
+        timer.schedule(deadline: deadline)
+        timer.resume()
+        cleanupTimer = timer
     }
 }
 

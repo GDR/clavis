@@ -161,22 +161,24 @@ public class KeychainManager {
             let context = try authenticator.authenticate(reason: prompt)
             ClavisLogger.log("TOUCH_ID_RESULT", "User authentication SUCCESS")
 
-            guard let sensitiveData = try privateKeyStore.load(label: label, context: context, prompt: prompt) else {
+            guard var sensitiveData = try privateKeyStore.load(label: label, context: context, prompt: prompt) else {
                 throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Private key seed not found for label '\(label)'"])
             }
-
-            var mutableData = sensitiveData
             defer {
-                mutableData.withUnsafeMutableBytes { ptr in
+                sensitiveData.withUnsafeMutableBytes { ptr in
                     if let baseAddress = ptr.baseAddress {
                         memset_s(baseAddress, ptr.count, 0, ptr.count)
                     }
                 }
             }
 
-            let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: mutableData)
-            guard let secureBuffer = SecureBuffer(data: mutableData) else {
+            guard let secureBuffer = SecureBuffer(consuming: &sensitiveData) else {
                 throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(label)'"])
+            }
+            guard let privateKey = try secureBuffer.withUnsafeBytes({ raw in
+                try Curve25519.Signing.PrivateKey(rawRepresentation: raw)
+            }) else {
+                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to parse private key representation"])
             }
             guard sessionCache.set(
                 label: label,
@@ -254,7 +256,7 @@ public class KeychainManager {
                     )
                     signingKey = .secureEnclave(seKey)
                 } else {
-                    guard let buf = SecureBuffer(data: storedData) else {
+                    guard let buf = SecureBuffer(consuming: &storedData) else {
                         throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(key.label)'"])
                     }
                     signingKey = .software(buf)
@@ -329,7 +331,7 @@ public class KeychainManager {
                     authenticationContext: context
                 ))
             } else {
-                guard let buf = SecureBuffer(data: storedData) else {
+                guard let buf = SecureBuffer(consuming: &storedData) else {
                     throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(label)'"])
                 }
                 signingKey = .software(buf)
@@ -342,7 +344,7 @@ public class KeychainManager {
                 throw SessionCacheError.invalidated
             }
         } else if storedData.count == 32 {
-            guard let buf = SecureBuffer(data: storedData) else {
+            guard let buf = SecureBuffer(consuming: &storedData) else {
                 throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(label)'"])
             }
             guard sessionCache.set(

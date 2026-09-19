@@ -282,6 +282,122 @@ final class ClavisTests: XCTestCase {
         XCTAssertThrowsError(try cachedKey.signature(for: sampleData))
     }
 
+    func testSecureBufferFailClosedOnMlockFailure() {
+        // When mlock fails (e.g. process limit or unsupported environment), init must return nil
+        let failingMlock: (UnsafeRawPointer?, Int) -> Int32 = { _, _ in -1 }
+
+        XCTAssertNil(SecureBuffer(count: 32, mlockFn: failingMlock), "SecureBuffer must fail-closed if mlock fails")
+        XCTAssertNil(SecureBuffer(data: Data([1, 2, 3]), mlockFn: failingMlock), "SecureBuffer(data:) must fail-closed if mlock fails")
+
+        var testData = Data([4, 5, 6])
+        XCTAssertNil(SecureBuffer(consuming: &testData, mlockFn: failingMlock), "SecureBuffer(consuming:) must fail-closed if mlock fails")
+    }
+
+    func testSecureBufferConsumingZeroesInputData() {
+        var secretData = Data([0xAA, 0xBB, 0xCC, 0xDD, 0xEE])
+        guard let buffer = SecureBuffer(consuming: &secretData) else {
+            XCTFail("Failed to allocate consuming SecureBuffer")
+            return
+        }
+
+        XCTAssertTrue(secretData.isEmpty, "Consuming init must empty the source Data container")
+        XCTAssertEqual(buffer.count, 5)
+
+        let recovered = buffer.withUnsafeBytes { Data($0) }
+        XCTAssertEqual(recovered, Data([0xAA, 0xBB, 0xCC, 0xDD, 0xEE]))
+    }
+
+    func testSecureBufferMemoryZeroedBeforeFree() {
+        let originalBytes: [UInt8] = [0xDE, 0xAD, 0xBE, 0xEF]
+        guard let buffer = SecureBuffer(data: Data(originalBytes)) else {
+            XCTFail("Failed to allocate SecureBuffer")
+            return
+        }
+
+        // Overwrite bytes via memset_s while keeping pointer valid to verify memory contents
+        buffer.wipeMemoryOnly()
+        let zeroedBytes = buffer.withUnsafeBytes { Array($0) }
+        XCTAssertEqual(zeroedBytes, [0x00, 0x00, 0x00, 0x00], "Memory must be filled with zeroes by memset_s")
+
+        buffer.wipe()
+        XCTAssertTrue(buffer.isWiped)
+    }
+
+    func testSecureBufferDeinitTriggersWipe() {
+        var wasWiped = false
+        do {
+            let buffer = SecureBuffer(data: Data([1, 2, 3, 4]))
+            buffer?.onWipe = {
+                wasWiped = true
+            }
+            XCTAssertFalse(wasWiped)
+        }
+        XCTAssertTrue(wasWiped, "SecureBuffer deinit must trigger wipe()")
+    }
+
+    func testSessionCacheActiveMonotonicTTLWipe() {
+        let cache = makeSessionCache()
+        cache.clearCache()
+        cache.currentTimeout = .fiveMinutes
+
+        let key = Curve25519.Signing.PrivateKey()
+        // Override timeout with 50ms for deterministic test
+        cache.set(label: "active-ttl-test", key: key, timeoutOverride: 0.05)
+
+        guard let buffer = cache.getBuffer(label: "active-ttl-test") else {
+            XCTFail("Buffer should be in cache")
+            return
+        }
+        XCTAssertFalse(buffer.isWiped)
+        XCTAssertEqual(cache.cachedCount, 1)
+
+        // Wait 150ms for active monotonic timer to fire
+        Thread.sleep(forTimeInterval: 0.15)
+
+        // The buffer MUST be wiped automatically by the timer without calling get()
+        XCTAssertTrue(buffer.isWiped, "Buffer must be wiped by active monotonic timer upon TTL expiration")
+        XCTAssertEqual(cache.cachedCount, 0, "Cache count must reflect expired entry")
+    }
+
+    func testSessionCacheSystemNotifications() {
+        let suiteName = "test-notifications-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let cache = SessionCacheManager(defaults: defaults, observeSystemEvents: true)
+        cache.currentTimeout = .fiveMinutes
+
+        // 1. Sleep notification
+        let key1 = Curve25519.Signing.PrivateKey()
+        cache.set(label: "sleep-test", key: key1)
+        guard let buf1 = cache.getBuffer(label: "sleep-test") else {
+            XCTFail("Buffer 1 missing")
+            return
+        }
+        XCTAssertFalse(buf1.isWiped)
+
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.willSleepNotification, object: nil)
+        XCTAssertTrue(buf1.isWiped, "Buffer must be wiped upon willSleepNotification")
+        XCTAssertEqual(cache.cachedCount, 0)
+
+        // 2. Screen lock notification
+        let key2 = Curve25519.Signing.PrivateKey()
+        cache.set(label: "screen-lock-test", key: key2)
+        guard let buf2 = cache.getBuffer(label: "screen-lock-test") else {
+            XCTFail("Buffer 2 missing")
+            return
+        }
+        XCTAssertFalse(buf2.isWiped)
+
+        DistributedNotificationCenter.default().postNotificationName(
+            NSNotification.Name("com.apple.screenIsLocked"),
+            object: nil,
+            userInfo: nil,
+            deliverImmediately: true
+        )
+        RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+        XCTAssertTrue(buf2.isWiped, "Buffer must be wiped upon screenIsLocked notification")
+        XCTAssertEqual(cache.cachedCount, 0)
+    }
+
     // MARK: - 4. Ed25519 to X25519 & Bech32 Age Conversion Tests
 
     func testEd25519ToX25519AgeConversion() throws {
