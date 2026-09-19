@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import AppKit
+import Darwin
 
 public enum SessionCacheError: LocalizedError, Equatable {
     case disabled
@@ -19,7 +20,7 @@ public enum SessionCacheError: LocalizedError, Equatable {
 public class SessionCacheManager {
     public static let shared = SessionCacheManager()
 
-    private var cache: [String: (key: Curve25519.Signing.PrivateKey, expiresAt: Date)] = [:]
+    private var cache: [String: (buffer: SecureBuffer, expiresAt: Date)] = [:]
     private var p256Cache: [String: (key: CachedP256SigningKey, expiresAt: Date)] = [:]
     private var unlockedSessions: [String: Date] = [:]
     private let lock = NSLock()
@@ -89,6 +90,12 @@ public class SessionCacheManager {
         lock.lock()
         defer { lock.unlock() }
         generation &+= 1
+        for (_, entry) in cache {
+            entry.buffer.wipe()
+        }
+        for (_, entry) in p256Cache {
+            entry.key.wipe()
+        }
         cache.removeAll()
         p256Cache.removeAll()
         unlockedSessions.removeAll()
@@ -98,8 +105,12 @@ public class SessionCacheManager {
         lock.lock()
         defer { lock.unlock() }
         generation &+= 1
-        cache.removeValue(forKey: label)
-        p256Cache.removeValue(forKey: label)
+        if let entry = cache.removeValue(forKey: label) {
+            entry.buffer.wipe()
+        }
+        if let entry = p256Cache.removeValue(forKey: label) {
+            entry.key.wipe()
+        }
         unlockedSessions.removeValue(forKey: label)
     }
 
@@ -107,11 +118,16 @@ public class SessionCacheManager {
         lock.lock()
         defer { lock.unlock() }
         let now = Date()
-        if let entry = cache[label], entry.expiresAt > now {
+        if let entry = cache[label], entry.expiresAt > now, !entry.buffer.isWiped {
             return true
         }
         if let entry = p256Cache[label], entry.expiresAt > now {
-            return true
+            switch entry.key {
+            case .software(let buf):
+                if !buf.isWiped { return true }
+            case .secureEnclave:
+                return true
+            }
         }
         if let expiresAt = unlockedSessions[label], expiresAt > now {
             return true
@@ -123,11 +139,18 @@ public class SessionCacheManager {
         lock.lock()
         defer { lock.unlock() }
         let now = Date()
-        if let entry = cache[label], entry.expiresAt > now {
+        if let entry = cache[label], entry.expiresAt > now, !entry.buffer.isWiped {
             return entry.expiresAt.timeIntervalSince(now)
         }
         if let entry = p256Cache[label], entry.expiresAt > now {
-            return entry.expiresAt.timeIntervalSince(now)
+            switch entry.key {
+            case .software(let buf):
+                if !buf.isWiped {
+                    return entry.expiresAt.timeIntervalSince(now)
+                }
+            case .secureEnclave:
+                return entry.expiresAt.timeIntervalSince(now)
+            }
         }
         if let expiresAt = unlockedSessions[label], expiresAt > now {
             return expiresAt.timeIntervalSince(now)
@@ -147,10 +170,26 @@ public class SessionCacheManager {
         guard _currentTimeout != .never else { return nil }
         guard let entry = cache[label] else { return nil }
         if Date() > entry.expiresAt {
+            entry.buffer.wipe()
             cache.removeValue(forKey: label)
             return nil
         }
-        return entry.key
+        return entry.buffer.withUnsafeBytes { raw in
+            try? Curve25519.Signing.PrivateKey(rawRepresentation: raw)
+        } ?? nil
+    }
+
+    public func getBuffer(label: String) -> SecureBuffer? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard _currentTimeout != .never else { return nil }
+        guard let entry = cache[label] else { return nil }
+        if Date() > entry.expiresAt {
+            entry.buffer.wipe()
+            cache.removeValue(forKey: label)
+            return nil
+        }
+        return entry.buffer
     }
 
     public func generationSnapshot() -> UInt64 {
@@ -168,19 +207,44 @@ public class SessionCacheManager {
     @discardableResult
     public func set(
         label: String,
-        key: Curve25519.Signing.PrivateKey,
+        buffer: SecureBuffer,
         expectedGeneration: UInt64? = nil
     ) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         if let expectedGeneration, expectedGeneration != generation {
+            buffer.wipe()
             return false
         }
-        guard let timeout = _currentTimeout.timeInterval else { return true }
+        guard let timeout = _currentTimeout.timeInterval else {
+            buffer.wipe()
+            return true
+        }
+        if let old = cache.removeValue(forKey: label) {
+            old.buffer.wipe()
+        }
         let expires = Date().addingTimeInterval(timeout)
-        cache[label] = (key, expires)
+        cache[label] = (buffer, expires)
         unlockedSessions[label] = expires
         return true
+    }
+
+    @discardableResult
+    public func set(
+        label: String,
+        key: Curve25519.Signing.PrivateKey,
+        expectedGeneration: UInt64? = nil
+    ) -> Bool {
+        var raw = key.rawRepresentation
+        defer {
+            raw.withUnsafeMutableBytes { ptr in
+                if let base = ptr.baseAddress {
+                    memset_s(base, ptr.count, 0, ptr.count)
+                }
+            }
+        }
+        guard let buffer = SecureBuffer(data: raw) else { return false }
+        return set(label: label, buffer: buffer, expectedGeneration: expectedGeneration)
     }
 
     func getP256(label: String) -> CachedP256SigningKey? {
@@ -189,6 +253,7 @@ public class SessionCacheManager {
         guard _currentTimeout != .never else { return nil }
         guard let entry = p256Cache[label] else { return nil }
         if Date() > entry.expiresAt {
+            entry.key.wipe()
             p256Cache.removeValue(forKey: label)
             return nil
         }
@@ -204,9 +269,16 @@ public class SessionCacheManager {
         lock.lock()
         defer { lock.unlock() }
         if let expectedGeneration, expectedGeneration != generation {
+            key.wipe()
             return false
         }
-        guard let timeout = _currentTimeout.timeInterval else { return true }
+        guard let timeout = _currentTimeout.timeInterval else {
+            key.wipe()
+            return true
+        }
+        if let old = p256Cache.removeValue(forKey: label) {
+            old.key.wipe()
+        }
         let expires = Date().addingTimeInterval(timeout)
         p256Cache[label] = (key, expires)
         unlockedSessions[label] = expires
@@ -219,11 +291,16 @@ public class SessionCacheManager {
         guard _currentTimeout != .never else { return 0 }
         let now = Date()
         var activeLabels = Set<String>()
-        for (lbl, entry) in cache where entry.expiresAt > now {
+        for (lbl, entry) in cache where entry.expiresAt > now && !entry.buffer.isWiped {
             activeLabels.insert(lbl)
         }
         for (lbl, entry) in p256Cache where entry.expiresAt > now {
-            activeLabels.insert(lbl)
+            switch entry.key {
+            case .software(let buf):
+                if !buf.isWiped { activeLabels.insert(lbl) }
+            case .secureEnclave:
+                activeLabels.insert(lbl)
+            }
         }
         for (lbl, expiresAt) in unlockedSessions where expiresAt > now {
             activeLabels.insert(lbl)
@@ -232,14 +309,27 @@ public class SessionCacheManager {
     }
 }
 
-enum CachedP256SigningKey {
-    case software(P256.Signing.PrivateKey)
+public enum CachedP256SigningKey {
+    case software(SecureBuffer)
     case secureEnclave(SecureEnclave.P256.Signing.PrivateKey)
 
-    func signature(for data: Data) throws -> P256.Signing.ECDSASignature {
+    public func wipe() {
+        if case .software(let buffer) = self {
+            buffer.wipe()
+        }
+    }
+
+    public func signature(for data: Data) throws -> P256.Signing.ECDSASignature {
         switch self {
-        case .software(let key):
-            return try key.signature(for: data)
+        case .software(let buffer):
+            let res = try buffer.withUnsafeBytes { raw -> P256.Signing.ECDSASignature in
+                let key = try P256.Signing.PrivateKey(rawRepresentation: raw)
+                return try key.signature(for: data)
+            }
+            guard let signature = res else {
+                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key buffer has been wiped"])
+            }
+            return signature
         case .secureEnclave(let key):
             return try key.signature(for: data)
         }

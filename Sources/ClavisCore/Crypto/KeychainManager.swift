@@ -175,9 +175,12 @@ public class KeychainManager {
             }
 
             let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: mutableData)
+            guard let secureBuffer = SecureBuffer(data: mutableData) else {
+                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(label)'"])
+            }
             guard sessionCache.set(
                 label: label,
-                key: privateKey,
+                buffer: secureBuffer,
                 expectedGeneration: cacheGeneration
             ) else {
                 throw SessionCacheError.invalidated
@@ -231,8 +234,17 @@ public class KeychainManager {
                 signingKey = cachedKey
             } else {
                 let context = try authenticator.authenticate(reason: prompt)
-                guard let storedData = try privateKeyStore.load(label: key.label, context: context, prompt: prompt) else {
+                guard var storedData = try privateKeyStore.load(label: key.label, context: context, prompt: prompt) else {
                     throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key data not found for '\(key.label)'"])
+                }
+                defer {
+                    if key.storageType != .secureEnclave {
+                        storedData.withUnsafeMutableBytes { ptr in
+                            if let base = ptr.baseAddress {
+                                memset_s(base, ptr.count, 0, ptr.count)
+                            }
+                        }
+                    }
                 }
 
                 if key.storageType == .secureEnclave {
@@ -242,7 +254,10 @@ public class KeychainManager {
                     )
                     signingKey = .secureEnclave(seKey)
                 } else {
-                    signingKey = .software(try P256.Signing.PrivateKey(rawRepresentation: storedData))
+                    guard let buf = SecureBuffer(data: storedData) else {
+                        throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(key.label)'"])
+                    }
+                    signingKey = .software(buf)
                 }
                 guard sessionCache.setP256(
                     label: key.label,
@@ -293,8 +308,17 @@ public class KeychainManager {
             throw SessionCacheError.disabled
         }
         guard let keyInfo = try fetchKeyInfo(label: label),
-              let storedData = try privateKeyStore.load(label: label, context: context, prompt: reason) else {
+              var storedData = try privateKeyStore.load(label: label, context: context, prompt: reason) else {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Private key not found for '\(label)'"])
+        }
+        defer {
+            if keyInfo.storageType != .secureEnclave {
+                storedData.withUnsafeMutableBytes { ptr in
+                    if let base = ptr.baseAddress {
+                        memset_s(base, ptr.count, 0, ptr.count)
+                    }
+                }
+            }
         }
 
         if keyInfo.algorithm == "ECDSA P-256" {
@@ -305,7 +329,10 @@ public class KeychainManager {
                     authenticationContext: context
                 ))
             } else {
-                signingKey = .software(try P256.Signing.PrivateKey(rawRepresentation: storedData))
+                guard let buf = SecureBuffer(data: storedData) else {
+                    throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(label)'"])
+                }
+                signingKey = .software(buf)
             }
             guard sessionCache.setP256(
                 label: label,
@@ -315,14 +342,15 @@ public class KeychainManager {
                 throw SessionCacheError.invalidated
             }
         } else if storedData.count == 32 {
-            if let privateKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: storedData) {
-                guard sessionCache.set(
-                    label: label,
-                    key: privateKey,
-                    expectedGeneration: cacheGeneration
-                ) else {
-                    throw SessionCacheError.invalidated
-                }
+            guard let buf = SecureBuffer(data: storedData) else {
+                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(label)'"])
+            }
+            guard sessionCache.set(
+                label: label,
+                buffer: buf,
+                expectedGeneration: cacheGeneration
+            ) else {
+                throw SessionCacheError.invalidated
             }
         }
         ClavisLogger.log("KEY_UNLOCK", "Key '\(label)' unlocked successfully for \(Int(timeout))s.")

@@ -176,6 +176,112 @@ final class ClavisTests: XCTestCase {
         XCTAssertEqual(cache.cachedCount, 0)
     }
 
+    func testSecureBufferAllocationAndRAMLocking() {
+        let secretData = Data([0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04])
+        guard let buffer = SecureBuffer(data: secretData) else {
+            XCTFail("Failed to allocate SecureBuffer")
+            return
+        }
+
+        XCTAssertEqual(buffer.count, 8)
+        XCTAssertFalse(buffer.isWiped)
+        XCTAssertTrue(buffer.isLocked, "SecureBuffer should be locked into RAM with mlock(2)")
+
+        let readData = buffer.withUnsafeBytes { raw in
+            Data(raw)
+        }
+        XCTAssertEqual(readData, secretData)
+    }
+
+    func testSecureBufferWipe() {
+        let secretData = Data([1, 2, 3, 4, 5, 6, 7, 8])
+        guard let buffer = SecureBuffer(data: secretData) else {
+            XCTFail("Failed to allocate SecureBuffer")
+            return
+        }
+
+        XCTAssertFalse(buffer.isWiped)
+        buffer.wipe()
+
+        XCTAssertTrue(buffer.isWiped)
+        XCTAssertFalse(buffer.isLocked)
+
+        let read = buffer.withUnsafeBytes { raw in
+            Data(raw)
+        }
+        XCTAssertNil(read, "withUnsafeBytes must return nil after buffer is wiped")
+
+        // Redundant wipe should be a safe no-op
+        buffer.wipe()
+        XCTAssertTrue(buffer.isWiped)
+    }
+
+    func testSessionCacheManagerZeroingOnClear() {
+        let cache = makeSessionCache()
+        cache.clearCache()
+        cache.currentTimeout = .fiveMinutes
+
+        let key = Curve25519.Signing.PrivateKey()
+        cache.set(label: "wipe-on-clear", key: key)
+
+        guard let buffer = cache.getBuffer(label: "wipe-on-clear") else {
+            XCTFail("Expected cached buffer")
+            return
+        }
+        XCTAssertFalse(buffer.isWiped)
+        XCTAssertTrue(buffer.isLocked)
+
+        // Clearing the cache must immediately zero out and unlock the memory
+        cache.clearCache()
+
+        XCTAssertTrue(buffer.isWiped, "Buffer held by session cache must be wiped via memset_s on clearCache()")
+        XCTAssertNil(cache.get(label: "wipe-on-clear"))
+        XCTAssertEqual(cache.cachedCount, 0)
+    }
+
+    func testSessionCacheManagerZeroingOnRemove() {
+        let cache = makeSessionCache()
+        cache.clearCache()
+        cache.currentTimeout = .fiveMinutes
+
+        let key = Curve25519.Signing.PrivateKey()
+        cache.set(label: "wipe-on-remove", key: key)
+
+        guard let buffer = cache.getBuffer(label: "wipe-on-remove") else {
+            XCTFail("Expected cached buffer")
+            return
+        }
+        XCTAssertFalse(buffer.isWiped)
+
+        cache.remove(label: "wipe-on-remove")
+
+        XCTAssertTrue(buffer.isWiped, "Buffer must be wiped when removed from session cache")
+        XCTAssertNil(cache.get(label: "wipe-on-remove"))
+    }
+
+    func testCachedP256SoftwareWiping() throws {
+        let p256Key = P256.Signing.PrivateKey()
+        let raw = p256Key.rawRepresentation
+        guard let buf = SecureBuffer(data: raw) else {
+            XCTFail("Failed to allocate SecureBuffer for P256")
+            return
+        }
+
+        let cachedKey = CachedP256SigningKey.software(buf)
+        let sampleData = "test message".data(using: .utf8)!
+
+        // Signing works initially
+        let signature = try cachedKey.signature(for: sampleData)
+        XCTAssertFalse(signature.rawRepresentation.isEmpty)
+
+        // Wipe key
+        cachedKey.wipe()
+        XCTAssertTrue(buf.isWiped)
+
+        // Subsequent sign attempts fail
+        XCTAssertThrowsError(try cachedKey.signature(for: sampleData))
+    }
+
     // MARK: - 4. Ed25519 to X25519 & Bech32 Age Conversion Tests
 
     func testEd25519ToX25519AgeConversion() throws {
