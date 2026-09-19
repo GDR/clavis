@@ -863,6 +863,43 @@ final class ClavisTests: XCTestCase {
         XCTAssertEqual(missingArgsRes?.error, "Usage: clavis generate <label>")
     }
 
+    func testCLIServiceImportViaStdin() throws {
+        let label = "stdin_key_\(UUID().uuidString)"
+        defer { try? KeychainManager.shared.deleteKey(label: label) }
+
+        let validHexSeed = String(repeating: "ab", count: 32)
+        let res = CLIService.handle(
+            args: ["clavis", "import", label, "--stdin"],
+            inputReader: { validHexSeed }
+        )
+
+        XCTAssertNotNil(res)
+        XCTAssertEqual(res?.exitCode, 0)
+        XCTAssertTrue(res?.output.contains("Successfully imported") ?? false)
+        XCTAssertFalse(res?.output.contains("SECURITY WARNING") ?? true)
+
+        let loaded = try KeychainManager.shared.fetchKeyInfo(label: label)
+        XCTAssertNotNil(loaded)
+    }
+
+    func testCLIServiceImportViaArgvShowsWarning() throws {
+        let label = "argv_key_\(UUID().uuidString)"
+        defer { try? KeychainManager.shared.deleteKey(label: label) }
+
+        let validHexSeed = String(repeating: "cd", count: 32)
+        let res = CLIService.handle(
+            args: ["clavis", "import", label, validHexSeed]
+        )
+
+        XCTAssertNotNil(res)
+        XCTAssertEqual(res?.exitCode, 0)
+        XCTAssertTrue(res?.output.contains("Successfully imported") ?? false)
+        XCTAssertTrue(res?.output.contains("SECURITY WARNING") ?? false)
+
+        let loaded = try KeychainManager.shared.fetchKeyInfo(label: label)
+        XCTAssertNotNil(loaded)
+    }
+
     func testSingleInstanceLockAcquireAndRelease() {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("clavis_test_\(UUID().uuidString).lock")
         SingleInstanceLock.customLockFileURL = tempURL

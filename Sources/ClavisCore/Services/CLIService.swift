@@ -13,7 +13,7 @@ public struct CLICommandResult: Equatable {
 }
 
 public struct CLIService {
-    public static func handle(args: [String]) -> CLICommandResult? {
+    public static func handle(args: [String], inputReader: () -> String? = { readLine() }) -> CLICommandResult? {
         guard args.count > 1 else { return nil }
 
         let subcommand = args[1].lowercased()
@@ -35,17 +35,43 @@ public struct CLIService {
             }
 
         case "import":
-            guard args.count >= 4 else {
-                return CLICommandResult(exitCode: 1, output: "", error: "Usage: clavis import <label> <hex_seed>")
+            guard args.count >= 3 else {
+                return CLICommandResult(exitCode: 1, output: "", error: "Usage: clavis import <label> [--stdin | <hex_seed>]")
             }
             let label = args[2].trimmingCharacters(in: .whitespaces)
-            let hexSeed = args[3].trimmingCharacters(in: .whitespaces)
-            guard let seedData = Data(hexString: hexSeed), seedData.count == 32 else {
+            var hexSeed: String? = nil
+            var warning: String? = nil
+
+            if args.count >= 4 && args[3] != "--stdin" && args[3] != "-" {
+                hexSeed = args[3].trimmingCharacters(in: .whitespaces)
+                warning = "⚠️ [SECURITY WARNING] Passing private seed via CLI arguments exposes secrets in process list ('ps') and shell history. Use 'clavis import <label>' (interactive) or 'clavis import <label> --stdin' instead."
+                ClavisLogger.log("SECURITY", "Seed passed via argv for key '\(label)'.")
+            } else {
+                if isatty(STDIN_FILENO) != 0 && (args.count == 3 || args[3] != "--stdin") {
+                    var buffer = [CChar](repeating: 0, count: 256)
+                    if let pass = readpassphrase("Enter 64-character hex seed: ", &buffer, buffer.count, RPP_REQUIRE_TTY) {
+                        hexSeed = String(cString: pass).trimmingCharacters(in: .whitespacesAndNewlines)
+                        memset_s(&buffer, buffer.count, 0, buffer.count)
+                    }
+                } else {
+                    hexSeed = inputReader()?.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+
+            guard let rawHex = hexSeed, !rawHex.isEmpty else {
+                return CLICommandResult(exitCode: 1, output: "", error: "No seed provided. Provide seed via stdin, interactive prompt, or argument.")
+            }
+
+            guard let seedData = Data(hexString: rawHex), seedData.count == 32 else {
                 return CLICommandResult(exitCode: 1, output: "", error: "Invalid hex seed string (must be 64 hex characters / 32 bytes).")
             }
             do {
                 let info = try KeychainManager.shared.importKey(label: label, seedData: seedData)
-                var out = "Successfully imported Ed25519 seed for '\(info.label)' into Keychain.\n"
+                var out = ""
+                if let warn = warning {
+                    out += "\(warn)\n\n"
+                }
+                out += "Successfully imported Ed25519 seed for '\(info.label)' into Keychain.\n"
                 out += "Fingerprint: \(info.fingerprint)\n"
                 out += "Public Key:  \(info.publicKeyOpenSSH)"
                 return CLICommandResult(exitCode: 0, output: out)
