@@ -468,25 +468,32 @@ final class ClavisTests: XCTestCase {
         cache.currentTimeout = .fiveMinutes
 
         // 1. Sleep notification
-        let key1 = Curve25519.Signing.PrivateKey()
-        cache.set(label: "sleep-test", key: key1)
-        guard let buf1 = cache.getBuffer(label: "sleep-test") else {
-            XCTFail("Buffer 1 missing")
+        let sleepWipe = expectation(description: "Sleep notification wipes cached buffer")
+        var raw1 = Curve25519.Signing.PrivateKey().rawRepresentation
+        guard let buf1 = SecureBuffer(consuming: &raw1, onWipe: {
+            sleepWipe.fulfill()
+        }) else {
+            XCTFail("Failed to create buffer 1")
             return
         }
+        XCTAssertTrue(cache.set(label: "sleep-test", buffer: buf1))
         XCTAssertFalse(buf1.isWiped)
 
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.willSleepNotification, object: nil)
+        wait(for: [sleepWipe], timeout: 1.0)
         XCTAssertTrue(buf1.isWiped, "Buffer must be wiped upon willSleepNotification")
         XCTAssertEqual(cache.cachedCount, 0)
 
         // 2. Screen lock notification
-        let key2 = Curve25519.Signing.PrivateKey()
-        cache.set(label: "screen-lock-test", key: key2)
-        guard let buf2 = cache.getBuffer(label: "screen-lock-test") else {
-            XCTFail("Buffer 2 missing")
+        let screenLockWipe = expectation(description: "Screen lock notification wipes cached buffer")
+        var raw2 = Curve25519.Signing.PrivateKey().rawRepresentation
+        guard let buf2 = SecureBuffer(consuming: &raw2, onWipe: {
+            screenLockWipe.fulfill()
+        }) else {
+            XCTFail("Failed to create buffer 2")
             return
         }
+        XCTAssertTrue(cache.set(label: "screen-lock-test", buffer: buf2))
         XCTAssertFalse(buf2.isWiped)
 
         DistributedNotificationCenter.default().postNotificationName(
@@ -495,7 +502,7 @@ final class ClavisTests: XCTestCase {
             userInfo: nil,
             deliverImmediately: true
         )
-        RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+        wait(for: [screenLockWipe], timeout: 1.0)
         XCTAssertTrue(buf2.isWiped, "Buffer must be wiped upon screenIsLocked notification")
         XCTAssertEqual(cache.cachedCount, 0)
     }
