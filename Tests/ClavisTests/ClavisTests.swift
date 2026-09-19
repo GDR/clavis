@@ -1180,6 +1180,17 @@ final class ClavisTests: XCTestCase {
         XCTAssertEqual(reloaded, legacySeed)
     }
 
+    func testSeedStoreFindsLegacySanitizedFilename() throws {
+        let label = "legacy/path"
+        let legacyURL = SeedStore.seedsDirectory.appendingPathComponent("legacy_path.key")
+        let seed = Data(repeating: 0x4C, count: 32)
+        try seed.write(to: legacyURL, options: .atomic)
+
+        XCTAssertEqual(SeedStore.load(label: label), seed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: SeedStore.seedFileURL(label: label).path))
+    }
+
     func testSeedStoreTamperedCiphertextFails() throws {
         let label = "test_tamper_\(UUID().uuidString)"
 
@@ -1198,12 +1209,22 @@ final class ClavisTests: XCTestCase {
         XCTAssertNil(loaded)
     }
 
-    func testSeedStorePathSanitization() {
+    func testSeedStorePathUsesCollisionResistantIdentifier() {
         let maliciousLabel = "../../etc/passwd"
         let url = SeedStore.seedFileURL(label: maliciousLabel)
 
         XCTAssertFalse(url.path.contains(".."))
         XCTAssertFalse(url.path.contains("/etc/passwd"))
-        XCTAssertTrue(url.path.hasSuffix("____etc_passwd.key"))
+        XCTAssertTrue(url.lastPathComponent.hasPrefix("sha256-"))
+        XCTAssertEqual(url.lastPathComponent.count, 7 + 64 + 4)
+        XCTAssertNotEqual(
+            SeedStore.seedFileURL(label: "a/b"),
+            SeedStore.seedFileURL(label: "a_b")
+        )
+    }
+
+    func testKeyManagerRejectsControlCharactersInLabel() {
+        let keyManager = makeKeyManager()
+        XCTAssertThrowsError(try keyManager.generateKey(label: "trusted\n[AUTH] forged"))
     }
 }

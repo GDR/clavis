@@ -30,6 +30,7 @@ public class KeychainManager {
     // Generate new Key and save private seed (guarded by Touch ID) and public metadata (unencrypted)
     @discardableResult
     public func generateKey(label: String, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
+        try validateLabel(label)
         if try fetchKeyInfo(label: label) != nil {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key with label '\(label)' already exists. Delete it first before generating a new key with this label."])
         }
@@ -82,6 +83,7 @@ public class KeychainManager {
     // Import existing Ed25519 seed (32 bytes)
     @discardableResult
     public func importKey(label: String, seedData: Data, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
+        try validateLabel(label)
         if try fetchKeyInfo(label: label) != nil {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key with label '\(label)' already exists. Delete it first before importing a new key with this label."])
         }
@@ -365,5 +367,20 @@ public class KeychainManager {
             }
         }
         SeedStore.removeMasterKeyIfUnused()
+    }
+
+    private func validateLabel(_ label: String) throws {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasControlCharacters = label.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+        guard !label.isEmpty,
+              label == trimmed,
+              label.utf8.count <= 128,
+              !hasControlCharacters else {
+            throw NSError(
+                domain: "Clavis",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Key label must be 1-128 bytes and contain no leading, trailing, or control characters."]
+            )
+        }
     }
 }

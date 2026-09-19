@@ -37,14 +37,33 @@ public struct SeedStore {
     }
 
     public static func seedFileURL(label: String) -> URL {
+        let digest = SHA256.hash(data: Data(label.utf8))
+        let identifier = digest.map { String(format: "%02x", $0) }.joined()
+        return seedsDirectory.appendingPathComponent("sha256-\(identifier).key")
+    }
+
+    private static func legacySeedFileURL(label: String) -> URL {
         let safeLabel = label
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "..", with: "__")
         return seedsDirectory.appendingPathComponent("\(safeLabel).key")
     }
 
+    private static func existingSeedFileURL(label: String) -> URL? {
+        let fileManager = FileManager.default
+        let currentURL = seedFileURL(label: label)
+        if fileManager.fileExists(atPath: currentURL.path) {
+            return currentURL
+        }
+        let legacyURL = legacySeedFileURL(label: label)
+        if fileManager.fileExists(atPath: legacyURL.path) {
+            return legacyURL
+        }
+        return nil
+    }
+
     public static func hasSeedFile(label: String) -> Bool {
-        FileManager.default.fileExists(atPath: seedFileURL(label: label).path)
+        existingSeedFileURL(label: label) != nil
     }
 
     // MARK: - Master KEK Management
@@ -202,7 +221,7 @@ public struct SeedStore {
     }
 
     public static func load(label: String) -> Data? {
-        let url = seedFileURL(label: label)
+        guard let url = existingSeedFileURL(label: label) else { return nil }
         guard let fileData = try? Data(contentsOf: url) else { return nil }
 
         if fileData.count >= 4 && fileData.prefix(4).elementsEqual(envelopeMagic) {
@@ -219,6 +238,10 @@ public struct SeedStore {
             ClavisLogger.log("SEED_STORE", "Found legacy unencrypted seed for '\(label)'. Migrating to Secure Enclave envelope...")
             do {
                 try save(label: label, seedData: fileData)
+                let currentURL = seedFileURL(label: label)
+                if url != currentURL {
+                    try? FileManager.default.removeItem(at: url)
+                }
                 ClavisLogger.log("SEED_STORE", "Successfully migrated seed for '\(label)' to Secure Enclave envelope.")
             } catch {
                 ClavisLogger.log("SEED_STORE", "Failed to auto-migrate legacy seed for '\(label)': \(error.localizedDescription)")
@@ -228,9 +251,13 @@ public struct SeedStore {
     }
 
     public static func remove(label: String) {
-        let url = seedFileURL(label: label)
-        try? FileManager.default.removeItem(at: url)
-        ClavisLogger.log("SEED_STORE", "Removed seed file for '\(label)' at \(url.path)")
+        let currentURL = seedFileURL(label: label)
+        let legacyURL = legacySeedFileURL(label: label)
+        try? FileManager.default.removeItem(at: currentURL)
+        if legacyURL != currentURL {
+            try? FileManager.default.removeItem(at: legacyURL)
+        }
+        ClavisLogger.log("SEED_STORE", "Removed seed files for '\(label)'.")
     }
 
     public static func removeMasterKeyIfUnused() {
