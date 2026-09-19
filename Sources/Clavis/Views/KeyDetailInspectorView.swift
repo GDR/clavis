@@ -180,12 +180,42 @@ public struct KeyDetailInspectorView: View {
                             Divider().background(DesignTokens.cardBorder)
                         }
 
-                        // SHA-256 Fingerprint
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Fingerprint")
+                        // OpenSSH Key (Primary for GitHub / servers)
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("OpenSSH Public Key")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.primary)
+                                Text(key.publicKeyOpenSSH)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .textSelection(.enabled)
+                                Text("For GitHub, GitLab, and ~/.ssh/authorized_keys")
                                     .font(.caption2)
                                     .foregroundColor(DesignTokens.textSecondary)
+                            }
+                            Spacer()
+                            Button("Copy SSH Key", action: copyOpenSSH)
+                                .buttonStyle(.borderedProminent)
+                                .tint(DesignTokens.accentBlue)
+                                .controlSize(.small)
+                                .focusable(false)
+                        }
+
+                        Divider().background(DesignTokens.cardBorder)
+
+                        // SHA-256 Fingerprint (Verification only)
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 4) {
+                                    Text("Fingerprint")
+                                        .font(.caption2)
+                                        .foregroundColor(DesignTokens.textSecondary)
+                                    Text("(Verification hash, not for GitHub)")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(DesignTokens.textTertiary)
+                                }
                                 Text(key.fingerprint)
                                     .font(.system(size: 11, design: .monospaced))
                                     .textSelection(.enabled)
@@ -197,29 +227,7 @@ public struct KeyDetailInspectorView: View {
                             }
                             .buttonStyle(.borderless)
                             .focusable(false)
-                        }
-
-                        Divider().background(DesignTokens.cardBorder)
-
-                        // OpenSSH Key
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("OpenSSH")
-                                    .font(.caption2)
-                                    .foregroundColor(DesignTokens.textSecondary)
-                                Text(key.publicKeyOpenSSH)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                    .textSelection(.enabled)
-                            }
-                            Spacer()
-                            Button(action: copyOpenSSH) {
-                                Image(systemName: "doc.on.doc")
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.borderless)
-                            .focusable(false)
+                            .help("Copy SHA-256 Fingerprint")
                         }
                     }
                     .padding(14)
