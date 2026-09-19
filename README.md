@@ -18,10 +18,14 @@
 
 ## 🚀 Quick Start
 
-### 1. Build using Swift Package Manager
+### 1. Build and sign using Swift Package Manager
 ```bash
-swift build -c release
+./build.sh
 ```
+
+The build script signs every release executable with the hardened runtime and
+the required entitlements, then verifies each signature. It uses an available
+development certificate or falls back to an ad-hoc signature for local use.
 
 ### 2. Build using Nix
 ```bash

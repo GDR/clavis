@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 echo "🔨 Building Clavis (GUI), clavis-cli (CLI), and age-plugin-clavis (Release)..."
 swift build -c release
@@ -17,11 +20,29 @@ else
 fi
 
 echo "🔐 Signing binaries and embedding entitlements..."
-codesign --force --deep --sign "$SIGN_IDENTITY" --entitlements Entitlements.plist .build/release/Clavis 2>/dev/null || true
-codesign --force --deep --sign "$SIGN_IDENTITY" --entitlements Entitlements.plist .build/release/clavis-cli 2>/dev/null || true
-codesign --force --deep --sign "$SIGN_IDENTITY" --entitlements Entitlements.plist .build/release/age-plugin-clavis 2>/dev/null || true
+BINARIES=(
+    ".build/release/Clavis"
+    ".build/release/clavis-cli"
+    ".build/release/age-plugin-clavis"
+)
 
-echo "✅ Build and entitlements signing complete!"
+for binary in "${BINARIES[@]}"; do
+    if [[ ! -x "$binary" ]]; then
+        echo "❌ Expected executable is missing: $binary" >&2
+        exit 1
+    fi
+
+    /usr/bin/codesign \
+        --force \
+        --sign "$SIGN_IDENTITY" \
+        --options runtime \
+        --timestamp=none \
+        --entitlements Entitlements.plist \
+        "$binary"
+    /usr/bin/codesign --verify --strict --verbose=2 "$binary"
+done
+
+echo "✅ Build, hardened runtime signing, and signature verification complete!"
 echo ""
 echo "🚀 To run Clavis GUI App & Socket Daemon:"
 echo "  swift run Clavis"

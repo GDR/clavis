@@ -54,9 +54,9 @@
 
             installPhase = ''
               mkdir -p $out/bin
-              cp .build/release/Clavis $out/bin/clavis 2>/dev/null || true
-              cp .build/release/clavis-cli $out/bin/clavis-cli 2>/dev/null || true
-              cp .build/release/age-plugin-clavis $out/bin/age-plugin-clavis 2>/dev/null || true
+              cp .build/release/Clavis $out/bin/clavis
+              cp .build/release/clavis-cli $out/bin/clavis-cli
+              cp .build/release/age-plugin-clavis $out/bin/age-plugin-clavis
 
               # macOS Application Bundle for nix-darwin / home-manager
               mkdir -p $out/Applications/Clavis.app/Contents/MacOS
@@ -87,6 +87,30 @@
 </dict>
 </plist>
 EOF
+
+              for binary in \
+                $out/bin/clavis \
+                $out/bin/clavis-cli \
+                $out/bin/age-plugin-clavis \
+                $out/Applications/Clavis.app/Contents/MacOS/Clavis; do
+                /usr/bin/codesign \
+                  --force \
+                  --sign - \
+                  --options runtime \
+                  --timestamp=none \
+                  --entitlements $src/Entitlements.plist \
+                  "$binary"
+                /usr/bin/codesign --verify --strict --verbose=2 "$binary"
+              done
+
+              /usr/bin/codesign \
+                --force \
+                --sign - \
+                --options runtime \
+                --timestamp=none \
+                --entitlements $src/Entitlements.plist \
+                $out/Applications/Clavis.app
+              /usr/bin/codesign --verify --deep --strict --verbose=2 $out/Applications/Clavis.app
             '';
           } else pkgs.hello;
 
