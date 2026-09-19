@@ -1,10 +1,21 @@
 import XCTest
 import CryptoKit
+import LocalAuthentication
 @testable import ClavisCore
 @testable import AgePluginClavis
 @testable import Clavis
 
 final class ClavisTests: XCTestCase {
+
+    private struct AllowingAuthenticator: UserAuthenticating {
+        func authenticate(reason: String) throws -> LAContext {
+            LAContext()
+        }
+
+        func authenticate(reason: String) async throws -> LAContext {
+            LAContext()
+        }
+    }
 
     // MARK: - 1. Key Info & OpenSSH Wire Serialization Tests
 
@@ -949,20 +960,21 @@ final class ClavisTests: XCTestCase {
     }
 
     func testP256KeyGenerationAndSSHSigning() throws {
+        let keyManager = KeychainManager(authenticator: AllowingAuthenticator())
         let testLabel = "test_p256_\(UUID().uuidString)"
         defer {
-            try? KeychainManager.shared.deleteKey(label: testLabel)
+            try? keyManager.deleteKey(label: testLabel)
         }
 
         let storage: KeyStorageType = SecureEnclave.isAvailable ? .secureEnclave : .keychain
-        let keyInfo = try KeychainManager.shared.generateKey(label: testLabel, algorithm: "ECDSA P-256", storageType: storage)
+        let keyInfo = try keyManager.generateKey(label: testLabel, algorithm: "ECDSA P-256", storageType: storage)
 
         XCTAssertEqual(keyInfo.algorithm, "ECDSA P-256")
         XCTAssertEqual(keyInfo.isHardware, (storage == .secureEnclave))
         XCTAssertTrue(keyInfo.publicKeyOpenSSH.hasPrefix("ecdsa-sha2-nistp256"))
 
         let testData = "Test SSH challenge payload".data(using: .utf8)!
-        let sigBlob = try KeychainManager.shared.signSSH(key: keyInfo, data: testData, prompt: "Test prompt")
+        let sigBlob = try keyManager.signSSH(key: keyInfo, data: testData, prompt: "Test prompt")
 
         // Parse wire format: wire string "ecdsa-sha2-nistp256" + wire data
         var reader = DataReader(data: sigBlob)

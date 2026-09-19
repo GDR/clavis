@@ -9,7 +9,11 @@ public class KeychainManager {
     public static let publicServiceName = "com.clavis.ed25519.pub"
     public static let shared = KeychainManager()
 
-    private init() {}
+    private let authenticator: UserAuthenticating
+
+    init(authenticator: UserAuthenticating = LocalUserAuthenticator()) {
+        self.authenticator = authenticator
+    }
 
     // Generate new Key and save private seed (guarded by Touch ID) and public metadata (unencrypted)
     @discardableResult
@@ -151,30 +155,13 @@ public class KeychainManager {
             return cached
         }
 
-        if NSClassFromString("XCTestCase") == nil && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
-            ClavisLogger.log("TOUCH_ID_PROMPT", "Displaying Touch ID prompt: \"\(prompt)\"")
-            let laContext = LAContext()
-            laContext.localizedReason = prompt
-
-            var authError: NSError?
-            let sema = DispatchSemaphore(value: 0)
-            var authSuccess = false
-
-            DispatchQueue.main.async {
-                laContext.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: prompt) { success, error in
-                    authSuccess = success
-                    authError = error as NSError?
-                    sema.signal()
-                }
-            }
-            _ = sema.wait(timeout: .now() + 60)
-
-            if authSuccess {
-                ClavisLogger.log("TOUCH_ID_RESULT", "Touch ID fingerprint authentication SUCCESS")
-            } else {
-                ClavisLogger.log("TOUCH_ID_RESULT", "Touch ID FAILED: \(authError?.localizedDescription ?? "user cancelled")")
-                throw authError ?? NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Touch ID authentication failed or cancelled: \(authError?.localizedDescription ?? "unknown error")"])
-            }
+        ClavisLogger.log("TOUCH_ID_PROMPT", "Displaying user authentication prompt: \"\(prompt)\"")
+        do {
+            try authenticator.authenticate(reason: prompt)
+            ClavisLogger.log("TOUCH_ID_RESULT", "User authentication SUCCESS")
+        } catch {
+            ClavisLogger.log("TOUCH_ID_RESULT", "User authentication FAILED: \(error.localizedDescription)")
+            throw error
         }
 
         // Fetch private seed from SeedStore (with fallback migration from legacy Keychain)
@@ -249,24 +236,7 @@ public class KeychainManager {
     public func signSSH(key: Ed25519KeyInfo, data: Data, prompt: String) throws -> Data {
         if key.algorithm == "ECDSA P-256" {
             if !SessionCacheManager.shared.isKeyUnlocked(label: key.label) {
-                if NSClassFromString("XCTestCase") == nil && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
-                    let laContext = LAContext()
-                    laContext.localizedReason = prompt
-                    var authError: NSError?
-                    let sema = DispatchSemaphore(value: 0)
-                    var authSuccess = false
-                    DispatchQueue.main.async {
-                        laContext.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: prompt) { success, error in
-                            authSuccess = success
-                            authError = error as NSError?
-                            sema.signal()
-                        }
-                    }
-                    _ = sema.wait(timeout: .now() + 60)
-                    if !authSuccess {
-                        throw authError ?? NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Touch ID authentication failed or cancelled"])
-                    }
-                }
+                try authenticator.authenticate(reason: prompt)
 
                 if let timeout = SessionCacheManager.shared.currentTimeout.timeInterval {
                     SessionCacheManager.shared.unlockKey(label: key.label, duration: timeout)
@@ -314,14 +284,7 @@ public class KeychainManager {
     public func unlock(label: String, prompt: String? = nil) async throws {
         let reason = prompt ?? "Touch ID to unlock '\(label)'"
 
-        if NSClassFromString("XCTestCase") == nil && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
-            let laContext = LAContext()
-            laContext.localizedReason = reason
-            let success = try await laContext.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
-            guard success else {
-                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Touch ID authentication failed or cancelled"])
-            }
-        }
+        try await authenticator.authenticate(reason: reason)
 
         if SessionCacheManager.shared.currentTimeout == .never {
             SessionCacheManager.shared.currentTimeout = .fifteenMinutes
