@@ -341,6 +341,21 @@ final class ClavisTests: XCTestCase {
         XCTAssertTrue(testData.isEmpty, "Consuming init must empty source Data even when mlock fails")
     }
 
+    func testSecureMemoryFallsBackWhenMemsetSFails() {
+        var bytes = [UInt8](repeating: 0xA5, count: 32)
+        let usedPrimaryZeroizer = bytes.withUnsafeMutableBytes { raw -> Bool in
+            guard let base = raw.baseAddress else { return true }
+            return SecureMemory.zero(
+                base,
+                byteCount: raw.count,
+                memsetS: { _, _, _, _ in EINVAL }
+            )
+        }
+
+        XCTAssertFalse(usedPrimaryZeroizer)
+        XCTAssertEqual(bytes, [UInt8](repeating: 0, count: 32))
+    }
+
     func testSecureBufferConsumingZeroesInputData() {
         var secretData = Data([0xAA, 0xBB, 0xCC, 0xDD, 0xEE])
         guard let buffer = SecureBuffer(consuming: &secretData) else {

@@ -94,7 +94,7 @@ public class KeychainManager {
         defer {
             mutableSeed.withUnsafeMutableBytes { ptr in
                 if let baseAddress = ptr.baseAddress {
-                    memset_s(baseAddress, ptr.count, 0, ptr.count)
+                    SecureMemory.zero(baseAddress, byteCount: ptr.count)
                 }
             }
         }
@@ -108,7 +108,7 @@ public class KeychainManager {
         defer {
             rawSeed.withUnsafeMutableBytes { ptr in
                 if let baseAddress = ptr.baseAddress {
-                    memset_s(baseAddress, ptr.count, 0, ptr.count)
+                    SecureMemory.zero(baseAddress, byteCount: ptr.count)
                 }
             }
         }
@@ -188,7 +188,7 @@ public class KeychainManager {
             defer {
                 sensitiveData.withUnsafeMutableBytes { ptr in
                     if let baseAddress = ptr.baseAddress {
-                        _ = memset_s(baseAddress, ptr.count, 0, ptr.count)
+                        SecureMemory.zero(baseAddress, byteCount: ptr.count)
                     }
                 }
             }
@@ -315,7 +315,7 @@ public class KeychainManager {
                     if key.storageType != .secureEnclave {
                         storedData.withUnsafeMutableBytes { ptr in
                             if let base = ptr.baseAddress {
-                                _ = memset_s(base, ptr.count, 0, ptr.count)
+                                SecureMemory.zero(base, byteCount: ptr.count)
                             }
                         }
                     }
@@ -403,7 +403,7 @@ public class KeychainManager {
             if keyInfo.storageType != .secureEnclave {
                 storedData.withUnsafeMutableBytes { ptr in
                     if let base = ptr.baseAddress {
-                        _ = memset_s(base, ptr.count, 0, ptr.count)
+                        SecureMemory.zero(base, byteCount: ptr.count)
                     }
                 }
             }

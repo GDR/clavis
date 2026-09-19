@@ -293,7 +293,7 @@ public class SessionCacheManager {
         defer {
             raw.withUnsafeMutableBytes { ptr in
                 if let base = ptr.baseAddress {
-                    _ = memset_s(base, ptr.count, 0, ptr.count)
+                    SecureMemory.zero(base, byteCount: ptr.count)
                 }
             }
         }

@@ -1,6 +1,46 @@
 import Foundation
 import Darwin
 
+/// Centralized non-elidable zeroization for caller-owned memory.
+/// An unexpected `memset_s` error is retried through the system implementation and
+/// terminates the process if secure zeroization still cannot be established.
+enum SecureMemory {
+    typealias MemsetSFunction = (
+        UnsafeMutableRawPointer?,
+        Int,
+        Int32,
+        Int
+    ) -> Int32
+
+    static func zero(_ pointer: UnsafeMutableRawPointer, byteCount: Int) {
+        _ = zero(
+            pointer,
+            byteCount: byteCount,
+            memsetS: { destination, destinationSize, value, count in
+                memset_s(destination, destinationSize, value, count)
+            }
+        )
+    }
+
+    /// Returns `true` when the supplied implementation succeeded and `false`
+    /// when the verified system `memset_s` fallback was required.
+    @discardableResult
+    static func zero(
+        _ pointer: UnsafeMutableRawPointer,
+        byteCount: Int,
+        memsetS: MemsetSFunction
+    ) -> Bool {
+        guard byteCount > 0 else { return true }
+        let status = memsetS(pointer, byteCount, 0, byteCount)
+        guard status == 0 else {
+            let fallbackStatus = memset_s(pointer, byteCount, 0, byteCount)
+            precondition(fallbackStatus == 0, "Secure memory zeroization failed")
+            return false
+        }
+        return true
+    }
+}
+
 /// A page-aligned heap buffer locked into physical RAM via `mlock(2)` to prevent paging out
 /// to disk swap files. Serves as a defense-in-depth measure ensuring our managed memory
 /// representation is zeroed with C11 `memset_s` upon deallocation, TTL expiration, or explicit wipe.
@@ -17,7 +57,7 @@ final class SecureBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var didNotifyWipe: Bool = false
 
-    /// Verification hook called under buffer lock immediately following successful `memset_s`, while the memory pointer is still valid.
+    /// Verification hook called under buffer lock immediately following secure zeroization, while the memory pointer is still valid.
     /// Warning: The callback must NOT re-enter `SecureBuffer` methods as the buffer lock is held and teardown is in progress.
     let onAfterMemsetBeforeFree: (@Sendable (UnsafeRawBufferPointer) -> Void)?
 
@@ -55,19 +95,12 @@ final class SecureBuffer: @unchecked Sendable {
         }
 
         // Pre-zero buffer
-        let preZeroRet = memset_s(base, totalSize, 0, totalSize)
-        guard preZeroRet == 0 else {
-            free(base)
-            return nil
-        }
+        SecureMemory.zero(base, byteCount: totalSize)
 
         // Lock memory pages into physical RAM to prevent paging to swap (fail-closed)
         guard mlockFn(base, totalSize) == 0 else {
-            let zeroRet = memset_s(base, totalSize, 0, totalSize)
-            assert(zeroRet == 0, "memset_s failed in fail-closed branch")
-            if zeroRet == 0 {
-                onAfterMemsetBeforeFree?(UnsafeRawBufferPointer(start: base, count: count))
-            }
+            SecureMemory.zero(base, byteCount: totalSize)
+            onAfterMemsetBeforeFree?(UnsafeRawBufferPointer(start: base, count: count))
             free(base)
             onWipe?()
             return nil
@@ -118,7 +151,7 @@ final class SecureBuffer: @unchecked Sendable {
         defer {
             data.withUnsafeMutableBytes { raw in
                 if let src = raw.baseAddress {
-                    _ = memset_s(src, raw.count, 0, raw.count)
+                    SecureMemory.zero(src, byteCount: raw.count)
                 }
             }
             data.removeAll(keepingCapacity: false)
@@ -154,9 +187,8 @@ final class SecureBuffer: @unchecked Sendable {
         }
         guard let base = pointer else { return }
 
-        // 1. Guaranteed memory overwrite using C11 memset_s (not optimized away by LLVM)
-        let ret = memset_s(base, allocationSize, 0, allocationSize)
-        assert(ret == 0, "memset_s failed during SecureBuffer wipe")
+        // 1. Non-elidable overwrite using checked memset_s
+        SecureMemory.zero(base, byteCount: allocationSize)
 
         // Execute verification callback under lock while pointer is valid
         let buffer = UnsafeRawBufferPointer(start: base, count: count)

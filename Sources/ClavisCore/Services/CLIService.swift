@@ -55,7 +55,11 @@ public struct CLIService {
                     var buffer = [CChar](repeating: 0, count: 256)
                     if let pass = readpassphrase("Enter 64-character hex seed: ", &buffer, buffer.count, RPP_REQUIRE_TTY) {
                         hexSeed = String(cString: pass).trimmingCharacters(in: .whitespacesAndNewlines)
-                        memset_s(&buffer, buffer.count, 0, buffer.count)
+                        buffer.withUnsafeMutableBytes { raw in
+                            if let base = raw.baseAddress {
+                                SecureMemory.zero(base, byteCount: raw.count)
+                            }
+                        }
                     }
                 } else {
                     hexSeed = inputReader()?.trimmingCharacters(in: .whitespacesAndNewlines)
