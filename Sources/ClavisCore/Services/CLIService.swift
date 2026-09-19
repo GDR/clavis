@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public struct CLICommandResult: Equatable {
     public let exitCode: Int32
@@ -15,7 +16,7 @@ public struct CLICommandResult: Equatable {
 public struct CLIService {
     public static func handle(
         args: [String],
-        inputReader: () -> String? = { readLine() },
+        seedDataProvider: (() -> Data?)? = nil,
         keyManager: KeychainManager = .shared
     ) -> CLICommandResult? {
         guard args.count > 1 else { return nil }
@@ -40,46 +41,44 @@ public struct CLIService {
 
         case "import":
             guard args.count >= 3 else {
-                return CLICommandResult(exitCode: 1, output: "", error: "Usage: clavis import <label> [--stdin | <hex_seed>]")
+                return CLICommandResult(exitCode: 1, output: "", error: "Usage: clavis import <label> [--stdin]")
             }
             let label = args[2].trimmingCharacters(in: .whitespaces)
-            var hexSeed: String? = nil
-            var warning: String? = nil
-
             if args.count >= 4 && args[3] != "--stdin" && args[3] != "-" {
-                hexSeed = args[3].trimmingCharacters(in: .whitespaces)
-                warning = "⚠️ [SECURITY WARNING] Passing private seed via CLI arguments exposes secrets in process list ('ps') and shell history. Use 'clavis import <label>' (interactive) or 'clavis import <label> --stdin' instead."
-                ClavisLogger.log("SECURITY", "Seed passed via argv for key '\(label)'.")
+                ClavisLogger.log("SECURITY", "Rejected private seed passed via argv for key '\(label)'.")
+                return CLICommandResult(
+                    exitCode: 1,
+                    output: "",
+                    error: "Refusing private seed in command arguments. Use interactive input or --stdin."
+                )
+            }
+
+            var seedData: Data?
+            if let seedDataProvider {
+                seedData = seedDataProvider()
+            } else if isatty(STDIN_FILENO) != 0 && args.count == 3 {
+                seedData = readSeedFromTerminal()
             } else {
-                if isatty(STDIN_FILENO) != 0 && (args.count == 3 || args[3] != "--stdin") {
-                    var buffer = [CChar](repeating: 0, count: 256)
-                    if let pass = readpassphrase("Enter 64-character hex seed: ", &buffer, buffer.count, RPP_REQUIRE_TTY) {
-                        hexSeed = String(cString: pass).trimmingCharacters(in: .whitespacesAndNewlines)
-                        buffer.withUnsafeMutableBytes { raw in
-                            if let base = raw.baseAddress {
-                                SecureMemory.zero(base, byteCount: raw.count)
-                            }
-                        }
+                seedData = readSeedFromStandardInput()
+            }
+
+            guard var seedData else {
+                return CLICommandResult(exitCode: 1, output: "", error: "No valid seed provided. Use stdin or the interactive prompt.")
+            }
+            defer {
+                seedData.withUnsafeMutableBytes { raw in
+                    if let base = raw.baseAddress {
+                        SecureMemory.zero(base, byteCount: raw.count)
                     }
-                } else {
-                    hexSeed = inputReader()?.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
+                seedData.removeAll(keepingCapacity: false)
             }
-
-            guard let rawHex = hexSeed, !rawHex.isEmpty else {
-                return CLICommandResult(exitCode: 1, output: "", error: "No seed provided. Provide seed via stdin, interactive prompt, or argument.")
-            }
-
-            guard let seedData = Data(hexString: rawHex), seedData.count == 32 else {
+            guard seedData.count == 32 else {
                 return CLICommandResult(exitCode: 1, output: "", error: "Invalid hex seed string (must be 64 hex characters / 32 bytes).")
             }
             do {
-                let info = try keyManager.importKey(label: label, seedData: seedData)
-                var out = ""
-                if let warn = warning {
-                    out += "\(warn)\n\n"
-                }
-                out += "Successfully imported Ed25519 seed for '\(info.label)' into Keychain.\n"
+                let info = try keyManager.importKey(label: label, consuming: &seedData)
+                var out = "Successfully imported Ed25519 seed for '\(info.label)' into Keychain.\n"
                 out += "Fingerprint: \(info.fingerprint)\n"
                 out += "Public Key:  \(info.publicKeyOpenSSH)"
                 return CLICommandResult(exitCode: 0, output: out)
@@ -145,7 +144,7 @@ public struct CLIService {
 
             USAGE:
               clavis generate <label>         Generate a new Ed25519 key pair in Keychain
-              clavis import <label> <hex_seed> Import a 32-byte hex seed into Keychain
+              clavis import <label> [--stdin]    Import a 32-byte hex seed into Keychain
               clavis list                     List all stored keys and OpenSSH public keys
               clavis export-pub <label>       Print the OpenSSH public key for <label>
               clavis delete <label>           Delete key pair from Keychain
@@ -158,5 +157,95 @@ public struct CLIService {
         default:
             return nil
         }
+    }
+
+    private static func readSeedFromTerminal() -> Data? {
+        var buffer = [CChar](repeating: 0, count: 128)
+        defer {
+            buffer.withUnsafeMutableBytes { raw in
+                if let base = raw.baseAddress {
+                    SecureMemory.zero(base, byteCount: raw.count)
+                }
+            }
+        }
+        guard readpassphrase("Enter 64-character hex seed: ", &buffer, buffer.count, RPP_REQUIRE_TTY) != nil else {
+            return nil
+        }
+        return buffer.withUnsafeBytes { decodeHexSeed($0) }
+    }
+
+    private static func readSeedFromStandardInput() -> Data? {
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(65)
+        defer {
+            bytes.withUnsafeMutableBytes { raw in
+                if let base = raw.baseAddress {
+                    SecureMemory.zero(base, byteCount: raw.count)
+                }
+            }
+            bytes.removeAll(keepingCapacity: false)
+        }
+
+        while bytes.count <= 128 {
+            var byte: UInt8 = 0
+            let result = Darwin.read(STDIN_FILENO, &byte, 1)
+            if result < 0 {
+                if errno == EINTR { continue }
+                return nil
+            }
+            if result == 0 || byte == 0x0A { break }
+            bytes.append(byte)
+        }
+        guard bytes.count <= 128 else { return nil }
+        return bytes.withUnsafeBytes { decodeHexSeed($0) }
+    }
+
+    private static func decodeHexSeed(_ raw: UnsafeRawBufferPointer) -> Data? {
+        let bytes = raw.bindMemory(to: UInt8.self)
+        var end = bytes.firstIndex(of: 0) ?? bytes.endIndex
+        var start = bytes.startIndex
+        while start < end, isASCIIWhitespace(bytes[start]) { start += 1 }
+        while end > start, isASCIIWhitespace(bytes[end - 1]) { end -= 1 }
+        guard end - start == 64 else { return nil }
+
+        var decoded = Data(count: 32)
+        var succeeded = false
+        defer {
+            if !succeeded {
+                decoded.withUnsafeMutableBytes { output in
+                    if let base = output.baseAddress {
+                        SecureMemory.zero(base, byteCount: output.count)
+                    }
+                }
+            }
+        }
+
+        let valid = decoded.withUnsafeMutableBytes { output -> Bool in
+            guard let destination = output.bindMemory(to: UInt8.self).baseAddress else { return false }
+            for index in 0..<32 {
+                guard let high = hexNibble(bytes[start + index * 2]),
+                      let low = hexNibble(bytes[start + index * 2 + 1]) else {
+                    return false
+                }
+                destination[index] = (high << 4) | low
+            }
+            return true
+        }
+        guard valid else { return nil }
+        succeeded = true
+        return decoded
+    }
+
+    private static func hexNibble(_ byte: UInt8) -> UInt8? {
+        switch byte {
+        case 48...57: return byte - 48
+        case 65...70: return byte - 55
+        case 97...102: return byte - 87
+        default: return nil
+        }
+    }
+
+    private static func isASCIIWhitespace(_ byte: UInt8) -> Bool {
+        byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D
     }
 }

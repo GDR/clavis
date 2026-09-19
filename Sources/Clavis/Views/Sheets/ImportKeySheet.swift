@@ -18,8 +18,8 @@ public struct ImportKeySheet: View {
     }
 
     private var isValidSeed: Bool {
-        let cleaned = seedHex.trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.count == 64 && Data(hexString: cleaned) != nil
+        let bytes = seedHex.utf8
+        return bytes.count == 64 && bytes.allSatisfy(Self.isHexDigit)
     }
 
     public var body: some View {
@@ -155,23 +155,55 @@ public struct ImportKeySheet: View {
 
     private func importKey() {
         let label = keyLabel.trimmingCharacters(in: .whitespaces)
-        let cleanedSeed = seedHex.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !label.isEmpty, let seedData = Data(hexString: cleanedSeed) else {
+        guard !label.isEmpty, var seedData = decodeSeedHex() else {
             errorMessage = "Please enter a valid label and 64-character hex seed."
             return
         }
+        // Release our SwiftUI-owned representation as soon as the wipeable
+        // byte buffer exists. AppKit may retain its own transient text storage.
+        seedHex.removeAll(keepingCapacity: false)
 
         isImporting = true
         errorMessage = nil
 
         do {
-            try KeychainManager.shared.importKey(label: label, seedData: seedData)
+            try KeychainManager.shared.importKey(label: label, consuming: &seedData)
             appState.refresh()
             dismiss()
         } catch {
             errorMessage = error.localizedDescription
             isImporting = false
+        }
+    }
+
+    private func decodeSeedHex() -> Data? {
+        guard isValidSeed else { return nil }
+        let bytes = seedHex.utf8
+        var result = Data(capacity: 32)
+        var sourceIndex = bytes.startIndex
+        for _ in 0..<32 {
+            let nextIndex = bytes.index(after: sourceIndex)
+            guard let high = Self.hexNibble(bytes[sourceIndex]),
+                  let low = Self.hexNibble(bytes[nextIndex]) else {
+                return nil
+            }
+            result.append((high << 4) | low)
+            sourceIndex = bytes.index(after: nextIndex)
+        }
+        return result
+    }
+
+    private static func isHexDigit(_ byte: UInt8) -> Bool {
+        hexNibble(byte) != nil
+    }
+
+    private static func hexNibble(_ byte: UInt8) -> UInt8? {
+        switch byte {
+        case 48...57: return byte - 48
+        case 65...70: return byte - 55
+        case 97...102: return byte - 87
+        default: return nil
         }
     }
 }

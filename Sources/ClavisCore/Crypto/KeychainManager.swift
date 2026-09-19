@@ -87,7 +87,15 @@ public class KeychainManager {
 
     // Import existing Ed25519 seed (32 bytes)
     @discardableResult
-    public func importKey(label: String, seedData: Data, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
+    public func importKey(label: String, consuming seedData: inout Data, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
+        defer {
+            seedData.withUnsafeMutableBytes { ptr in
+                if let baseAddress = ptr.baseAddress {
+                    SecureMemory.zero(baseAddress, byteCount: ptr.count)
+                }
+            }
+            seedData.removeAll(keepingCapacity: false)
+        }
         try validateLabel(label)
         if try fetchKeyInfo(label: label) != nil {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key with label '\(label)' already exists. Delete it first before importing a new key with this label."])
@@ -95,15 +103,9 @@ public class KeychainManager {
         guard seedData.count == 32 else {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid Ed25519 seed length (must be 32 bytes)"])
         }
-        var mutableSeed = seedData
-        defer {
-            mutableSeed.withUnsafeMutableBytes { ptr in
-                if let baseAddress = ptr.baseAddress {
-                    SecureMemory.zero(baseAddress, byteCount: ptr.count)
-                }
-            }
+        let privateKey = try seedData.withUnsafeBytes { raw in
+            try Curve25519.Signing.PrivateKey(rawRepresentation: raw)
         }
-        let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: mutableSeed)
         return try storeKey(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType)
     }
 
@@ -458,9 +460,17 @@ public class KeychainManager {
         for keyInfo in PublicKeyStore.loadAll() where SeedStore.hasSeedFile(label: keyInfo.label) {
             do {
                 if !privateKeyStore.contains(label: keyInfo.label) {
-                    guard let keyData = SeedStore.load(label: keyInfo.label) else {
+                    guard var keyData = SeedStore.load(label: keyInfo.label) else {
                         ClavisLogger.log("KEYCHAIN_MIGRATE", "Could not decrypt legacy seed for '\(keyInfo.label)'; keeping the original file.")
                         continue
+                    }
+                    defer {
+                        keyData.withUnsafeMutableBytes { raw in
+                            if let base = raw.baseAddress {
+                                SecureMemory.zero(base, byteCount: raw.count)
+                            }
+                        }
+                        keyData.removeAll(keepingCapacity: false)
                     }
                     try privateKeyStore.save(label: keyInfo.label, data: keyData)
                 }

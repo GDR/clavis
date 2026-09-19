@@ -1503,7 +1503,11 @@ final class ClavisTests: XCTestCase {
 
     func testCLIServiceImportValidation() {
         let keyManager = makeKeyManager()
-        let invalidSeedRes = CLIService.handle(args: ["clavis", "import", "mykey", "invalidhex"], keyManager: keyManager)
+        let invalidSeedRes = CLIService.handle(
+            args: ["clavis", "import", "mykey", "--stdin"],
+            seedDataProvider: { Data([0x01]) },
+            keyManager: keyManager
+        )
         XCTAssertNotNil(invalidSeedRes)
         XCTAssertEqual(invalidSeedRes?.exitCode, 1)
         XCTAssertEqual(invalidSeedRes?.error, "Invalid hex seed string (must be 64 hex characters / 32 bytes).")
@@ -1518,10 +1522,9 @@ final class ClavisTests: XCTestCase {
         let label = "stdin_key_\(UUID().uuidString)"
         defer { try? keyManager.deleteKey(label: label) }
 
-        let validHexSeed = String(repeating: "ab", count: 32)
         let res = CLIService.handle(
             args: ["clavis", "import", label, "--stdin"],
-            inputReader: { validHexSeed },
+            seedDataProvider: { Data(repeating: 0xab, count: 32) },
             keyManager: keyManager
         )
 
@@ -1534,10 +1537,9 @@ final class ClavisTests: XCTestCase {
         XCTAssertNotNil(loaded)
     }
 
-    func testCLIServiceImportViaArgvShowsWarning() throws {
+    func testCLIServiceRejectsImportViaArgv() throws {
         let keyManager = makeKeyManager()
         let label = "argv_key_\(UUID().uuidString)"
-        defer { try? keyManager.deleteKey(label: label) }
 
         let validHexSeed = String(repeating: "cd", count: 32)
         let res = CLIService.handle(
@@ -1546,12 +1548,26 @@ final class ClavisTests: XCTestCase {
         )
 
         XCTAssertNotNil(res)
-        XCTAssertEqual(res?.exitCode, 0)
-        XCTAssertTrue(res?.output.contains("Successfully imported") ?? false)
-        XCTAssertTrue(res?.output.contains("SECURITY WARNING") ?? false)
+        XCTAssertEqual(res?.exitCode, 1)
+        XCTAssertEqual(
+            res?.error,
+            "Refusing private seed in command arguments. Use interactive input or --stdin."
+        )
 
         let loaded = try keyManager.fetchKeyInfo(label: label)
-        XCTAssertNotNil(loaded)
+        XCTAssertNil(loaded)
+    }
+
+    func testKeyManagerConsumesImportedSeed() throws {
+        let keyManager = makeKeyManager()
+        let label = "consumed_seed_\(UUID().uuidString)"
+        defer { try? keyManager.deleteKey(label: label) }
+        var seed = Data(repeating: 0x5a, count: 32)
+
+        _ = try keyManager.importKey(label: label, consuming: &seed)
+
+        XCTAssertTrue(seed.isEmpty)
+        XCTAssertNotNil(try keyManager.fetchKeyInfo(label: label))
     }
 
     func testSingleInstanceLockAcquireAndRelease() {

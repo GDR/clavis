@@ -1,12 +1,12 @@
 import Foundation
 import CryptoKit
 
-public struct SeedStore {
-    public static var customSeedsDirectory: URL? = nil
-    public static var customMasterKEKURL: URL? = nil
-    public static var useSoftwareMasterKeyForTesting = false
+enum SeedStore {
+    static var customSeedsDirectory: URL? = nil
+    static var customMasterKEKURL: URL? = nil
+    static var useSoftwareMasterKeyForTesting = false
 
-    public static var seedsDirectory: URL {
+    static var seedsDirectory: URL {
         if let custom = customSeedsDirectory {
             try? FileManager.default.createDirectory(
                 at: custom,
@@ -21,7 +21,7 @@ public struct SeedStore {
         return dir
     }
 
-    public static var masterKEKURL: URL {
+    static var masterKEKURL: URL {
         if let custom = customMasterKEKURL {
             try? FileManager.default.createDirectory(
                 at: custom.deletingLastPathComponent(),
@@ -36,7 +36,7 @@ public struct SeedStore {
         return dir.appendingPathComponent("master.kek")
     }
 
-    public static func seedFileURL(label: String) -> URL {
+    static func seedFileURL(label: String) -> URL {
         let digest = SHA256.hash(data: Data(label.utf8))
         let identifier = digest.map { String(format: "%02x", $0) }.joined()
         return seedsDirectory.appendingPathComponent("sha256-\(identifier).key")
@@ -62,7 +62,7 @@ public struct SeedStore {
         return nil
     }
 
-    public static func hasSeedFile(label: String) -> Bool {
+    static func hasSeedFile(label: String) -> Bool {
         existingSeedFileURL(label: label) != nil
     }
 
@@ -94,7 +94,7 @@ public struct SeedStore {
     private static let masterKeyLock = NSLock()
     private static var cachedMasterKey: MasterKey? = nil
 
-    public static func resetMasterKeyCacheForTesting() {
+    static func resetMasterKeyCacheForTesting() {
         masterKeyLock.lock()
         defer { masterKeyLock.unlock() }
         cachedMasterKey = nil
@@ -166,7 +166,7 @@ public struct SeedStore {
     private static let kdfSalt = Data("clavis-seed-envelope-v1".utf8)
     private static let kdfInfo = Data("clavis-seed-encryption".utf8)
 
-    public static func encryptSeed(_ seedData: Data) throws -> Data {
+    static func encryptSeed(_ seedData: Data) throws -> Data {
         let master = try getOrCreateMasterKey()
         let ephemeralKey = P256.KeyAgreement.PrivateKey()
         let sharedSecret = try ephemeralKey.sharedSecretFromKeyAgreement(with: master.publicKey)
@@ -186,7 +186,7 @@ public struct SeedStore {
         return envelope
     }
 
-    public static func decryptSeed(_ envelopeData: Data) throws -> Data {
+    static func decryptSeed(_ envelopeData: Data) throws -> Data {
         guard envelopeData.count >= 4 + 65 + 28,
               envelopeData.prefix(4).elementsEqual(envelopeMagic) else {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid encrypted seed format or missing CLV1 header"])
@@ -212,7 +212,7 @@ public struct SeedStore {
 
     // MARK: - Public Storage API
 
-    public static func save(label: String, seedData: Data) throws {
+    static func save(label: String, seedData: Data) throws {
         let encryptedData = try encryptSeed(seedData)
         let url = seedFileURL(label: label)
         try encryptedData.write(to: url, options: .atomic)
@@ -220,7 +220,7 @@ public struct SeedStore {
         ClavisLogger.log("SEED_STORE", "Saved encrypted seed (Secure Enclave Envelope) for '\(label)' to \(url.path) (POSIX 0600)")
     }
 
-    public static func load(label: String) -> Data? {
+    static func load(label: String) -> Data? {
         guard let url = existingSeedFileURL(label: label) else { return nil }
         guard let fileData = try? Data(contentsOf: url) else { return nil }
 
@@ -250,7 +250,7 @@ public struct SeedStore {
         }
     }
 
-    public static func remove(label: String) {
+    static func remove(label: String) {
         let currentURL = seedFileURL(label: label)
         let legacyURL = legacySeedFileURL(label: label)
         try? FileManager.default.removeItem(at: currentURL)
@@ -260,7 +260,7 @@ public struct SeedStore {
         ClavisLogger.log("SEED_STORE", "Removed seed files for '\(label)'.")
     }
 
-    public static func removeMasterKeyIfUnused() {
+    static func removeMasterKeyIfUnused() {
         let fileManager = FileManager.default
         let remainingSeedFiles = (try? fileManager.contentsOfDirectory(
             at: seedsDirectory,
