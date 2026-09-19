@@ -808,13 +808,21 @@ final class ClavisTests: XCTestCase {
     }
 
     func testSingleInstanceLockAcquireAndRelease() {
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("clavis_test_\(UUID().uuidString).lock")
+        SingleInstanceLock.customLockFileURL = tempURL
+        defer {
+            SingleInstanceLock.shared.release()
+            SingleInstanceLock.customLockFileURL = nil
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
         let lock = SingleInstanceLock.shared
         lock.release()
 
         XCTAssertTrue(lock.acquire())
         XCTAssertTrue(lock.acquire())
 
-        let fd = open(SingleInstanceLock.lockFileURL.path, O_RDWR)
+        let fd = open(tempURL.path, O_RDWR)
         if fd >= 0 {
             let flockRes = flock(fd, LOCK_EX | LOCK_NB)
             XCTAssertEqual(flockRes, -1)
@@ -823,7 +831,7 @@ final class ClavisTests: XCTestCase {
         }
 
         lock.release()
-        let fd2 = open(SingleInstanceLock.lockFileURL.path, O_RDWR)
+        let fd2 = open(tempURL.path, O_RDWR)
         if fd2 >= 0 {
             let flockRes2 = flock(fd2, LOCK_EX | LOCK_NB)
             XCTAssertEqual(flockRes2, 0)

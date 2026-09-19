@@ -6,7 +6,10 @@ public final class SingleInstanceLock: @unchecked Sendable {
     private var lockFd: Int32 = -1
     private let lock = NSLock()
 
+    public static var customLockFileURL: URL? = nil
+
     public static var lockFileURL: URL {
+        if let custom = customLockFileURL { return custom }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(".config/clavis", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

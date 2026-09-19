@@ -36,22 +36,6 @@ struct KeyListView: View {
                     DesignTokens.sidebarBackground
                         .ignoresSafeArea()
 
-                    // Ambient Liquid Glass Glow (iridescent cyan/purple blobs)
-                    ZStack {
-                        Circle()
-                            .fill(DesignTokens.sidebarTintBlue)
-                            .frame(width: 310, height: 310)
-                            .blur(radius: 60)
-                            .offset(x: -100, y: -40)
-
-                        Circle()
-                            .fill(DesignTokens.sidebarTintViolet)
-                            .frame(width: 270, height: 270)
-                            .blur(radius: 60)
-                            .offset(x: 100, y: 300)
-                    }
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
 
                     VStack(alignment: .leading, spacing: 12) {
                         // Title header — top padding to clear macOS window controls (traffic lights)

@@ -8,9 +8,6 @@ public enum DesignTokens {
     public static let cardBackground = Color(nsColor: NSColor(calibratedWhite: 1.0, alpha: 0.05))
     public static let cardBorder = Color(nsColor: NSColor(calibratedWhite: 1.0, alpha: 0.08))
 
-    // Gradients for ambient glass glow
-    public static let sidebarTintBlue = Color(red: 0.0, green: 0.53, blue: 1.0).opacity(0.20)
-    public static let sidebarTintViolet = Color(red: 0.58, green: 0.22, blue: 0.95).opacity(0.18)
 
     // Accents & Badges
     public static let accentGreen = Color(red: 0.20, green: 0.78, blue: 0.35)
