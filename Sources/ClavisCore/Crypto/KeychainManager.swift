@@ -11,14 +11,17 @@ public class KeychainManager {
 
     private let authenticator: UserAuthenticating
     private let privateKeyStore: PrivateKeyStoring
+    private let sessionCache: SessionCacheManager
 
     init(
         authenticator: UserAuthenticating = LocalUserAuthenticator(),
         privateKeyStore: PrivateKeyStoring = KeychainPrivateKeyStore(),
+        sessionCache: SessionCacheManager = .shared,
         migrateLegacyStorage: Bool = false
     ) {
         self.authenticator = authenticator
         self.privateKeyStore = privateKeyStore
+        self.sessionCache = sessionCache
         if migrateLegacyStorage {
             migrateLegacySeedFiles()
         }
@@ -139,13 +142,13 @@ public class KeychainManager {
         SeedStore.remove(label: label)
         try privateKeyStore.remove(label: label)
         PublicKeyStore.remove(label: label)
-        SessionCacheManager.shared.remove(label: label)
+        sessionCache.remove(label: label)
     }
 
     // Retrieve private key seed with Touch ID / Apple Watch / Password fallback authentication
     public func fetchPrivateKey(label: String, prompt: String) throws -> Curve25519.Signing.PrivateKey {
         ClavisLogger.log("FETCH_KEY", "Access request for key '\(label)'")
-        if let cached = SessionCacheManager.shared.get(label: label) {
+        if let cached = sessionCache.get(label: label) {
             ClavisLogger.log("SESSION_CACHE", "Serving key '\(label)' from active session cache (0 prompts)")
             return cached
         }
@@ -169,7 +172,7 @@ public class KeychainManager {
             }
 
             let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: mutableData)
-            SessionCacheManager.shared.set(label: label, key: privateKey)
+            sessionCache.set(label: label, key: privateKey)
             ClavisLogger.log("FETCH_KEY_SUCCESS", "Key '\(label)' loaded from Keychain and placed into session cache.")
             return privateKey
         } catch {
@@ -209,7 +212,7 @@ public class KeychainManager {
     public func signSSH(key: Ed25519KeyInfo, data: Data, prompt: String) throws -> Data {
         if key.algorithm == "ECDSA P-256" {
             let signingKey: CachedP256SigningKey
-            if let cachedKey = SessionCacheManager.shared.getP256(label: key.label) {
+            if let cachedKey = sessionCache.getP256(label: key.label) {
                 ClavisLogger.log("SESSION_CACHE", "Serving key '\(key.label)' (ECDSA P-256) from active session cache (0 prompts)")
                 signingKey = cachedKey
             } else {
@@ -227,7 +230,7 @@ public class KeychainManager {
                 } else {
                     signingKey = .software(try P256.Signing.PrivateKey(rawRepresentation: storedData))
                 }
-                SessionCacheManager.shared.setP256(label: key.label, key: signingKey)
+                sessionCache.setP256(label: key.label, key: signingKey)
             }
 
             let ecdsaSig = try signingKey.signature(for: data)
@@ -259,11 +262,11 @@ public class KeychainManager {
 
         let context = try await authenticator.authenticate(reason: reason)
 
-        if SessionCacheManager.shared.currentTimeout == .never {
-            SessionCacheManager.shared.currentTimeout = .fifteenMinutes
+        if sessionCache.currentTimeout == .never {
+            sessionCache.currentTimeout = .fifteenMinutes
         }
 
-        let timeout = SessionCacheManager.shared.currentTimeout.timeInterval ?? 900
+        let timeout = sessionCache.currentTimeout.timeInterval ?? 900
         guard let keyInfo = try fetchKeyInfo(label: label),
               let storedData = try privateKeyStore.load(label: label, context: context, prompt: reason) else {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Private key not found for '\(label)'"])
@@ -279,10 +282,10 @@ public class KeychainManager {
             } else {
                 signingKey = .software(try P256.Signing.PrivateKey(rawRepresentation: storedData))
             }
-            SessionCacheManager.shared.setP256(label: label, key: signingKey)
+            sessionCache.setP256(label: label, key: signingKey)
         } else if storedData.count == 32 {
             if let privateKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: storedData) {
-                SessionCacheManager.shared.set(label: label, key: privateKey)
+                sessionCache.set(label: label, key: privateKey)
             }
         }
         ClavisLogger.log("KEY_UNLOCK", "Key '\(label)' unlocked successfully for \(Int(timeout))s.")
@@ -290,7 +293,7 @@ public class KeychainManager {
 
     // Lock a key immediately
     public func lockKey(label: String) {
-        SessionCacheManager.shared.remove(label: label)
+        sessionCache.remove(label: label)
         ClavisLogger.log("KEY_LOCK", "Key '\(label)' locked.")
     }
 

@@ -14,17 +14,28 @@ public class AppState: ObservableObject {
     @Published public var launchAtLogin: Bool = false
     @Published public var showingSettings: Bool = false
 
-    private init() {
+    private let keyManager: KeychainManager
+    private let sessionCache: SessionCacheManager
+    private let sshAgentServer: SSHAgentServer
+
+    init(
+        keyManager: KeychainManager = .shared,
+        sessionCache: SessionCacheManager = .shared,
+        sshAgentServer: SSHAgentServer = .sharedInstance
+    ) {
+        self.keyManager = keyManager
+        self.sessionCache = sessionCache
+        self.sshAgentServer = sshAgentServer
         self.isDaemonMode = CommandLine.arguments.contains("--daemon")
         refresh()
     }
 
     public func refresh() {
         do {
-            keys = try KeychainManager.shared.listKeys()
-            isSocketActive = SSHAgentServer.sharedInstance.isSocketActive
-            cachedKeysCount = SessionCacheManager.shared.cachedCount
-            selectedTimeout = SessionCacheManager.shared.currentTimeout
+            keys = try keyManager.listKeys()
+            isSocketActive = sshAgentServer.isSocketActive
+            cachedKeysCount = sessionCache.cachedCount
+            selectedTimeout = sessionCache.currentTimeout
             launchAtLogin = LaunchAtLoginManager.shared.isEnabled
             errorMessage = nil
         } catch {
@@ -38,22 +49,22 @@ public class AppState: ObservableObject {
     }
 
     public func setTimeout(_ timeout: SessionTimeout) {
-        SessionCacheManager.shared.currentTimeout = timeout
+        sessionCache.currentTimeout = timeout
         selectedTimeout = timeout
         refresh()
     }
 
     public func lockNow() {
-        SessionCacheManager.shared.clearCache()
+        sessionCache.clearCache()
         refresh()
     }
 
     public func isKeyUnlocked(label: String) -> Bool {
-        SessionCacheManager.shared.isKeyUnlocked(label: label)
+        sessionCache.isKeyUnlocked(label: label)
     }
 
     public func remainingTimeFormatted(label: String) -> String? {
-        guard let remaining = SessionCacheManager.shared.remainingTime(label: label) else { return nil }
+        guard let remaining = sessionCache.remainingTime(label: label) else { return nil }
         let mins = max(1, Int(ceil(remaining / 60)))
         return "\(mins) min remaining"
     }

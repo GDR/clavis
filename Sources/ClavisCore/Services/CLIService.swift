@@ -13,7 +13,11 @@ public struct CLICommandResult: Equatable {
 }
 
 public struct CLIService {
-    public static func handle(args: [String], inputReader: () -> String? = { readLine() }) -> CLICommandResult? {
+    public static func handle(
+        args: [String],
+        inputReader: () -> String? = { readLine() },
+        keyManager: KeychainManager = .shared
+    ) -> CLICommandResult? {
         guard args.count > 1 else { return nil }
 
         let subcommand = args[1].lowercased()
@@ -25,7 +29,7 @@ public struct CLIService {
             }
             let label = args[2].trimmingCharacters(in: .whitespaces)
             do {
-                let info = try KeychainManager.shared.generateKey(label: label)
+                let info = try keyManager.generateKey(label: label)
                 var out = "Successfully generated Ed25519 key '\(info.label)' in Keychain.\n"
                 out += "Fingerprint: \(info.fingerprint)\n"
                 out += "Public Key:  \(info.publicKeyOpenSSH)"
@@ -66,7 +70,7 @@ public struct CLIService {
                 return CLICommandResult(exitCode: 1, output: "", error: "Invalid hex seed string (must be 64 hex characters / 32 bytes).")
             }
             do {
-                let info = try KeychainManager.shared.importKey(label: label, seedData: seedData)
+                let info = try keyManager.importKey(label: label, seedData: seedData)
                 var out = ""
                 if let warn = warning {
                     out += "\(warn)\n\n"
@@ -81,7 +85,7 @@ public struct CLIService {
 
         case "list":
             do {
-                let keys = try KeychainManager.shared.listKeys()
+                let keys = try keyManager.listKeys()
                 if keys.isEmpty {
                     return CLICommandResult(exitCode: 0, output: "No Ed25519 keys found in Keychain.")
                 }
@@ -102,7 +106,7 @@ public struct CLIService {
             }
             let label = args[2].trimmingCharacters(in: .whitespaces)
             do {
-                try KeychainManager.shared.deleteKey(label: label)
+                try keyManager.deleteKey(label: label)
                 return CLICommandResult(exitCode: 0, output: "Successfully deleted key '\(label)' from Keychain.")
             } catch {
                 return CLICommandResult(exitCode: 1, output: "", error: "Failed to delete key: \(error.localizedDescription)")
@@ -114,7 +118,7 @@ public struct CLIService {
             }
             let label = args[2].trimmingCharacters(in: .whitespaces)
             do {
-                let keys = try KeychainManager.shared.listKeys()
+                let keys = try keyManager.listKeys()
                 guard let match = keys.first(where: { $0.label == label }) else {
                     return CLICommandResult(exitCode: 1, output: "", error: "Key '\(label)' not found in Keychain.")
                 }

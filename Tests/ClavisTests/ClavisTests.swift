@@ -7,6 +7,35 @@ import LocalAuthentication
 
 final class ClavisTests: XCTestCase {
 
+    private var testRootURL: URL!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        testRootURL = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("clavis-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: testRootURL, withIntermediateDirectories: true)
+
+        PublicKeyStore.customStorageURL = testRootURL.appendingPathComponent("keys.json")
+        ClavisLogger.customLogFileURL = testRootURL.appendingPathComponent("clavis.log")
+        SeedStore.customSeedsDirectory = testRootURL.appendingPathComponent("seeds", isDirectory: true)
+        SeedStore.customMasterKEKURL = testRootURL.appendingPathComponent("master.kek")
+        SeedStore.useSoftwareMasterKeyForTesting = true
+        SeedStore.resetMasterKeyCacheForTesting()
+    }
+
+    override func tearDownWithError() throws {
+        SeedStore.resetMasterKeyCacheForTesting()
+        PublicKeyStore.customStorageURL = nil
+        ClavisLogger.customLogFileURL = nil
+        SeedStore.customSeedsDirectory = nil
+        SeedStore.customMasterKEKURL = nil
+        SeedStore.useSoftwareMasterKeyForTesting = false
+        if let testRootURL {
+            try? FileManager.default.removeItem(at: testRootURL)
+        }
+        try super.tearDownWithError()
+    }
+
     private struct AllowingAuthenticator: UserAuthenticating {
         func authenticate(reason: String) throws -> LAContext {
             LAContext()
@@ -17,11 +46,55 @@ final class ClavisTests: XCTestCase {
         }
     }
 
+    private final class InMemoryPrivateKeyStore: PrivateKeyStoring {
+        private var values: [String: Data] = [:]
+        private let lock = NSLock()
+
+        func contains(label: String) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return values[label] != nil
+        }
+
+        func save(label: String, data: Data) throws {
+            lock.lock()
+            defer { lock.unlock() }
+            values[label] = data
+        }
+
+        func load(label: String, context: LAContext, prompt: String) throws -> Data? {
+            lock.lock()
+            defer { lock.unlock() }
+            return values[label]
+        }
+
+        func remove(label: String) throws {
+            lock.lock()
+            defer { lock.unlock() }
+            values.removeValue(forKey: label)
+        }
+    }
+
+    private func makeSessionCache() -> SessionCacheManager {
+        let suiteName = "com.clavis.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return SessionCacheManager(defaults: defaults, observeSystemEvents: false)
+    }
+
+    private func makeKeyManager(sessionCache: SessionCacheManager? = nil) -> KeychainManager {
+        KeychainManager(
+            authenticator: AllowingAuthenticator(),
+            privateKeyStore: InMemoryPrivateKeyStore(),
+            sessionCache: sessionCache ?? makeSessionCache()
+        )
+    }
+
     // MARK: - 1. Key Info & OpenSSH Wire Serialization Tests
 
     func testEd25519KeyInfoAndWireSerialization() throws {
         let privateKey = Curve25519.Signing.PrivateKey()
-        let keyInfo = try KeychainManager.shared.makeKeyInfo(label: "test-github-key", privateKey: privateKey)
+        let keyInfo = try makeKeyManager().makeKeyInfo(label: "test-github-key", privateKey: privateKey)
 
         XCTAssertEqual(keyInfo.label, "test-github-key")
         XCTAssertTrue(keyInfo.publicKeyOpenSSH.hasPrefix("ssh-ed25519 "))
@@ -74,7 +147,7 @@ final class ClavisTests: XCTestCase {
     // MARK: - 3. Session Cache Manager Tests
 
     func testSessionCacheManagerExpiration() {
-        let cache = SessionCacheManager.shared
+        let cache = makeSessionCache()
         cache.clearCache()
         cache.currentTimeout = .fiveMinutes
 
@@ -90,7 +163,7 @@ final class ClavisTests: XCTestCase {
     }
 
     func testSessionCacheDisabled() {
-        let cache = SessionCacheManager.shared
+        let cache = makeSessionCache()
         cache.clearCache()
         cache.currentTimeout = .never // Cache off
 
@@ -152,7 +225,7 @@ final class ClavisTests: XCTestCase {
     }
 
     func testSessionCacheFlushOnTimeoutChange() {
-        let cache = SessionCacheManager.shared
+        let cache = makeSessionCache()
         cache.clearCache()
         cache.currentTimeout = .fiveMinutes
         cache.set(label: "flush-test", key: Curve25519.Signing.PrivateKey())
@@ -164,8 +237,7 @@ final class ClavisTests: XCTestCase {
     }
 
     func testSSHAgentServerLifecycle() throws {
-        let tmpDir = NSTemporaryDirectory()
-        let testSockPath = (tmpDir as NSString).appendingPathComponent("clavis-unittest.sock")
+        let testSockPath = testRootURL.appendingPathComponent("clavis-unittest.sock").path
         let server = SSHAgentServer(socketPath: testSockPath)
 
         XCTAssertFalse(server.isSocketActive)
@@ -185,7 +257,7 @@ final class ClavisTests: XCTestCase {
     // MARK: - 7. Milestone 1 Expanded Unit Tests
 
     func testSessionCacheTimeoutChangePurgesCache() {
-        let cache = SessionCacheManager.shared
+        let cache = makeSessionCache()
         cache.clearCache()
         cache.currentTimeout = .oneHour
 
@@ -218,7 +290,7 @@ final class ClavisTests: XCTestCase {
     }
 
     func testSessionCacheThreadSafety() {
-        let cache = SessionCacheManager.shared
+        let cache = makeSessionCache()
         cache.clearCache()
         cache.currentTimeout = .oneHour
 
@@ -312,7 +384,7 @@ final class ClavisTests: XCTestCase {
     }
 
     func testKeychainManagerListKeysSingleItemHandling() throws {
-        let keys = try KeychainManager.shared.listKeys()
+        let keys = try makeKeyManager().listKeys()
         XCTAssertNotNil(keys)
 
         let dummyKeyInfo = Ed25519KeyInfo(label: "dummy", publicKeyOpenSSH: "ssh-ed25519 AAA dummy", publicKeyBlob: Data(), fingerprint: "SHA256:dummy")
@@ -394,7 +466,7 @@ final class ClavisTests: XCTestCase {
     }
 
     func testSessionCacheHighConcurrencyStress() {
-        let cache = SessionCacheManager.shared
+        let cache = makeSessionCache()
         cache.clearCache()
         cache.currentTimeout = .oneHour
 
@@ -421,7 +493,7 @@ final class ClavisTests: XCTestCase {
     }
 
     func testSessionCacheSetDoubleLockWindow() {
-        let cache = SessionCacheManager.shared
+        let cache = makeSessionCache()
         cache.clearCache()
         cache.currentTimeout = .never
 
@@ -450,8 +522,7 @@ final class ClavisTests: XCTestCase {
     }
 
     func testSSHAgentServerRequestIdentitiesSocket() throws {
-        let tmpDir = NSTemporaryDirectory()
-        let testSockPath = (tmpDir as NSString).appendingPathComponent("clavis-req-ident.sock")
+        let testSockPath = testRootURL.appendingPathComponent("clavis-req-ident.sock").path
         let server = SSHAgentServer(socketPath: testSockPath)
         try server.start()
         defer { server.stop() }
@@ -503,8 +574,7 @@ final class ClavisTests: XCTestCase {
     }
 
     func testSSHAgentServerSignRequestMissingFlags() throws {
-        let tmpDir = NSTemporaryDirectory()
-        let testSockPath = (tmpDir as NSString).appendingPathComponent("clavis-sign-req.sock")
+        let testSockPath = testRootURL.appendingPathComponent("clavis-sign-req.sock").path
         let server = SSHAgentServer(socketPath: testSockPath)
         try server.start()
         defer { server.stop() }
@@ -819,22 +889,28 @@ final class ClavisTests: XCTestCase {
 
     @MainActor
     func testAppStateInitializationAndDaemonFlag() {
-        let appState = AppState.shared
+        let sessionCache = makeSessionCache()
+        let appState = AppState(
+            keyManager: makeKeyManager(sessionCache: sessionCache),
+            sessionCache: sessionCache,
+            sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-state.sock").path)
+        )
         XCTAssertNotNil(appState)
 
         // Test setTimeout method syncs with SessionCacheManager
         appState.setTimeout(.fiveMinutes)
-        XCTAssertEqual(SessionCacheManager.shared.currentTimeout, .fiveMinutes)
+        XCTAssertEqual(sessionCache.currentTimeout, .fiveMinutes)
         XCTAssertEqual(appState.selectedTimeout, .fiveMinutes)
 
         appState.setTimeout(.never)
-        XCTAssertEqual(SessionCacheManager.shared.currentTimeout, .never)
+        XCTAssertEqual(sessionCache.currentTimeout, .never)
         XCTAssertEqual(appState.selectedTimeout, .never)
 
         // Test lockNow clears cache and refreshes state
-        SessionCacheManager.shared.set(label: "test-lock", key: Curve25519.Signing.PrivateKey())
+        sessionCache.currentTimeout = .fiveMinutes
+        sessionCache.set(label: "test-lock", key: Curve25519.Signing.PrivateKey())
         appState.lockNow()
-        XCTAssertEqual(SessionCacheManager.shared.cachedCount, 0)
+        XCTAssertEqual(sessionCache.cachedCount, 0)
         XCTAssertEqual(appState.cachedKeysCount, 0)
 
         // Test clearError
@@ -851,37 +927,41 @@ final class ClavisTests: XCTestCase {
     // MARK: - 13. CLIService Subcommand Tests
 
     func testCLIServiceHelpCommand() {
-        let resHelp = CLIService.handle(args: ["clavis", "help"])
+        let keyManager = makeKeyManager()
+        let resHelp = CLIService.handle(args: ["clavis", "help"], keyManager: keyManager)
         XCTAssertNotNil(resHelp)
         XCTAssertEqual(resHelp?.exitCode, 0)
         XCTAssertTrue(resHelp?.output.contains("Clavis") ?? false)
 
-        let resDashH = CLIService.handle(args: ["clavis", "-h"])
+        let resDashH = CLIService.handle(args: ["clavis", "-h"], keyManager: keyManager)
         XCTAssertEqual(resDashH?.exitCode, 0)
 
-        let resNoArgs = CLIService.handle(args: ["clavis"])
+        let resNoArgs = CLIService.handle(args: ["clavis"], keyManager: keyManager)
         XCTAssertNil(resNoArgs)
     }
 
     func testCLIServiceImportValidation() {
-        let invalidSeedRes = CLIService.handle(args: ["clavis", "import", "mykey", "invalidhex"])
+        let keyManager = makeKeyManager()
+        let invalidSeedRes = CLIService.handle(args: ["clavis", "import", "mykey", "invalidhex"], keyManager: keyManager)
         XCTAssertNotNil(invalidSeedRes)
         XCTAssertEqual(invalidSeedRes?.exitCode, 1)
         XCTAssertEqual(invalidSeedRes?.error, "Invalid hex seed string (must be 64 hex characters / 32 bytes).")
 
-        let missingArgsRes = CLIService.handle(args: ["clavis", "generate"])
+        let missingArgsRes = CLIService.handle(args: ["clavis", "generate"], keyManager: keyManager)
         XCTAssertEqual(missingArgsRes?.exitCode, 1)
         XCTAssertEqual(missingArgsRes?.error, "Usage: clavis generate <label>")
     }
 
     func testCLIServiceImportViaStdin() throws {
+        let keyManager = makeKeyManager()
         let label = "stdin_key_\(UUID().uuidString)"
-        defer { try? KeychainManager.shared.deleteKey(label: label) }
+        defer { try? keyManager.deleteKey(label: label) }
 
         let validHexSeed = String(repeating: "ab", count: 32)
         let res = CLIService.handle(
             args: ["clavis", "import", label, "--stdin"],
-            inputReader: { validHexSeed }
+            inputReader: { validHexSeed },
+            keyManager: keyManager
         )
 
         XCTAssertNotNil(res)
@@ -889,17 +969,19 @@ final class ClavisTests: XCTestCase {
         XCTAssertTrue(res?.output.contains("Successfully imported") ?? false)
         XCTAssertFalse(res?.output.contains("SECURITY WARNING") ?? true)
 
-        let loaded = try KeychainManager.shared.fetchKeyInfo(label: label)
+        let loaded = try keyManager.fetchKeyInfo(label: label)
         XCTAssertNotNil(loaded)
     }
 
     func testCLIServiceImportViaArgvShowsWarning() throws {
+        let keyManager = makeKeyManager()
         let label = "argv_key_\(UUID().uuidString)"
-        defer { try? KeychainManager.shared.deleteKey(label: label) }
+        defer { try? keyManager.deleteKey(label: label) }
 
         let validHexSeed = String(repeating: "cd", count: 32)
         let res = CLIService.handle(
-            args: ["clavis", "import", label, validHexSeed]
+            args: ["clavis", "import", label, validHexSeed],
+            keyManager: keyManager
         )
 
         XCTAssertNotNil(res)
@@ -907,12 +989,12 @@ final class ClavisTests: XCTestCase {
         XCTAssertTrue(res?.output.contains("Successfully imported") ?? false)
         XCTAssertTrue(res?.output.contains("SECURITY WARNING") ?? false)
 
-        let loaded = try KeychainManager.shared.fetchKeyInfo(label: label)
+        let loaded = try keyManager.fetchKeyInfo(label: label)
         XCTAssertNotNil(loaded)
     }
 
     func testSingleInstanceLockAcquireAndRelease() {
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("clavis_test_\(UUID().uuidString).lock")
+        let tempURL = testRootURL.appendingPathComponent("clavis_test_\(UUID().uuidString).lock")
         SingleInstanceLock.customLockFileURL = tempURL
         defer {
             SingleInstanceLock.shared.release()
@@ -960,13 +1042,13 @@ final class ClavisTests: XCTestCase {
     }
 
     func testP256KeyGenerationAndSSHSigning() throws {
-        let keyManager = KeychainManager(authenticator: AllowingAuthenticator())
+        let keyManager = makeKeyManager()
         let testLabel = "test_p256_\(UUID().uuidString)"
         defer {
             try? keyManager.deleteKey(label: testLabel)
         }
 
-        let storage: KeyStorageType = SecureEnclave.isAvailable ? .secureEnclave : .keychain
+        let storage: KeyStorageType = .keychain
         let keyInfo = try keyManager.generateKey(label: testLabel, algorithm: "ECDSA P-256", storageType: storage)
 
         XCTAssertEqual(keyInfo.algorithm, "ECDSA P-256")
@@ -1007,7 +1089,6 @@ final class ClavisTests: XCTestCase {
 
     func testSeedStoreEnvelopeEncryptionCycle() throws {
         let label = "test_envelope_\(UUID().uuidString)"
-        defer { SeedStore.remove(label: label) }
 
         var randomSeed = Data(count: 32)
         _ = randomSeed.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
@@ -1020,7 +1101,6 @@ final class ClavisTests: XCTestCase {
 
     func testSeedStoreEncryptedFileFormat() throws {
         let label = "test_format_\(UUID().uuidString)"
-        defer { SeedStore.remove(label: label) }
 
         let secretBytes = Data([0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04,
                                 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
@@ -1043,7 +1123,6 @@ final class ClavisTests: XCTestCase {
 
     func testSeedStoreLegacyPlaintextMigration() throws {
         let label = "test_legacy_\(UUID().uuidString)"
-        defer { SeedStore.remove(label: label) }
 
         let legacySeed = Data(repeating: 0x7A, count: 32)
         let fileURL = SeedStore.seedFileURL(label: label)
@@ -1068,7 +1147,6 @@ final class ClavisTests: XCTestCase {
 
     func testSeedStoreTamperedCiphertextFails() throws {
         let label = "test_tamper_\(UUID().uuidString)"
-        defer { SeedStore.remove(label: label) }
 
         let seed = Data(repeating: 0x33, count: 32)
         try SeedStore.save(label: label, seedData: seed)

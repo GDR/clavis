@@ -1,7 +1,10 @@
 import Foundation
 
 public struct ClavisLogger {
+    public static var customLogFileURL: URL? = nil
+
     public static var logFileURL: URL {
+        if let customLogFileURL { return customLogFileURL }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(".config/clavis", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

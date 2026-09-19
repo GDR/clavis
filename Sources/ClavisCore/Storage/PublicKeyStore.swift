@@ -1,7 +1,10 @@
 import Foundation
 
 public struct PublicKeyStore {
+    public static var customStorageURL: URL? = nil
+
     private static var storageURL: URL {
+        if let customStorageURL { return customStorageURL }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(".config/clavis", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

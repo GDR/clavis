@@ -9,6 +9,7 @@ public class SessionCacheManager {
     private var p256Cache: [String: (key: CachedP256SigningKey, expiresAt: Date)] = [:]
     private var unlockedSessions: [String: Date] = [:]
     private let lock = NSLock()
+    private let defaults: UserDefaults
 
     private static let userDefaultsKey = "com.clavis.sessionTimeout"
 
@@ -23,7 +24,7 @@ public class SessionCacheManager {
             lock.lock()
             let oldTimeout = _currentTimeout
             _currentTimeout = newValue
-            UserDefaults.standard.set(newValue.rawValue, forKey: Self.userDefaultsKey)
+            defaults.set(newValue.rawValue, forKey: Self.userDefaultsKey)
             lock.unlock()
 
             let shouldClear: Bool
@@ -43,27 +44,30 @@ public class SessionCacheManager {
         }
     }
 
-    private init() {
-        if let saved = UserDefaults.standard.string(forKey: Self.userDefaultsKey),
+    public init(defaults: UserDefaults = .standard, observeSystemEvents: Bool = true) {
+        self.defaults = defaults
+        if let saved = defaults.string(forKey: Self.userDefaultsKey),
            let timeout = SessionTimeout(rawValue: saved) {
             self._currentTimeout = timeout
         } else {
             self._currentTimeout = .fiveMinutes
         }
 
-        DistributedNotificationCenter.default().addObserver(
-            self,
-            selector: #selector(clearCache),
-            name: NSNotification.Name("com.apple.screenIsLocked"),
-            object: nil,
-            suspensionBehavior: .deliverImmediately
-        )
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self,
-            selector: #selector(clearCache),
-            name: NSWorkspace.willSleepNotification,
-            object: nil
-        )
+        if observeSystemEvents {
+            DistributedNotificationCenter.default().addObserver(
+                self,
+                selector: #selector(clearCache),
+                name: NSNotification.Name("com.apple.screenIsLocked"),
+                object: nil,
+                suspensionBehavior: .deliverImmediately
+            )
+            NSWorkspace.shared.notificationCenter.addObserver(
+                self,
+                selector: #selector(clearCache),
+                name: NSWorkspace.willSleepNotification,
+                object: nil
+            )
+        }
     }
 
     @objc public func clearCache() {

@@ -4,9 +4,17 @@ import CryptoKit
 public struct SeedStore {
     public static var customSeedsDirectory: URL? = nil
     public static var customMasterKEKURL: URL? = nil
+    public static var useSoftwareMasterKeyForTesting = false
 
     public static var seedsDirectory: URL {
-        if let custom = customSeedsDirectory { return custom }
+        if let custom = customSeedsDirectory {
+            try? FileManager.default.createDirectory(
+                at: custom,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            return custom
+        }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(".config/clavis/seeds", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -14,7 +22,14 @@ public struct SeedStore {
     }
 
     public static var masterKEKURL: URL {
-        if let custom = customMasterKEKURL { return custom }
+        if let custom = customMasterKEKURL {
+            try? FileManager.default.createDirectory(
+                at: custom.deletingLastPathComponent(),
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            return custom
+        }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(".config/clavis", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -103,7 +118,7 @@ public struct SeedStore {
         let master: MasterKey
         var fileData = Data()
 
-        if SecureEnclave.isAvailable {
+        if SecureEnclave.isAvailable && !useSoftwareMasterKeyForTesting {
             let seKey = try SecureEnclave.P256.KeyAgreement.PrivateKey()
             master = .secureEnclave(seKey)
             fileData.append(0x01)
