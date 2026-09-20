@@ -207,6 +207,55 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         XCTAssertEqual(AppState.shared.isDaemonMode, isDaemonMode)
     }
 
+    @MainActor
+    func testApplicationDelegateRunsShutdownExactlyOnceForAllTerminationCallbacks() {
+        var shutdownCount = 0
+        let delegate = ClavisApplicationDelegate {
+            shutdownCount += 1
+        }
+
+        let reply = delegate.applicationShouldTerminate(NSApplication.shared)
+        delegate.applicationWillTerminate(
+            Notification(name: NSApplication.willTerminateNotification)
+        )
+
+        XCTAssertEqual(reply, .terminateNow)
+        XCTAssertEqual(shutdownCount, 1)
+    }
+
+    @MainActor
+    func testAppTerminationClearsCachesStopsServerAndStopsAgent() throws {
+        let cache = makeSessionCache()
+        cache.currentTimeout = .fiveMinutes
+        cache.set(label: "termination-key", key: Curve25519.Signing.PrivateKey())
+
+        let socketPath = testRootURL.appendingPathComponent("termination.sock").path
+        let server = SSHAgentServer(socketPath: socketPath)
+        try server.start()
+
+        var agentStopCount = 0
+        let lifecycle = AgentLifecycleManager(socketPath: socketPath)
+        let appState = AppState(
+            keyManager: makeKeyManager(sessionCache: cache),
+            sessionCache: cache,
+            sshAgentServer: server,
+            agentLifecycle: lifecycle,
+            terminationAgentStop: {
+                agentStopCount += 1
+                return true
+            }
+        )
+
+        appState.shutdownForTermination()
+
+        XCTAssertEqual(cache.cachedCount, 0)
+        XCTAssertFalse(server.isSocketActive)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+        XCTAssertEqual(agentStopCount, 1)
+        XCTAssertFalse(appState.isSocketActive)
+        XCTAssertNil(appState.agentPID)
+    }
+
 
     func testLaunchAtLoginManager() {
         let tempPlistURL = FileManager.default.temporaryDirectory.appendingPathComponent("clavis_launch_\(UUID().uuidString).plist")

@@ -222,9 +222,9 @@ struct MenuBarView: View {
         let alert = NSAlert()
         alert.messageText = "Quit Clavis?"
         if appState.isSocketActive {
-            alert.informativeText = "The background SSH Agent daemon (~/.ssh/clavis.sock) will continue running for your terminal and Git sessions."
+            alert.informativeText = "Clavis and its background SSH Agent will stop. Active caches and Git signing sessions will be cleared."
         } else {
-            alert.informativeText = "Quitting Clavis."
+            alert.informativeText = "Clavis will stop and active caches will be cleared."
         }
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Quit Clavis")
@@ -232,7 +232,6 @@ struct MenuBarView: View {
 
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
-            SingleInstanceLock.gui.release()
             NSApplication.shared.terminate(nil)
         }
     }

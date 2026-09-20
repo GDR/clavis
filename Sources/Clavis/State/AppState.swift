@@ -40,17 +40,20 @@ public class AppState: ObservableObject {
     private let sessionCache: SessionCacheManager
     private let sshAgentServer: SSHAgentServer
     private let agentLifecycle: AgentLifecycleManager
+    private let terminationAgentStop: () -> Bool
 
     init(
         keyManager: KeychainManager = .shared,
         sessionCache: SessionCacheManager = .shared,
         sshAgentServer: SSHAgentServer = .sharedInstance,
-        agentLifecycle: AgentLifecycleManager = .shared
+        agentLifecycle: AgentLifecycleManager = .shared,
+        terminationAgentStop: (() -> Bool)? = nil
     ) {
         self.keyManager = keyManager
         self.sessionCache = sessionCache
         self.sshAgentServer = sshAgentServer
         self.agentLifecycle = agentLifecycle
+        self.terminationAgentStop = terminationAgentStop ?? { agentLifecycle.stopAgent() }
         self.isDaemonMode = CommandLine.arguments.contains("--daemon")
 
         DistributedNotificationCenter.default().addObserver(
@@ -110,6 +113,19 @@ public class AppState: ObservableObject {
     public func stopAgent() {
         _ = agentLifecycle.stopAgent()
         refresh()
+    }
+
+    /// Performs the security-sensitive shutdown sequence shared by every GUI
+    /// termination path (menu action, Cmd+Q, Dock, logout, or system shutdown).
+    public func shutdownForTermination() {
+        sessionCache.clearCache()
+        GitSigningGraceManager.shared.invalidateAll()
+        sshAgentServer.stop()
+        _ = terminationAgentStop()
+        activeGitGrace = nil
+        cachedKeysCount = 0
+        isSocketActive = false
+        agentPID = nil
     }
 
     public func restartAgent() {

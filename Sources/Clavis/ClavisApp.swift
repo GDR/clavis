@@ -1,9 +1,44 @@
 import SwiftUI
+import AppKit
 import ClavisCore
+
+@MainActor
+final class ClavisApplicationDelegate: NSObject, NSApplicationDelegate {
+    private var didShutdown = false
+    private let shutdownHandler: () -> Void
+
+    override convenience init() {
+        self.init {
+            AppState.shared.shutdownForTermination()
+            SingleInstanceLock.gui.release()
+        }
+    }
+
+    init(shutdownHandler: @escaping () -> Void) {
+        self.shutdownHandler = shutdownHandler
+        super.init()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        shutdownOnce()
+        return .terminateNow
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        shutdownOnce()
+    }
+
+    private func shutdownOnce() {
+        guard !didShutdown else { return }
+        didShutdown = true
+        shutdownHandler()
+    }
+}
 
 @main
 @MainActor
 struct ClavisApp: App {
+    @NSApplicationDelegateAdaptor(ClavisApplicationDelegate.self) private var appDelegate
     @StateObject private var appState = AppState.shared
 
     init() {
