@@ -17,7 +17,7 @@ struct MenuBarView: View {
                         Text("Clavis Agent")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundColor(.primary)
-                        Text(appState.isSocketActive ? "\(appState.keys.count) identities ready" : "Agent offline")
+                        Text(appState.isSocketActive ? (appState.agentPID != nil ? "Active (PID \(appState.agentPID!))" : "\(appState.keys.count) identities ready") : "Agent offline")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
@@ -132,6 +132,24 @@ struct MenuBarView: View {
                     WindowManager.shared.openKeyManager()
                 }
 
+                if appState.isSocketActive {
+                    MenuBarActionItem(
+                        title: "Restart SSH Agent…",
+                        icon: "arrow.clockwise",
+                        shortcut: "⇧⌘R"
+                    ) {
+                        appState.restartAgent()
+                    }
+                } else {
+                    MenuBarActionItem(
+                        title: "Start SSH Agent…",
+                        icon: "play.fill",
+                        shortcut: "⇧⌘S"
+                    ) {
+                        appState.startAgent()
+                    }
+                }
+
                 MenuBarActionItem(
                     title: "Settings…",
                     icon: "gearshape",
@@ -171,15 +189,18 @@ struct MenuBarView: View {
     private func confirmQuit() {
         let alert = NSAlert()
         alert.messageText = "Quit Clavis?"
-        alert.informativeText = "Quitting Clavis will stop the background SSH Agent server (~/.ssh/clavis.sock) and disconnect active SSH sessions."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Quit")
+        if appState.isSocketActive {
+            alert.informativeText = "The background SSH Agent daemon (~/.ssh/clavis.sock) will continue running for your terminal and Git sessions."
+        } else {
+            alert.informativeText = "Quitting Clavis."
+        }
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Quit Clavis")
         alert.addButton(withTitle: "Cancel")
 
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
-            SingleInstanceLock.shared.release()
-            SSHAgentServer.sharedInstance.stop()
+            SingleInstanceLock.gui.release()
             NSApplication.shared.terminate(nil)
         }
     }

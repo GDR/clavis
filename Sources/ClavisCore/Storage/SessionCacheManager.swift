@@ -28,6 +28,7 @@ public class SessionCacheManager {
     private var unlockedSessions: [String: (expiresAt: Date, monotonicDeadline: DispatchTime)] = [:]
     private let lock = NSLock()
     private let defaults: UserDefaults
+    private let observeSystemEvents: Bool
     private var generation: UInt64 = 0
 
     private let timerQueue = DispatchQueue(label: "com.clavis.sessioncache.timer", qos: .userInitiated)
@@ -68,6 +69,7 @@ public class SessionCacheManager {
 
     public init(defaults: UserDefaults = .standard, observeSystemEvents: Bool = true) {
         self.defaults = defaults
+        self.observeSystemEvents = observeSystemEvents
         if let saved = defaults.string(forKey: Self.userDefaultsKey),
            let timeout = SessionTimeout(rawValue: saved) {
             self._currentTimeout = timeout
@@ -85,6 +87,13 @@ public class SessionCacheManager {
         self.cleanupTimer = timer
 
         if observeSystemEvents {
+            DistributedNotificationCenter.default().addObserver(
+                self,
+                selector: #selector(handleDistributedClearCache),
+                name: NSNotification.Name("com.clavis.lockAll"),
+                object: nil,
+                suspensionBehavior: .deliverImmediately
+            )
             DistributedNotificationCenter.default().addObserver(
                 self,
                 selector: #selector(clearCache),
@@ -126,8 +135,15 @@ public class SessionCacheManager {
     }
 
     @objc public func clearCache() {
+        clearCacheInternal(broadcast: true)
+    }
+
+    @objc private func handleDistributedClearCache() {
+        clearCacheInternal(broadcast: false)
+    }
+
+    private func clearCacheInternal(broadcast: Bool) {
         lock.lock()
-        defer { lock.unlock() }
         generation &+= 1
         cleanupTimer?.schedule(deadline: .distantFuture)
 
@@ -140,6 +156,16 @@ public class SessionCacheManager {
         cache.removeAll()
         p256Cache.removeAll()
         unlockedSessions.removeAll()
+        lock.unlock()
+
+        if broadcast && observeSystemEvents {
+            DistributedNotificationCenter.default().postNotificationName(
+                NSNotification.Name("com.clavis.lockAll"),
+                object: nil,
+                userInfo: nil,
+                deliverImmediately: true
+            )
+        }
     }
 
     public func remove(label: String) {

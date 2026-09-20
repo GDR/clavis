@@ -1,12 +1,35 @@
 import Foundation
 import Network
 
+public enum SSHAgentServerError: LocalizedError, Equatable {
+    case socketAlreadyInUse(String)
+    case socketCreationFailed(Int32)
+    case socketBindFailed(String, Int32)
+    case socketListenFailed(Int32)
+    case pathTooLong(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .socketAlreadyInUse(let path):
+            return "Another SSH agent is actively listening on socket at \(path)"
+        case .socketCreationFailed(let code):
+            return "Failed to create socket (errno: \(code))"
+        case .socketBindFailed(let path, let code):
+            return "Failed to bind socket at \(path) (errno: \(code))"
+        case .socketListenFailed(let code):
+            return "Failed to listen on socket (errno: \(code))"
+        case .pathTooLong(let path):
+            return "Socket path is too long: \(path)"
+        }
+    }
+}
+
 public class SSHAgentServer {
     public static let shared = SSHAgentServer()
     public static let sharedInstance = shared
     public static let defaultSocketPath = NSString(string: "~/.ssh/clavis.sock").expandingTildeInPath
 
-    private let socketPath: String
+    public let socketPath: String
     private let maxConcurrentClients: Int
     private let clientIdleTimeout: TimeInterval
     private let stateLock = NSLock()
@@ -23,6 +46,34 @@ public class SSHAgentServer {
         self.socketPath = socketPath
         self.maxConcurrentClients = max(1, maxConcurrentClients)
         self.clientIdleTimeout = max(0.1, clientIdleTimeout)
+    }
+
+    /// Tests whether an active SSH agent server is listening on the given AF_UNIX socket.
+    public static func isSocketListening(atPath path: String = defaultSocketPath) -> Bool {
+        guard FileManager.default.fileExists(atPath: path) else { return false }
+        let sock = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard sock >= 0 else { return false }
+        defer { close(sock) }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = path.utf8CString
+        guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else { return false }
+
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            let raw = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: CChar.self)
+            for (i, byte) in pathBytes.enumerated() {
+                raw[i] = byte
+            }
+        }
+
+        let addrLen = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
+        let res = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(sock, $0, addrLen)
+            }
+        }
+        return res == 0
     }
 
     private var isRunning: Bool {
@@ -52,6 +103,12 @@ public class SSHAgentServer {
     }
 
     public func start() throws {
+        // Prevent clobbering an actively listening server
+        if Self.isSocketListening(atPath: socketPath) {
+            ClavisLogger.log("SSH_AGENT", "Refusing to start: socket at \(socketPath) is actively listening.")
+            throw SSHAgentServerError.socketAlreadyInUse(socketPath)
+        }
+
         let fileManager = FileManager.default
         unlink(socketPath)
 
@@ -64,7 +121,7 @@ public class SSHAgentServer {
 
         let sock = socket(AF_UNIX, SOCK_STREAM, 0)
         guard sock >= 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Failed to create socket"])
+            throw SSHAgentServerError.socketCreationFailed(errno)
         }
 
         var nosigpipe = 1
@@ -77,7 +134,7 @@ public class SSHAgentServer {
 
         let pathBytes = socketPath.utf8CString
         guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else {
-            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Socket path too long"])
+            throw SSHAgentServerError.pathTooLong(socketPath)
         }
 
         withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
@@ -93,14 +150,14 @@ public class SSHAgentServer {
                 bind(sock, $0, addrLen)
             }
         }) == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Failed to bind socket at \(socketPath)"])
+            throw SSHAgentServerError.socketBindFailed(socketPath, errno)
         }
 
         // Enforce strict 0600 permissions on the created socket file (read/write only by owner)
         chmod(socketPath, S_IRUSR | S_IWUSR)
 
         guard listen(sock, 5) == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Failed to listen on socket"])
+            throw SSHAgentServerError.socketListenFailed(errno)
         }
 
         isRunning = true

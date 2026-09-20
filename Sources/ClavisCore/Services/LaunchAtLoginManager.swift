@@ -51,7 +51,7 @@ public final class LaunchAtLoginManager: @unchecked Sendable {
         }
 
         // Fallback: Create LaunchAgent plist in ~/Library/LaunchAgents/
-        let execPath = Bundle.main.executablePath ?? ProcessInfo.processInfo.arguments[0]
+        let agentExec = AgentLifecycleManager.shared.locateAgentExecutable()?.path ?? (Bundle.main.executablePath ?? ProcessInfo.processInfo.arguments[0])
         let plistContent = """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -61,7 +61,7 @@ public final class LaunchAtLoginManager: @unchecked Sendable {
             <string>\(Self.launchAgentLabel)</string>
             <key>ProgramArguments</key>
             <array>
-                <string>\(execPath)</string>
+                <string>\(agentExec)</string>
                 <string>--daemon</string>
             </array>
             <key>RunAtLoad</key>

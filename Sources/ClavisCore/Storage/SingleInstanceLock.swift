@@ -2,18 +2,50 @@ import Foundation
 import AppKit
 
 public final class SingleInstanceLock: @unchecked Sendable {
-    public static let shared = SingleInstanceLock()
-    private var lockFd: Int32 = -1
-    private let lock = NSLock()
+    public static let gui = SingleInstanceLock(name: "clavis-gui", bringToFrontOnConflict: true)
+    public static let agent = SingleInstanceLock(name: "clavis-agent", bringToFrontOnConflict: false)
+    public static let shared = SingleInstanceLock.gui
+
+    public let name: String
+    public let bringToFrontOnConflict: Bool
+    public var customLockFileURL: URL?
 
     public static var customLockFileURL: URL? = nil
 
-    public static var lockFileURL: URL {
+    private var lockFd: Int32 = -1
+    private let lock = NSLock()
+
+    public init(name: String = "clavis", bringToFrontOnConflict: Bool = true, customLockFileURL: URL? = nil) {
+        self.name = name
+        self.bringToFrontOnConflict = bringToFrontOnConflict
+        self.customLockFileURL = customLockFileURL
+    }
+
+    public var lockFileURL: URL {
         if let custom = customLockFileURL { return custom }
+        if let staticCustom = Self.customLockFileURL { return staticCustom }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(".config/clavis", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("clavis.lock")
+        return dir.appendingPathComponent("\(name).lock")
+    }
+
+    public static var lockFileURL: URL {
+        shared.lockFileURL
+    }
+
+    /// Reads the PID stored in the lock file, verifying if that process is currently alive.
+    public var lockOwnerPID: pid_t? {
+        guard let data = try? Data(contentsOf: lockFileURL),
+              let pidString = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let pid = pid_t(pidString), pid > 0 else {
+            return nil
+        }
+        // Verify process is active
+        if kill(pid, 0) == 0 {
+            return pid
+        }
+        return nil
     }
 
     public func acquire() -> Bool {
@@ -24,7 +56,7 @@ public final class SingleInstanceLock: @unchecked Sendable {
             return true // Already acquired in this process
         }
 
-        let path = Self.lockFileURL.path
+        let path = lockFileURL.path
         let fd = open(path, O_CREAT | O_RDWR, 0o600)
         guard fd >= 0 else {
             ClavisLogger.log("LOCK", "Failed to open lock file at \(path): errno \(errno)")
@@ -33,23 +65,23 @@ public final class SingleInstanceLock: @unchecked Sendable {
 
         // Attempt non-blocking exclusive flock
         if flock(fd, LOCK_EX | LOCK_NB) != 0 {
-            ClavisLogger.log("LOCK", "Single instance lock is held by another process.")
+            ClavisLogger.log("LOCK", "Single instance lock '\(name)' is held by another process.")
 
-            // Read existing PID from lock file to activate its window
-            if let data = try? Data(contentsOf: Self.lockFileURL),
-               let pidString = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-               let pid = pid_t(pidString) {
-                ClavisLogger.log("LOCK", "Attempting to focus existing process with PID \(pid)")
-                NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateIgnoringOtherApps])
+            if bringToFrontOnConflict {
+                // Read existing PID from lock file to activate its window
+                if let pid = lockOwnerPID {
+                    ClavisLogger.log("LOCK", "Attempting to focus existing process with PID \(pid)")
+                    NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateIgnoringOtherApps])
+                }
+
+                // Signal existing instance to bring Key Manager window to front
+                DistributedNotificationCenter.default().postNotificationName(
+                    NSNotification.Name("com.clavis.openKeyManager"),
+                    object: nil,
+                    userInfo: nil,
+                    deliverImmediately: true
+                )
             }
-
-            // Signal existing instance to bring Key Manager window to front
-            DistributedNotificationCenter.default().postNotificationName(
-                NSNotification.Name("com.clavis.openKeyManager"),
-                object: nil,
-                userInfo: nil,
-                deliverImmediately: true
-            )
 
             close(fd)
             return false
@@ -65,7 +97,7 @@ public final class SingleInstanceLock: @unchecked Sendable {
             _ = write(fd, ptr, strlen(ptr))
         }
 
-        ClavisLogger.log("LOCK", "Single instance lock acquired by PID \(getpid()).")
+        ClavisLogger.log("LOCK", "Single instance lock '\(name)' acquired by PID \(getpid()).")
         return true
     }
 
@@ -77,8 +109,8 @@ public final class SingleInstanceLock: @unchecked Sendable {
             flock(lockFd, LOCK_UN)
             close(lockFd)
             lockFd = -1
-            try? FileManager.default.removeItem(at: Self.lockFileURL)
-            ClavisLogger.log("LOCK", "Single instance lock released.")
+            try? FileManager.default.removeItem(at: lockFileURL)
+            ClavisLogger.log("LOCK", "Single instance lock '\(name)' released.")
         }
     }
 

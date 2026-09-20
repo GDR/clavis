@@ -55,13 +55,16 @@
             installPhase = ''
               mkdir -p $out/bin
               cp .build/release/Clavis $out/bin/clavis
+              cp .build/release/clavis-agent $out/bin/clavis-agent
               cp .build/release/clavis-cli $out/bin/clavis-cli
               cp .build/release/age-plugin-clavis $out/bin/age-plugin-clavis
 
               # macOS Application Bundle for nix-darwin / home-manager
               mkdir -p $out/Applications/Clavis.app/Contents/MacOS
+              mkdir -p $out/Applications/Clavis.app/Contents/Helpers
               mkdir -p $out/Applications/Clavis.app/Contents/Resources
               cp .build/release/Clavis $out/Applications/Clavis.app/Contents/MacOS/Clavis
+              cp .build/release/clavis-agent $out/Applications/Clavis.app/Contents/Helpers/clavis-agent
 
               cat << 'EOF' > $out/Applications/Clavis.app/Contents/Info.plist
 <?xml version="1.0" encoding="UTF-8"?>
@@ -90,9 +93,11 @@ EOF
 
               for binary in \
                 $out/bin/clavis \
+                $out/bin/clavis-agent \
                 $out/bin/clavis-cli \
                 $out/bin/age-plugin-clavis \
-                $out/Applications/Clavis.app/Contents/MacOS/Clavis; do
+                $out/Applications/Clavis.app/Contents/MacOS/Clavis \
+                $out/Applications/Clavis.app/Contents/Helpers/clavis-agent; do
                 /usr/bin/codesign \
                   --force \
                   --sign - \
@@ -123,6 +128,13 @@ EOF
               exec "${packages.clavis}/bin/clavis" "$@"
             '';
             name = "clavis";
+          };
+
+          agent = flake-utils.lib.mkApp {
+            drv = pkgs.writeShellScriptBin "clavis-agent" ''
+              exec "${packages.clavis}/bin/clavis-agent" "$@"
+            '';
+            name = "clavis-agent";
           };
 
           cli = flake-utils.lib.mkApp {

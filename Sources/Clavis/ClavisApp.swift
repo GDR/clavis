@@ -7,8 +7,8 @@ struct ClavisApp: App {
     @StateObject private var appState = AppState.shared
 
     init() {
-        guard SingleInstanceLock.shared.acquire() else {
-            ClavisLogger.log("APP_START", "Another instance of Clavis is already running. Exiting duplicate process.")
+        guard SingleInstanceLock.gui.acquire() else {
+            ClavisLogger.log("APP_START", "Another instance of Clavis GUI is already running. Exiting duplicate process.")
             exit(0)
         }
 
@@ -18,11 +18,9 @@ struct ClavisApp: App {
                 NSApp.setActivationPolicy(.accessory)
             }
         }
-        do {
-            try SSHAgentServer.sharedInstance.start()
-        } catch {
-            print("Failed to start SSH agent server: \(error)")
-        }
+
+        // Ensure the background agent daemon is running
+        AgentLifecycleManager.shared.ensureAgentRunning()
 
         // Bring Key Manager window to front when a subsequent launch is attempted
         DistributedNotificationCenter.default().addObserver(

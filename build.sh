@@ -30,12 +30,13 @@ else
     exit 1
 fi
 
-echo "🔨 Building Clavis (GUI), clavis-cli (CLI), and age-plugin-clavis (Release)..."
+echo "🔨 Building Clavis (GUI), clavis-agent (Daemon), clavis-cli (CLI), and age-plugin-clavis (Release)..."
 swift build -c release
 
 echo "🔐 Signing binaries and embedding entitlements..."
 BINARIES=(
     ".build/release/Clavis"
+    ".build/release/clavis-agent"
     ".build/release/clavis-cli"
     ".build/release/age-plugin-clavis"
 )
@@ -68,9 +69,13 @@ else
     echo "✅ Release build, hardened runtime certificate signing, and signature verification complete!"
 fi
 echo ""
-echo "🚀 To run Clavis GUI App & Socket Daemon:"
+echo "🚀 To run Clavis GUI App:"
 echo "  swift run Clavis"
 echo "  or: .build/release/Clavis"
+echo ""
+echo "🔑 To run standalone Clavis SSH Agent Daemon:"
+echo "  swift run clavis-agent"
+echo "  or: .build/release/clavis-agent"
 echo ""
 echo "💻 To use Clavis CLI:"
 echo "  swift run clavis-cli list"

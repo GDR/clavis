@@ -14,6 +14,7 @@ public class AppState: ObservableObject {
 
     @Published public var keys: [Ed25519KeyInfo] = []
     @Published public var isSocketActive: Bool = false
+    @Published public var agentPID: pid_t? = nil
     @Published public var selectedTimeout: SessionTimeout = .never
     @Published public var cachedKeysCount: Int = 0
     @Published public var errorMessage: String? = nil
@@ -25,15 +26,18 @@ public class AppState: ObservableObject {
     private let keyManager: KeychainManager
     private let sessionCache: SessionCacheManager
     private let sshAgentServer: SSHAgentServer
+    private let agentLifecycle: AgentLifecycleManager
 
     init(
         keyManager: KeychainManager = .shared,
         sessionCache: SessionCacheManager = .shared,
-        sshAgentServer: SSHAgentServer = .sharedInstance
+        sshAgentServer: SSHAgentServer = .sharedInstance,
+        agentLifecycle: AgentLifecycleManager = .shared
     ) {
         self.keyManager = keyManager
         self.sessionCache = sessionCache
         self.sshAgentServer = sshAgentServer
+        self.agentLifecycle = agentLifecycle
         self.isDaemonMode = CommandLine.arguments.contains("--daemon")
         refresh()
     }
@@ -41,11 +45,35 @@ public class AppState: ObservableObject {
     public func refresh() {
         do {
             keys = try keyManager.listKeys()
-            isSocketActive = sshAgentServer.isSocketActive
+            isSocketActive = agentLifecycle.isAgentRunning || sshAgentServer.isSocketActive
+            agentPID = agentLifecycle.agentPID
             cachedKeysCount = sessionCache.cachedCount
             selectedTimeout = sessionCache.currentTimeout
             launchAtLogin = LaunchAtLoginManager.shared.isEnabled
             errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func startAgent() {
+        do {
+            try agentLifecycle.startAgent()
+            refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func stopAgent() {
+        _ = agentLifecycle.stopAgent()
+        refresh()
+    }
+
+    public func restartAgent() {
+        do {
+            try agentLifecycle.restartAgent()
+            refresh()
         } catch {
             errorMessage = error.localizedDescription
         }

@@ -2203,4 +2203,131 @@ final class ClavisTests: XCTestCase {
         // Cleanup
         PublicKeyStore.remove(label: keyInfo.label)
     }
+
+    // MARK: - 13. GUI and Daemon Separation Tests
+
+    func testSingleInstanceLockGuiAndAgentConcurrency() throws {
+        let guiURL = testRootURL.appendingPathComponent("test_gui_\(UUID().uuidString).lock")
+        let agentURL = testRootURL.appendingPathComponent("test_agent_\(UUID().uuidString).lock")
+
+        let guiLock = SingleInstanceLock(name: "test-gui", bringToFrontOnConflict: false, customLockFileURL: guiURL)
+        let agentLock = SingleInstanceLock(name: "test-agent", bringToFrontOnConflict: false, customLockFileURL: agentURL)
+
+        defer {
+            guiLock.release()
+            agentLock.release()
+            try? FileManager.default.removeItem(at: guiURL)
+            try? FileManager.default.removeItem(at: agentURL)
+        }
+
+        // Both GUI and Agent locks must acquire successfully simultaneously
+        XCTAssertTrue(guiLock.acquire())
+        XCTAssertTrue(agentLock.acquire())
+
+        // lockOwnerPID should identify this process
+        XCTAssertEqual(guiLock.lockOwnerPID, getpid())
+        XCTAssertEqual(agentLock.lockOwnerPID, getpid())
+
+        // A second instance trying to acquire the same file must fail
+        let duplicateGuiLock = SingleInstanceLock(name: "test-gui-dup", bringToFrontOnConflict: false, customLockFileURL: guiURL)
+        XCTAssertFalse(duplicateGuiLock.acquire())
+
+        // Release GUI lock; duplicate can now acquire
+        guiLock.release()
+        XCTAssertTrue(duplicateGuiLock.acquire())
+        duplicateGuiLock.release()
+    }
+
+    func testSSHAgentServerIsSocketListeningAndCollisionPrevention() throws {
+        let testSockPath = testRootURL.appendingPathComponent("t-listen.sock").path
+
+        // 1. Initial state: socket does not exist, isSocketListening must be false
+        XCTAssertFalse(SSHAgentServer.isSocketListening(atPath: testSockPath))
+
+        // 2. Start primary server
+        let primaryServer = SSHAgentServer(socketPath: testSockPath)
+        try primaryServer.start()
+        defer { primaryServer.stop() }
+
+        // Wait up to 1 second for socket to be active
+        let deadline = Date().addingTimeInterval(1.0)
+        var listening = false
+        while Date() < deadline {
+            if SSHAgentServer.isSocketListening(atPath: testSockPath) {
+                listening = true
+                break
+            }
+            usleep(10_000)
+        }
+        XCTAssertTrue(listening, "Server should be actively listening on socket")
+
+        // 3. Attempting to start a second server on the same socket must fail with socketAlreadyInUse
+        let secondaryServer = SSHAgentServer(socketPath: testSockPath)
+        XCTAssertThrowsError(try secondaryServer.start()) { error in
+            guard let serverError = error as? SSHAgentServerError else {
+                XCTFail("Expected SSHAgentServerError, got \(error)")
+                return
+            }
+            XCTAssertEqual(serverError, .socketAlreadyInUse(testSockPath))
+        }
+
+        // 4. Primary server must remain active and listening despite the collision attempt
+        XCTAssertTrue(SSHAgentServer.isSocketListening(atPath: testSockPath))
+
+        // 5. Stopping primary server makes socket not listening
+        primaryServer.stop()
+        XCTAssertFalse(SSHAgentServer.isSocketListening(atPath: testSockPath))
+    }
+
+    func testAgentLifecycleManagerSocketDetection() throws {
+        let testSockPath = testRootURL.appendingPathComponent("t-life.sock").path
+        let manager = AgentLifecycleManager(socketPath: testSockPath)
+
+        XCTAssertFalse(manager.isAgentRunning)
+
+        let server = SSHAgentServer(socketPath: testSockPath)
+        try server.start()
+        defer { server.stop() }
+
+        let deadline = Date().addingTimeInterval(1.0)
+        var isRunning = false
+        while Date() < deadline {
+            if manager.isAgentRunning {
+                isRunning = true
+                break
+            }
+            usleep(10_000)
+        }
+        XCTAssertTrue(isRunning)
+
+        server.stop()
+        XCTAssertFalse(manager.isAgentRunning)
+    }
+
+    func testDistributedLockAllNotification() throws {
+        let cache = SessionCacheManager(observeSystemEvents: true)
+        let label = "dist-test-\(UUID().uuidString)"
+        cache.set(label: label, key: Curve25519.Signing.PrivateKey())
+        XCTAssertTrue(cache.isKeyUnlocked(label: label))
+
+        // Simulate broadcast from another process
+        DistributedNotificationCenter.default().postNotificationName(
+            NSNotification.Name("com.clavis.lockAll"),
+            object: nil,
+            userInfo: nil,
+            deliverImmediately: true
+        )
+
+        // Allow runloop tick for notification delivery
+        let deadline = Date().addingTimeInterval(0.5)
+        var cleared = false
+        while Date() < deadline {
+            if !cache.isKeyUnlocked(label: label) {
+                cleared = true
+                break
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertTrue(cleared, "Cache should be cleared after receiving com.clavis.lockAll distributed notification")
+    }
 }
