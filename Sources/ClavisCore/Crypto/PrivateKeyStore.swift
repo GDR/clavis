@@ -54,54 +54,81 @@ enum PrivateKeyAccessControl {
 }
 
 public final class KeychainPrivateKeyStore: PrivateKeyStoring {
+    /// The application group is also a Keychain access group on macOS. Every
+    /// shipped executable that performs private-key operations is signed with
+    /// this entitlement.
+    public static let sharedAccessGroup = "group.com.clavis"
+
     private let serviceName: String
+    private let accessGroup: String
     private let addItem: (CFDictionary) -> OSStatus
     private let deleteItem: (CFDictionary) -> OSStatus
     private let updateItem: (CFDictionary, CFDictionary) -> OSStatus
+    private let copyItem: (CFDictionary) -> (OSStatus, AnyObject?)
 
     public convenience init(serviceName: String = KeychainManager.privateServiceName) {
         self.init(
             serviceName: serviceName,
+            accessGroup: Self.sharedAccessGroup,
             addItem: { SecItemAdd($0, nil) },
             deleteItem: { SecItemDelete($0) },
-            updateItem: { SecItemUpdate($0, $1) }
+            updateItem: { SecItemUpdate($0, $1) },
+            copyItem: { query in
+                var result: CFTypeRef?
+                let status = SecItemCopyMatching(query, &result)
+                return (status, result)
+            }
         )
     }
 
     init(
         serviceName: String,
+        accessGroup: String = KeychainPrivateKeyStore.sharedAccessGroup,
         addItem: @escaping (CFDictionary) -> OSStatus,
         deleteItem: @escaping (CFDictionary) -> OSStatus,
-        updateItem: @escaping (CFDictionary, CFDictionary) -> OSStatus = { SecItemUpdate($0, $1) }
+        updateItem: @escaping (CFDictionary, CFDictionary) -> OSStatus = { SecItemUpdate($0, $1) },
+        copyItem: @escaping (CFDictionary) -> (OSStatus, AnyObject?) = { query in
+            var result: CFTypeRef?
+            let status = SecItemCopyMatching(query, &result)
+            return (status, result)
+        }
     ) {
         self.serviceName = serviceName
+        self.accessGroup = accessGroup
         self.addItem = addItem
         self.deleteItem = deleteItem
         self.updateItem = updateItem
+        self.copyItem = copyItem
     }
 
     public func contains(label: String) -> Bool {
         let context = LAContext()
         context.interactionNotAllowed = true
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: label,
+        var query = sharedLookup(label: label)
+        query.merge([
             kSecReturnAttributes as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
             kSecUseAuthenticationContext as String: context
-        ]
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        return status == errSecSuccess || status == errSecInteractionNotAllowed
+        ]) { _, new in new }
+        let (status, _) = copyItem(query as CFDictionary)
+        if status == errSecSuccess || status == errSecInteractionNotAllowed {
+            return true
+        }
+
+        // An existing legacy item still counts as a collision. This query does
+        // not request secret data and suppresses authentication UI.
+        var legacyQuery = legacyLookup(label: label)
+        legacyQuery.merge([
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationContext as String: context
+        ]) { _, new in new }
+        let (legacyStatus, _) = copyItem(legacyQuery as CFDictionary)
+        return legacyStatus == errSecSuccess || legacyStatus == errSecInteractionNotAllowed
     }
 
     public func save(label: String, data: Data, accessControlFlags: SecAccessControlCreateFlags = [.userPresence]) throws {
-        let lookup: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: label
-        ]
+        let lookup = sharedLookup(label: label)
 
         var baseItem = lookup
         baseItem[kSecValueData as String] = data
@@ -144,39 +171,107 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
 
     public func load(label: String, context: LAContext, prompt: String) throws -> Data? {
         context.localizedReason = prompt
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: label,
+        var query = sharedLookup(label: label)
+        query.merge([
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
             kSecUseAuthenticationContext as String: context
-        ]
+        ]) { _, new in new }
 
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound {
-            return nil
+        let (status, result) = copyItem(query as CFDictionary)
+        if status == errSecSuccess, let data = result as? Data {
+            return data
         }
-        guard status == errSecSuccess, let data = result as? Data else {
+        guard status == errSecItemNotFound else {
             throw PrivateKeyStoreError.keychain(status)
         }
-        return data
+
+        return try migrateLegacyItem(label: label, context: context)
     }
 
     public func remove(label: String, context: LAContext?, prompt: String) throws {
-        var query: [String: Any] = [
+        var sharedQuery = sharedLookup(label: label)
+        if let context {
+            context.localizedReason = prompt
+            sharedQuery[kSecUseAuthenticationContext as String] = context
+        }
+        let sharedStatus = deleteItem(sharedQuery as CFDictionary)
+        guard sharedStatus == errSecSuccess || sharedStatus == errSecItemNotFound else {
+            throw PrivateKeyStoreError.keychain(sharedStatus)
+        }
+
+        var legacyQuery = legacyLookup(label: label)
+        if let context {
+            legacyQuery[kSecUseAuthenticationContext as String] = context
+        }
+        let legacyStatus = deleteItem(legacyQuery as CFDictionary)
+        guard legacyStatus == errSecSuccess || legacyStatus == errSecItemNotFound else {
+            throw PrivateKeyStoreError.keychain(legacyStatus)
+        }
+    }
+
+    private func migrateLegacyItem(label: String, context: LAContext) throws -> Data? {
+        var legacyQuery = legacyLookup(label: label)
+        legacyQuery.merge([
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationContext as String: context
+        ]) { _, new in new }
+
+        let (legacyStatus, legacyResult) = copyItem(legacyQuery as CFDictionary)
+        if legacyStatus == errSecItemNotFound {
+            return nil
+        }
+        guard legacyStatus == errSecSuccess, var legacyData = legacyResult as? Data else {
+            throw PrivateKeyStoreError.keychain(legacyStatus)
+        }
+        defer {
+            legacyData.withUnsafeMutableBytes { bytes in
+                if let baseAddress = bytes.baseAddress {
+                    SecureMemory.zero(baseAddress, byteCount: bytes.count)
+                }
+            }
+            legacyData.removeAll(keepingCapacity: false)
+        }
+
+        let flags = migrationAccessControlFlags(for: legacyData)
+        try save(label: label, data: legacyData, accessControlFlags: flags)
+
+        // Delete only after the data-protection item has been stored. If this
+        // fails, both copies remain and the caller sees the cleanup failure.
+        var deletionQuery = legacyLookup(label: label)
+        deletionQuery[kSecUseAuthenticationContext as String] = context
+        let deletionStatus = deleteItem(deletionQuery as CFDictionary)
+        guard deletionStatus == errSecSuccess || deletionStatus == errSecItemNotFound else {
+            throw PrivateKeyStoreError.keychain(deletionStatus)
+        }
+
+        return legacyData
+    }
+
+    private func migrationAccessControlFlags(for data: Data) -> SecAccessControlCreateFlags {
+        guard var record = try? StoredPrivateKeyRecord.decode(from: data) else {
+            return [.userPresence]
+        }
+        defer { record.wipe() }
+        return record.biometricPolicy?.accessControlFlags ?? [.userPresence]
+    }
+
+    private func sharedLookup(label: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: label,
+            kSecUseDataProtectionKeychain as String: true,
+            kSecAttrAccessGroup as String: accessGroup
+        ]
+    }
+
+    private func legacyLookup(label: String) -> [String: Any] {
+        [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: label
         ]
-        if let context {
-            context.localizedReason = prompt
-            query[kSecUseAuthenticationContext as String] = context
-        }
-        let status = deleteItem(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw PrivateKeyStoreError.keychain(status)
-        }
     }
 }

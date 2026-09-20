@@ -28,6 +28,13 @@ the required entitlements, then verifies each signature. It fails closed when
 no development certificate is available. A specific certificate can be selected
 with `CLAVIS_SIGN_IDENTITY`.
 
+Private records use the Data Protection Keychain access group
+`group.com.clavis`, shared by the signed Clavis executables. Run the signed
+artifacts produced by `build.sh`; plain `swift run` executables do not carry the
+required entitlement. Existing legacy Login Keychain records are migrated only
+after an authenticated read, and the old record is deleted only after the new
+protected record has been stored successfully.
+
 For an explicitly local, non-distributable build without a certificate, opt in
 to ad-hoc signing with `CLAVIS_ALLOW_ADHOC_SIGNING=1 ./build.sh`. The Nix package
 is likewise ad-hoc signed for local nix-darwin / Home Manager installation and

@@ -56,6 +56,12 @@ for binary in "${BINARIES[@]}"; do
         "$binary"
     /usr/bin/codesign --verify --strict --verbose=2 "$binary"
 
+    SIGNED_ENTITLEMENTS="$(/usr/bin/codesign -d --entitlements - "$binary" 2>&1)"
+    if ! /usr/bin/grep -Fq "group.com.clavis" <<<"$SIGNED_ENTITLEMENTS"; then
+        echo "❌ Shared Keychain application-group entitlement is missing from $binary." >&2
+        exit 1
+    fi
+
     if [[ "$SIGNING_MODE" == "identity" ]] && \
         /usr/bin/codesign --display --verbose=4 "$binary" 2>&1 | /usr/bin/grep -q "Signature=adhoc"; then
         echo "❌ Expected certificate signing, but $binary has an ad-hoc signature." >&2
@@ -70,18 +76,16 @@ else
 fi
 echo ""
 echo "🚀 To run Clavis GUI App:"
-echo "  swift run Clavis"
-echo "  or: .build/release/Clavis"
+echo "  .build/release/Clavis"
 echo ""
 echo "🔑 To run standalone Clavis SSH Agent Daemon:"
-echo "  swift run clavis-agent"
-echo "  or: .build/release/clavis-agent"
+echo "  .build/release/clavis-agent"
 echo ""
 echo "💻 To use Clavis CLI:"
-echo "  swift run clavis-cli list"
-echo "  swift run clavis-cli generate <label>"
-echo "  swift run clavis-cli export-pub <label>"
-echo "  swift run clavis-cli delete <label>"
+echo "  .build/release/clavis-cli list"
+echo "  .build/release/clavis-cli generate <label>"
+echo "  .build/release/clavis-cli export-pub <label>"
+echo "  .build/release/clavis-cli delete <label>"
 echo ""
 echo "🔑 To use with SSH:"
 echo "  export SSH_AUTH_SOCK=~/.ssh/clavis.sock"
