@@ -76,7 +76,11 @@ public class KeychainManager {
                 defer { record.wipe() }
                 var recordData = try record.encode()
                 defer { Self.wipeData(&recordData) }
-                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: policy.accessControlFlags)
+                // The serialized value is only an opaque, device-bound Secure
+                // Enclave reference. Authentication is enforced by the hardware
+                // key's access control above, so the containing generic-password
+                // record must not request a second entitlement-gated policy.
+                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [])
                 pubKeyData = seKey.publicKey.x963Representation
             } else {
                 effectivePolicy = nil

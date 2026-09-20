@@ -122,6 +122,25 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
         baseItem[kSecAttrSynchronizable as String] = false
         baseItem[kSecAttrDescription as String] = "Clavis private key record"
 
+        // An empty flag set is reserved for an opaque Secure Enclave reference.
+        // The hardware key itself owns the authentication policy; the reference
+        // is device-bound metadata and contains no exportable private scalar.
+        if accessControlFlags.isEmpty {
+            var referenceAttributes = baseItem
+            referenceAttributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            var saveStatus = updateItem(lookup as CFDictionary, referenceAttributes as CFDictionary)
+            if saveStatus == errSecItemNotFound {
+                saveStatus = addItem(referenceAttributes as CFDictionary)
+                if saveStatus == errSecDuplicateItem {
+                    saveStatus = updateItem(lookup as CFDictionary, referenceAttributes as CFDictionary)
+                }
+            }
+            guard saveStatus == errSecSuccess else {
+                throw PrivateKeyStoreError.keychain(saveStatus)
+            }
+            return
+        }
+
         // Generic password records do not support .privateKeyUsage (reserved for SecKeyRef).
         let passwordFlags = accessControlFlags.subtracting([.privateKeyUsage])
         guard !passwordFlags.isEmpty else {

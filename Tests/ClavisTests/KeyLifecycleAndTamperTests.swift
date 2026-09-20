@@ -752,6 +752,31 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         XCTAssertNil(added[kSecAttrAccess as String])
     }
 
+    func testKeychainPrivateKeyStoreStoresSecureEnclaveReferenceAsDeviceBoundMetadata() throws {
+        var addedItems: [CFDictionary] = []
+        let store = KeychainPrivateKeyStore(
+            serviceName: "com.clavis.tests.secure-enclave-reference",
+            addItem: { item in
+                addedItems.append(item)
+                return errSecSuccess
+            },
+            deleteItem: { _ in errSecItemNotFound },
+            updateItem: { _, _ in errSecItemNotFound }
+        )
+
+        try store.save(label: "hardware-key", data: Data([0xCA, 0xFE]), accessControlFlags: [])
+
+        XCTAssertEqual(addedItems.count, 1)
+        let added = addedItems[0] as NSDictionary
+        XCTAssertEqual(
+            added[kSecAttrAccessible as String] as? String,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+        )
+        XCTAssertNil(added[kSecAttrAccessControl as String])
+        XCTAssertNil(added[kSecUseDataProtectionKeychain as String])
+        XCTAssertNil(added[kSecAttrAccessGroup as String])
+    }
+
     func testKeychainPrivateKeyStoreLoadsExistingItemWithoutRewritingIt() throws {
         let encoded = Data([0x01, 0x02, 0x03])
         var addCallCount = 0
