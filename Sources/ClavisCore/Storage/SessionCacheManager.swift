@@ -6,6 +6,7 @@ import Darwin
 public enum SessionCacheError: LocalizedError, Equatable {
     case disabled
     case invalidated
+    case hardwareNotCacheable
 
     public var errorDescription: String? {
         switch self {
@@ -13,6 +14,8 @@ public enum SessionCacheError: LocalizedError, Equatable {
             return "Session caching is disabled; choose a timeout before unlocking a key"
         case .invalidated:
             return "The key operation was cancelled because the session was locked"
+        case .hardwareNotCacheable:
+            return "Hardware-backed Secure Enclave keys cannot be cached in session; authentication is required for each operation"
         }
     }
 }
@@ -166,7 +169,7 @@ public class SessionCacheManager {
             case .software(let buf):
                 if !buf.isWiped { return true }
             case .secureEnclave:
-                return true
+                return false
             }
         }
         if let entry = unlockedSessions[label], entry.expiresAt > now, entry.monotonicDeadline > monoNow {
@@ -190,7 +193,7 @@ public class SessionCacheManager {
                     return entry.expiresAt.timeIntervalSince(now)
                 }
             case .secureEnclave:
-                return entry.expiresAt.timeIntervalSince(now)
+                return nil
             }
         }
         if let entry = unlockedSessions[label], entry.expiresAt > now, entry.monotonicDeadline > monoNow {
@@ -460,6 +463,10 @@ public class SessionCacheManager {
     ) -> Bool {
         lock.lock()
         defer { lock.unlock() }
+        if case .secureEnclave = key {
+            key.wipe()
+            return false
+        }
         if let expectedGeneration, expectedGeneration != generation {
             key.wipe()
             return false
@@ -494,7 +501,7 @@ public class SessionCacheManager {
             case .software(let buf):
                 if !buf.isWiped { activeLabels.insert(lbl) }
             case .secureEnclave:
-                activeLabels.insert(lbl)
+                break
             }
         }
         for (lbl, entry) in unlockedSessions where entry.expiresAt > now && entry.monotonicDeadline > monoNow {

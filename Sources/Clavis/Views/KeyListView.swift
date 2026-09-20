@@ -61,8 +61,15 @@ struct KeyListView: View {
                                         let isUnlocked = appState.isKeyUnlocked(label: key.label)
 
                                         HStack(spacing: 10) {
-                                            // Status dot
-                                            StatusDot(isActive: isUnlocked)
+                                            // Status indicator: hardware shield for Secure Enclave, cache status dot for software
+                                            if key.isHardware {
+                                                Image(systemName: "lock.shield.fill")
+                                                    .font(.system(size: 11))
+                                                    .foregroundColor(isSelected ? .white : DesignTokens.accentGreen)
+                                                    .frame(width: 8, height: 8)
+                                            } else {
+                                                StatusDot(isActive: isUnlocked)
+                                            }
 
                                             // Key label & algorithm
                                             VStack(alignment: .leading, spacing: 3) {

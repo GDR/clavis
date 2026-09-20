@@ -993,6 +993,36 @@ final class ClavisTests: XCTestCase {
         XCTAssertEqual(cache.cachedCount, 0)
     }
 
+    func testUnlockHardwareKeyThrowsNotCacheable() async throws {
+        let cache = makeSessionCache()
+        cache.currentTimeout = .fifteenMinutes
+        let keyManager = makeKeyManager(sessionCache: cache)
+        let label = "hw-test-\(UUID().uuidString)"
+        defer { try? keyManager.deleteKey(label: label) }
+
+        let hwKeyInfo = Ed25519KeyInfo(
+            label: label,
+            publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA... \(label)",
+            publicKeyBlob: Data([1, 2, 3]),
+            fingerprint: "SHA256:fake-hw",
+            createdAt: Date(),
+            algorithmName: "ECDSA P-256",
+            storage: .secureEnclave
+        )
+        PublicKeyStore.save(hwKeyInfo)
+
+        do {
+            try await keyManager.unlock(label: label)
+            XCTFail("Unlock must fail for hardware keys")
+        } catch {
+            XCTAssertEqual(error as? SessionCacheError, .hardwareNotCacheable)
+        }
+
+        XCTAssertFalse(cache.isKeyUnlocked(label: label))
+        XCTAssertNil(cache.remainingTime(label: label))
+        XCTAssertEqual(cache.cachedCount, 0)
+    }
+
     // MARK: - 9. SSHAgentServer Socket Protocol Tests
 
     private func socketReadFullBytes(from sock: Int32, count: Int) -> Data? {

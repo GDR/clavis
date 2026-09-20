@@ -61,36 +61,59 @@ public struct KeyDetailInspectorView: View {
                             .foregroundColor(DesignTokens.textSecondary)
 
                         HStack(spacing: 6) {
-                            StatusDot(isActive: isUnlocked)
-                            Text(unlockStatusText)
-                                .font(.caption)
-                                .foregroundColor(isUnlocked ? DesignTokens.accentGreen : DesignTokens.textSecondary)
+                            if key.isHardware {
+                                Image(systemName: "lock.shield.fill")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(DesignTokens.accentGreen)
+                                Text("Hardware Isolated · Touch ID per operation")
+                                    .font(.caption)
+                                    .foregroundColor(DesignTokens.accentGreen)
+                            } else {
+                                StatusDot(isActive: isUnlocked)
+                                Text(unlockStatusText)
+                                    .font(.caption)
+                                    .foregroundColor(isUnlocked ? DesignTokens.accentGreen : DesignTokens.textSecondary)
+                            }
                         }
                         .padding(.top, 2)
                     }
 
                     Spacer()
 
-                    // Lock / Unlock Button
-                    Button(action: {
-                        toggleLock()
-                    }) {
-                        HStack(spacing: 4) {
-                            if isUnlocking {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                Image(systemName: isUnlocked ? "lock.fill" : "lock.open.fill")
-                                Text(isUnlocked ? "Lock" : "Unlock")
+                    // Lock / Unlock Button (Only available for software keys that can be cached)
+                    if !key.isHardware {
+                        Button(action: {
+                            toggleLock()
+                        }) {
+                            HStack(spacing: 4) {
+                                if isUnlocking {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Image(systemName: isUnlocked ? "lock.fill" : "lock.open.fill")
+                                    Text(isUnlocked ? "Lock" : "Unlock")
+                                }
                             }
+                            .font(.caption)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
                         }
-                        .font(.caption)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
+                        .buttonStyle(.bordered)
+                        .focusable(false)
+                        .disabled(isUnlocking)
+                    } else {
+                        HStack(spacing: 4) {
+                            Image(systemName: "hand.raised.fill")
+                                .font(.system(size: 10))
+                            Text("Always Prompt")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(DesignTokens.accentGreen.opacity(0.12))
+                        .foregroundColor(DesignTokens.accentGreen)
+                        .clipShape(Capsule())
                     }
-                    .buttonStyle(.bordered)
-                    .focusable(false)
-                    .disabled(isUnlocking)
 
                     // Context Menu
                     Menu {
@@ -276,11 +299,25 @@ public struct KeyDetailInspectorView: View {
                         .foregroundColor(DesignTokens.textTertiary)
 
                     VStack(spacing: 8) {
-                        SecurityPropertyRow(label: "Storage", value: key.storageType.rawValue)
+                        SecurityPropertyRow(
+                            label: "Storage",
+                            value: key.isHardware ? "Apple Secure Enclave (Hardware Chip)" : "macOS Login Keychain (Software)"
+                        )
                         Divider().background(DesignTokens.cardBorder)
-                        SecurityPropertyRow(label: "Authentication", value: "Touch ID · Biometric prompt")
+                        SecurityPropertyRow(
+                            label: "Session Cache",
+                            value: key.isHardware ? "Disabled (Prompt on each signature)" : "Active TTL Memory Cache"
+                        )
                         Divider().background(DesignTokens.cardBorder)
-                        SecurityPropertyRow(label: "Export", value: key.isHardware ? "Hardware Bound" : "Seed Export Allowed")
+                        SecurityPropertyRow(
+                            label: "Authentication",
+                            value: key.isHardware ? "Biometric User Presence (Hardware Enforced)" : "Touch ID (Protected Seed)"
+                        )
+                        Divider().background(DesignTokens.cardBorder)
+                        SecurityPropertyRow(
+                            label: "Export",
+                            value: key.isHardware ? "Non-exportable (Hardware Bound)" : "Protected by Keychain Access Control"
+                        )
                         Divider().background(DesignTokens.cardBorder)
                         SecurityPropertyRow(label: "Created", value: formattedDate)
                     }
@@ -288,25 +325,25 @@ public struct KeyDetailInspectorView: View {
                     .glassCard(cornerRadius: 10)
                 }
 
-                // Last Activity Section
+                // Agent Availability Section
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("LAST ACTIVITY")
+                    Text("AGENT AVAILABILITY")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(DesignTokens.textTertiary)
 
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Agent authentication session")
+                            Text(appState.isSocketActive ? "Ready for SSH Agent requests" : "SSH Agent socket offline")
                                 .font(.subheadline)
                                 .fontWeight(.medium)
-                            Text("Accessed via SSH protocol")
+                            Text("~/.ssh/clavis.sock")
                                 .font(.caption2)
                                 .foregroundColor(DesignTokens.textSecondary)
                         }
                         Spacer()
-                        Text("Active session")
+                        Text(appState.isSocketActive ? "Online" : "Offline")
                             .font(.caption2)
-                            .foregroundColor(DesignTokens.accentGreen)
+                            .foregroundColor(appState.isSocketActive ? DesignTokens.accentGreen : .secondary)
                     }
                     .padding(14)
                     .glassCard(cornerRadius: 10)
@@ -344,18 +381,17 @@ public struct KeyDetailInspectorView: View {
     }
 
     private func toggleLock() {
+        guard !key.isHardware else { return }
         if isUnlocked {
-            KeychainManager.shared.lockKey(label: key.label)
-            appState.refresh()
+            appState.lockKey(label: key.label)
             showFeedback("Locked '\(key.label)'")
         } else {
             isUnlocking = true
             Task {
                 do {
-                    try await KeychainManager.shared.unlock(label: key.label)
+                    try await appState.unlockKey(label: key.label)
                     await MainActor.run {
                         isUnlocking = false
-                        appState.refresh()
                         showFeedback("Unlocked '\(key.label)'")
                     }
                 } catch {

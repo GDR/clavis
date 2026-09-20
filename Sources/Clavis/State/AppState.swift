@@ -69,6 +69,33 @@ public class AppState: ObservableObject {
         return "\(mins) min remaining"
     }
 
+    public func generateKey(label: String, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
+        let info = try keyManager.generateKey(label: label, algorithm: algorithm, storageType: storageType)
+        refresh()
+        return info
+    }
+
+    public func importKey(label: String, consuming seedData: inout Data, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
+        let info = try keyManager.importKey(label: label, consuming: &seedData, algorithm: algorithm, storageType: storageType)
+        refresh()
+        return info
+    }
+
+    public func deleteKey(label: String) throws {
+        try keyManager.deleteKey(label: label)
+        refresh()
+    }
+
+    public func lockKey(label: String) {
+        keyManager.lockKey(label: label)
+        refresh()
+    }
+
+    public func unlockKey(label: String) async throws {
+        try await keyManager.unlock(label: label)
+        refresh()
+    }
+
     public func clearError() {
         errorMessage = nil
     }

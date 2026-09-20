@@ -352,8 +352,7 @@ public struct CreateKeySheet: View {
         errorMessage = nil
 
         do {
-            try KeychainManager.shared.generateKey(label: label, algorithm: selectedAlgorithm.rawValue, storageType: selectedStorage)
-            appState.refresh()
+            _ = try appState.generateKey(label: label, algorithm: selectedAlgorithm.rawValue, storageType: selectedStorage)
             dismiss()
         } catch {
             errorMessage = error.localizedDescription

@@ -168,8 +168,7 @@ public struct ImportKeySheet: View {
         errorMessage = nil
 
         do {
-            try KeychainManager.shared.importKey(label: label, consuming: &seedData)
-            appState.refresh()
+            _ = try appState.importKey(label: label, consuming: &seedData)
             dismiss()
         } catch {
             errorMessage = error.localizedDescription

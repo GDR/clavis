@@ -302,7 +302,7 @@ public class KeychainManager {
             }
 
             let ecdsaSig: P256.Signing.ECDSASignature
-            if useCache, let cachedSignature = try sessionCache.withCachedP256(
+            if useCache && key.storageType != .secureEnclave, let cachedSignature = try sessionCache.withCachedP256(
                 label: key.label,
                 operation: { try $0.signature(for: data) }
             ) {
@@ -350,7 +350,7 @@ public class KeychainManager {
                     throw SessionCacheError.invalidated
                 }
 
-                if useCache && sessionCache.currentTimeout != .never {
+                if useCache && key.storageType != .secureEnclave && sessionCache.currentTimeout != .never {
                     // Ownership transfers to the cache even if the first
                     // operation throws after insertion.
                     localKeyToWipe = nil
@@ -390,6 +390,13 @@ public class KeychainManager {
 
     // Unlock a key with Touch ID / password and place in session cache
     public func unlock(label: String, prompt: String? = nil) async throws {
+        guard let keyInfo = try fetchKeyInfo(label: label) else {
+            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key '\(label)' not found"])
+        }
+        guard keyInfo.storageType != .secureEnclave else {
+            throw SessionCacheError.hardwareNotCacheable
+        }
+
         let reason = prompt ?? "Touch ID to unlock '\(label)'"
         guard sessionCache.currentTimeout.timeInterval != nil else {
             throw SessionCacheError.disabled
@@ -404,33 +411,22 @@ public class KeychainManager {
         guard let timeout = sessionCache.currentTimeout.timeInterval else {
             throw SessionCacheError.disabled
         }
-        guard let keyInfo = try fetchKeyInfo(label: label),
-              var storedData = try privateKeyStore.load(label: label, context: context, prompt: reason) else {
+        guard var storedData = try privateKeyStore.load(label: label, context: context, prompt: reason) else {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Private key not found for '\(label)'"])
         }
         defer {
-            if keyInfo.storageType != .secureEnclave {
-                storedData.withUnsafeMutableBytes { ptr in
-                    if let base = ptr.baseAddress {
-                        SecureMemory.zero(base, byteCount: ptr.count)
-                    }
+            storedData.withUnsafeMutableBytes { ptr in
+                if let base = ptr.baseAddress {
+                    SecureMemory.zero(base, byteCount: ptr.count)
                 }
             }
         }
 
         if keyInfo.algorithm == "ECDSA P-256" {
-            let signingKey: CachedP256SigningKey
-            if keyInfo.storageType == .secureEnclave {
-                signingKey = .secureEnclave(try SecureEnclave.P256.Signing.PrivateKey(
-                    dataRepresentation: storedData,
-                    authenticationContext: context
-                ))
-            } else {
-                guard let buf = secureBufferFactory(&storedData) else {
-                    throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(label)'"])
-                }
-                signingKey = .software(buf)
+            guard let buf = secureBufferFactory(&storedData) else {
+                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(label)'"])
             }
+            let signingKey = CachedP256SigningKey.software(buf)
             guard sessionCache.setP256(
                 label: label,
                 key: signingKey,
