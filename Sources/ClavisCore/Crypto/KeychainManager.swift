@@ -220,11 +220,12 @@ public class KeychainManager {
     // Delete key (both private seed and public metadata)
     public func deleteKey(label: String) throws {
         ClavisLogger.log("KEY_DELETE", "Deleting key '\(label)'...")
+        let prompt = "Authenticate to permanently delete key '\(label)'"
+        let context = try authenticator.authenticate(reason: prompt)
         try revokeKeyCapabilities(label: label)
+        try privateKeyStore.remove(label: label, context: context, prompt: prompt)
         SeedStore.remove(label: label)
-        try privateKeyStore.remove(label: label)
         PublicKeyStore.remove(label: label)
-        sessionCache.remove(label: label)
     }
 
     // MARK: - Authenticated Private Key Records & Verification

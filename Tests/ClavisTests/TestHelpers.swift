@@ -64,7 +64,7 @@ final class InMemoryPrivateKeyStore: PrivateKeyStoring {
         return values[label]
     }
 
-    func remove(label: String) throws {
+    func remove(label: String, context: LAContext?, prompt: String) throws {
         lock.lock()
         defer { lock.unlock() }
         values.removeValue(forKey: label)

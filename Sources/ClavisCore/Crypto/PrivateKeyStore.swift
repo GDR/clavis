@@ -6,12 +6,16 @@ public protocol PrivateKeyStoring {
     func contains(label: String) -> Bool
     func save(label: String, data: Data, accessControlFlags: SecAccessControlCreateFlags) throws
     func load(label: String, context: LAContext, prompt: String) throws -> Data?
-    func remove(label: String) throws
+    func remove(label: String, context: LAContext?, prompt: String) throws
 }
 
 public extension PrivateKeyStoring {
     func save(label: String, data: Data) throws {
         try save(label: label, data: data, accessControlFlags: [.userPresence])
+    }
+
+    func remove(label: String) throws {
+        try remove(label: label, context: nil, prompt: "")
     }
 }
 
@@ -160,12 +164,16 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
         return data
     }
 
-    public func remove(label: String) throws {
-        let query: [String: Any] = [
+    public func remove(label: String, context: LAContext?, prompt: String) throws {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: label
         ]
+        if let context {
+            context.localizedReason = prompt
+            query[kSecUseAuthenticationContext as String] = context
+        }
         let status = deleteItem(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw PrivateKeyStoreError.keychain(status)

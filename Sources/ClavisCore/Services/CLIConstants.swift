@@ -25,6 +25,7 @@ public enum CLIFlag: String {
     case stdin = "--stdin"
     case dash = "-"
     case daemon = "--daemon"
+    case yes = "--yes"
 }
 
 public enum CLIMessages {
@@ -35,7 +36,7 @@ public enum CLIMessages {
         case .importCmd:
             return "Usage: clavis import <label> [--stdin] [--git-only]"
         case .delete:
-            return "Usage: clavis delete <label>"
+            return "Usage: clavis delete <label> --yes"
         case .exportPub:
             return "Usage: clavis export-pub <label>"
         default:
@@ -51,7 +52,7 @@ public enum CLIMessages {
       clavis import <label> [--stdin]       Import a 32-byte hex seed into Keychain
       clavis list                          List all stored keys and OpenSSH public keys
       clavis export-pub <label>            Print the OpenSSH public key for <label>
-      clavis delete <label>                Delete key pair from Keychain
+      clavis delete <label> --yes          Authenticate and permanently delete a key pair
       clavis lock                          Lock all session caches and active Git sessions
       clavis logs                          Print live Touch ID and authentication logs
       clavis daemon / --daemon            Run SSH Agent socket daemon in background

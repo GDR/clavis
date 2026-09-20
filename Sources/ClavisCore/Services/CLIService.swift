@@ -109,7 +109,7 @@ public struct CLIService {
             return CLICommandResult(exitCode: 0, output: CLIMessages.lockedAll)
 
         case .delete:
-            guard args.count >= 3 else {
+            guard args.count >= 3, args.contains(CLIFlag.yes.rawValue) else {
                 return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.usage(for: .delete))
             }
             let label = args[2].trimmingCharacters(in: .whitespaces)
