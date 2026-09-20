@@ -24,12 +24,12 @@ elif [[ "$SIGN_IDENTITY" == "-" ]]; then
     echo "⚠️  Using explicitly requested ad-hoc signing; this is a local-only build."
 elif [[ -n "$SIGN_IDENTITY" ]]; then
     echo "  Using explicitly configured certificate: '$SIGN_IDENTITY'"
-elif /usr/bin/security find-identity -v -p codesigning 2>/dev/null | grep -q "Clavis Local Development"; then
-    SIGN_IDENTITY="Clavis Local Development"
-    echo "  Using local certificate: 'Clavis Local Development'"
 elif /usr/bin/security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Development"; then
     SIGN_IDENTITY="Apple Development"
     echo "  Using Apple Development certificate"
+elif /usr/bin/security find-identity -v -p codesigning 2>/dev/null | grep -q "Clavis Local Development"; then
+    SIGN_IDENTITY="Clavis Local Development"
+    echo "  Using local certificate: 'Clavis Local Development'"
 else
     echo "❌ No code-signing certificate found; refusing to create an ad-hoc release." >&2
     echo "   Install a signing certificate, set CLAVIS_SIGN_IDENTITY, or explicitly opt" >&2
