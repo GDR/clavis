@@ -384,6 +384,19 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         }
     }
 
+    internal func invalidate(keyLabel: String) {
+        lock.lock()
+        if activeGrant?.keyLabel == keyLabel {
+            activeGrant?.invalidate()
+            activeGrant = nil
+            expirationTimer?.schedule(deadline: .distantFuture)
+        }
+        let prefix = "\(keyLabel)\u{0}"
+        recentSignatures = recentSignatures.filter { !$0.key.hasPrefix(prefix) }
+        lock.unlock()
+        broadcastUpdate(grant: nil)
+    }
+
     private func expireActiveGrant() {
         lock.lock()
         guard let grant = activeGrant, !grant.isValid else {

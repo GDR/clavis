@@ -13,6 +13,7 @@ public class KeychainManager {
     private let privateKeyStore: PrivateKeyStoring
     private let sessionCache: SessionCacheManager
     private let secureBufferFactory: (inout Data) -> SecureBuffer?
+    private let agentGrantRevoker: (String) throws -> Void
 
     init(
         authenticator: UserAuthenticating = LocalUserAuthenticator(),
@@ -21,12 +22,16 @@ public class KeychainManager {
         secureBufferFactory: @escaping (inout Data) -> SecureBuffer? = { data in
             SecureBuffer(consuming: &data)
         },
+        agentGrantRevoker: @escaping (String) throws -> Void = { label in
+            try AgentLifecycleManager.shared.invalidateAgentGrant(label: label)
+        },
         migrateLegacyStorage: Bool = false
     ) {
         self.authenticator = authenticator
         self.privateKeyStore = privateKeyStore
         self.sessionCache = sessionCache
         self.secureBufferFactory = secureBufferFactory
+        self.agentGrantRevoker = agentGrantRevoker
         if migrateLegacyStorage {
             migrateLegacySeedFiles()
         }
@@ -215,6 +220,7 @@ public class KeychainManager {
     // Delete key (both private seed and public metadata)
     public func deleteKey(label: String) throws {
         ClavisLogger.log("KEY_DELETE", "Deleting key '\(label)'...")
+        try revokeKeyCapabilities(label: label)
         SeedStore.remove(label: label)
         try privateKeyStore.remove(label: label)
         PublicKeyStore.remove(label: label)
@@ -794,9 +800,15 @@ public class KeychainManager {
     }
 
     // Lock a key immediately
-    public func lockKey(label: String) {
-        sessionCache.remove(label: label)
+    public func lockKey(label: String) throws {
+        try revokeKeyCapabilities(label: label)
         ClavisLogger.log("KEY_LOCK", "Key '\(label)' locked.")
+    }
+
+    private func revokeKeyCapabilities(label: String) throws {
+        sessionCache.remove(label: label)
+        GitSigningGraceManager.shared.invalidate(keyLabel: label)
+        try agentGrantRevoker(label)
     }
 
     // Convert Curve25519.Signing.PrivateKey to OpenSSH public key format & wire representation

@@ -6,6 +6,29 @@ import LocalAuthentication
 @testable import Clavis
 
 final class SSHAgentServerTests: ClavisBaseTestCase {
+    func testOwnerControlRequestRevokesPerKeyGitGrant() throws {
+        let label = "revoke-\(UUID().uuidString)"
+        GitSigningGraceManager.shared.invalidateAll(broadcast: false)
+        defer { GitSigningGraceManager.shared.invalidateAll(broadcast: false) }
+        _ = GitSigningGraceManager.shared.recordGrant(
+            keyLabel: label,
+            clientIdentity: "/usr/bin/git",
+            context: LAContext()
+        )
+        XCTAssertNotNil(GitSigningGraceManager.shared.getValidGrant(for: label))
+
+        var request = Data([SSHAgentServer.invalidateKeyRequest])
+        request.appendWireString(label)
+        let response = SSHAgentServer(keyManager: makeKeyManager()).processAgentRequest(
+            payload: request,
+            clientPid: getpid(),
+            clientExecutablePath: "/Applications/Clavis.app/Contents/MacOS/Clavis"
+        )
+
+        XCTAssertEqual(response, Data([6]))
+        XCTAssertNil(GitSigningGraceManager.shared.getValidGrant(for: label))
+    }
+
 
     func testSSHAgentServerLifecycle() throws {
         let testSockPath = testRootURL.appendingPathComponent("clavis-unittest.sock").path

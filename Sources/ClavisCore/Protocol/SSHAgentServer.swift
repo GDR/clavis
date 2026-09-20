@@ -25,6 +25,7 @@ public enum SSHAgentServerError: LocalizedError, Equatable {
 }
 
 public class SSHAgentServer {
+    internal static let invalidateKeyRequest: UInt8 = 240
     public static let shared = SSHAgentServer()
     public static let sharedInstance = shared
     public static let defaultSocketPath = NSString(string: "~/.ssh/clavis.sock").expandingTildeInPath
@@ -364,6 +365,13 @@ public class SSHAgentServer {
                 clientPid: clientPid,
                 clientExecutablePath: clientExecutablePath
             )
+        case Self.invalidateKeyRequest:
+            var reader = DataReader(data: Data(payload.dropFirst()))
+            guard let label = reader.readWireString(), !label.isEmpty, reader.isEOF else {
+                return Data([5])
+            }
+            GitSigningGraceManager.shared.invalidate(keyLabel: label)
+            return Data([6]) // SSH_AGENT_SUCCESS
         default:
             ClavisLogger.log("SSH_AGENT_REQ", "Unsupported SSH Agent request type \(msgType)")
             return Data([5]) // SSH_AGENT_FAILURE

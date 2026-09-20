@@ -189,8 +189,8 @@ public class AppState: ObservableObject {
         refresh()
     }
 
-    public func lockKey(label: String) {
-        keyManager.lockKey(label: label)
+    public func lockKey(label: String) throws {
+        try keyManager.lockKey(label: label)
         refresh()
     }
 

@@ -431,8 +431,12 @@ public struct KeyDetailInspectorView: View {
     private func toggleLock() {
         guard !key.isHardware else { return }
         if isUnlocked {
-            appState.lockKey(label: key.label)
-            showFeedback("Locked '\(key.label)'")
+            do {
+                try appState.lockKey(label: key.label)
+                showFeedback("Locked '\(key.label)'")
+            } catch {
+                appState.errorMessage = error.localizedDescription
+            }
         } else {
             isUnlocking = true
             Task {

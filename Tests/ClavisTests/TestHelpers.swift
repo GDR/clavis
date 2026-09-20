@@ -122,7 +122,8 @@ class ClavisBaseTestCase: XCTestCase {
             authenticator: authenticator,
             privateKeyStore: InMemoryPrivateKeyStore(),
             sessionCache: sessionCache ?? makeSessionCache(),
-            secureBufferFactory: secureBufferFactory
+            secureBufferFactory: secureBufferFactory,
+            agentGrantRevoker: { _ in }
         )
     }
 
