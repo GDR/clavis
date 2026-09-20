@@ -5,7 +5,8 @@ import LocalAuthentication
 import AppKit
 
 public class KeychainManager {
-    public static let privateServiceName = "com.clavis.ed25519"
+    public static let privateServiceName = "com.clavis.private-record.v2"
+    public static let legacyPrivateServiceName = "com.clavis.ed25519"
     public static let publicServiceName = "com.clavis.ed25519.pub"
     public static let shared = KeychainManager(migrateLegacyStorage: true)
 

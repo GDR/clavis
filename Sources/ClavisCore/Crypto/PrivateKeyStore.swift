@@ -55,14 +55,19 @@ enum PrivateKeyAccessControl {
 
 public final class KeychainPrivateKeyStore: PrivateKeyStoring {
     private let serviceName: String
+    private let legacyServiceNames: [String]
     private let addItem: (CFDictionary) -> OSStatus
     private let deleteItem: (CFDictionary) -> OSStatus
     private let updateItem: (CFDictionary, CFDictionary) -> OSStatus
     private let copyItem: (CFDictionary) -> (OSStatus, AnyObject?)
 
     public convenience init(serviceName: String = KeychainManager.privateServiceName) {
+        let legacyServiceNames = serviceName == KeychainManager.privateServiceName
+            ? [KeychainManager.legacyPrivateServiceName]
+            : []
         self.init(
             serviceName: serviceName,
+            legacyServiceNames: legacyServiceNames,
             addItem: { SecItemAdd($0, nil) },
             deleteItem: { SecItemDelete($0) },
             updateItem: { SecItemUpdate($0, $1) },
@@ -76,6 +81,7 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
 
     init(
         serviceName: String,
+        legacyServiceNames: [String] = [],
         addItem: @escaping (CFDictionary) -> OSStatus,
         deleteItem: @escaping (CFDictionary) -> OSStatus,
         updateItem: @escaping (CFDictionary, CFDictionary) -> OSStatus = { SecItemUpdate($0, $1) },
@@ -86,6 +92,7 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
         }
     ) {
         self.serviceName = serviceName
+        self.legacyServiceNames = legacyServiceNames
         self.addItem = addItem
         self.deleteItem = deleteItem
         self.updateItem = updateItem
@@ -95,18 +102,20 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
     public func contains(label: String) -> Bool {
         let context = LAContext()
         context.interactionNotAllowed = true
-        var query = lookup(label: label)
-        query.merge([
-            kSecReturnAttributes as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationContext as String: context
-        ]) { _, new in new }
-        let (status, _) = copyItem(query as CFDictionary)
-        return status == errSecSuccess || status == errSecInteractionNotAllowed
+        return ([serviceName] + legacyServiceNames).contains { candidateService in
+            var query = lookup(label: label, serviceName: candidateService)
+            query.merge([
+                kSecReturnAttributes as String: true,
+                kSecMatchLimit as String: kSecMatchLimitOne,
+                kSecUseAuthenticationContext as String: context
+            ]) { _, new in new }
+            let (status, _) = copyItem(query as CFDictionary)
+            return status == errSecSuccess || status == errSecInteractionNotAllowed
+        }
     }
 
     public func save(label: String, data: Data, accessControlFlags: SecAccessControlCreateFlags = [.userPresence]) throws {
-        let lookup = lookup(label: label)
+        let lookup = lookup(label: label, serviceName: serviceName)
 
         var baseItem = lookup
         baseItem[kSecValueData as String] = data
@@ -134,6 +143,9 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
                 protectedAttributes[key] = value
             }
             saveStatus = addItem(protectedAttributes as CFDictionary)
+            if saveStatus == errSecDuplicateItem {
+                saveStatus = updateItem(lookup as CFDictionary, protectedAttributes as CFDictionary)
+            }
         }
 
         // Never retry without SecAccessControl. A missing entitlement is a deployment
@@ -149,34 +161,76 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
 
     public func load(label: String, context: LAContext, prompt: String) throws -> Data? {
         context.localizedReason = prompt
-        var query = lookup(label: label)
+        let (status, result) = loadItem(label: label, serviceName: serviceName, context: context)
+        if status == errSecSuccess, let data = result as? Data {
+            return data
+        }
+        guard status == errSecItemNotFound else {
+            throw PrivateKeyStoreError.keychain(status)
+        }
+
+        for legacyServiceName in legacyServiceNames {
+            let (legacyStatus, legacyResult) = loadItem(
+                label: label,
+                serviceName: legacyServiceName,
+                context: context
+            )
+            if legacyStatus == errSecItemNotFound { continue }
+            guard legacyStatus == errSecSuccess, let legacyData = legacyResult as? Data else {
+                throw PrivateKeyStoreError.keychain(legacyStatus)
+            }
+
+            try save(
+                label: label,
+                data: legacyData,
+                accessControlFlags: migrationAccessControlFlags(for: legacyData)
+            )
+            ClavisLogger.log(
+                "KEYCHAIN_LOCATION_MIGRATE",
+                "Copied '\(label)' to the current signed-client Keychain record; retained the legacy record as a recovery fallback."
+            )
+            return legacyData
+        }
+        return nil
+    }
+
+    public func remove(label: String, context: LAContext?, prompt: String) throws {
+        for candidateService in [serviceName] + legacyServiceNames {
+            var query = lookup(label: label, serviceName: candidateService)
+            if let context {
+                context.localizedReason = prompt
+                query[kSecUseAuthenticationContext as String] = context
+            }
+            let status = deleteItem(query as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw PrivateKeyStoreError.keychain(status)
+            }
+        }
+    }
+
+    private func loadItem(
+        label: String,
+        serviceName: String,
+        context: LAContext
+    ) -> (OSStatus, AnyObject?) {
+        var query = lookup(label: label, serviceName: serviceName)
         query.merge([
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
             kSecUseAuthenticationContext as String: context
         ]) { _, new in new }
-
-        let (status, result) = copyItem(query as CFDictionary)
-        if status == errSecSuccess, let data = result as? Data {
-            return data
-        }
-        if status == errSecItemNotFound { return nil }
-        throw PrivateKeyStoreError.keychain(status)
+        return copyItem(query as CFDictionary)
     }
 
-    public func remove(label: String, context: LAContext?, prompt: String) throws {
-        var query = lookup(label: label)
-        if let context {
-            context.localizedReason = prompt
-            query[kSecUseAuthenticationContext as String] = context
+    private func migrationAccessControlFlags(for data: Data) -> SecAccessControlCreateFlags {
+        guard var record = try? StoredPrivateKeyRecord.decode(from: data) else {
+            return [.userPresence]
         }
-        let status = deleteItem(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw PrivateKeyStoreError.keychain(status)
-        }
+        defer { record.wipe() }
+        return record.biometricPolicy?.accessControlFlags ?? [.userPresence]
     }
 
-    private func lookup(label: String) -> [String: Any] {
+    private func lookup(label: String, serviceName: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,

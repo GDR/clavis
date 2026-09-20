@@ -785,6 +785,55 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         XCTAssertNil(query[kSecAttrAccessGroup as String])
     }
 
+    func testKeychainPrivateKeyStoreCopiesLegacyServiceOnceWithoutDeletingFallback() throws {
+        let currentService = "com.clavis.tests.current"
+        let legacyService = "com.clavis.tests.legacy"
+        let encoded = Data([0x01, 0x02, 0x03])
+        var currentItemExists = false
+        var legacyReadCount = 0
+        var addCallCount = 0
+        var deleteCallCount = 0
+
+        let store = KeychainPrivateKeyStore(
+            serviceName: currentService,
+            legacyServiceNames: [legacyService],
+            addItem: { item in
+                let dictionary = item as NSDictionary
+                XCTAssertEqual(dictionary[kSecAttrService as String] as? String, currentService)
+                XCTAssertNotNil(dictionary[kSecAttrAccessControl as String])
+                currentItemExists = true
+                addCallCount += 1
+                return errSecSuccess
+            },
+            deleteItem: { _ in
+                deleteCallCount += 1
+                return errSecSuccess
+            },
+            updateItem: { _, _ in currentItemExists ? errSecSuccess : errSecItemNotFound },
+            copyItem: { query in
+                let dictionary = query as NSDictionary
+                let service = dictionary[kSecAttrService as String] as? String
+                if service == currentService {
+                    return currentItemExists
+                        ? (errSecSuccess, encoded as AnyObject)
+                        : (errSecItemNotFound, nil)
+                }
+                if service == legacyService {
+                    legacyReadCount += 1
+                    return (errSecSuccess, encoded as AnyObject)
+                }
+                return (errSecItemNotFound, nil)
+            }
+        )
+
+        let context = LAContext()
+        XCTAssertEqual(try store.load(label: "legacy-key", context: context, prompt: "Use key"), encoded)
+        XCTAssertEqual(try store.load(label: "legacy-key", context: context, prompt: "Use key"), encoded)
+        XCTAssertEqual(legacyReadCount, 1)
+        XCTAssertEqual(addCallCount, 1)
+        XCTAssertEqual(deleteCallCount, 0, "Migration must retain the old item as a recovery fallback")
+    }
+
     func testKeychainPrivateKeyStoreLoadFailureDoesNotRewriteOrDeleteItem() throws {
         var addCallCount = 0
         var deleteCallCount = 0

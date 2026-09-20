@@ -33,7 +33,10 @@ The build script gives every certificate-signed Clavis executable the original
 GUI Code Signing Identifier (`Clavis`), so existing GUI-created records and all
 shipped clients have the same designated requirement without restricted
 entitlements or a provisioning profile. Independently signed or plain
-`swift run` executables are not equivalent Keychain clients.
+`swift run` executables are not equivalent Keychain clients. Records created by
+older signatures are copied once, after an authenticated read, to a versioned
+service owned by the current signed client. The old record is retained as a
+recovery fallback and is no longer consulted after the copy succeeds.
 
 For an explicitly local, non-distributable build without a certificate, opt in
 to ad-hoc signing with `CLAVIS_ALLOW_ADHOC_SIGNING=1 ./build.sh`. The Nix package
