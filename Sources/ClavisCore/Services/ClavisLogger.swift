@@ -47,6 +47,32 @@ public struct ClavisLogger {
         return dir.appendingPathComponent("clavis.log")
     }
 
+    public enum Category: String {
+        case security = "SECURITY"
+        case sshAgent = "SSH_AGENT"
+        case sshAgentReq = "SSH_AGENT_REQ"
+        case sshAgentSign = "SSH_AGENT_SIGN"
+        case sshAgentIdentities = "SSH_AGENT_IDENTITIES"
+        case sshAgentLimit = "SSH_AGENT_LIMIT"
+        case agentDaemon = "AGENT_DAEMON"
+        case keychainWrite = "KEYCHAIN_WRITE"
+        case keychainMigrate = "KEYCHAIN_MIGRATE"
+        case fetchKey = "FETCH_KEY"
+        case fetchKeySuccess = "FETCH_KEY_SUCCESS"
+        case keyList = "KEY_LIST"
+        case keyDelete = "KEY_DELETE"
+        case seedStore = "SEED_STORE"
+        case gitGrace = "GIT_GRACE"
+        case lock = "LOCK"
+        case touchIdPrompt = "TOUCH_ID_PROMPT"
+        case touchIdResult = "TOUCH_ID_RESULT"
+        case securityAlert = "SECURITY_ALERT"
+    }
+
+    public static func log(_ category: Category, _ message: String) {
+        log(category.rawValue, message)
+    }
+
     public static func log(_ category: String, _ message: String) {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"

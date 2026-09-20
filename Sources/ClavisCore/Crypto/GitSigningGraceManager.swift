@@ -139,6 +139,36 @@ public final class GitSigningGrant: @unchecked Sendable {
     }
 }
 
+public struct GitSigningPromptStrings {
+    public var header: String
+    public var messageTemplate: (String, String) -> String
+    public var allowFiveMinutesButton: String
+    public var cancelButton: String
+    public var singleShotButton: String
+
+    public static let russian = GitSigningPromptStrings(
+        header: "Clavis — Сессия подписи Git",
+        messageTemplate: { keyLabel, clientDesc in
+            "Обнаружена серия коммитов Git (rebase / cherry-pick) для ключа '\(keyLabel)' от \(clientDesc).\n\nРазрешить автоматическую подпись Git на 5 минут без повторных запросов Touch ID?"
+        },
+        allowFiveMinutesButton: "Разрешить на 5 минут",
+        cancelButton: "Отмена",
+        singleShotButton: "Только этот раз"
+    )
+
+    public static let english = GitSigningPromptStrings(
+        header: "Clavis — Git Signing Session",
+        messageTemplate: { keyLabel, clientDesc in
+            "Detected a series of Git commits (rebase / cherry-pick) for key '\(keyLabel)' from \(clientDesc).\n\nGrant automatic Git signing for 5 minutes without repeated Touch ID prompts?"
+        },
+        allowFiveMinutesButton: "Grant 5 Minutes",
+        cancelButton: "Cancel",
+        singleShotButton: "Sign Once"
+    )
+
+    public static var current: GitSigningPromptStrings = .russian
+}
+
 public enum GitSigningPrompt {
     public static func displayModal(
         keyLabel: String,
@@ -146,11 +176,12 @@ public enum GitSigningPrompt {
         timeout: TimeInterval = 30.0
     ) -> GitSigningPromptChoice {
         var responseFlags: CFOptionFlags = 0
-        let header = "Clavis — Сессия подписи Git" as CFString
-        let message = "Обнаружена серия коммитов Git (rebase / cherry-pick) для ключа '\(keyLabel)' от \(clientDesc).\n\nРазрешить автоматическую подпись Git на 5 минут без повторных запросов Touch ID?" as CFString
-        let defaultBtn = "Разрешить на 5 минут" as CFString
-        let alternateBtn = "Отмена" as CFString
-        let otherBtn = "Только этот раз" as CFString
+        let strings = GitSigningPromptStrings.current
+        let header = strings.header as CFString
+        let message = strings.messageTemplate(keyLabel, clientDesc) as CFString
+        let defaultBtn = strings.allowFiveMinutesButton as CFString
+        let alternateBtn = strings.cancelButton as CFString
+        let otherBtn = strings.singleShotButton as CFString
 
         let status = CFUserNotificationDisplayAlert(
             timeout,
@@ -187,8 +218,10 @@ public enum GitSigningPrompt {
 public final class GitSigningGraceManager: @unchecked Sendable {
     public static let shared = GitSigningGraceManager()
 
+    public static let lockAllNotification = NSNotification.Name("com.clavis.lockAll")
     public static let endGitGraceNotification = NSNotification.Name("com.clavis.endGitGrace")
     public static let gitGraceUpdatedNotification = NSNotification.Name("com.clavis.gitGraceUpdated")
+    public static let screenIsLockedNotification = NSNotification.Name("com.apple.screenIsLocked")
 
     /// Pluggable prompt provider for unit tests and headless environments.
     public static var promptProvider: (String, String) -> GitSigningPromptChoice = { label, clientDesc in
@@ -204,7 +237,7 @@ public final class GitSigningGraceManager: @unchecked Sendable {
             DistributedNotificationCenter.default().addObserver(
                 self,
                 selector: #selector(handleLockAll),
-                name: NSNotification.Name("com.clavis.lockAll"),
+                name: Self.lockAllNotification,
                 object: nil,
                 suspensionBehavior: .deliverImmediately
             )
@@ -218,7 +251,7 @@ public final class GitSigningGraceManager: @unchecked Sendable {
             DistributedNotificationCenter.default().addObserver(
                 self,
                 selector: #selector(handleScreenLocked),
-                name: NSNotification.Name("com.apple.screenIsLocked"),
+                name: Self.screenIsLockedNotification,
                 object: nil,
                 suspensionBehavior: .deliverImmediately
             )

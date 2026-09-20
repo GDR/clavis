@@ -24,11 +24,11 @@ public struct KeyDetailInspectorView: View {
     private var unlockStatusText: String {
         if isUnlocked {
             if let remaining = appState.remainingTimeFormatted(label: key.label) {
-                return "Unlocked · \(remaining)"
+                return ClavisUIStrings.Inspector.unlockedWithTime(remaining)
             }
-            return "Unlocked · Active in session"
+            return ClavisUIStrings.Inspector.unlockedActive
         }
-        return "Locked · Touch ID required"
+        return ClavisUIStrings.Inspector.lockedTouchIdRequired
     }
 
     private var formattedDate: String {
@@ -65,7 +65,7 @@ public struct KeyDetailInspectorView: View {
                                 Image(systemName: "lock.shield.fill")
                                     .font(.system(size: 11))
                                     .foregroundColor(DesignTokens.accentGreen)
-                                Text("Hardware Isolated · Touch ID per operation")
+                                Text(ClavisUIStrings.Inspector.hardwareIsolated)
                                     .font(.caption)
                                     .foregroundColor(DesignTokens.accentGreen)
                             } else {
@@ -91,7 +91,7 @@ public struct KeyDetailInspectorView: View {
                                         .controlSize(.small)
                                 } else {
                                     Image(systemName: isUnlocked ? "lock.fill" : "lock.open.fill")
-                                    Text(isUnlocked ? "Lock" : "Unlock")
+                                    Text(isUnlocked ? ClavisUIStrings.Inspector.lock : ClavisUIStrings.Inspector.unlock)
                                 }
                             }
                             .font(.caption)
@@ -400,13 +400,13 @@ public struct KeyDetailInspectorView: View {
             .padding(24)
         }
         .background(Color.clear)
-        .alert("Delete Key", isPresented: $showingDeleteAlert) {
-            Button("Delete", role: .destructive) {
+        .alert(ClavisUIStrings.Inspector.deleteAlertTitle, isPresented: $showingDeleteAlert) {
+            Button(ClavisUIStrings.Common.delete, role: .destructive) {
                 onDelete()
             }
-            Button("Cancel", role: .cancel) {}
+            Button(ClavisUIStrings.Common.cancel, role: .cancel) {}
         } message: {
-            Text("Are you sure you want to permanently delete '\(key.label)' from macOS Keychain? Any secrets encrypted for this key will become unrecoverable.")
+            Text(ClavisUIStrings.Inspector.deleteAlertMessage(label: key.label))
         }
     }
 

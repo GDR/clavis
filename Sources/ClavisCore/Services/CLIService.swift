@@ -21,41 +21,37 @@ public struct CLIService {
     ) -> CLICommandResult? {
         guard args.count > 1 else { return nil }
 
-        let subcommand = args[1].lowercased()
+        guard let command = CLICommand.match(args[1]) else { return nil }
 
-        switch subcommand {
-        case "generate":
+        switch command {
+        case .generate:
             guard args.count >= 3 else {
-                return CLICommandResult(exitCode: 1, output: "", error: "Usage: clavis generate <label>")
+                return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.usage(for: .generate))
             }
             let label = args[2].trimmingCharacters(in: .whitespaces)
-            let isGitOnly = args.contains("--git-only")
+            let isGitOnly = args.contains(CLIFlag.gitOnly.rawValue)
             let purpose: KeyPurpose = isGitOnly ? .gitSigningOnly : .general
             do {
                 let info = try keyManager.generateKey(label: label, keyPurpose: purpose)
-                var out = "Successfully generated Ed25519 key '\(info.label)' in Keychain.\n"
-                out += "Purpose:     \(info.purpose.title)\n"
-                out += "Fingerprint: \(info.fingerprint)\n"
-                out += "Public Key:  \(info.publicKeyOpenSSH)"
-                return CLICommandResult(exitCode: 0, output: out)
+                return CLICommandResult(exitCode: 0, output: CLIMessages.successfullyGenerated(info: info))
             } catch {
-                return CLICommandResult(exitCode: 1, output: "", error: "Failed to generate key: \(error.localizedDescription)")
+                return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.failedToGenerate(error: error))
             }
 
-        case "import":
+        case .importCmd:
             guard args.count >= 3 else {
-                return CLICommandResult(exitCode: 1, output: "", error: "Usage: clavis import <label> [--stdin] [--git-only]")
+                return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.usage(for: .importCmd))
             }
             let label = args[2].trimmingCharacters(in: .whitespaces)
-            let isGitOnly = args.contains("--git-only")
+            let isGitOnly = args.contains(CLIFlag.gitOnly.rawValue)
             let purpose: KeyPurpose = isGitOnly ? .gitSigningOnly : .general
-            let nonFlagArgs = args.filter { $0 != "--git-only" }
-            if nonFlagArgs.count >= 4 && nonFlagArgs[3] != "--stdin" && nonFlagArgs[3] != "-" {
+            let nonFlagArgs = args.filter { $0 != CLIFlag.gitOnly.rawValue }
+            if nonFlagArgs.count >= 4 && nonFlagArgs[3] != CLIFlag.stdin.rawValue && nonFlagArgs[3] != CLIFlag.dash.rawValue {
                 ClavisLogger.log("SECURITY", "Rejected private seed passed via argv for key '\(label)'.")
                 return CLICommandResult(
                     exitCode: 1,
                     output: "",
-                    error: "Refusing private seed in command arguments. Use interactive input or --stdin."
+                    error: CLIMessages.seedFromArgvRejected
                 )
             }
 
@@ -69,7 +65,7 @@ public struct CLIService {
             }
 
             guard var seedData else {
-                return CLICommandResult(exitCode: 1, output: "", error: "No valid seed provided. Use stdin or the interactive prompt.")
+                return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.noValidSeed)
             }
             defer {
                 seedData.withUnsafeMutableBytes { raw in
@@ -80,26 +76,22 @@ public struct CLIService {
                 seedData.removeAll(keepingCapacity: false)
             }
             guard seedData.count == 32 else {
-                return CLICommandResult(exitCode: 1, output: "", error: "Invalid hex seed string (must be 64 hex characters / 32 bytes).")
+                return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.invalidSeedLength)
             }
             do {
                 let info = try keyManager.importKey(label: label, consuming: &seedData, keyPurpose: purpose)
-                var out = "Successfully imported Ed25519 seed for '\(info.label)' into Keychain.\n"
-                out += "Purpose:     \(info.purpose.title)\n"
-                out += "Fingerprint: \(info.fingerprint)\n"
-                out += "Public Key:  \(info.publicKeyOpenSSH)"
-                return CLICommandResult(exitCode: 0, output: out)
+                return CLICommandResult(exitCode: 0, output: CLIMessages.successfullyImported(info: info))
             } catch {
-                return CLICommandResult(exitCode: 1, output: "", error: "Failed to import key: \(error.localizedDescription)")
+                return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.failedToImport(error: error))
             }
 
-        case "list":
+        case .list:
             do {
                 let keys = try keyManager.listKeys()
                 if keys.isEmpty {
-                    return CLICommandResult(exitCode: 0, output: "No Ed25519 keys found in Keychain.")
+                    return CLICommandResult(exitCode: 0, output: CLIMessages.noKeysFound())
                 }
-                var lines: [String] = ["Found \(keys.count) key(s) in Keychain:"]
+                var lines: [String] = [CLIMessages.foundKeysHeader(count: keys.count)]
                 for key in keys {
                     let purposeTag = key.purpose == .gitSigningOnly ? " [Git Only]" : ""
                     lines.append(" - [\(key.label)]\(purposeTag)")
@@ -108,68 +100,51 @@ public struct CLIService {
                 }
                 return CLICommandResult(exitCode: 0, output: lines.joined(separator: "\n"))
             } catch {
-                return CLICommandResult(exitCode: 1, output: "", error: "Failed to list keys: \(error.localizedDescription)")
+                return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.failedToList(error: error))
             }
 
-        case "lock":
+        case .lock:
             SessionCacheManager.shared.clearCache()
             GitSigningGraceManager.shared.invalidateAll()
-            return CLICommandResult(exitCode: 0, output: "🔒 All active sessions and caches locked.")
+            return CLICommandResult(exitCode: 0, output: CLIMessages.lockedAll)
 
-        case "delete":
+        case .delete:
             guard args.count >= 3 else {
-                return CLICommandResult(exitCode: 1, output: "", error: "Usage: clavis delete <label>")
+                return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.usage(for: .delete))
             }
             let label = args[2].trimmingCharacters(in: .whitespaces)
             do {
                 try keyManager.deleteKey(label: label)
-                return CLICommandResult(exitCode: 0, output: "Successfully deleted key '\(label)' from Keychain.")
+                return CLICommandResult(exitCode: 0, output: CLIMessages.successfullyDeleted(label: label))
             } catch {
-                return CLICommandResult(exitCode: 1, output: "", error: "Failed to delete key: \(error.localizedDescription)")
+                return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.failedToDelete(error: error))
             }
 
-        case "export-pub":
+        case .exportPub:
             guard args.count >= 3 else {
-                return CLICommandResult(exitCode: 1, output: "", error: "Usage: clavis export-pub <label>")
+                return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.usage(for: .exportPub))
             }
             let label = args[2].trimmingCharacters(in: .whitespaces)
             do {
                 let keys = try keyManager.listKeys()
                 guard let match = keys.first(where: { $0.label == label }) else {
-                    return CLICommandResult(exitCode: 1, output: "", error: "Key '\(label)' not found in Keychain.")
+                    return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.keyNotFound(label: label))
                 }
                 return CLICommandResult(exitCode: 0, output: match.publicKeyOpenSSH)
             } catch {
-                return CLICommandResult(exitCode: 1, output: "", error: "Failed to export public key: \(error.localizedDescription)")
+                return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.failedToExport(error: error))
             }
 
-        case "logs":
+        case .logs:
             let logURL = ClavisLogger.logFileURL
             if let content = try? String(contentsOf: logURL, encoding: .utf8) {
                 return CLICommandResult(exitCode: 0, output: content)
             } else {
-                return CLICommandResult(exitCode: 0, output: "No log file found at \(logURL.path)")
+                return CLICommandResult(exitCode: 0, output: CLIMessages.noLogFileFound(path: logURL.path))
             }
 
-        case "--help", "-h", "help":
-            let helpMsg = """
-            Clavis — Native macOS Ed25519 Keychain & SSH Agent Daemon
-
-            USAGE:
-              clavis generate <label> [--git-only]  Generate a new key pair in Keychain
-              clavis import <label> [--stdin]       Import a 32-byte hex seed into Keychain
-              clavis list                          List all stored keys and OpenSSH public keys
-              clavis export-pub <label>            Print the OpenSSH public key for <label>
-              clavis delete <label>                Delete key pair from Keychain
-              clavis lock                          Lock all session caches and active Git sessions
-              clavis logs                          Print live Touch ID and authentication logs
-              clavis daemon / --daemon            Run SSH Agent socket daemon in background
-              clavis                               Launch SwiftUI Key Manager GUI
-            """
-            return CLICommandResult(exitCode: 0, output: helpMsg)
-
-        default:
-            return nil
+        case .dashDashHelp, .dashH, .help:
+            return CLICommandResult(exitCode: 0, output: CLIMessages.help)
         }
     }
 
@@ -182,7 +157,7 @@ public struct CLIService {
                 }
             }
         }
-        guard readpassphrase("Enter 64-character hex seed: ", &buffer, buffer.count, RPP_REQUIRE_TTY) != nil else {
+        guard readpassphrase(CLIMessages.promptSeedTerminal, &buffer, buffer.count, RPP_REQUIRE_TTY) != nil else {
             return nil
         }
         return buffer.withUnsafeBytes { decodeHexSeed($0) }

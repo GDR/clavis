@@ -11,27 +11,27 @@ public enum KeyTypePreset: String, CaseIterable, Identifiable {
     public var title: String {
         switch self {
         case .software:
-            return "Software Key (Ed25519)"
+            return ClavisUIStrings.CreateKey.softwareTitle
         case .hardware:
-            return "Hardware Key (Secure Enclave)"
+            return ClavisUIStrings.CreateKey.hardwareTitle
         }
     }
 
     public var badge: String {
         switch self {
         case .software:
-            return "KEYCHAIN"
+            return ClavisUIStrings.CreateKey.softwareBadge
         case .hardware:
-            return "APPLE SILICON"
+            return ClavisUIStrings.CreateKey.hardwareBadge
         }
     }
 
     public var subtitle: String {
         switch self {
         case .software:
-            return "Standard Edwards-curve key. Supported by age/agenix, SSH, and Git commit signing, with session TTL memory caching."
+            return ClavisUIStrings.CreateKey.softwareSubtitle
         case .hardware:
-            return "Hardware-bound NIST P-256 key isolated inside the Apple Silicon chip. Private key never leaves hardware. Always prompts Touch ID per operation."
+            return ClavisUIStrings.CreateKey.hardwareSubtitle
         }
     }
 
@@ -78,10 +78,10 @@ public struct CreateKeySheet: View {
         VStack(alignment: .leading, spacing: 18) {
             // Header
             VStack(alignment: .leading, spacing: 4) {
-                Text("Create New Key")
+                Text(ClavisUIStrings.CreateKey.title)
                     .font(.title2)
                     .fontWeight(.bold)
-                Text("Select a key type preset. Storage and cryptographic algorithm are configured automatically.")
+                Text(ClavisUIStrings.CreateKey.subtitle)
                     .font(.subheadline)
                     .foregroundColor(DesignTokens.textSecondary)
             }

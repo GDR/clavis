@@ -26,25 +26,24 @@ if let cliResult = CLIService.handle(args: CommandLine.arguments) {
     if isDaemon {
         if CommandLine.arguments.contains("status") {
             if AgentLifecycleManager.shared.isAgentRunning {
-                let pidStr = AgentLifecycleManager.shared.agentPID.map { " (PID \($0))" } ?? ""
-                printOut("🟢 Clavis SSH Agent is active at \(SSHAgentServer.defaultSocketPath)\(pidStr)")
+                printOut(CLIMessages.Agent.active(socketPath: SSHAgentServer.defaultSocketPath, pid: AgentLifecycleManager.shared.agentPID))
                 exit(0)
             } else {
-                printErr("🔴 Clavis SSH Agent is not running.")
+                printErr(CLIMessages.Agent.notRunning)
                 exit(1)
             }
         } else if CommandLine.arguments.contains("stop") {
             if AgentLifecycleManager.shared.stopAgent() {
-                printOut("🛑 Clavis SSH Agent stopped.")
+                printOut(CLIMessages.Agent.stopped)
                 exit(0)
             } else {
-                printOut("ℹ️ Clavis SSH Agent was not running.")
+                printOut(CLIMessages.Agent.notRunningInfo)
                 exit(0)
             }
         } else if CommandLine.arguments.contains("restart") {
             do {
                 try AgentLifecycleManager.shared.restartAgent()
-                printOut("🔄 Clavis SSH Agent restarted at \(SSHAgentServer.defaultSocketPath)")
+                printOut(CLIMessages.Agent.restarted(socketPath: SSHAgentServer.defaultSocketPath))
                 exit(0)
             } catch {
                 printErr("Failed to restart SSH agent: \(error.localizedDescription)")
@@ -53,7 +52,7 @@ if let cliResult = CLIService.handle(args: CommandLine.arguments) {
         } else {
             guard SingleInstanceLock.agent.acquire() else {
                 let existingPid = SingleInstanceLock.agent.lockOwnerPID ?? 0
-                printErr("Another clavis-agent instance is already running (PID: \(existingPid)).")
+                printErr(CLIMessages.Agent.alreadyRunning(pid: existingPid))
                 exit(1)
             }
             signal(SIGINT) { _ in
@@ -70,7 +69,7 @@ if let cliResult = CLIService.handle(args: CommandLine.arguments) {
             signal(SIGPIPE, SIG_IGN)
             do {
                 try SSHAgentServer.sharedInstance.start()
-                printOut("🔑 Clavis SSH Agent socket daemon started at \(SSHAgentServer.defaultSocketPath) (PID: \(getpid()))")
+                printOut(CLIMessages.Agent.daemonStarted(socketPath: SSHAgentServer.defaultSocketPath, pid: getpid()))
                 dispatchMain()
             } catch {
                 printErr("Failed to start SSH agent server: \(error.localizedDescription)")

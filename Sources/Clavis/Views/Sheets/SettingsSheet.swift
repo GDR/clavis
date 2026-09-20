@@ -11,12 +11,12 @@ public struct SettingsView: View {
         ScrollView {
             VStack(spacing: 16) {
                 // System Startup Section
-                SettingsGroup(title: "SYSTEM STARTUP") {
+                SettingsGroup(title: ClavisUIStrings.Settings.startupSection) {
                     SettingsRow(
                         icon: "power",
                         iconColor: Color(red: 0.0, green: 0.48, blue: 1.0),
-                        title: "Launch at Login",
-                        subtitle: "Automatically start Clavis daemon on user login"
+                        title: ClavisUIStrings.Settings.launchAtLoginTitle,
+                        subtitle: ClavisUIStrings.Settings.launchAtLoginSubtitle
                     ) {
                         Toggle("", isOn: Binding(
                             get: { appState.launchAtLogin },
@@ -28,13 +28,13 @@ public struct SettingsView: View {
                 }
 
                 // SSH Integration Section
-                SettingsGroup(title: "SSH INTEGRATION") {
+                SettingsGroup(title: ClavisUIStrings.Settings.sshSection) {
                     VStack(alignment: .leading, spacing: 10) {
                         SettingsRow(
                             icon: "terminal.fill",
                             iconColor: Color(red: 0.55, green: 0.58, blue: 0.62),
-                            title: "Agent Socket",
-                            subtitle: "~/.ssh/clavis.sock"
+                            title: ClavisUIStrings.Settings.agentSocketTitle,
+                            subtitle: SSHAgentServer.defaultSocketPath
                         ) {
                             EmptyView()
                         }
@@ -42,12 +42,12 @@ public struct SettingsView: View {
                         Divider()
 
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Terminal Environment Variable")
+                            Text(ClavisUIStrings.Settings.envVarTitle)
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundColor(.secondary)
 
                             HStack(spacing: 8) {
-                                Text("export SSH_AUTH_SOCK=~/.ssh/clavis.sock")
+                                Text(ClavisUIStrings.Settings.envVarCommand)
                                     .font(.system(size: 11, design: .monospaced))
                                     .foregroundColor(.primary)
                                     .lineLimit(1)
@@ -57,7 +57,7 @@ public struct SettingsView: View {
 
                                 Button(action: {
                                     NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString("export SSH_AUTH_SOCK=~/.ssh/clavis.sock", forType: .string)
+                                    NSPasteboard.general.setString(ClavisUIStrings.Settings.envVarCommand, forType: .string)
                                     copiedEnv = true
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                                         copiedEnv = false
@@ -65,7 +65,7 @@ public struct SettingsView: View {
                                 }) {
                                     HStack(spacing: 4) {
                                         Image(systemName: copiedEnv ? "checkmark" : "doc.on.doc")
-                                        Text(copiedEnv ? "Copied" : "Copy")
+                                        Text(copiedEnv ? ClavisUIStrings.Common.copied : ClavisUIStrings.Common.copy)
                                     }
                                     .font(.system(size: 11, weight: .medium))
                                 }

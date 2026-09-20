@@ -14,10 +14,10 @@ struct MenuBarView: View {
                 HStack(spacing: 8) {
                     StatusDot(isActive: appState.isSocketActive)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("Clavis Agent")
+                        Text(ClavisUIStrings.MenuBar.title)
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundColor(.primary)
-                        Text(appState.isSocketActive ? (appState.agentPID != nil ? "Active (PID \(appState.agentPID!))" : "\(appState.keys.count) identities ready") : "Agent offline")
+                        Text(appState.isSocketActive ? (appState.agentPID != nil ? ClavisUIStrings.MenuBar.activeWithPID(appState.agentPID!) : ClavisUIStrings.MenuBar.identitiesReady(count: appState.keys.count)) : ClavisUIStrings.MenuBar.agentOffline)
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
@@ -32,7 +32,7 @@ struct MenuBarView: View {
                         HStack(spacing: 4) {
                             Image(systemName: "lock.fill")
                                 .font(.system(size: 10))
-                            Text("Lock All")
+                            Text(ClavisUIStrings.MenuBar.lockAll)
                                 .font(.system(size: 11, weight: .medium))
                         }
                         .padding(.horizontal, 8)
@@ -78,10 +78,10 @@ struct MenuBarView: View {
                         .foregroundColor(.blue)
                         .font(.system(size: 13, weight: .bold))
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("Git Session: \(gitGrace.keyLabel)")
+                        Text(ClavisUIStrings.MenuBar.gitSessionTitle(label: gitGrace.keyLabel))
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(.primary)
-                        Text("\(gitGrace.formattedRemainingTime) remaining • \(gitGrace.remainingOperations) ops left")
+                        Text(ClavisUIStrings.MenuBar.gitSessionDetails(timeRemaining: gitGrace.formattedRemainingTime, opsLeft: gitGrace.remainingOperations))
                             .font(.system(size: 10))
                             .foregroundColor(.secondary)
                     }
@@ -89,7 +89,7 @@ struct MenuBarView: View {
                     Button(action: {
                         appState.endGitSigningSession()
                     }) {
-                        Text("End")
+                        Text(ClavisUIStrings.Common.end)
                             .font(.system(size: 10, weight: .medium))
                             .padding(.horizontal, 7)
                             .padding(.vertical, 3)
@@ -107,17 +107,17 @@ struct MenuBarView: View {
 
             // Identities Section
             VStack(alignment: .leading, spacing: 4) {
-                Text("Identities")
+                Text(ClavisUIStrings.MenuBar.identitiesHeader)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 4)
 
                 if appState.keys.isEmpty {
                     VStack(spacing: 4) {
-                        Text("No keys available")
+                        Text(ClavisUIStrings.MenuBar.noKeysAvailable)
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        Text("Use 'New Key…' to generate an identity.")
+                        Text(ClavisUIStrings.MenuBar.useNewKeyHint)
                             .font(.caption2)
                             .foregroundColor(.secondary.opacity(0.8))
                     }
@@ -141,7 +141,7 @@ struct MenuBarView: View {
             // Menu Items (Control Center action style)
             VStack(spacing: 1) {
                 MenuBarActionItem(
-                    title: "New Key…",
+                    title: ClavisUIStrings.MenuBar.newKey,
                     icon: "plus",
                     shortcut: "⌘N"
                 ) {
@@ -149,7 +149,7 @@ struct MenuBarView: View {
                 }
 
                 MenuBarActionItem(
-                    title: "Import Key…",
+                    title: ClavisUIStrings.MenuBar.importKey,
                     icon: "square.and.arrow.down",
                     shortcut: "⇧⌘I"
                 ) {
@@ -157,7 +157,7 @@ struct MenuBarView: View {
                 }
 
                 MenuBarActionItem(
-                    title: "Open Key Manager…",
+                    title: ClavisUIStrings.MenuBar.openKeyManager,
                     icon: "slider.horizontal.3",
                     shortcut: "⌘O"
                 ) {
@@ -166,7 +166,7 @@ struct MenuBarView: View {
 
                 if appState.isSocketActive {
                     MenuBarActionItem(
-                        title: "Restart SSH Agent…",
+                        title: ClavisUIStrings.MenuBar.restartAgent,
                         icon: "arrow.clockwise",
                         shortcut: "⇧⌘R"
                     ) {
@@ -174,7 +174,7 @@ struct MenuBarView: View {
                     }
                 } else {
                     MenuBarActionItem(
-                        title: "Start SSH Agent…",
+                        title: ClavisUIStrings.MenuBar.startAgent,
                         icon: "play.fill",
                         shortcut: "⇧⌘S"
                     ) {
@@ -183,7 +183,7 @@ struct MenuBarView: View {
                 }
 
                 MenuBarActionItem(
-                    title: "Settings…",
+                    title: ClavisUIStrings.MenuBar.settings,
                     icon: "gearshape",
                     shortcut: "⌘,"
                 ) {
@@ -195,7 +195,7 @@ struct MenuBarView: View {
 
             // Quit Action
             MenuBarActionItem(
-                title: "Quit Clavis",
+                title: ClavisUIStrings.MenuBar.quit,
                 icon: "power",
                 shortcut: "⌘Q",
                 isDestructive: true

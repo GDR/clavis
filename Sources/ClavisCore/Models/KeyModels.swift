@@ -37,6 +37,14 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
         return publicKeyOpenSSH
     }
 
+    public var cliSummary: String {
+        """
+        Purpose:     \(purpose.title)
+        Fingerprint: \(fingerprint)
+        Public Key:  \(publicKeyOpenSSH)
+        """
+    }
+
     public var algorithm: String {
         if let name = algorithmName {
             return name
