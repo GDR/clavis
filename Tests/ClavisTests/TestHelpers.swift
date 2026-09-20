@@ -6,11 +6,11 @@ import LocalAuthentication
 @testable import Clavis
 
 struct AllowingAuthenticator: UserAuthenticating {
-    func authenticate(reason: String) throws -> LAContext {
+    func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) throws -> LAContext {
         LAContext()
     }
 
-    func authenticate(reason: String) async throws -> LAContext {
+    func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) async throws -> LAContext {
         LAContext()
     }
 }
@@ -25,12 +25,12 @@ final class CountingAuthenticator: UserAuthenticating {
         return count
     }
 
-    func authenticate(reason: String) throws -> LAContext {
+    func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) throws -> LAContext {
         recordAuthentication()
         return LAContext()
     }
 
-    func authenticate(reason: String) async throws -> LAContext {
+    func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) async throws -> LAContext {
         recordAuthentication()
         return LAContext()
     }

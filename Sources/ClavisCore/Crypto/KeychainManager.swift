@@ -607,7 +607,10 @@ public class KeychainManager {
         if let existing = existingContext {
             context = existing
         } else {
-            context = try authenticator.authenticate(reason: prompt)
+            let laPolicy: LAPolicy = (key.biometricPolicy == .biometryCurrentSet)
+                ? .deviceOwnerAuthenticationWithBiometrics
+                : .deviceOwnerAuthentication
+            context = try authenticator.authenticate(reason: prompt, policy: laPolicy)
         }
         guard sessionCache.isGenerationCurrent(cacheGeneration) else {
             throw SessionCacheError.invalidated
