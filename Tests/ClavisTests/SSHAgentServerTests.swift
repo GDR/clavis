@@ -6,6 +6,21 @@ import LocalAuthentication
 @testable import Clavis
 
 final class SSHAgentServerTests: ClavisBaseTestCase {
+    func testAuthenticationReasonsFitSystemPromptGrammar() {
+        XCTAssertEqual(
+            SSHAgentServer.sshAuthenticationReason(keyLabel: "Main Key"),
+            "use \u{201c}Main Key\u{201d} for SSH authentication"
+        )
+        XCTAssertEqual(
+            SSHAgentServer.gitCommitSigningReason(keyLabel: "Main Key"),
+            "sign a Git commit with \u{201c}Main Key\u{201d}"
+        )
+        XCTAssertEqual(
+            SSHAgentServer.gitSigningSessionReason(keyLabel: "Main Key"),
+            "authorize a 5-minute Git signing session with \u{201c}Main Key\u{201d}"
+        )
+    }
+
     func testOwnerControlRequestRevokesPerKeyGitGrant() throws {
         let label = "revoke-\(UUID().uuidString)"
         GitSigningGraceManager.shared.invalidateAll(broadcast: false)

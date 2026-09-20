@@ -516,7 +516,7 @@ public class SSHAgentServer {
 
                     case .grantFiveMinutes:
                         ClavisLogger.log("GIT_GRACE", "User approved 5-minute Git signing session. Authorizing via Touch ID...")
-                        let authPrompt = "Touch ID to authorize 5-minute Git signing session for '\(matchingKey.label)' (\(clientDesc))"
+                        let authPrompt = Self.gitSigningSessionReason(keyLabel: matchingKey.label)
                         let grant = try keyManager.authorizeGitSigningGrant(
                             key: matchingKey,
                             prompt: authPrompt,
@@ -545,7 +545,7 @@ public class SSHAgentServer {
 
                     case .singleShot:
                         ClavisLogger.log("GIT_GRACE", "User chose single-shot signing.")
-                        let prompt = "Touch ID to approve Git commit signature for '\(matchingKey.label)' requested by \(clientDesc)"
+                        let prompt = Self.gitCommitSigningReason(keyLabel: matchingKey.label)
                         sigBlob = try keyManager.signSSH(
                             key: matchingKey,
                             data: dataToSign,
@@ -556,7 +556,7 @@ public class SSHAgentServer {
                     }
                 } else {
                     // Commit #1 (single commit / first in a potential sequence) -> standard Touch ID, no dialog
-                    let prompt = "Touch ID to approve Git commit signature for '\(matchingKey.label)' requested by \(clientDesc)"
+                    let prompt = Self.gitCommitSigningReason(keyLabel: matchingKey.label)
                     sigBlob = try keyManager.signSSH(
                         key: matchingKey,
                         data: dataToSign,
@@ -567,7 +567,7 @@ public class SSHAgentServer {
                 }
             } else {
                 // Non-Git signing request (e.g. SSH login): Grace period NEVER applies
-                let prompt = "Touch ID to approve SSH authentication for key '\(matchingKey.label)' requested by \(clientDesc)"
+                let prompt = Self.sshAuthenticationReason(keyLabel: matchingKey.label)
                 ClavisLogger.log("SSH_AGENT_SIGN", "Initiating SSH login signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
                 sigBlob = try keyManager.signSSH(
                     key: matchingKey,
@@ -593,6 +593,18 @@ public class SSHAgentServer {
             CharacterSet.controlCharacters.contains(scalar) ? "?" : Character(String(scalar))
         }
         return String(sanitized.prefix(512))
+    }
+
+    static func sshAuthenticationReason(keyLabel: String) -> String {
+        "use \u{201c}\(keyLabel)\u{201d} for SSH authentication"
+    }
+
+    static func gitCommitSigningReason(keyLabel: String) -> String {
+        "sign a Git commit with \u{201c}\(keyLabel)\u{201d}"
+    }
+
+    static func gitSigningSessionReason(keyLabel: String) -> String {
+        "authorize a 5-minute Git signing session with \u{201c}\(keyLabel)\u{201d}"
     }
 
     private func isSecureDirectory(_ path: String) -> Bool {
