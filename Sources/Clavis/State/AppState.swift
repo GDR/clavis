@@ -1,6 +1,13 @@
 import SwiftUI
 import ClavisCore
 
+public enum KeyManagerSheet: String, Identifiable {
+    case create
+    case importKey
+
+    public var id: String { rawValue }
+}
+
 @MainActor
 public class AppState: ObservableObject {
     public static let shared = AppState()
@@ -13,6 +20,7 @@ public class AppState: ObservableObject {
     @Published public var isDaemonMode: Bool = false
     @Published public var launchAtLogin: Bool = false
     @Published public var showingSettings: Bool = false
+    @Published public var activeSheet: KeyManagerSheet? = nil
 
     private let keyManager: KeychainManager
     private let sessionCache: SessionCacheManager

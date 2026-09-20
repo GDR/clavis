@@ -7,8 +7,9 @@ public class WindowManager: NSObject, NSWindowDelegate {
     private var keyManagerWindow: NSWindow?
     private var settingsWindow: NSWindow?
 
-    public func openKeyManager() {
+    public func openKeyManager(sheet: KeyManagerSheet? = nil) {
         NSApp.setActivationPolicy(.regular)
+        AppState.shared.activeSheet = sheet
 
         if let window = keyManagerWindow {
             window.makeKeyAndOrderFront(nil)

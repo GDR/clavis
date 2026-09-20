@@ -7,8 +7,6 @@ struct KeyListView: View {
     @EnvironmentObject var appState: AppState
 
     @State private var selectedKeyId: String? = nil
-    @State private var showingCreateSheet: Bool = false
-    @State private var showingImportSheet: Bool = false
     @State private var showingAddPopover: Bool = false
     @State private var statusMessage: String? = nil
 
@@ -147,11 +145,11 @@ struct KeyListView: View {
                                     AddKeyPopoverView(
                                         onNewKey: {
                                             showingAddPopover = false
-                                            showingCreateSheet = true
+                                            appState.activeSheet = .create
                                         },
                                         onImportKey: {
                                             showingAddPopover = false
-                                            showingImportSheet = true
+                                            appState.activeSheet = .importKey
                                         }
                                     )
                                 }
@@ -225,17 +223,19 @@ struct KeyListView: View {
             .ignoresSafeArea()
         }
         .ignoresSafeArea()
-        .sheet(isPresented: $showingCreateSheet) {
-            CreateKeySheet(appState: appState)
-        }
-        .sheet(isPresented: $showingImportSheet) {
-            ImportKeySheet(appState: appState)
+        .sheet(item: $appState.activeSheet) { sheet in
+            switch sheet {
+            case .create:
+                CreateKeySheet(appState: appState)
+            case .importKey:
+                ImportKeySheet(appState: appState)
+            }
         }
         .background {
             Group {
-                Button("") { showingCreateSheet = true }
+                Button("") { appState.activeSheet = .create }
                     .keyboardShortcut("n", modifiers: .command)
-                Button("") { showingImportSheet = true }
+                Button("") { appState.activeSheet = .importKey }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
                 Button("") { WindowManager.shared.openSettings() }
                     .keyboardShortcut(",", modifiers: .command)

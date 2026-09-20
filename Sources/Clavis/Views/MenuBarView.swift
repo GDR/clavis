@@ -113,7 +113,7 @@ struct MenuBarView: View {
                     icon: "plus",
                     shortcut: "⌘N"
                 ) {
-                    WindowManager.shared.openKeyManager()
+                    WindowManager.shared.openKeyManager(sheet: .create)
                 }
 
                 MenuBarActionItem(
@@ -121,7 +121,7 @@ struct MenuBarView: View {
                     icon: "square.and.arrow.down",
                     shortcut: "⇧⌘I"
                 ) {
-                    WindowManager.shared.openKeyManager()
+                    WindowManager.shared.openKeyManager(sheet: .importKey)
                 }
 
                 MenuBarActionItem(
@@ -150,9 +150,7 @@ struct MenuBarView: View {
                 shortcut: "⌘Q",
                 isDestructive: true
             ) {
-                SingleInstanceLock.shared.release()
-                SSHAgentServer.sharedInstance.stop()
-                NSApplication.shared.terminate(nil)
+                confirmQuit()
             }
         }
         .padding(14)
@@ -167,6 +165,22 @@ struct MenuBarView: View {
         )
         .onAppear {
             appState.refresh()
+        }
+    }
+
+    private func confirmQuit() {
+        let alert = NSAlert()
+        alert.messageText = "Quit Clavis?"
+        alert.informativeText = "Quitting Clavis will stop the background SSH Agent server (~/.ssh/clavis.sock) and disconnect active SSH sessions."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
+
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            SingleInstanceLock.shared.release()
+            SSHAgentServer.sharedInstance.stop()
+            NSApplication.shared.terminate(nil)
         }
     }
 
