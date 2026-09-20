@@ -58,7 +58,7 @@ for binary in "${BINARIES[@]}"; do
     /usr/bin/codesign \
         --force \
         --sign "$SIGN_IDENTITY" \
-        --identifier "com.clavis.shared-client" \
+        --identifier "Clavis" \
         --options runtime \
         --timestamp=none \
         --entitlements Entitlements.plist \
@@ -72,7 +72,7 @@ for binary in "${BINARIES[@]}"; do
     fi
 
     SIGNING_DETAILS="$(/usr/bin/codesign --display --verbose=4 "$binary" 2>&1)"
-    if ! /usr/bin/grep -Fq "Identifier=com.clavis.shared-client" <<<"$SIGNING_DETAILS"; then
+    if ! /usr/bin/grep -Fq "Identifier=Clavis" <<<"$SIGNING_DETAILS"; then
         echo "❌ Shared Code Signing Identifier is missing from $binary." >&2
         exit 1
     fi

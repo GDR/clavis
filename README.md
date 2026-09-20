@@ -28,14 +28,12 @@ the required entitlements, then verifies each signature. It fails closed when
 no development certificate is available. A specific certificate can be selected
 with `CLAVIS_SIGN_IDENTITY`.
 
-Private records use the Data Protection Keychain's default access group. The
-build script gives every certificate-signed Clavis executable the same Code
-Signing Identifier, so they have the same designated requirement without a
-restricted Keychain entitlement or provisioning profile. Run the signed
-artifacts produced by `build.sh`; independently signed or plain `swift run`
-executables are not equivalent Keychain clients. Existing legacy Login Keychain
-records are migrated only after an authenticated read, and the old record is
-deleted only after the new protected record has been stored successfully.
+Private records use the Login Keychain with `SecAccessControl` authentication.
+The build script gives every certificate-signed Clavis executable the original
+GUI Code Signing Identifier (`Clavis`), so existing GUI-created records and all
+shipped clients have the same designated requirement without restricted
+entitlements or a provisioning profile. Independently signed or plain
+`swift run` executables are not equivalent Keychain clients.
 
 For an explicitly local, non-distributable build without a certificate, opt in
 to ad-hoc signing with `CLAVIS_ALLOW_ADHOC_SIGNING=1 ./build.sh`. The Nix package

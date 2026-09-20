@@ -730,7 +730,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         XCTAssertEqual(deleteCallCount, 0, "A failed update must leave the existing item intact")
     }
 
-    func testKeychainPrivateKeyStoreWritesProtectedDataProtectionItemToDefaultGroup() throws {
+    func testKeychainPrivateKeyStoreWritesProtectedLoginKeychainItem() throws {
         var addedItems: [CFDictionary] = []
         let store = KeychainPrivateKeyStore(
             serviceName: "com.clavis.tests.shared-group",
@@ -747,92 +747,70 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         XCTAssertEqual(addedItems.count, 1)
         let added = addedItems[0] as NSDictionary
         XCTAssertNotNil(added[kSecAttrAccessControl as String])
-        XCTAssertEqual(added[kSecUseDataProtectionKeychain as String] as? Bool, true)
+        XCTAssertNil(added[kSecUseDataProtectionKeychain as String])
         XCTAssertNil(added[kSecAttrAccessGroup as String])
-        XCTAssertNil(added[kSecAttrAccess as String], "Data Protection Keychain must not use legacy ACLs")
+        XCTAssertNil(added[kSecAttrAccess as String])
     }
 
-    func testKeychainPrivateKeyStoreMigratesLegacyItemBeforeDeletingIt() throws {
-        let label = "legacy-key"
-        var record = StoredPrivateKeyRecord(
-            label: label,
-            algorithm: .ed25519,
-            storageType: .keychain,
-            keyPurpose: .general,
-            keyData: Data(repeating: 0x42, count: 32)
-        )
-        defer { record.wipe() }
-        let encoded = try record.encode()
-
-        var addedItems: [CFDictionary] = []
-        var deletedQueries: [CFDictionary] = []
+    func testKeychainPrivateKeyStoreLoadsExistingItemWithoutRewritingIt() throws {
+        let encoded = Data([0x01, 0x02, 0x03])
+        var addCallCount = 0
+        var deleteCallCount = 0
         var copyQueries: [CFDictionary] = []
         let store = KeychainPrivateKeyStore(
-            serviceName: "com.clavis.tests.legacy-migration",
-            addItem: { item in
-                addedItems.append(item)
+            serviceName: "com.clavis.tests.existing-item",
+            addItem: { _ in
+                addCallCount += 1
                 return errSecSuccess
             },
-            deleteItem: { query in
-                deletedQueries.append(query)
-                return errSecSuccess
-            },
-            updateItem: { _, _ in errSecItemNotFound },
-            copyItem: { query in
-                copyQueries.append(query)
-                let dictionary = query as NSDictionary
-                if dictionary[kSecUseDataProtectionKeychain as String] != nil {
-                    return (errSecItemNotFound, nil)
-                }
-                return (errSecSuccess, encoded as AnyObject)
-            }
-        )
-
-        let loaded = try store.load(label: label, context: LAContext(), prompt: "Migrate key")
-
-        XCTAssertEqual(loaded, encoded)
-        XCTAssertEqual(copyQueries.count, 2)
-        XCTAssertEqual(addedItems.count, 1)
-        XCTAssertEqual(deletedQueries.count, 1)
-
-        let added = addedItems[0] as NSDictionary
-        XCTAssertEqual(added[kSecUseDataProtectionKeychain as String] as? Bool, true)
-        XCTAssertNil(added[kSecAttrAccessGroup as String])
-        XCTAssertNotNil(added[kSecAttrAccessControl as String])
-
-        let deleted = deletedQueries[0] as NSDictionary
-        XCTAssertNil(deleted[kSecUseDataProtectionKeychain as String])
-        XCTAssertNil(deleted[kSecAttrAccessGroup as String])
-    }
-
-    func testKeychainPrivateKeyStoreDoesNotDeleteLegacyItemWhenMigrationAddFails() throws {
-        let encoded = Data([0x01, 0x02, 0x03])
-        var deleteCallCount = 0
-        let store = KeychainPrivateKeyStore(
-            serviceName: "com.clavis.tests.failed-legacy-migration",
-            addItem: { _ in errSecMissingEntitlement },
             deleteItem: { _ in
                 deleteCallCount += 1
                 return errSecSuccess
             },
             updateItem: { _, _ in errSecItemNotFound },
             copyItem: { query in
-                let dictionary = query as NSDictionary
-                if dictionary[kSecUseDataProtectionKeychain as String] != nil {
-                    return (errSecItemNotFound, nil)
-                }
+                copyQueries.append(query)
                 return (errSecSuccess, encoded as AnyObject)
             }
         )
 
+        let loaded = try store.load(label: "existing-key", context: LAContext(), prompt: "Use key")
+
+        XCTAssertEqual(loaded, encoded)
+        XCTAssertEqual(copyQueries.count, 1)
+        XCTAssertEqual(addCallCount, 0)
+        XCTAssertEqual(deleteCallCount, 0)
+        let query = copyQueries[0] as NSDictionary
+        XCTAssertNil(query[kSecUseDataProtectionKeychain as String])
+        XCTAssertNil(query[kSecAttrAccessGroup as String])
+    }
+
+    func testKeychainPrivateKeyStoreLoadFailureDoesNotRewriteOrDeleteItem() throws {
+        var addCallCount = 0
+        var deleteCallCount = 0
+        let store = KeychainPrivateKeyStore(
+            serviceName: "com.clavis.tests.failed-load",
+            addItem: { _ in
+                addCallCount += 1
+                return errSecSuccess
+            },
+            deleteItem: { _ in
+                deleteCallCount += 1
+                return errSecSuccess
+            },
+            updateItem: { _, _ in errSecItemNotFound },
+            copyItem: { _ in (errSecAuthFailed, nil) }
+        )
+
         XCTAssertThrowsError(
-            try store.load(label: "legacy-key", context: LAContext(), prompt: "Migrate key")
+            try store.load(label: "existing-key", context: LAContext(), prompt: "Use key")
         ) { error in
-            guard case PrivateKeyStoreError.protectionUnavailable(let status) = error else {
-                return XCTFail("Expected protectionUnavailable, got \(error)")
+            guard case PrivateKeyStoreError.keychain(let status) = error else {
+                return XCTFail("Expected keychain error, got \(error)")
             }
-            XCTAssertEqual(status, errSecMissingEntitlement)
+            XCTAssertEqual(status, errSecAuthFailed)
         }
-        XCTAssertEqual(deleteCallCount, 0, "Legacy data must survive a failed migration")
+        XCTAssertEqual(addCallCount, 0)
+        XCTAssertEqual(deleteCallCount, 0)
     }
 }
