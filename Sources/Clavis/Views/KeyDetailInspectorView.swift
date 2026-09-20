@@ -314,36 +314,7 @@ public struct KeyDetailInspectorView: View {
                             value: key.isHardware ? "Biometric User Presence (Hardware Enforced)" : "Touch ID (Protected Seed)"
                         )
                         Divider().background(DesignTokens.cardBorder)
-                        SecurityPropertyRow(
-                            label: "Export",
-                            value: key.isHardware ? "Non-exportable (Hardware Bound)" : "Protected by Keychain Access Control"
-                        )
-                        Divider().background(DesignTokens.cardBorder)
                         SecurityPropertyRow(label: "Created", value: formattedDate)
-                    }
-                    .padding(14)
-                    .glassCard(cornerRadius: 10)
-                }
-
-                // Agent Availability Section
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("AGENT AVAILABILITY")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(DesignTokens.textTertiary)
-
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(appState.isSocketActive ? "Ready for SSH Agent requests" : "SSH Agent socket offline")
-                                .font(.subheadline)
-                                .fontWeight(.medium)
-                            Text("~/.ssh/clavis.sock")
-                                .font(.caption2)
-                                .foregroundColor(DesignTokens.textSecondary)
-                        }
-                        Spacer()
-                        Text(appState.isSocketActive ? "Online" : "Offline")
-                            .font(.caption2)
-                            .foregroundColor(appState.isSocketActive ? DesignTokens.accentGreen : .secondary)
                     }
                     .padding(14)
                     .glassCard(cornerRadius: 10)
