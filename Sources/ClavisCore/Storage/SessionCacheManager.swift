@@ -467,6 +467,10 @@ public class SessionCacheManager {
         lock.lock()
         defer { lock.unlock() }
 
+        if case .secureEnclave = key {
+            key.wipe()
+            throw SessionCacheError.hardwareNotCacheable
+        }
         guard expectedGeneration == generation, let timeout = _currentTimeout.timeInterval else {
             key.wipe()
             throw SessionCacheError.invalidated

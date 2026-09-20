@@ -6,6 +6,28 @@ import LocalAuthentication
 @testable import Clavis
 
 final class SessionCacheTests: ClavisBaseTestCase {
+    func testAtomicP256InsertionRejectsSecureEnclaveKeys() throws {
+        guard ProcessInfo.processInfo.environment["CLAVIS_RUN_SECURE_ENCLAVE_INTEGRATION_TESTS"] == "1" else {
+            throw XCTSkip("Set CLAVIS_RUN_SECURE_ENCLAVE_INTEGRATION_TESTS=1 to run Secure Enclave integration tests.")
+        }
+        guard SecureEnclave.isAvailable else { throw XCTSkip("Secure Enclave is unavailable") }
+        let accessControl = try PrivateKeyAccessControl.make(flags: [.privateKeyUsage])
+        let key = try SecureEnclave.P256.Signing.PrivateKey(accessControl: accessControl)
+        let cache = makeSessionCache()
+
+        XCTAssertThrowsError(
+            try cache.setAndWithP256(
+                label: "hardware",
+                key: .secureEnclave(key),
+                expectedGeneration: cache.generationSnapshot(),
+                operation: { _ in XCTFail("Hardware cache operation must not execute") }
+            )
+        ) { error in
+            XCTAssertEqual(error as? SessionCacheError, .hardwareNotCacheable)
+        }
+        XCTAssertEqual(cache.cachedCount, 0)
+    }
+
 
     func testSessionCacheManagerExpiration() {
         let cache = makeSessionCache()
