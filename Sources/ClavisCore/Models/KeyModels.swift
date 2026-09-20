@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
     public var id: String { label }
@@ -9,6 +10,7 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
     public let createdAt: Date
     public let algorithmName: String?
     public let storage: KeyStorageType?
+    public let biometricPolicy: BiometricPolicy?
 
     public var isAgeCompatible: Bool {
         algorithm == "Ed25519" && storageType == .keychain
@@ -54,6 +56,10 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
         isHardware ? "Hardware" : "Software"
     }
 
+    public var effectiveBiometricPolicy: BiometricPolicy {
+        biometricPolicy ?? .userPresence
+    }
+
     public init(
         label: String,
         publicKeyOpenSSH: String,
@@ -61,7 +67,8 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
         fingerprint: String,
         createdAt: Date = Date(),
         algorithmName: String? = nil,
-        storage: KeyStorageType? = nil
+        storage: KeyStorageType? = nil,
+        biometricPolicy: BiometricPolicy? = nil
     ) {
         self.label = label
         self.publicKeyOpenSSH = publicKeyOpenSSH
@@ -70,6 +77,41 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
         self.createdAt = createdAt
         self.algorithmName = algorithmName
         self.storage = storage
+        self.biometricPolicy = biometricPolicy
+    }
+}
+
+public enum BiometricPolicy: String, CaseIterable, Identifiable, Codable {
+    case userPresence = "userPresence"
+    case biometryCurrentSet = "biometryCurrentSet"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .userPresence:
+            return "User Presence"
+        case .biometryCurrentSet:
+            return "Strict Biometrics"
+        }
+    }
+
+    public var subtitle: String {
+        switch self {
+        case .userPresence:
+            return "Touch ID, Apple Watch, or device password fallback"
+        case .biometryCurrentSet:
+            return "Touch ID only. Invalidated if system fingerprints change"
+        }
+    }
+
+    public var accessControlFlags: SecAccessControlCreateFlags {
+        switch self {
+        case .userPresence:
+            return [.privateKeyUsage, .userPresence]
+        case .biometryCurrentSet:
+            return [.privateKeyUsage, .biometryCurrentSet]
+        }
     }
 }
 

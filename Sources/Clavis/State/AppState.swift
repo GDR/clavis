@@ -77,8 +77,18 @@ public class AppState: ObservableObject {
         return "\(mins) min remaining"
     }
 
-    public func generateKey(label: String, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
-        let info = try keyManager.generateKey(label: label, algorithm: algorithm, storageType: storageType)
+    public func generateKey(
+        label: String,
+        algorithm: String = "Ed25519",
+        storageType: KeyStorageType = .keychain,
+        biometricPolicy: BiometricPolicy? = nil
+    ) throws -> Ed25519KeyInfo {
+        let info = try keyManager.generateKey(
+            label: label,
+            algorithm: algorithm,
+            storageType: storageType,
+            biometricPolicy: biometricPolicy
+        )
         refresh()
         return info
     }

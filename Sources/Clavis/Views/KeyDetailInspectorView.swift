@@ -311,7 +311,7 @@ public struct KeyDetailInspectorView: View {
                         Divider().background(DesignTokens.cardBorder)
                         SecurityPropertyRow(
                             label: "Authentication",
-                            value: key.isHardware ? "Biometric User Presence (Hardware Enforced)" : "Touch ID (Protected Seed)"
+                            value: key.isHardware ? (key.biometricPolicy == .biometryCurrentSet ? "Touch ID Only (Strict Current Set)" : "User Presence (Touch ID / Watch / Password)") : "Touch ID (Protected Seed)"
                         )
                         Divider().background(DesignTokens.cardBorder)
                         SecurityPropertyRow(label: "Created", value: formattedDate)
@@ -328,14 +328,14 @@ public struct KeyDetailInspectorView: View {
 
                     if key.isHardware {
                         HStack(spacing: 12) {
-                            Image(systemName: "lock.shield.fill")
+                            Image(systemName: key.biometricPolicy == .biometryCurrentSet ? "touchid" : "lock.shield.fill")
                                 .font(.system(size: 20))
                                 .foregroundColor(DesignTokens.accentGreen)
                             VStack(alignment: .leading, spacing: 3) {
-                                Text("Hardware Isolation (Always Prompt)")
+                                Text(key.biometricPolicy == .biometryCurrentSet ? "Hardware Isolation (Strict Biometrics)" : "Hardware Isolation (User Presence)")
                                     .font(.system(size: 13, weight: .semibold))
                                     .foregroundColor(.primary)
-                                Text("Secure Enclave keys cannot be cached in session memory. Every signature strictly requires explicit Touch ID user presence.")
+                                Text(key.biometricPolicy == .biometryCurrentSet ? "Secure Enclave strictly requires Touch ID matching the current biometric enrollment. Device password fallback is disabled. Changes to enrolled fingerprints will invalidate this key." : "Secure Enclave keys cannot be cached in session memory. Every signature requires explicit Touch ID user presence (password fallback allowed).")
                                     .font(.caption)
                                     .foregroundColor(DesignTokens.textSecondary)
                                     .fixedSize(horizontal: false, vertical: true)

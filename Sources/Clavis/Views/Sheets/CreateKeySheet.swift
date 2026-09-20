@@ -34,6 +34,7 @@ public struct CreateKeySheet: View {
     @State private var selectedPurpose: KeyPurpose = .age
     @State private var selectedStorage: KeyStorageType = .keychain
     @State private var selectedAlgorithm: KeyAlgorithm = .ed25519
+    @State private var selectedBiometricPolicy: BiometricPolicy = .userPresence
     @State private var selectedTimeout: SessionTimeout = .fifteenMinutes
     @State private var isCreating = false
     @State private var errorMessage: String? = nil
@@ -230,6 +231,68 @@ public struct CreateKeySheet: View {
                 }
             }
 
+            // Biometric Policy Selector (Secure Enclave only)
+            if selectedStorage == .secureEnclave {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Biometric Authentication Policy")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(DesignTokens.textSecondary)
+
+                    HStack(spacing: 10) {
+                        ForEach(BiometricPolicy.allCases) { policy in
+                            Button(action: {
+                                selectedBiometricPolicy = policy
+                            }) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Image(systemName: policy == .biometryCurrentSet ? "touchid" : "person.badge.key.fill")
+                                            .foregroundColor(selectedBiometricPolicy == policy ? DesignTokens.accentGreen : .secondary)
+                                        Spacer()
+                                        if selectedBiometricPolicy == policy {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .foregroundColor(DesignTokens.accentGreen)
+                                                .font(.caption)
+                                        }
+                                    }
+                                    Text(policy.title)
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                    Text(policy.subtitle)
+                                        .font(.caption2)
+                                        .foregroundColor(DesignTokens.textSecondary)
+                                        .lineLimit(2)
+                                }
+                                .padding(10)
+                                .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(selectedBiometricPolicy == policy ? DesignTokens.accentGreen.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(selectedBiometricPolicy == policy ? DesignTokens.accentGreen : DesignTokens.cardBorder, lineWidth: 1)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    if selectedBiometricPolicy == .biometryCurrentSet {
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.shield.fill")
+                                .foregroundColor(DesignTokens.accentOrange)
+                                .font(.caption2)
+                            Text("Warning: Adding or removing any fingerprint in macOS Touch ID settings will permanently invalidate this key.")
+                                .font(.caption2)
+                                .foregroundColor(DesignTokens.textSecondary)
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.top, 2)
+                    }
+                }
+            }
+
             // Algorithm Selector
             VStack(alignment: .leading, spacing: 6) {
                 Text("Algorithm")
@@ -352,7 +415,12 @@ public struct CreateKeySheet: View {
         errorMessage = nil
 
         do {
-            _ = try appState.generateKey(label: label, algorithm: selectedAlgorithm.rawValue, storageType: selectedStorage)
+            _ = try appState.generateKey(
+                label: label,
+                algorithm: selectedAlgorithm.rawValue,
+                storageType: selectedStorage,
+                biometricPolicy: selectedStorage == .secureEnclave ? selectedBiometricPolicy : nil
+            )
             dismiss()
         } catch {
             errorMessage = error.localizedDescription

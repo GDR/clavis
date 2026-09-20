@@ -34,7 +34,12 @@ public class KeychainManager {
 
     // Generate new Key and save private seed (guarded by Touch ID) and public metadata (unencrypted)
     @discardableResult
-    public func generateKey(label: String, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
+    public func generateKey(
+        label: String,
+        algorithm: String = "Ed25519",
+        storageType: KeyStorageType = .keychain,
+        biometricPolicy: BiometricPolicy? = nil
+    ) throws -> Ed25519KeyInfo {
         try validateLabel(label)
         try validateGenerationConfiguration(algorithm: algorithm, storageType: storageType)
         if try fetchKeyInfo(label: label) != nil {
@@ -43,15 +48,19 @@ public class KeychainManager {
 
         if algorithm == "ECDSA P-256" {
             let pubKeyData: Data
+            let effectivePolicy: BiometricPolicy?
             if storageType == .secureEnclave {
                 guard SecureEnclave.isAvailable else {
                     throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Apple Secure Enclave is not available on this device."])
                 }
-                let accessControl = try PrivateKeyAccessControl.make(flags: [.privateKeyUsage, .userPresence])
+                let policy = biometricPolicy ?? .userPresence
+                effectivePolicy = policy
+                let accessControl = try PrivateKeyAccessControl.make(flags: policy.accessControlFlags)
                 let seKey = try SecureEnclave.P256.Signing.PrivateKey(accessControl: accessControl)
                 try privateKeyStore.save(label: label, data: seKey.dataRepresentation)
                 pubKeyData = seKey.publicKey.x963Representation
             } else {
+                effectivePolicy = nil
                 let privateKey = P256.Signing.PrivateKey()
                 try privateKeyStore.save(label: label, data: privateKey.rawRepresentation)
                 pubKeyData = privateKey.publicKey.x963Representation
@@ -76,7 +85,8 @@ public class KeychainManager {
                 fingerprint: fingerprint,
                 createdAt: Date(),
                 algorithmName: algorithm,
-                storage: storageType
+                storage: storageType,
+                biometricPolicy: effectivePolicy
             )
             PublicKeyStore.save(keyInfo)
             return keyInfo

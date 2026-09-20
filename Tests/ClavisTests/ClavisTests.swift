@@ -1023,6 +1023,42 @@ final class ClavisTests: XCTestCase {
         XCTAssertEqual(cache.cachedCount, 0)
     }
 
+    func testBiometricPolicyAccessControlAndSerialization() throws {
+        XCTAssertEqual(BiometricPolicy.userPresence.accessControlFlags, [.privateKeyUsage, .userPresence])
+        XCTAssertEqual(BiometricPolicy.biometryCurrentSet.accessControlFlags, [.privateKeyUsage, .biometryCurrentSet])
+
+        let keyWithPolicy = Ed25519KeyInfo(
+            label: "test-policy-\(UUID().uuidString)",
+            publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA... test",
+            publicKeyBlob: Data([1, 2, 3]),
+            fingerprint: "SHA256:fake",
+            createdAt: Date(),
+            algorithmName: "ECDSA P-256",
+            storage: .secureEnclave,
+            biometricPolicy: .biometryCurrentSet
+        )
+
+        XCTAssertEqual(keyWithPolicy.biometricPolicy, .biometryCurrentSet)
+        XCTAssertEqual(keyWithPolicy.effectiveBiometricPolicy, .biometryCurrentSet)
+
+        let encoded = try JSONEncoder().encode(keyWithPolicy)
+        let decoded = try JSONDecoder().decode(Ed25519KeyInfo.self, from: encoded)
+        XCTAssertEqual(decoded.biometricPolicy, .biometryCurrentSet)
+        XCTAssertEqual(decoded.effectiveBiometricPolicy, .biometryCurrentSet)
+
+        let legacyKey = Ed25519KeyInfo(
+            label: "legacy-\(UUID().uuidString)",
+            publicKeyOpenSSH: "ssh-ed25519 AAAA... legacy",
+            publicKeyBlob: Data([4, 5, 6]),
+            fingerprint: "SHA256:other",
+            createdAt: Date(),
+            algorithmName: "Ed25519",
+            storage: .keychain
+        )
+        XCTAssertNil(legacyKey.biometricPolicy)
+        XCTAssertEqual(legacyKey.effectiveBiometricPolicy, .userPresence)
+    }
+
     // MARK: - 9. SSHAgentServer Socket Protocol Tests
 
     private func socketReadFullBytes(from sock: Int32, count: Int) -> Data? {
