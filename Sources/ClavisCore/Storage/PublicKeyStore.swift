@@ -54,10 +54,7 @@ public struct PublicKeyStore {
         item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         item[kSecAttrSynchronizable as String] = false
         item[kSecAttrDescription as String] = "Clavis public key metadata"
-        let addStatus = SecItemAdd(item as CFDictionary, nil)
-        if addStatus != errSecSuccess {
-            print("[DEBUG_KEYCHAIN_PUB_SAVE] status: \(addStatus)")
-        }
+        _ = SecItemAdd(item as CFDictionary, nil)
     }
 
     public static func removeFromKeychain(label: String) {

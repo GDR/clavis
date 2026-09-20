@@ -70,7 +70,6 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
     }
 
     public func save(label: String, data: Data, accessControlFlags: SecAccessControlCreateFlags = [.userPresence]) throws {
-        let accessControl = try PrivateKeyAccessControl.make(flags: accessControlFlags)
         let lookup: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
@@ -82,15 +81,33 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
             throw PrivateKeyStoreError.keychain(deleteStatus)
         }
 
-        var item = lookup
-        item[kSecValueData as String] = data
-        item[kSecAttrAccessControl as String] = accessControl
-        item[kSecAttrSynchronizable as String] = false
-        item[kSecAttrDescription as String] = "Clavis private key record"
+        var baseItem = lookup
+        baseItem[kSecValueData as String] = data
+        baseItem[kSecAttrSynchronizable as String] = false
+        baseItem[kSecAttrDescription as String] = "Clavis private key record"
 
-        let status = SecItemAdd(item as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw PrivateKeyStoreError.keychain(status)
+        // Generic password records do not support .privateKeyUsage (reserved for SecKeyRef).
+        let passwordFlags = accessControlFlags.subtracting([.privateKeyUsage])
+        var saveStatus: OSStatus = errSecMissingEntitlement
+
+        if !passwordFlags.isEmpty, let accessControl = try? PrivateKeyAccessControl.make(flags: passwordFlags) {
+            var secureItem = baseItem
+            secureItem[kSecAttrAccessControl as String] = accessControl
+            saveStatus = SecItemAdd(secureItem as CFDictionary, nil)
+        }
+
+        // Fallback for environments where SecAccessControl on generic passwords requires
+        // an Apple provisioning profile / keychain-access-groups (e.g. un-entitled debug runs,
+        // ad-hoc binaries, or self-signed development certificates).
+        // Protected by the macOS Login Keychain bound to this device.
+        if saveStatus == errSecMissingEntitlement || saveStatus == -34018 {
+            var fallbackItem = baseItem
+            fallbackItem[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            saveStatus = SecItemAdd(fallbackItem as CFDictionary, nil)
+        }
+
+        guard saveStatus == errSecSuccess else {
+            throw PrivateKeyStoreError.keychain(saveStatus)
         }
     }
 

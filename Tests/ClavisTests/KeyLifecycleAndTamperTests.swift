@@ -577,4 +577,24 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
     }
 
 
+    func testKeychainPrivateKeyStoreLifecycle() throws {
+        let store = KeychainPrivateKeyStore(serviceName: "com.clavis.tests.\(UUID().uuidString)")
+        let label = "test-store-lifecycle-\(UUID().uuidString)"
+        let dummySecret = "SecurePayload_\(UUID().uuidString)".data(using: .utf8)!
+
+        defer { try? store.remove(label: label) }
+
+        XCTAssertFalse(store.contains(label: label))
+
+        // Saving with accessControlFlags (should cleanly fall back without -34018 error)
+        try store.save(label: label, data: dummySecret, accessControlFlags: [.privateKeyUsage, .userPresence])
+        XCTAssertTrue(store.contains(label: label))
+
+        let context = LAContext()
+        let loaded = try store.load(label: label, context: context, prompt: "Test prompt")
+        XCTAssertEqual(loaded, dummySecret)
+
+        try store.remove(label: label)
+        XCTAssertFalse(store.contains(label: label))
+    }
 }
