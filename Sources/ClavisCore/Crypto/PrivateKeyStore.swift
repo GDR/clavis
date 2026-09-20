@@ -53,23 +53,27 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
     private let serviceName: String
     private let addItem: (CFDictionary) -> OSStatus
     private let deleteItem: (CFDictionary) -> OSStatus
+    private let updateItem: (CFDictionary, CFDictionary) -> OSStatus
 
     public convenience init(serviceName: String = KeychainManager.privateServiceName) {
         self.init(
             serviceName: serviceName,
             addItem: { SecItemAdd($0, nil) },
-            deleteItem: { SecItemDelete($0) }
+            deleteItem: { SecItemDelete($0) },
+            updateItem: { SecItemUpdate($0, $1) }
         )
     }
 
     init(
         serviceName: String,
         addItem: @escaping (CFDictionary) -> OSStatus,
-        deleteItem: @escaping (CFDictionary) -> OSStatus
+        deleteItem: @escaping (CFDictionary) -> OSStatus,
+        updateItem: @escaping (CFDictionary, CFDictionary) -> OSStatus = { SecItemUpdate($0, $1) }
     ) {
         self.serviceName = serviceName
         self.addItem = addItem
         self.deleteItem = deleteItem
+        self.updateItem = updateItem
     }
 
     public func contains(label: String) -> Bool {
@@ -95,11 +99,6 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
             kSecAttrAccount as String: label
         ]
 
-        let deleteStatus = deleteItem(lookup as CFDictionary)
-        guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
-            throw PrivateKeyStoreError.keychain(deleteStatus)
-        }
-
         var baseItem = lookup
         baseItem[kSecValueData as String] = data
         baseItem[kSecAttrSynchronizable as String] = false
@@ -114,9 +113,19 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
         }
 
         let accessControl = try PrivateKeyAccessControl.make(flags: passwordFlags)
-        var secureItem = baseItem
-        secureItem[kSecAttrAccessControl as String] = accessControl
-        let saveStatus = addItem(secureItem as CFDictionary)
+        var protectedAttributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrSynchronizable as String: false,
+            kSecAttrDescription as String: "Clavis private key record",
+            kSecAttrAccessControl as String: accessControl
+        ]
+        var saveStatus = updateItem(lookup as CFDictionary, protectedAttributes as CFDictionary)
+        if saveStatus == errSecItemNotFound {
+            for (key, value) in baseItem where protectedAttributes[key] == nil {
+                protectedAttributes[key] = value
+            }
+            saveStatus = addItem(protectedAttributes as CFDictionary)
+        }
 
         // Never retry without SecAccessControl. A missing entitlement is a deployment
         // configuration failure, not permission to downgrade private-key protection.

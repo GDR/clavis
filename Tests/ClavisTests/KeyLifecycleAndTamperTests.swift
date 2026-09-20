@@ -613,7 +613,8 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             deleteItem: { _ in
                 deleteCallCount += 1
                 return errSecItemNotFound
-            }
+            },
+            updateItem: { _, _ in errSecItemNotFound }
         )
 
         XCTAssertThrowsError(
@@ -629,7 +630,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             XCTAssertEqual(status, errSecMissingEntitlement)
         }
 
-        XCTAssertEqual(deleteCallCount, 1)
+        XCTAssertEqual(deleteCallCount, 0)
         XCTAssertEqual(addedItems.count, 1, "A protected add failure must never retry with weaker attributes")
         let added = addedItems[0] as NSDictionary
         XCTAssertNotNil(added[kSecAttrAccessControl as String])
@@ -644,7 +645,11 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
                 addCallCount += 1
                 return errSecSuccess
             },
-            deleteItem: { _ in errSecItemNotFound }
+            deleteItem: { _ in errSecItemNotFound },
+            updateItem: { _, _ in
+                XCTFail("Update must not be attempted without an authentication constraint")
+                return errSecSuccess
+            }
         )
 
         XCTAssertThrowsError(
@@ -659,5 +664,37 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             }
         }
         XCTAssertEqual(addCallCount, 0)
+    }
+
+    func testKeychainPrivateKeyStoreFailedUpdateNeverDeletesExistingItem() throws {
+        var addCallCount = 0
+        var deleteCallCount = 0
+        var updateCallCount = 0
+        let store = KeychainPrivateKeyStore(
+            serviceName: "com.clavis.tests.atomic-update",
+            addItem: { _ in
+                addCallCount += 1
+                return errSecSuccess
+            },
+            deleteItem: { _ in
+                deleteCallCount += 1
+                return errSecSuccess
+            },
+            updateItem: { _, _ in
+                updateCallCount += 1
+                return errSecAuthFailed
+            }
+        )
+
+        XCTAssertThrowsError(
+            try store.save(
+                label: "existing",
+                data: Data([0x01]),
+                accessControlFlags: [.userPresence]
+            )
+        )
+        XCTAssertEqual(updateCallCount, 1)
+        XCTAssertEqual(addCallCount, 0)
+        XCTAssertEqual(deleteCallCount, 0, "A failed update must leave the existing item intact")
     }
 }

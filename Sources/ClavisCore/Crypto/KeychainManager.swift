@@ -48,7 +48,7 @@ public class KeychainManager {
     ) throws -> Ed25519KeyInfo {
         try validateLabel(label)
         try validateGenerationConfiguration(algorithm: algorithm, storageType: storageType)
-        if try fetchKeyInfo(label: label) != nil {
+        if try fetchKeyInfo(label: label) != nil || privateKeyStore.contains(label: label) {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key with label '\(label)' already exists. Delete it first before generating a new key with this label."])
         }
 
@@ -149,7 +149,7 @@ public class KeychainManager {
                 userInfo: [NSLocalizedDescriptionKey: "Imported seeds support only Ed25519 in Login Keychain storage."]
             )
         }
-        if try fetchKeyInfo(label: label) != nil {
+        if try fetchKeyInfo(label: label) != nil || privateKeyStore.contains(label: label) {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key with label '\(label)' already exists. Delete it first before importing a new key with this label."])
         }
         guard seedData.count == 32 else {
@@ -317,32 +317,48 @@ public class KeychainManager {
             }
         }
 
-        // 1. Try decoding as modern StoredPrivateKeyRecord
-        if let record = try? StoredPrivateKeyRecord.decode(from: rawData) {
+        // 1. Decode a modern record without downgrading malformed or future data to legacy.
+        do {
+            let record = try StoredPrivateKeyRecord.decode(from: rawData)
             guard record.label == label else {
                 throw PrivateKeyRecordError.labelMismatch(expected: label, actual: record.label)
             }
             return record
+        } catch let error as PrivateKeyRecordError {
+            throw error
+        } catch {
+            let firstNonWhitespace = rawData.first { byte in
+                byte != 0x20 && byte != 0x09 && byte != 0x0A && byte != 0x0D
+            }
+            if firstNonWhitespace == 0x7B || firstNonWhitespace == 0x5B {
+                throw PrivateKeyRecordError.corruptedRecord("Malformed versioned private-key record")
+            }
         }
 
-        // 2. Legacy record: raw seed or opaque CryptoKit SE token
+        // 2. Legacy records are accepted only when authoritative public metadata
+        // identifies an exact supported format.
         ClavisLogger.log("KEYCHAIN_MIGRATE", "Migrating legacy Keychain record for '\(label)' to StoredPrivateKeyRecord (v1)...")
+        guard let expected = expectedKeyInfo else {
+            throw PrivateKeyRecordError.legacyRecordUnmigrated(label)
+        }
         let algorithm: KeyAlgorithm
         let storageType: KeyStorageType
         let policy: BiometricPolicy?
 
-        if let expected = expectedKeyInfo {
-            algorithm = (expected.algorithm == "ECDSA P-256") ? .ecdsaP256 : .ed25519
-            storageType = expected.storageType
-            policy = expected.biometricPolicy
-        } else if rawData.count == 32 {
+        if expected.algorithm == "Ed25519", expected.storageType == .keychain, rawData.count == 32 {
             algorithm = .ed25519
             storageType = .keychain
             policy = nil
-        } else {
+        } else if expected.algorithm == "ECDSA P-256", expected.storageType == .keychain, rawData.count == 32 {
+            algorithm = .ecdsaP256
+            storageType = .keychain
+            policy = nil
+        } else if expected.algorithm == "ECDSA P-256", expected.storageType == .secureEnclave {
             algorithm = .ecdsaP256
             storageType = .secureEnclave
-            policy = .userPresence
+            policy = expected.biometricPolicy ?? .userPresence
+        } else {
+            throw PrivateKeyRecordError.legacyRecordUnmigrated(label)
         }
 
         let record = StoredPrivateKeyRecord(
@@ -351,17 +367,28 @@ public class KeychainManager {
             algorithm: algorithm,
             storageType: storageType,
             biometricPolicy: policy,
-            keyPurpose: expectedKeyInfo?.keyPurpose,
+            keyPurpose: expected.keyPurpose,
             keyData: rawData,
-            createdAt: expectedKeyInfo?.createdAt ?? Date()
+            createdAt: expected.createdAt
         )
 
-        // Save migrated record back to Keychain
-        let flags = policy?.accessControlFlags ?? [.userPresence]
-        if let encoded = try? record.encode() {
-            try? privateKeyStore.save(label: label, data: encoded, accessControlFlags: flags)
-            ClavisLogger.log("KEYCHAIN_MIGRATE", "Successfully saved migrated record for '\(label)' to Keychain.")
+        let derivedPublicBlob = try Self.derivePublicKeyBlob(record: record, context: context)
+        guard derivedPublicBlob == expected.publicKeyBlob else {
+            throw PrivateKeyRecordError.publicKeyMismatch
         }
+
+        // Save migrated record back to Keychain. Failure is propagated so the
+        // caller never proceeds under an unpersisted migration assumption.
+        let flags = policy?.accessControlFlags ?? [.userPresence]
+        var encoded = try record.encode()
+        defer {
+            encoded.withUnsafeMutableBytes { raw in
+                if let base = raw.baseAddress { SecureMemory.zero(base, byteCount: raw.count) }
+            }
+            encoded.removeAll(keepingCapacity: false)
+        }
+        try privateKeyStore.save(label: label, data: encoded, accessControlFlags: flags)
+        ClavisLogger.log("KEYCHAIN_MIGRATE", "Successfully saved migrated record for '\(label)' to Keychain.")
 
         return record
     }
