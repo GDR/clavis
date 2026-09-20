@@ -41,53 +41,45 @@ public final class AgentLifecycleManager: @unchecked Sendable {
     public func locateAgentExecutable() -> URL? {
         let fileManager = FileManager.default
 
-        // 1. Check App bundle Contents/Helpers/clavis-agent
+        // Production: only the helper at the fixed app-bundle location is eligible.
         if let bundleURL = Bundle.main.executableURL?.deletingLastPathComponent().deletingLastPathComponent() {
             let helperURL = bundleURL.appendingPathComponent("Helpers/clavis-agent")
-            if fileManager.isExecutableFile(atPath: helperURL.path) {
+            if fileManager.isExecutableFile(atPath: helperURL.path), isTrustedExecutable(helperURL) {
                 return helperURL
             }
         }
 
-        // 2. Check sibling to main executable (e.g. .build/release/clavis-agent or Nix $out/bin/clavis-agent)
-        if let execURL = Bundle.main.executableURL {
-            let siblingURL = execURL.deletingLastPathComponent().appendingPathComponent("clavis-agent")
-            if fileManager.isExecutableFile(atPath: siblingURL.path) {
-                return siblingURL
-            }
-        }
-
-        // 3. Check current process arguments directory
-        let arg0 = ProcessInfo.processInfo.arguments[0]
-        let arg0URL = URL(fileURLWithPath: arg0)
-        let arg0Sibling = arg0URL.deletingLastPathComponent().appendingPathComponent("clavis-agent")
-        if fileManager.isExecutableFile(atPath: arg0Sibling.path) {
-            return arg0Sibling
-        }
-
-        // 4. Common system installation paths
-        let commonPaths = [
-            "/usr/local/bin/clavis-agent",
-            "/opt/homebrew/bin/clavis-agent",
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".nix-profile/bin/clavis-agent").path
-        ]
-        for path in commonPaths {
-            if fileManager.isExecutableFile(atPath: path) {
-                return URL(fileURLWithPath: path)
-            }
-        }
-
-        // 5. PATH lookup
-        if let envPath = ProcessInfo.processInfo.environment["PATH"] {
-            for dir in envPath.split(separator: ":") {
-                let candidate = URL(fileURLWithPath: String(dir)).appendingPathComponent("clavis-agent")
-                if fileManager.isExecutableFile(atPath: candidate.path) {
-                    return candidate
-                }
+        // Development and non-app packaging must opt in to one explicit path.
+        // Never search inherited PATH or common mutable installation locations.
+        if let explicitPath = ProcessInfo.processInfo.environment["CLAVIS_AGENT_EXECUTABLE"],
+           explicitPath.hasPrefix("/") {
+            let candidate = URL(fileURLWithPath: explicitPath).standardizedFileURL
+            if fileManager.isExecutableFile(atPath: candidate.path), isTrustedExecutable(candidate) {
+                return candidate
             }
         }
 
         return nil
+    }
+
+    private func isTrustedExecutable(_ url: URL) -> Bool {
+        var info = stat()
+        guard lstat(url.path, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == 0 || info.st_uid == geteuid(),
+              (info.st_mode & 0o022) == 0 else {
+            return false
+        }
+
+        let parent = url.deletingLastPathComponent()
+        var parentInfo = stat()
+        guard lstat(parent.path, &parentInfo) == 0,
+              (parentInfo.st_mode & S_IFMT) == S_IFDIR,
+              parentInfo.st_uid == 0 || parentInfo.st_uid == geteuid(),
+              (parentInfo.st_mode & 0o022) == 0 else {
+            return false
+        }
+        return true
     }
 
     public func ensureAgentRunning() {
