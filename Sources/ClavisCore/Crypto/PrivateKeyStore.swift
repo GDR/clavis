@@ -54,10 +54,9 @@ enum PrivateKeyAccessControl {
 }
 
 public final class KeychainPrivateKeyStore: PrivateKeyStoring {
-    /// The application group is also a Keychain access group on macOS. Every
-    /// shipped executable that performs private-key operations is signed with
-    /// this entitlement.
-    public static let sharedAccessGroup = "group.com.clavis"
+    /// Team-scoped Keychain group shared by every signed Clavis executable
+    /// that performs private-key operations.
+    public static let sharedAccessGroup = "P7P693LH69.com.clavis.shared"
 
     private let serviceName: String
     private let accessGroup: String

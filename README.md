@@ -29,7 +29,7 @@ no development certificate is available. A specific certificate can be selected
 with `CLAVIS_SIGN_IDENTITY`.
 
 Private records use the Data Protection Keychain access group
-`group.com.clavis`, shared by the signed Clavis executables. Run the signed
+`P7P693LH69.com.clavis.shared`, shared by the signed Clavis executables. Run the signed
 artifacts produced by `build.sh`; plain `swift run` executables do not carry the
 required entitlement. Existing legacy Login Keychain records are migrated only
 after an authenticated read, and the old record is deleted only after the new
