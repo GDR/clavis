@@ -422,6 +422,7 @@ public class SSHAgentServer {
             return Data([5])
         }
         let clientDesc = "\(Self.safeProcessPath(processPath)) (PID \(pid))"
+        let clientIdentity = URL(fileURLWithPath: processPath).standardizedFileURL.path
 
         // Domain verification: Parse signed payload as OpenSSH SSHSIG (strict Git format)
         let gitSSHSIG = SSHSIGPayload.parse(from: dataToSign)
@@ -437,21 +438,27 @@ public class SSHAgentServer {
 
             if let _ = gitSSHSIG {
                 // Git signing request
-                if let grant = GitSigningGraceManager.shared.consumeGrant(for: matchingKey.label) {
-                    // Fast-path: Active 5-minute grant
-                    ClavisLogger.log("GIT_GRACE", "Using active Git signing grant for '\(matchingKey.label)' (\(grant.remainingOperations) ops remaining, \(grant.remainingSeconds)s left). 0 Touch ID prompts.")
-                    if let cachedKey = grant.cachedKey {
-                        sigBlob = try cachedKey.signSSH(data: dataToSign)
-                    } else {
-                        sigBlob = try keyManager.signSSH(
+                if let grantedSignature = try GitSigningGraceManager.shared.withGrant(
+                    for: matchingKey.label,
+                    clientIdentity: clientIdentity,
+                    operation: { context in
+                        try keyManager.signSSH(
                             key: matchingKey,
                             data: dataToSign,
                             prompt: "",
                             useCache: false,
-                            existingContext: grant.authorizedContext
+                            existingContext: context
                         )
                     }
-                } else if GitSigningGraceManager.shared.hasRecentGitSignature(for: matchingKey.label, windowSeconds: 30.0) {
+                ) {
+                    // Fast-path: Active 5-minute grant
+                    ClavisLogger.log("GIT_GRACE", "Using active client-bound Git signing grant for '\(matchingKey.label)'. 0 Touch ID prompts.")
+                    sigBlob = grantedSignature
+                } else if GitSigningGraceManager.shared.hasRecentGitSignature(
+                    for: matchingKey.label,
+                    clientIdentity: clientIdentity,
+                    windowSeconds: 30.0
+                ) {
                     // Rebase / repeated commit pattern detected (Commit #2+ within 30s)
                     ClavisLogger.log("GIT_GRACE", "Detected rapid Git signing pattern (<30s) for '\(matchingKey.label)'. Prompting user for session...")
                     let choice = GitSigningGraceManager.promptProvider(matchingKey.label, clientDesc)
@@ -466,22 +473,28 @@ public class SSHAgentServer {
                         let grant = try keyManager.authorizeGitSigningGrant(
                             key: matchingKey,
                             prompt: authPrompt,
+                            clientIdentity: clientIdentity,
                             duration: 300.0,
                             maxOperations: 200
                         )
                         // Perform the commit #2 signature under the newly created grant
-                        _ = grant.consumeOperation()
-                        if let cachedKey = grant.cachedKey {
-                            sigBlob = try cachedKey.signSSH(data: dataToSign)
-                        } else {
-                            sigBlob = try keyManager.signSSH(
-                                key: matchingKey,
-                                data: dataToSign,
-                                prompt: "",
-                                useCache: false,
-                                existingContext: grant.authorizedContext
-                            )
+                        guard let grantedSignature = try GitSigningGraceManager.shared.withGrant(
+                            for: matchingKey.label,
+                            clientIdentity: clientIdentity,
+                            operation: { context in
+                                try keyManager.signSSH(
+                                    key: matchingKey,
+                                    data: dataToSign,
+                                    prompt: "",
+                                    useCache: false,
+                                    existingContext: context
+                                )
+                            }
+                        ) else {
+                            grant.invalidate()
+                            return Data([5])
                         }
+                        sigBlob = grantedSignature
 
                     case .singleShot:
                         ClavisLogger.log("GIT_GRACE", "User chose single-shot signing.")
@@ -492,7 +505,7 @@ public class SSHAgentServer {
                             prompt: prompt,
                             useCache: false
                         )
-                        GitSigningGraceManager.shared.recordGitSignature(for: matchingKey.label)
+                        GitSigningGraceManager.shared.recordGitSignature(for: matchingKey.label, clientIdentity: clientIdentity)
                     }
                 } else {
                     // Commit #1 (single commit / first in a potential sequence) -> standard Touch ID, no dialog
@@ -503,7 +516,7 @@ public class SSHAgentServer {
                         prompt: prompt,
                         useCache: false
                     )
-                    GitSigningGraceManager.shared.recordGitSignature(for: matchingKey.label)
+                    GitSigningGraceManager.shared.recordGitSignature(for: matchingKey.label, clientIdentity: clientIdentity)
                 }
             } else {
                 // Non-Git signing request (e.g. SSH login): Grace period NEVER applies

@@ -72,15 +72,15 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         XCTAssertEqual(grant.remainingOperations, 3)
 
         // Consume operations
-        XCTAssertTrue(grant.consumeOperation())
+        XCTAssertTrue(grant.consumeOperation(clientIdentity: "test-client"))
         XCTAssertEqual(grant.remainingOperations, 2)
-        XCTAssertTrue(grant.consumeOperation())
+        XCTAssertTrue(grant.consumeOperation(clientIdentity: "test-client"))
         XCTAssertEqual(grant.remainingOperations, 1)
-        XCTAssertTrue(grant.consumeOperation())
+        XCTAssertTrue(grant.consumeOperation(clientIdentity: "test-client"))
         XCTAssertEqual(grant.remainingOperations, 0)
 
         // Exceeded operation limit
-        XCTAssertFalse(grant.consumeOperation())
+        XCTAssertFalse(grant.consumeOperation(clientIdentity: "test-client"))
         XCTAssertFalse(grant.isValid)
 
         // Expiry by time
@@ -88,7 +88,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         XCTAssertTrue(timeGrant.isValid)
         usleep(70_000)
         XCTAssertFalse(timeGrant.isValid)
-        XCTAssertFalse(timeGrant.consumeOperation())
+        XCTAssertFalse(timeGrant.consumeOperation(clientIdentity: "test-client"))
     }
 
 
@@ -118,14 +118,24 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         XCTAssertEqual(choice, .grantFiveMinutes)
 
         // Issue grant
-        let grant = graceManager.recordGrant(keyLabel: label, duration: 300, maxOperations: 50)
+        let grant = graceManager.recordGrant(
+            keyLabel: label,
+            clientIdentity: "/usr/bin/git",
+            duration: 300,
+            maxOperations: 50,
+            context: LAContext()
+        )
         XCTAssertNotNil(graceManager.getValidGrant(for: label))
         XCTAssertEqual(grant.remainingOperations, 50)
 
         // Step 3: Subsequent rebase commits consume grant
-        let consumed = graceManager.consumeGrant(for: label)
-        XCTAssertNotNil(consumed)
-        XCTAssertEqual(consumed?.remainingOperations, 49)
+        let result = graceManager.withGrant(for: label, clientIdentity: "/usr/bin/git") { _ in "signed" }
+        XCTAssertEqual(result, "signed")
+        XCTAssertEqual(grant.remainingOperations, 49)
+        XCTAssertNil(
+            graceManager.withGrant(for: label, clientIdentity: "/tmp/fake-git") { _ in "signed" },
+            "A grant must not be transferable to another client identity"
+        )
 
         // Invalidation clears grant
         graceManager.invalidateAll(broadcast: false)
@@ -223,7 +233,11 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         }
 
         XCTAssertThrowsError(
-            try manager.authorizeGitSigningGrant(key: tampered, prompt: "Grant")
+            try manager.authorizeGitSigningGrant(
+                key: tampered,
+                prompt: "Grant",
+                clientIdentity: "/usr/bin/git"
+            )
         ) { error in
             guard case PrivateKeyRecordError.purposeMismatch = error else {
                 return XCTFail("Expected purposeMismatch, got \(error)")

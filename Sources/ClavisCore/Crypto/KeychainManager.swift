@@ -502,8 +502,23 @@ public class KeychainManager {
         key: Ed25519KeyInfo,
         data: Data,
         prompt: String,
-        useCache: Bool = true,
-        existingContext: LAContext? = nil
+        useCache: Bool = true
+    ) throws -> Data {
+        try signSSH(
+            key: key,
+            data: data,
+            prompt: prompt,
+            useCache: useCache,
+            existingContext: nil
+        )
+    }
+
+    internal func signSSH(
+        key: Ed25519KeyInfo,
+        data: Data,
+        prompt: String,
+        useCache: Bool,
+        existingContext: LAContext?
     ) throws -> Data {
         let isGitSigningRequest = SSHSIGPayload.parse(from: data) != nil
         if key.purpose == .gitSigningOnly && !isGitSigningRequest {
@@ -661,9 +676,10 @@ public class KeychainManager {
 
     /// Authorizes a 5-minute Git signing grant via Touch ID, returning an active grant.
     @discardableResult
-    public func authorizeGitSigningGrant(
+    internal func authorizeGitSigningGrant(
         key: Ed25519KeyInfo,
         prompt: String,
+        clientIdentity: String,
         duration: TimeInterval = 300.0,
         maxOperations: Int = 200
     ) throws -> GitSigningGrant {
@@ -678,36 +694,12 @@ public class KeychainManager {
 
         try validateAuthenticatedRecord(record, against: key, context: context)
 
-        let cachedKey: GitCachedSigningKey
-        switch record.algorithm {
-        case .ed25519:
-            var seedData = record.keyData
-            guard let buf = secureBufferFactory(&seedData) else {
-                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(key.label)'"])
-            }
-            cachedKey = .ed25519(buf)
-        case .ecdsaP256:
-            if record.storageType == .secureEnclave {
-                let seKey = try SecureEnclave.P256.Signing.PrivateKey(
-                    dataRepresentation: record.keyData,
-                    authenticationContext: context
-                )
-                cachedKey = .p256SecureEnclave(seKey)
-            } else {
-                var scalarData = record.keyData
-                guard let buf = secureBufferFactory(&scalarData) else {
-                    throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(key.label)'"])
-                }
-                cachedKey = .p256Software(buf)
-            }
-        }
-
         return GitSigningGraceManager.shared.recordGrant(
             keyLabel: key.label,
+            clientIdentity: clientIdentity,
             duration: duration,
             maxOperations: maxOperations,
-            context: context,
-            cachedKey: cachedKey
+            context: context
         )
     }
 
