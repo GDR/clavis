@@ -4,6 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+ACTIVE_MACOS_SDK="$(env -u SDKROOT /usr/bin/xcrun --sdk macosx --show-sdk-path)"
+if [[ ! -f "$ACTIVE_MACOS_SDK/SDKSettings.plist" ]]; then
+    echo "❌ Active Xcode returned an invalid macOS SDK path: $ACTIVE_MACOS_SDK" >&2
+    exit 1
+fi
+export SDKROOT="$ACTIVE_MACOS_SDK"
+
 echo "🔐 Detecting Code Signing Identity..."
 SIGN_IDENTITY="${CLAVIS_SIGN_IDENTITY:-}"
 SIGNING_MODE="identity"
@@ -31,6 +38,7 @@ else
 fi
 
 echo "🔨 Building Clavis (GUI), clavis-agent (Daemon), clavis-cli (CLI), and age-plugin-clavis (Release)..."
+echo "  Using macOS SDK: $SDKROOT"
 swift build -c release
 
 echo "🔐 Signing binaries and embedding entitlements..."
