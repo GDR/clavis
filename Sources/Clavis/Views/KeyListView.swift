@@ -83,8 +83,11 @@ struct KeyListView: View {
 
                                             Spacer()
 
-                                            // Hardware / Software badge
-                                            KeyBadge(isHardware: key.isHardware)
+                                            // Hardware / Software and Purpose badges
+                                            HStack(spacing: 4) {
+                                                KeyBadge(isHardware: key.isHardware)
+                                                PurposeBadge(purpose: key.purpose)
+                                            }
                                         }
                                         .padding(.horizontal, 12)
                                         .padding(.vertical, 10)

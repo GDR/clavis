@@ -1,4 +1,5 @@
 import SwiftUI
+import ClavisCore
 
 public struct StatusDot: View {
     public let isActive: Bool
@@ -62,5 +63,29 @@ public struct KeyBadge: View {
                 )
         )
         .shadow(color: Color.black.opacity(0.2), radius: 2, x: 0, y: 1)
+    }
+}
+
+public struct PurposeBadge: View {
+    public let purpose: KeyPurpose
+
+    public init(purpose: KeyPurpose) {
+        self.purpose = purpose
+    }
+
+    public var body: some View {
+        if purpose == .gitSigningOnly {
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 8, weight: .bold))
+                Text("Git Only")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundColor(.orange)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(Color.orange.opacity(0.15))
+            .cornerRadius(4)
+        }
     }
 }

@@ -8,6 +8,18 @@ public enum KeyManagerSheet: String, Identifiable {
     public var id: String { rawValue }
 }
 
+public struct ActiveGitGraceInfo: Equatable {
+    public let keyLabel: String
+    public let remainingSeconds: Int
+    public let remainingOperations: Int
+
+    public var formattedRemainingTime: String {
+        let mins = remainingSeconds / 60
+        let secs = remainingSeconds % 60
+        return String(format: "%d:%02d", mins, secs)
+    }
+}
+
 @MainActor
 public class AppState: ObservableObject {
     public static let shared = AppState()
@@ -17,6 +29,7 @@ public class AppState: ObservableObject {
     @Published public var agentPID: pid_t? = nil
     @Published public var selectedTimeout: SessionTimeout = .never
     @Published public var cachedKeysCount: Int = 0
+    @Published public var activeGitGrace: ActiveGitGraceInfo? = nil
     @Published public var errorMessage: String? = nil
     @Published public var isDaemonMode: Bool = false
     @Published public var launchAtLogin: Bool = false
@@ -39,6 +52,29 @@ public class AppState: ObservableObject {
         self.sshAgentServer = sshAgentServer
         self.agentLifecycle = agentLifecycle
         self.isDaemonMode = CommandLine.arguments.contains("--daemon")
+
+        DistributedNotificationCenter.default().addObserver(
+            forName: GitSigningGraceManager.gitGraceUpdatedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notif in
+            Task { @MainActor in
+                guard let self = self else { return }
+                if let active = notif.userInfo?["active"] as? Bool, active,
+                   let label = notif.userInfo?["keyLabel"] as? String,
+                   let sec = notif.userInfo?["remainingSeconds"] as? Int,
+                   let ops = notif.userInfo?["remainingOperations"] as? Int {
+                    self.activeGitGrace = ActiveGitGraceInfo(
+                        keyLabel: label,
+                        remainingSeconds: sec,
+                        remainingOperations: ops
+                    )
+                } else {
+                    self.activeGitGrace = nil
+                }
+            }
+        }
+
         refresh()
     }
 
@@ -54,6 +90,12 @@ public class AppState: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    public func endGitSigningSession() {
+        GitSigningGraceManager.shared.invalidateAll()
+        activeGitGrace = nil
+        refresh()
     }
 
     public func startAgent() {
@@ -92,6 +134,7 @@ public class AppState: ObservableObject {
 
     public func lockNow() {
         sessionCache.clearCache()
+        endGitSigningSession()
         refresh()
     }
 
@@ -109,20 +152,34 @@ public class AppState: ObservableObject {
         label: String,
         algorithm: String = "Ed25519",
         storageType: KeyStorageType = .keychain,
-        biometricPolicy: BiometricPolicy? = nil
+        biometricPolicy: BiometricPolicy? = nil,
+        keyPurpose: KeyPurpose = .general
     ) throws -> Ed25519KeyInfo {
         let info = try keyManager.generateKey(
             label: label,
             algorithm: algorithm,
             storageType: storageType,
-            biometricPolicy: biometricPolicy
+            biometricPolicy: biometricPolicy,
+            keyPurpose: keyPurpose
         )
         refresh()
         return info
     }
 
-    public func importKey(label: String, consuming seedData: inout Data, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
-        let info = try keyManager.importKey(label: label, consuming: &seedData, algorithm: algorithm, storageType: storageType)
+    public func importKey(
+        label: String,
+        consuming seedData: inout Data,
+        algorithm: String = "Ed25519",
+        storageType: KeyStorageType = .keychain,
+        keyPurpose: KeyPurpose = .general
+    ) throws -> Ed25519KeyInfo {
+        let info = try keyManager.importKey(
+            label: label,
+            consuming: &seedData,
+            algorithm: algorithm,
+            storageType: storageType,
+            keyPurpose: keyPurpose
+        )
         refresh()
         return info
     }

@@ -66,6 +66,7 @@ public struct CreateKeySheet: View {
     @State private var keyName: String = ""
     @State private var selectedPreset: KeyTypePreset = .software
     @State private var selectedBiometricPolicy: BiometricPolicy = .userPresence
+    @State private var selectedPurpose: KeyPurpose = .general
     @State private var isCreating = false
     @State private var errorMessage: String? = nil
 
@@ -304,6 +305,53 @@ public struct CreateKeySheet: View {
                 }
             }
 
+            // Key Purpose (Domain Isolation)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Key Purpose & Scope")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(DesignTokens.textSecondary)
+
+                HStack(spacing: 10) {
+                    ForEach(KeyPurpose.allCases) { purpose in
+                        Button(action: {
+                            selectedPurpose = purpose
+                        }) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Image(systemName: purpose == .gitSigningOnly ? "arrow.triangle.branch" : "network")
+                                        .foregroundColor(selectedPurpose == purpose ? (selectedPreset == .hardware ? DesignTokens.accentGreen : DesignTokens.accentBlue) : .secondary)
+                                    Spacer()
+                                    if selectedPurpose == purpose {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(selectedPreset == .hardware ? DesignTokens.accentGreen : DesignTokens.accentBlue)
+                                            .font(.caption)
+                                    }
+                                }
+                                Text(purpose.title)
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                Text(purpose.subtitle)
+                                    .font(.caption2)
+                                    .foregroundColor(DesignTokens.textSecondary)
+                                    .lineLimit(2)
+                            }
+                            .padding(10)
+                            .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(selectedPurpose == purpose ? (selectedPreset == .hardware ? DesignTokens.accentGreen.opacity(0.12) : DesignTokens.accentBlue.opacity(0.12)) : Color(nsColor: .controlBackgroundColor))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(selectedPurpose == purpose ? (selectedPreset == .hardware ? DesignTokens.accentGreen : DesignTokens.accentBlue) : DesignTokens.cardBorder, lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
             // Footer / Actions
             HStack {
                 Button("Cancel") {
@@ -339,7 +387,8 @@ public struct CreateKeySheet: View {
                 label: label,
                 algorithm: selectedPreset.algorithm.rawValue,
                 storageType: selectedPreset.storageType,
-                biometricPolicy: selectedPreset == .hardware ? selectedBiometricPolicy : nil
+                biometricPolicy: selectedPreset == .hardware ? selectedBiometricPolicy : nil,
+                keyPurpose: selectedPurpose
             )
             dismiss()
         } catch {

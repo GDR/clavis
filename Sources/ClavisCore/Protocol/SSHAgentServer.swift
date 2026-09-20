@@ -32,6 +32,7 @@ public class SSHAgentServer {
     public let socketPath: String
     private let maxConcurrentClients: Int
     private let clientIdleTimeout: TimeInterval
+    private let keyManager: KeychainManager
     private let stateLock = NSLock()
     private var _serverSocket: Int32 = -1
     private var _isRunning = false
@@ -41,11 +42,13 @@ public class SSHAgentServer {
     public init(
         socketPath: String = SSHAgentServer.defaultSocketPath,
         maxConcurrentClients: Int = 32,
-        clientIdleTimeout: TimeInterval = 30
+        clientIdleTimeout: TimeInterval = 30,
+        keyManager: KeychainManager = .shared
     ) {
         self.socketPath = socketPath
         self.maxConcurrentClients = max(1, maxConcurrentClients)
         self.clientIdleTimeout = max(0.1, clientIdleTimeout)
+        self.keyManager = keyManager
     }
 
     /// Tests whether an active SSH agent server is listening on the given AF_UNIX socket.
@@ -378,7 +381,8 @@ public class SSHAgentServer {
             clientDesc = "local process"
         }
         ClavisLogger.log("SSH_AGENT_IDENTITIES", "Listing active SSH identities for \(clientDesc)...")
-        let keys = (try? KeychainManager.shared.listKeys()) ?? []
+        // Exclude gitSigningOnly keys from general SSH identity listings (prevents accidental SSH login usage)
+        let keys = ((try? keyManager.listKeys()) ?? []).filter { $0.purpose != .gitSigningOnly }
         var response = Data()
         response.append(12) // SSH2_AGENT_IDENTITIES_ANSWER
 
@@ -406,7 +410,7 @@ public class SSHAgentServer {
             return Data([5]) // SSH_AGENT_FAILURE
         }
 
-        let keys = (try? KeychainManager.shared.listKeys()) ?? []
+        let keys = (try? keyManager.listKeys()) ?? []
         guard let matchingKey = keys.first(where: { $0.publicKeyBlob == keyBlob }) else {
             ClavisLogger.log("SSH_AGENT_SIGN", "No matching key found for requested public key blob.")
             return Data([5]) // SSH_AGENT_FAILURE
@@ -419,15 +423,99 @@ public class SSHAgentServer {
         }
         let clientDesc = "\(Self.safeProcessPath(processPath)) (PID \(pid))"
 
-        let prompt = "Touch ID to approve SSH signature for key '\(matchingKey.label)' requested by \(clientDesc)"
-        ClavisLogger.log("SSH_AGENT_SIGN", "Initiating signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
+        // Domain verification: Parse signed payload as OpenSSH SSHSIG (strict Git format)
+        let gitSSHSIG = SSHSIGPayload.parse(from: dataToSign)
+
+        // Security invariant: If key is restricted to Git signing, reject any non-Git payload
+        if matchingKey.purpose == .gitSigningOnly && gitSSHSIG == nil {
+            ClavisLogger.log("SECURITY_ALERT", "Key '\(matchingKey.label)' is restricted to Git signing. Refusing non-Git signature request from \(clientDesc).")
+            return Data([5]) // SSH_AGENT_FAILURE
+        }
+
         do {
-            let sigBlob = try KeychainManager.shared.signSSH(
-                key: matchingKey,
-                data: dataToSign,
-                prompt: prompt,
-                useCache: false
-            )
+            let sigBlob: Data
+
+            if let _ = gitSSHSIG {
+                // Git signing request
+                if let grant = GitSigningGraceManager.shared.consumeGrant(for: matchingKey.label) {
+                    // Fast-path: Active 5-minute grant
+                    ClavisLogger.log("GIT_GRACE", "Using active Git signing grant for '\(matchingKey.label)' (\(grant.remainingOperations) ops remaining, \(grant.remainingSeconds)s left). 0 Touch ID prompts.")
+                    if let cachedKey = grant.cachedKey {
+                        sigBlob = try cachedKey.signSSH(data: dataToSign)
+                    } else {
+                        sigBlob = try keyManager.signSSH(
+                            key: matchingKey,
+                            data: dataToSign,
+                            prompt: "",
+                            useCache: false,
+                            existingContext: grant.authorizedContext
+                        )
+                    }
+                } else if GitSigningGraceManager.shared.hasRecentGitSignature(for: matchingKey.label, windowSeconds: 30.0) {
+                    // Rebase / repeated commit pattern detected (Commit #2+ within 30s)
+                    ClavisLogger.log("GIT_GRACE", "Detected rapid Git signing pattern (<30s) for '\(matchingKey.label)'. Prompting user for session...")
+                    let choice = GitSigningGraceManager.promptProvider(matchingKey.label, clientDesc)
+                    switch choice {
+                    case .cancel:
+                        ClavisLogger.log("GIT_GRACE", "User cancelled Git signing session.")
+                        return Data([5]) // SSH_AGENT_FAILURE
+
+                    case .grantFiveMinutes:
+                        ClavisLogger.log("GIT_GRACE", "User approved 5-minute Git signing session. Authorizing via Touch ID...")
+                        let authPrompt = "Touch ID to authorize 5-minute Git signing session for '\(matchingKey.label)' (\(clientDesc))"
+                        let grant = try keyManager.authorizeGitSigningGrant(
+                            key: matchingKey,
+                            prompt: authPrompt,
+                            duration: 300.0,
+                            maxOperations: 200
+                        )
+                        // Perform the commit #2 signature under the newly created grant
+                        _ = grant.consumeOperation()
+                        if let cachedKey = grant.cachedKey {
+                            sigBlob = try cachedKey.signSSH(data: dataToSign)
+                        } else {
+                            sigBlob = try keyManager.signSSH(
+                                key: matchingKey,
+                                data: dataToSign,
+                                prompt: "",
+                                useCache: false,
+                                existingContext: grant.authorizedContext
+                            )
+                        }
+
+                    case .singleShot:
+                        ClavisLogger.log("GIT_GRACE", "User chose single-shot signing.")
+                        let prompt = "Touch ID to approve Git commit signature for '\(matchingKey.label)' requested by \(clientDesc)"
+                        sigBlob = try keyManager.signSSH(
+                            key: matchingKey,
+                            data: dataToSign,
+                            prompt: prompt,
+                            useCache: false
+                        )
+                        GitSigningGraceManager.shared.recordGitSignature(for: matchingKey.label)
+                    }
+                } else {
+                    // Commit #1 (single commit / first in a potential sequence) -> standard Touch ID, no dialog
+                    let prompt = "Touch ID to approve Git commit signature for '\(matchingKey.label)' requested by \(clientDesc)"
+                    sigBlob = try keyManager.signSSH(
+                        key: matchingKey,
+                        data: dataToSign,
+                        prompt: prompt,
+                        useCache: false
+                    )
+                    GitSigningGraceManager.shared.recordGitSignature(for: matchingKey.label)
+                }
+            } else {
+                // Non-Git signing request (e.g. SSH login): Grace period NEVER applies
+                let prompt = "Touch ID to approve SSH authentication for key '\(matchingKey.label)' requested by \(clientDesc)"
+                ClavisLogger.log("SSH_AGENT_SIGN", "Initiating SSH login signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
+                sigBlob = try keyManager.signSSH(
+                    key: matchingKey,
+                    data: dataToSign,
+                    prompt: prompt,
+                    useCache: false
+                )
+            }
 
             var response = Data()
             response.append(14) // SSH2_AGENT_SIGN_RESPONSE

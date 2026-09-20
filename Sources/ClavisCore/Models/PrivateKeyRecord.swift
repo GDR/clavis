@@ -15,8 +15,13 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
     public let algorithm: KeyAlgorithm
     public let storageType: KeyStorageType
     public let biometricPolicy: BiometricPolicy?
+    public let keyPurpose: KeyPurpose?
     public var keyData: Data
     public let createdAt: Date
+
+    public var purpose: KeyPurpose {
+        keyPurpose ?? .general
+    }
 
     public init(
         version: Int = StoredPrivateKeyRecord.currentVersion,
@@ -24,6 +29,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         algorithm: KeyAlgorithm,
         storageType: KeyStorageType,
         biometricPolicy: BiometricPolicy? = nil,
+        keyPurpose: KeyPurpose? = nil,
         keyData: Data,
         createdAt: Date = Date()
     ) {
@@ -32,6 +38,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         self.algorithm = algorithm
         self.storageType = storageType
         self.biometricPolicy = biometricPolicy
+        self.keyPurpose = keyPurpose
         self.keyData = keyData
         self.createdAt = createdAt
     }

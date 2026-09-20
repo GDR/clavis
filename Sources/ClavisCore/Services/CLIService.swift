@@ -29,9 +29,12 @@ public struct CLIService {
                 return CLICommandResult(exitCode: 1, output: "", error: "Usage: clavis generate <label>")
             }
             let label = args[2].trimmingCharacters(in: .whitespaces)
+            let isGitOnly = args.contains("--git-only")
+            let purpose: KeyPurpose = isGitOnly ? .gitSigningOnly : .general
             do {
-                let info = try keyManager.generateKey(label: label)
+                let info = try keyManager.generateKey(label: label, keyPurpose: purpose)
                 var out = "Successfully generated Ed25519 key '\(info.label)' in Keychain.\n"
+                out += "Purpose:     \(info.purpose.title)\n"
                 out += "Fingerprint: \(info.fingerprint)\n"
                 out += "Public Key:  \(info.publicKeyOpenSSH)"
                 return CLICommandResult(exitCode: 0, output: out)
@@ -41,10 +44,13 @@ public struct CLIService {
 
         case "import":
             guard args.count >= 3 else {
-                return CLICommandResult(exitCode: 1, output: "", error: "Usage: clavis import <label> [--stdin]")
+                return CLICommandResult(exitCode: 1, output: "", error: "Usage: clavis import <label> [--stdin] [--git-only]")
             }
             let label = args[2].trimmingCharacters(in: .whitespaces)
-            if args.count >= 4 && args[3] != "--stdin" && args[3] != "-" {
+            let isGitOnly = args.contains("--git-only")
+            let purpose: KeyPurpose = isGitOnly ? .gitSigningOnly : .general
+            let nonFlagArgs = args.filter { $0 != "--git-only" }
+            if nonFlagArgs.count >= 4 && nonFlagArgs[3] != "--stdin" && nonFlagArgs[3] != "-" {
                 ClavisLogger.log("SECURITY", "Rejected private seed passed via argv for key '\(label)'.")
                 return CLICommandResult(
                     exitCode: 1,
@@ -56,7 +62,7 @@ public struct CLIService {
             var seedData: Data?
             if let seedDataProvider {
                 seedData = seedDataProvider()
-            } else if isatty(STDIN_FILENO) != 0 && args.count == 3 {
+            } else if isatty(STDIN_FILENO) != 0 && nonFlagArgs.count == 3 {
                 seedData = readSeedFromTerminal()
             } else {
                 seedData = readSeedFromStandardInput()
@@ -77,8 +83,9 @@ public struct CLIService {
                 return CLICommandResult(exitCode: 1, output: "", error: "Invalid hex seed string (must be 64 hex characters / 32 bytes).")
             }
             do {
-                let info = try keyManager.importKey(label: label, consuming: &seedData)
+                let info = try keyManager.importKey(label: label, consuming: &seedData, keyPurpose: purpose)
                 var out = "Successfully imported Ed25519 seed for '\(info.label)' into Keychain.\n"
+                out += "Purpose:     \(info.purpose.title)\n"
                 out += "Fingerprint: \(info.fingerprint)\n"
                 out += "Public Key:  \(info.publicKeyOpenSSH)"
                 return CLICommandResult(exitCode: 0, output: out)
@@ -94,7 +101,8 @@ public struct CLIService {
                 }
                 var lines: [String] = ["Found \(keys.count) key(s) in Keychain:"]
                 for key in keys {
-                    lines.append(" - [\(key.label)]")
+                    let purposeTag = key.purpose == .gitSigningOnly ? " [Git Only]" : ""
+                    lines.append(" - [\(key.label)]\(purposeTag)")
                     lines.append("   Fingerprint: \(key.fingerprint)")
                     lines.append("   Public Key:  \(key.publicKeyOpenSSH)")
                 }
@@ -102,6 +110,11 @@ public struct CLIService {
             } catch {
                 return CLICommandResult(exitCode: 1, output: "", error: "Failed to list keys: \(error.localizedDescription)")
             }
+
+        case "lock":
+            SessionCacheManager.shared.clearCache()
+            GitSigningGraceManager.shared.invalidateAll()
+            return CLICommandResult(exitCode: 0, output: "🔒 All active sessions and caches locked.")
 
         case "delete":
             guard args.count >= 3 else {
@@ -143,14 +156,15 @@ public struct CLIService {
             Clavis — Native macOS Ed25519 Keychain & SSH Agent Daemon
 
             USAGE:
-              clavis generate <label>         Generate a new Ed25519 key pair in Keychain
-              clavis import <label> [--stdin]    Import a 32-byte hex seed into Keychain
-              clavis list                     List all stored keys and OpenSSH public keys
-              clavis export-pub <label>       Print the OpenSSH public key for <label>
-              clavis delete <label>           Delete key pair from Keychain
-              clavis logs                     Print live Touch ID and authentication logs
-              clavis daemon / --daemon       Run SSH Agent socket daemon in background
-              clavis                          Launch SwiftUI Key Manager GUI
+              clavis generate <label> [--git-only]  Generate a new key pair in Keychain
+              clavis import <label> [--stdin]       Import a 32-byte hex seed into Keychain
+              clavis list                          List all stored keys and OpenSSH public keys
+              clavis export-pub <label>            Print the OpenSSH public key for <label>
+              clavis delete <label>                Delete key pair from Keychain
+              clavis lock                          Lock all session caches and active Git sessions
+              clavis logs                          Print live Touch ID and authentication logs
+              clavis daemon / --daemon            Run SSH Agent socket daemon in background
+              clavis                               Launch SwiftUI Key Manager GUI
             """
             return CLICommandResult(exitCode: 0, output: helpMsg)
 

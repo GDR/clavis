@@ -38,7 +38,8 @@ public class KeychainManager {
         label: String,
         algorithm: String = "Ed25519",
         storageType: KeyStorageType = .keychain,
-        biometricPolicy: BiometricPolicy? = nil
+        biometricPolicy: BiometricPolicy? = nil,
+        keyPurpose: KeyPurpose = .general
     ) throws -> Ed25519KeyInfo {
         try validateLabel(label)
         try validateGenerationConfiguration(algorithm: algorithm, storageType: storageType)
@@ -63,6 +64,7 @@ public class KeychainManager {
                     algorithm: .ecdsaP256,
                     storageType: .secureEnclave,
                     biometricPolicy: policy,
+                    keyPurpose: keyPurpose,
                     keyData: seKey.dataRepresentation
                 )
                 defer { record.wipe() }
@@ -77,6 +79,7 @@ public class KeychainManager {
                     algorithm: .ecdsaP256,
                     storageType: .keychain,
                     biometricPolicy: nil,
+                    keyPurpose: keyPurpose,
                     keyData: privateKey.rawRepresentation
                 )
                 defer { record.wipe() }
@@ -105,19 +108,26 @@ public class KeychainManager {
                 createdAt: Date(),
                 algorithmName: algorithm,
                 storage: storageType,
-                biometricPolicy: effectivePolicy
+                biometricPolicy: effectivePolicy,
+                keyPurpose: keyPurpose
             )
             PublicKeyStore.save(keyInfo)
             return keyInfo
         }
 
         let privateKey = Curve25519.Signing.PrivateKey()
-        return try storeKey(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType)
+        return try storeKey(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)
     }
 
     // Import existing Ed25519 seed (32 bytes)
     @discardableResult
-    public func importKey(label: String, consuming seedData: inout Data, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
+    public func importKey(
+        label: String,
+        consuming seedData: inout Data,
+        algorithm: String = "Ed25519",
+        storageType: KeyStorageType = .keychain,
+        keyPurpose: KeyPurpose = .general
+    ) throws -> Ed25519KeyInfo {
         defer {
             seedData.withUnsafeMutableBytes { ptr in
                 if let baseAddress = ptr.baseAddress {
@@ -143,7 +153,7 @@ public class KeychainManager {
         let privateKey = try seedData.withUnsafeBytes { raw in
             try Curve25519.Signing.PrivateKey(rawRepresentation: raw)
         }
-        return try storeKey(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType)
+        return try storeKey(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)
     }
 
     private func validateGenerationConfiguration(algorithm: String, storageType: KeyStorageType) throws {
@@ -158,7 +168,13 @@ public class KeychainManager {
         }
     }
 
-    private func storeKey(label: String, privateKey: Curve25519.Signing.PrivateKey, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
+    private func storeKey(
+        label: String,
+        privateKey: Curve25519.Signing.PrivateKey,
+        algorithm: String = "Ed25519",
+        storageType: KeyStorageType = .keychain,
+        keyPurpose: KeyPurpose = .general
+    ) throws -> Ed25519KeyInfo {
         ClavisLogger.log("KEYCHAIN_WRITE", "Storing private seed for '\(label)'...")
         var rawSeed = privateKey.rawRepresentation
         defer {
@@ -174,13 +190,14 @@ public class KeychainManager {
             algorithm: .ed25519,
             storageType: .keychain,
             biometricPolicy: nil,
+            keyPurpose: keyPurpose,
             keyData: rawSeed
         )
         defer { record.wipe() }
         let recordData = try record.encode()
         try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
 
-        let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType)
+        let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)
         PublicKeyStore.save(keyInfo)
         return keyInfo
     }
@@ -299,6 +316,7 @@ public class KeychainManager {
             algorithm: algorithm,
             storageType: storageType,
             biometricPolicy: policy,
+            keyPurpose: expectedKeyInfo?.keyPurpose,
             keyData: rawData,
             createdAt: expectedKeyInfo?.createdAt ?? Date()
         )
@@ -439,16 +457,22 @@ public class KeychainManager {
     }
 
     // Sign challenge data for SSH Agent returning wire format signature blob
-    public func signSSH(key: Ed25519KeyInfo, data: Data, prompt: String, useCache: Bool = true) throws -> Data {
+    public func signSSH(
+        key: Ed25519KeyInfo,
+        data: Data,
+        prompt: String,
+        useCache: Bool = true,
+        existingContext: LAContext? = nil
+    ) throws -> Data {
         // Fast path for software keys already present in session cache
-        if useCache && key.storageType != .secureEnclave {
+        if useCache && existingContext == nil && key.storageType != .secureEnclave {
             if key.algorithm == "ECDSA P-256" {
                 if let cachedSig = try sessionCache.withCachedP256(
                     label: key.label,
                     operation: { try $0.signature(for: data) }
                 ) {
                     ClavisLogger.log("SESSION_CACHE", "Served key '\(key.label)' (ECDSA P-256) from active session cache (0 prompts)")
-                    return formatECDSASignatureBlob(cachedSig)
+                    return Self.formatECDSASignatureBlob(cachedSig)
                 }
             } else if key.algorithm == "Ed25519" {
                 if let cachedSig = try sessionCache.withCachedBuffer(label: key.label, operation: { seedBytes in
@@ -465,7 +489,12 @@ public class KeychainManager {
         }
 
         let cacheGeneration = sessionCache.generationSnapshot()
-        let context = try authenticator.authenticate(reason: prompt)
+        let context: LAContext
+        if let existing = existingContext {
+            context = existing
+        } else {
+            context = try authenticator.authenticate(reason: prompt)
+        }
         guard sessionCache.isGenerationCurrent(cacheGeneration) else {
             throw SessionCacheError.invalidated
         }
@@ -543,7 +572,7 @@ public class KeychainManager {
                     }
                 }
             }
-            return formatECDSASignatureBlob(ecdsaSig)
+            return Self.formatECDSASignatureBlob(ecdsaSig)
 
         case .ed25519:
             guard record.storageType == .keychain else {
@@ -590,7 +619,57 @@ public class KeychainManager {
         }
     }
 
-    private func formatECDSASignatureBlob(_ ecdsaSig: P256.Signing.ECDSASignature) -> Data {
+    /// Authorizes a 5-minute Git signing grant via Touch ID, returning an active grant.
+    @discardableResult
+    public func authorizeGitSigningGrant(
+        key: Ed25519KeyInfo,
+        prompt: String,
+        duration: TimeInterval = 300.0,
+        maxOperations: Int = 200
+    ) throws -> GitSigningGrant {
+        let context = try authenticator.authenticate(reason: prompt)
+        var record = try loadAuthenticatedRecord(
+            label: key.label,
+            context: context,
+            prompt: prompt,
+            expectedKeyInfo: key
+        )
+        defer { record.wipe() }
+
+        let cachedKey: GitCachedSigningKey
+        switch record.algorithm {
+        case .ed25519:
+            var seedData = record.keyData
+            guard let buf = secureBufferFactory(&seedData) else {
+                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(key.label)'"])
+            }
+            cachedKey = .ed25519(buf)
+        case .ecdsaP256:
+            if record.storageType == .secureEnclave {
+                let seKey = try SecureEnclave.P256.Signing.PrivateKey(
+                    dataRepresentation: record.keyData,
+                    authenticationContext: context
+                )
+                cachedKey = .p256SecureEnclave(seKey)
+            } else {
+                var scalarData = record.keyData
+                guard let buf = secureBufferFactory(&scalarData) else {
+                    throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(key.label)'"])
+                }
+                cachedKey = .p256Software(buf)
+            }
+        }
+
+        return GitSigningGraceManager.shared.recordGrant(
+            keyLabel: key.label,
+            duration: duration,
+            maxOperations: maxOperations,
+            context: context,
+            cachedKey: cachedKey
+        )
+    }
+
+    public static func formatECDSASignatureBlob(_ ecdsaSig: P256.Signing.ECDSASignature) -> Data {
         let rawSig = ecdsaSig.rawRepresentation
         let r = rawSig.prefix(32)
         let s = rawSig.suffix(32)
@@ -685,7 +764,13 @@ public class KeychainManager {
     }
 
     // Convert Curve25519.Signing.PrivateKey to OpenSSH public key format & wire representation
-    public func makeKeyInfo(label: String, privateKey: Curve25519.Signing.PrivateKey, algorithm: String = "Ed25519", storageType: KeyStorageType = .keychain) throws -> Ed25519KeyInfo {
+    public func makeKeyInfo(
+        label: String,
+        privateKey: Curve25519.Signing.PrivateKey,
+        algorithm: String = "Ed25519",
+        storageType: KeyStorageType = .keychain,
+        keyPurpose: KeyPurpose = .general
+    ) throws -> Ed25519KeyInfo {
         let pubKeyData = privateKey.publicKey.rawRepresentation
         let keyType = "ssh-ed25519"
 
@@ -697,7 +782,16 @@ public class KeychainManager {
         let openSSH = "\(keyType) \(b64) \(label)"
 
         let fingerprint = "SHA256:" + Data(SHA256.hash(data: blob)).base64EncodedString().replacingOccurrences(of: "=", with: "")
-        return Ed25519KeyInfo(label: label, publicKeyOpenSSH: openSSH, publicKeyBlob: blob, fingerprint: fingerprint, createdAt: Date(), algorithmName: algorithm, storage: storageType)
+        return Ed25519KeyInfo(
+            label: label,
+            publicKeyOpenSSH: openSSH,
+            publicKeyBlob: blob,
+            fingerprint: fingerprint,
+            createdAt: Date(),
+            algorithmName: algorithm,
+            storage: storageType,
+            keyPurpose: keyPurpose
+        )
     }
 
     private func migrateLegacySeedFiles() {

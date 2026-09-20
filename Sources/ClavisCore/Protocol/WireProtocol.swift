@@ -32,6 +32,14 @@ public struct DataReader {
         guard let data = readWireData() else { return nil }
         return String(data: data, encoding: .utf8)
     }
+
+    public var isEOF: Bool {
+        offset >= data.endIndex
+    }
+
+    public var remainingBytes: Int {
+        max(0, data.endIndex - offset)
+    }
 }
 
 public extension Data {

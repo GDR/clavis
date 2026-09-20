@@ -71,6 +71,38 @@ struct MenuBarView: View {
                 .cornerRadius(6)
             }
 
+            // Active Git Grace Session Banner
+            if let gitGrace = appState.activeGitGrace {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .foregroundColor(.blue)
+                        .font(.system(size: 13, weight: .bold))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Git Session: \(gitGrace.keyLabel)")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.primary)
+                        Text("\(gitGrace.formattedRemainingTime) remaining • \(gitGrace.remainingOperations) ops left")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Button(action: {
+                        appState.endGitSigningSession()
+                    }) {
+                        Text("End")
+                            .font(.system(size: 10, weight: .medium))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.secondary.opacity(0.15))
+                            .cornerRadius(4)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(6)
+                .background(Color.blue.opacity(0.12))
+                .cornerRadius(6)
+            }
+
             Divider()
 
             // Identities Section
@@ -246,6 +278,7 @@ private struct MenuBarIdentityRow: View {
                         .foregroundColor(.primary)
                         .lineLimit(1)
                     KeyBadge(isHardware: key.isHardware)
+                    PurposeBadge(purpose: key.purpose)
                 }
                 Text(key.displayIdentifier)
                     .font(.system(size: 10, design: .monospaced))

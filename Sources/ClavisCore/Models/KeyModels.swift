@@ -11,6 +11,11 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
     public let algorithmName: String?
     public let storage: KeyStorageType?
     public let biometricPolicy: BiometricPolicy?
+    public let keyPurpose: KeyPurpose?
+
+    public var purpose: KeyPurpose {
+        keyPurpose ?? .general
+    }
 
     public var isAgeCompatible: Bool {
         algorithm == "Ed25519" && storageType == .keychain
@@ -68,7 +73,8 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
         createdAt: Date = Date(),
         algorithmName: String? = nil,
         storage: KeyStorageType? = nil,
-        biometricPolicy: BiometricPolicy? = nil
+        biometricPolicy: BiometricPolicy? = nil,
+        keyPurpose: KeyPurpose? = nil
     ) {
         self.label = label
         self.publicKeyOpenSSH = publicKeyOpenSSH
@@ -78,6 +84,32 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
         self.algorithmName = algorithmName
         self.storage = storage
         self.biometricPolicy = biometricPolicy
+        self.keyPurpose = keyPurpose
+    }
+}
+
+public enum KeyPurpose: String, CaseIterable, Identifiable, Codable {
+    case general = "general"
+    case gitSigningOnly = "gitSigningOnly"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .general:
+            return "General (SSH & Git)"
+        case .gitSigningOnly:
+            return "Git Signing Only"
+        }
+    }
+
+    public var subtitle: String {
+        switch self {
+        case .general:
+            return "Available for SSH login and Git commit/tag signing"
+        case .gitSigningOnly:
+            return "Restricted strictly to Git commits. Hidden from SSH login"
+        }
     }
 }
 
