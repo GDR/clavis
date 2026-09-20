@@ -52,7 +52,7 @@ final class InMemoryPrivateKeyStore: PrivateKeyStoring {
         return values[label] != nil
     }
 
-    func save(label: String, data: Data, accessControlFlags: SecAccessControlCreateFlags = [.userPresence]) throws {
+    func save(label: String, data: Data, accessControlFlags: SecAccessControlCreateFlags = []) throws {
         lock.lock()
         defer { lock.unlock() }
         values[label] = data

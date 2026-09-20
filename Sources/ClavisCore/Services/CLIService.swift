@@ -31,8 +31,18 @@ public struct CLIService {
             let label = args[2].trimmingCharacters(in: .whitespaces)
             let isGitOnly = args.contains(CLIFlag.gitOnly.rawValue)
             let purpose: KeyPurpose = isGitOnly ? .gitSigningOnly : .general
+            let isEnclave = args.contains("--enclave") || args.contains("--secure-enclave")
+            let storage: KeyStorageType = isEnclave ? .secureEnclave : .keychain
+            let algorithm = isEnclave ? "ECDSA P-256" : "Ed25519"
+            let policy: BiometricPolicy? = isEnclave ? .biometryCurrentSet : nil
             do {
-                let info = try keyManager.generateKey(label: label, keyPurpose: purpose)
+                let info = try keyManager.generateKey(
+                    label: label,
+                    algorithm: algorithm,
+                    storageType: storage,
+                    biometricPolicy: policy,
+                    keyPurpose: purpose
+                )
                 return CLICommandResult(exitCode: 0, output: CLIMessages.successfullyGenerated(info: info))
             } catch {
                 return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.failedToGenerate(error: error))
