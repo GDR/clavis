@@ -166,7 +166,23 @@ public struct GitSigningPromptStrings {
         singleShotButton: "Sign Once"
     )
 
-    public static var current: GitSigningPromptStrings = .russian
+    public static var localized: GitSigningPromptStrings {
+        GitSigningPromptStrings(
+            header: String(localized: "prompt.git_session_header", defaultValue: "Clavis — Git Signing Session", bundle: .module),
+            messageTemplate: { keyLabel, clientDesc in
+                String(
+                    localized: "prompt.git_session_message",
+                    defaultValue: "Обнаружена серия коммитов Git (rebase / cherry-pick) для ключа '\(keyLabel)' от \(clientDesc).\n\nРазрешить автоматическую подпись Git на 5 минут без повторных запросов Touch ID?",
+                    bundle: .module
+                )
+            },
+            allowFiveMinutesButton: String(localized: "prompt.allow_five_minutes", defaultValue: "Grant 5 Minutes", bundle: .module),
+            cancelButton: String(localized: "prompt.cancel", defaultValue: "Cancel", bundle: .module),
+            singleShotButton: String(localized: "prompt.single_shot", defaultValue: "Sign Once", bundle: .module)
+        )
+    }
+
+    public static var current: GitSigningPromptStrings = .localized
 }
 
 public enum GitSigningPrompt {

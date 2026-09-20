@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Clavis",
+    defaultLocalization: "en",
     platforms: [
         .macOS(.v13)
     ],
@@ -31,7 +32,10 @@ let package = Package(
     targets: [
         .target(
             name: "ClavisCore",
-            path: "Sources/ClavisCore"
+            path: "Sources/ClavisCore",
+            resources: [
+                .process("Resources")
+            ]
         ),
         .executableTarget(
             name: "ClavisCLI",
