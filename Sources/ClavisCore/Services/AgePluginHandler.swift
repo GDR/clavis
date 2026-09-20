@@ -116,7 +116,7 @@ public struct AgePluginCrypto {
         }
     }
 
-    public static func unwrapFileKey(wrappedKey: Data, epkB64: String, ed25519Seed: Data) throws -> Data {
+    internal static func unwrapFileKey(wrappedKey: Data, epkB64: String, ed25519Seed: Data) throws -> Data {
         try ed25519Seed.withUnsafeBytes { raw in
             try unwrapFileKey(wrappedKey: wrappedKey, epkB64: epkB64, seedBytes: raw)
         }

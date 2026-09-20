@@ -72,6 +72,7 @@ public struct AgePluginClavis {
     static let maximumIPCLines = 4_096
     static let maximumIPCItems = 256
     static let maximumCryptoOperations = 1_024
+    static let maximumInteractiveUnwrapAttempts = 8
 
     public static func main() {
         let args = CommandLine.arguments
@@ -118,6 +119,12 @@ public struct AgePluginClavis {
 
         var recipients: [String] = []
         var fileKeys: [Data] = []
+        defer {
+            for index in fileKeys.indices {
+                wipeData(&fileKeys[index])
+            }
+            fileKeys.removeAll(keepingCapacity: false)
+        }
         var pendingLine: String? = nil
 
         while true {
@@ -379,8 +386,7 @@ public struct AgePluginClavis {
             candidateKeys = ageCompatibleKeys.filter { key in
                 identities.contains { id in
                     id.caseInsensitiveCompare(key.label) == .orderedSame ||
-                    id == key.ageRecipient ||
-                    id.contains(key.label)
+                    id == key.ageRecipient
                 }
             }
         } else {
@@ -398,17 +404,24 @@ public struct AgePluginClavis {
             return
         }
 
+        var unwrapAttempts = 0
         for stanza in stanzas {
             var unwrapped = false
 
             for keyInfo in candidateKeys {
+                guard unwrapAttempts < maximumInteractiveUnwrapAttempts else {
+                    outputHandler("-> error identity Interactive unwrap attempt limit exceeded")
+                    return
+                }
+                unwrapAttempts += 1
                 do {
-                    let fileKey = try unwrapKey(
+                    var fileKey = try unwrapKey(
                         keyInfo.label,
                         "Touch ID to unwrap age file key using '\(keyInfo.label)'",
                         stanza.wrappedKey,
                         stanza.epkB64
                     )
+                    defer { wipeData(&fileKey) }
 
                     outputHandler("-> file-key \(stanza.index)")
                     formatBase64(fileKey, outputHandler: outputHandler)
@@ -423,5 +436,14 @@ public struct AgePluginClavis {
                 outputHandler("-> error identity Failed to unwrap stanza \(stanza.index)")
             }
         }
+    }
+
+    private static func wipeData(_ data: inout Data) {
+        data.withUnsafeMutableBytes { raw in
+            if let base = raw.baseAddress {
+                SecureMemory.zero(base, byteCount: raw.count)
+            }
+        }
+        data.removeAll(keepingCapacity: false)
     }
 }

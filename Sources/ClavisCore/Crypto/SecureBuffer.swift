@@ -4,7 +4,7 @@ import Darwin
 /// Centralized non-elidable zeroization for caller-owned memory.
 /// An unexpected `memset_s` error is retried through the system implementation and
 /// terminates the process if secure zeroization still cannot be established.
-enum SecureMemory {
+public enum SecureMemory {
     typealias MemsetSFunction = (
         UnsafeMutableRawPointer?,
         Int,
@@ -12,7 +12,7 @@ enum SecureMemory {
         Int
     ) -> Int32
 
-    static func zero(_ pointer: UnsafeMutableRawPointer, byteCount: Int) {
+    public static func zero(_ pointer: UnsafeMutableRawPointer, byteCount: Int) {
         _ = zero(
             pointer,
             byteCount: byteCount,
