@@ -578,6 +578,9 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
 
     func testKeychainPrivateKeyStoreLifecycle() throws {
+        guard ProcessInfo.processInfo.environment["CLAVIS_RUN_KEYCHAIN_INTEGRATION_TESTS"] == "1" else {
+            throw XCTSkip("Set CLAVIS_RUN_KEYCHAIN_INTEGRATION_TESTS=1 to run tests against the real user Keychain.")
+        }
         let store = KeychainPrivateKeyStore(serviceName: "com.clavis.tests.\(UUID().uuidString)")
         let label = "test-store-lifecycle-\(UUID().uuidString)"
         let dummySecret = "SecurePayload_\(UUID().uuidString)".data(using: .utf8)!
@@ -586,7 +589,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
         XCTAssertFalse(store.contains(label: label))
 
-        // Saving with accessControlFlags (should cleanly fall back without -34018 error)
+        // This opt-in integration test must preserve the requested access control.
         try store.save(label: label, data: dummySecret, accessControlFlags: [.privateKeyUsage, .userPresence])
         XCTAssertTrue(store.contains(label: label))
 
@@ -596,5 +599,65 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
         try store.remove(label: label)
         XCTAssertFalse(store.contains(label: label))
+    }
+
+    func testKeychainPrivateKeyStoreFailsClosedWhenProtectedAddIsUnavailable() throws {
+        var addedItems: [CFDictionary] = []
+        var deleteCallCount = 0
+        let store = KeychainPrivateKeyStore(
+            serviceName: "com.clavis.tests.fail-closed",
+            addItem: { item in
+                addedItems.append(item)
+                return errSecMissingEntitlement
+            },
+            deleteItem: { _ in
+                deleteCallCount += 1
+                return errSecItemNotFound
+            }
+        )
+
+        XCTAssertThrowsError(
+            try store.save(
+                label: "protected",
+                data: Data([0x01, 0x02]),
+                accessControlFlags: [.privateKeyUsage, .userPresence]
+            )
+        ) { error in
+            guard case PrivateKeyStoreError.protectionUnavailable(let status) = error else {
+                return XCTFail("Expected protectionUnavailable, got \(error)")
+            }
+            XCTAssertEqual(status, errSecMissingEntitlement)
+        }
+
+        XCTAssertEqual(deleteCallCount, 1)
+        XCTAssertEqual(addedItems.count, 1, "A protected add failure must never retry with weaker attributes")
+        let added = addedItems[0] as NSDictionary
+        XCTAssertNotNil(added[kSecAttrAccessControl as String])
+        XCTAssertNil(added[kSecAttrAccessible as String])
+    }
+
+    func testKeychainPrivateKeyStoreRejectsMissingAuthenticationConstraint() throws {
+        var addCallCount = 0
+        let store = KeychainPrivateKeyStore(
+            serviceName: "com.clavis.tests.missing-auth",
+            addItem: { _ in
+                addCallCount += 1
+                return errSecSuccess
+            },
+            deleteItem: { _ in errSecItemNotFound }
+        )
+
+        XCTAssertThrowsError(
+            try store.save(
+                label: "unprotected",
+                data: Data([0x01]),
+                accessControlFlags: [.privateKeyUsage]
+            )
+        ) { error in
+            guard case PrivateKeyStoreError.accessControlCreation = error else {
+                return XCTFail("Expected accessControlCreation, got \(error)")
+            }
+        }
+        XCTAssertEqual(addCallCount, 0)
     }
 }

@@ -17,12 +17,15 @@ public extension PrivateKeyStoring {
 
 public enum PrivateKeyStoreError: LocalizedError {
     case accessControlCreation(String)
+    case protectionUnavailable(OSStatus)
     case keychain(OSStatus)
 
     public var errorDescription: String? {
         switch self {
         case .accessControlCreation(let message):
             return "Failed to create private-key access control: \(message)"
+        case .protectionUnavailable(let status):
+            return "The private key was not stored because the requested Keychain authentication protection is unavailable (\(status)). Check the application's Keychain entitlements; Clavis will not store the key with weaker protection."
         case .keychain(let status):
             let message = SecCopyErrorMessageString(status, nil) as String? ?? "Unknown Keychain error"
             return "Keychain operation failed (\(status)): \(message)"
@@ -48,9 +51,25 @@ enum PrivateKeyAccessControl {
 
 public final class KeychainPrivateKeyStore: PrivateKeyStoring {
     private let serviceName: String
+    private let addItem: (CFDictionary) -> OSStatus
+    private let deleteItem: (CFDictionary) -> OSStatus
 
-    public init(serviceName: String = KeychainManager.privateServiceName) {
+    public convenience init(serviceName: String = KeychainManager.privateServiceName) {
+        self.init(
+            serviceName: serviceName,
+            addItem: { SecItemAdd($0, nil) },
+            deleteItem: { SecItemDelete($0) }
+        )
+    }
+
+    init(
+        serviceName: String,
+        addItem: @escaping (CFDictionary) -> OSStatus,
+        deleteItem: @escaping (CFDictionary) -> OSStatus
+    ) {
         self.serviceName = serviceName
+        self.addItem = addItem
+        self.deleteItem = deleteItem
     }
 
     public func contains(label: String) -> Bool {
@@ -76,7 +95,7 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
             kSecAttrAccount as String: label
         ]
 
-        let deleteStatus = SecItemDelete(lookup as CFDictionary)
+        let deleteStatus = deleteItem(lookup as CFDictionary)
         guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
             throw PrivateKeyStoreError.keychain(deleteStatus)
         }
@@ -88,22 +107,21 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
 
         // Generic password records do not support .privateKeyUsage (reserved for SecKeyRef).
         let passwordFlags = accessControlFlags.subtracting([.privateKeyUsage])
-        var saveStatus: OSStatus = errSecMissingEntitlement
-
-        if !passwordFlags.isEmpty, let accessControl = try? PrivateKeyAccessControl.make(flags: passwordFlags) {
-            var secureItem = baseItem
-            secureItem[kSecAttrAccessControl as String] = accessControl
-            saveStatus = SecItemAdd(secureItem as CFDictionary, nil)
+        guard !passwordFlags.isEmpty else {
+            throw PrivateKeyStoreError.accessControlCreation(
+                "No authentication constraint remains after removing the SecKey-only privateKeyUsage flag."
+            )
         }
 
-        // Fallback for environments where SecAccessControl on generic passwords requires
-        // an Apple provisioning profile / keychain-access-groups (e.g. un-entitled debug runs,
-        // ad-hoc binaries, or self-signed development certificates).
-        // Protected by the macOS Login Keychain bound to this device.
+        let accessControl = try PrivateKeyAccessControl.make(flags: passwordFlags)
+        var secureItem = baseItem
+        secureItem[kSecAttrAccessControl as String] = accessControl
+        let saveStatus = addItem(secureItem as CFDictionary)
+
+        // Never retry without SecAccessControl. A missing entitlement is a deployment
+        // configuration failure, not permission to downgrade private-key protection.
         if saveStatus == errSecMissingEntitlement || saveStatus == -34018 {
-            var fallbackItem = baseItem
-            fallbackItem[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            saveStatus = SecItemAdd(fallbackItem as CFDictionary, nil)
+            throw PrivateKeyStoreError.protectionUnavailable(saveStatus)
         }
 
         guard saveStatus == errSecSuccess else {
@@ -139,7 +157,7 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: label
         ]
-        let status = SecItemDelete(query as CFDictionary)
+        let status = deleteItem(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw PrivateKeyStoreError.keychain(status)
         }
