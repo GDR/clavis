@@ -576,6 +576,11 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
 
     func testRebuildPublicIndexFromKeychain() throws {
+        guard ProcessInfo.processInfo.environment["CLAVIS_RUN_KEYCHAIN_INTEGRATION_TESTS"] == "1" else {
+            throw XCTSkip("Set CLAVIS_RUN_KEYCHAIN_INTEGRATION_TESTS=1 to run tests against the real user Keychain.")
+        }
+        PublicKeyStore.disableKeychainMirrorForTesting = false
+        defer { PublicKeyStore.disableKeychainMirrorForTesting = true }
         let keyInfo = Ed25519KeyInfo(
             label: "test-rebuild-\(UUID().uuidString)",
             publicKeyOpenSSH: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA test",

@@ -82,6 +82,7 @@ class ClavisBaseTestCase: XCTestCase {
         try FileManager.default.createDirectory(at: testRootURL, withIntermediateDirectories: true)
 
         PublicKeyStore.customStorageURL = testRootURL.appendingPathComponent("keys.json")
+        PublicKeyStore.disableKeychainMirrorForTesting = true
         ClavisLogger.customLogFileURL = testRootURL.appendingPathComponent("clavis.log")
         ClavisLogger.customMaximumLogFileSize = nil
         SeedStore.customSeedsDirectory = testRootURL.appendingPathComponent("seeds", isDirectory: true)
@@ -93,6 +94,7 @@ class ClavisBaseTestCase: XCTestCase {
     override func tearDownWithError() throws {
         SeedStore.resetMasterKeyCacheForTesting()
         PublicKeyStore.customStorageURL = nil
+        PublicKeyStore.disableKeychainMirrorForTesting = false
         ClavisLogger.customLogFileURL = nil
         ClavisLogger.customMaximumLogFileSize = nil
         SeedStore.customSeedsDirectory = nil

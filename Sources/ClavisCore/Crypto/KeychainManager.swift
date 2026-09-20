@@ -118,7 +118,7 @@ public class KeychainManager {
                 biometricPolicy: effectivePolicy,
                 keyPurpose: keyPurpose
             )
-            PublicKeyStore.save(keyInfo)
+            try PublicKeyStore.saveChecked(keyInfo)
             return keyInfo
         }
 
@@ -206,7 +206,7 @@ public class KeychainManager {
         try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
 
         let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)
-        PublicKeyStore.save(keyInfo)
+        try PublicKeyStore.saveChecked(keyInfo)
         return keyInfo
     }
 
@@ -228,7 +228,7 @@ public class KeychainManager {
         try revokeKeyCapabilities(label: label)
         try privateKeyStore.remove(label: label, context: context, prompt: prompt)
         SeedStore.remove(label: label)
-        PublicKeyStore.remove(label: label)
+        try PublicKeyStore.removeChecked(label: label)
     }
 
     // MARK: - Authenticated Private Key Records & Verification
