@@ -54,12 +54,7 @@ enum PrivateKeyAccessControl {
 }
 
 public final class KeychainPrivateKeyStore: PrivateKeyStoring {
-    /// Team-scoped Keychain group shared by every signed Clavis executable
-    /// that performs private-key operations.
-    public static let sharedAccessGroup = "P7P693LH69.com.clavis.shared"
-
     private let serviceName: String
-    private let accessGroup: String
     private let addItem: (CFDictionary) -> OSStatus
     private let deleteItem: (CFDictionary) -> OSStatus
     private let updateItem: (CFDictionary, CFDictionary) -> OSStatus
@@ -68,7 +63,6 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
     public convenience init(serviceName: String = KeychainManager.privateServiceName) {
         self.init(
             serviceName: serviceName,
-            accessGroup: Self.sharedAccessGroup,
             addItem: { SecItemAdd($0, nil) },
             deleteItem: { SecItemDelete($0) },
             updateItem: { SecItemUpdate($0, $1) },
@@ -82,7 +76,6 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
 
     init(
         serviceName: String,
-        accessGroup: String = KeychainPrivateKeyStore.sharedAccessGroup,
         addItem: @escaping (CFDictionary) -> OSStatus,
         deleteItem: @escaping (CFDictionary) -> OSStatus,
         updateItem: @escaping (CFDictionary, CFDictionary) -> OSStatus = { SecItemUpdate($0, $1) },
@@ -93,7 +86,6 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
         }
     ) {
         self.serviceName = serviceName
-        self.accessGroup = accessGroup
         self.addItem = addItem
         self.deleteItem = deleteItem
         self.updateItem = updateItem
@@ -261,8 +253,7 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: label,
-            kSecUseDataProtectionKeychain as String: true,
-            kSecAttrAccessGroup as String: accessGroup
+            kSecUseDataProtectionKeychain as String: true
         ]
     }
 

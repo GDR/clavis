@@ -58,6 +58,7 @@ for binary in "${BINARIES[@]}"; do
     /usr/bin/codesign \
         --force \
         --sign "$SIGN_IDENTITY" \
+        --identifier "com.clavis.shared-client" \
         --options runtime \
         --timestamp=none \
         --entitlements Entitlements.plist \
@@ -65,13 +66,18 @@ for binary in "${BINARIES[@]}"; do
     /usr/bin/codesign --verify --strict --verbose=2 "$binary"
 
     SIGNED_ENTITLEMENTS="$(/usr/bin/codesign -d --entitlements - "$binary" 2>&1)"
-    if ! /usr/bin/grep -Fq "P7P693LH69.com.clavis.shared" <<<"$SIGNED_ENTITLEMENTS"; then
-        echo "❌ Shared Keychain access-group entitlement is missing from $binary." >&2
+    if /usr/bin/grep -Eq "keychain-access-groups|com.apple.security.application-groups" <<<"$SIGNED_ENTITLEMENTS"; then
+        echo "❌ Provisioning-dependent entitlement unexpectedly present in $binary." >&2
+        exit 1
+    fi
+
+    SIGNING_DETAILS="$(/usr/bin/codesign --display --verbose=4 "$binary" 2>&1)"
+    if ! /usr/bin/grep -Fq "Identifier=com.clavis.shared-client" <<<"$SIGNING_DETAILS"; then
+        echo "❌ Shared Code Signing Identifier is missing from $binary." >&2
         exit 1
     fi
 
     if [[ "$SIGNING_MODE" == "identity" ]]; then
-        SIGNING_DETAILS="$(/usr/bin/codesign --display --verbose=4 "$binary" 2>&1)"
         if /usr/bin/grep -q "Signature=adhoc" <<<"$SIGNING_DETAILS"; then
             echo "❌ Expected certificate signing, but $binary has an ad-hoc signature." >&2
             exit 1

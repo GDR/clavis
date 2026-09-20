@@ -28,12 +28,14 @@ the required entitlements, then verifies each signature. It fails closed when
 no development certificate is available. A specific certificate can be selected
 with `CLAVIS_SIGN_IDENTITY`.
 
-Private records use the Data Protection Keychain access group
-`P7P693LH69.com.clavis.shared`, shared by the signed Clavis executables. Run the signed
-artifacts produced by `build.sh`; plain `swift run` executables do not carry the
-required entitlement. Existing legacy Login Keychain records are migrated only
-after an authenticated read, and the old record is deleted only after the new
-protected record has been stored successfully.
+Private records use the Data Protection Keychain's default access group. The
+build script gives every certificate-signed Clavis executable the same Code
+Signing Identifier, so they have the same designated requirement without a
+restricted Keychain entitlement or provisioning profile. Run the signed
+artifacts produced by `build.sh`; independently signed or plain `swift run`
+executables are not equivalent Keychain clients. Existing legacy Login Keychain
+records are migrated only after an authenticated read, and the old record is
+deleted only after the new protected record has been stored successfully.
 
 For an explicitly local, non-distributable build without a certificate, opt in
 to ad-hoc signing with `CLAVIS_ALLOW_ADHOC_SIGNING=1 ./build.sh`. The Nix package

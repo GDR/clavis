@@ -730,7 +730,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         XCTAssertEqual(deleteCallCount, 0, "A failed update must leave the existing item intact")
     }
 
-    func testKeychainPrivateKeyStoreWritesProtectedDataProtectionItemToSharedGroup() throws {
+    func testKeychainPrivateKeyStoreWritesProtectedDataProtectionItemToDefaultGroup() throws {
         var addedItems: [CFDictionary] = []
         let store = KeychainPrivateKeyStore(
             serviceName: "com.clavis.tests.shared-group",
@@ -748,10 +748,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let added = addedItems[0] as NSDictionary
         XCTAssertNotNil(added[kSecAttrAccessControl as String])
         XCTAssertEqual(added[kSecUseDataProtectionKeychain as String] as? Bool, true)
-        XCTAssertEqual(
-            added[kSecAttrAccessGroup as String] as? String,
-            KeychainPrivateKeyStore.sharedAccessGroup
-        )
+        XCTAssertNil(added[kSecAttrAccessGroup as String])
         XCTAssertNil(added[kSecAttrAccess as String], "Data Protection Keychain must not use legacy ACLs")
     }
 
@@ -800,10 +797,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
         let added = addedItems[0] as NSDictionary
         XCTAssertEqual(added[kSecUseDataProtectionKeychain as String] as? Bool, true)
-        XCTAssertEqual(
-            added[kSecAttrAccessGroup as String] as? String,
-            KeychainPrivateKeyStore.sharedAccessGroup
-        )
+        XCTAssertNil(added[kSecAttrAccessGroup as String])
         XCTAssertNotNil(added[kSecAttrAccessControl as String])
 
         let deleted = deletedQueries[0] as NSDictionary
