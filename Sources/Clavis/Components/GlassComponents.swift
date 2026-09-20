@@ -104,4 +104,62 @@ public extension View {
     func liquidGlassCircle(size: CGFloat = 28) -> some View {
         self.modifier(LiquidGlassCircleModifier(size: size))
     }
+
+    func liquidGlassRowSelection(isSelected: Bool, isHovered: Bool = false, cornerRadius: CGFloat = 10) -> some View {
+        self.modifier(LiquidGlassRowSelectionModifier(isSelected: isSelected, isHovered: isHovered, cornerRadius: cornerRadius))
+    }
 }
+
+public struct LiquidGlassRowSelectionModifier: ViewModifier {
+    public var isSelected: Bool
+    public var isHovered: Bool
+    public var cornerRadius: CGFloat = 10
+
+    public func body(content: Content) -> some View {
+        content
+            .background(
+                Group {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color.white.opacity(isHovered ? 0.22 : 0.16),
+                                        Color.white.opacity(isHovered ? 0.10 : 0.05)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                    } else if isHovered {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(Color.white.opacity(0.06))
+                    }
+                }
+            )
+            .overlay(
+                Group {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .stroke(
+                                LinearGradient(
+                                    colors: [
+                                        Color.white.opacity(isHovered ? 0.38 : 0.28),
+                                        Color.white.opacity(isHovered ? 0.14 : 0.08)
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                ),
+                                lineWidth: 0.8
+                            )
+                    } else if isHovered {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .stroke(Color.white.opacity(0.09), lineWidth: 0.8)
+                    }
+                }
+            )
+            .shadow(color: isSelected ? Color.black.opacity(0.22) : .clear, radius: 4, x: 0, y: 1.5)
+    }
+}
+

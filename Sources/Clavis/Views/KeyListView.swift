@@ -55,50 +55,14 @@ struct KeyListView: View {
                             ScrollView {
                                 LazyVStack(spacing: 8) {
                                     ForEach(appState.keys) { key in
-                                        let isSelected = (selectedKey?.id == key.id)
-                                        let isUnlocked = appState.isKeyUnlocked(label: key.label)
-
-                                        HStack(spacing: 10) {
-                                            // Status indicator: hardware shield for Secure Enclave, cache status dot for software
-                                            if key.isHardware {
-                                                Image(systemName: "lock.shield.fill")
-                                                    .font(.system(size: 11))
-                                                    .foregroundColor(isSelected ? .white : DesignTokens.accentGreen)
-                                                    .frame(width: 8, height: 8)
-                                            } else {
-                                                StatusDot(isActive: isUnlocked)
+                                        KeySidebarRowView(
+                                            key: key,
+                                            isSelected: (selectedKey?.id == key.id),
+                                            isUnlocked: appState.isKeyUnlocked(label: key.label),
+                                            onSelect: {
+                                                selectedKeyId = key.id
                                             }
-
-                                            // Key label & algorithm
-                                            VStack(alignment: .leading, spacing: 3) {
-                                                Text(key.label)
-                                                    .font(.system(size: 13, weight: .semibold))
-                                                    .foregroundColor(isSelected ? .white : .primary)
-                                                    .lineLimit(1)
-                                                Text(key.isAgeCompatible ? "\(key.algorithm) · agenix" : key.algorithm)
-                                                    .font(.system(size: 11))
-                                                    .foregroundColor(isSelected ? Color.white.opacity(0.8) : DesignTokens.textSecondary)
-                                                    .lineLimit(1)
-                                            }
-
-                                            Spacer()
-
-                                            // Hardware / Software and Purpose badges
-                                            HStack(spacing: 4) {
-                                                KeyBadge(isHardware: key.isHardware)
-                                                PurposeBadge(purpose: key.purpose)
-                                            }
-                                        }
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 10)
-                                        .background(
-                                            RoundedRectangle(cornerRadius: 10)
-                                                .fill(isSelected ? DesignTokens.accentBlue : Color.clear)
                                         )
-                                        .contentShape(RoundedRectangle(cornerRadius: 10))
-                                        .onTapGesture {
-                                            selectedKeyId = key.id
-                                        }
                                     }
                                 }
                                 .padding(.horizontal, 16)
@@ -266,6 +230,62 @@ struct KeyListView: View {
             statusMessage = "Deleted key '\(label)'."
         } catch {
             appState.errorMessage = "Failed to delete key: \(error.localizedDescription)"
+        }
+    }
+}
+
+private struct KeySidebarRowView: View {
+    let key: Ed25519KeyInfo
+    let isSelected: Bool
+    let isUnlocked: Bool
+    let onSelect: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            // Status indicator: hardware shield for Secure Enclave, cache status dot for software
+            if key.isHardware {
+                Image(systemName: "lock.shield.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(DesignTokens.accentGreen)
+                    .frame(width: 8, height: 8)
+            } else {
+                StatusDot(isActive: isUnlocked)
+            }
+
+            // Key label & algorithm
+            VStack(alignment: .leading, spacing: 3) {
+                Text(key.label)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                Text(key.isAgeCompatible ? "\(key.algorithm) · agenix" : key.algorithm)
+                    .font(.system(size: 11))
+                    .foregroundColor(isSelected ? Color.white.opacity(0.80) : DesignTokens.textSecondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            // Hardware / Software and Purpose badges
+            HStack(spacing: 4) {
+                KeyBadge(isHardware: key.isHardware)
+                PurposeBadge(purpose: key.purpose)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(FirstMouseView())
+        .liquidGlassRowSelection(isSelected: isSelected, isHovered: isHovered)
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onTapGesture {
+            onSelect()
+        }
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isHovered = hovering
+            }
         }
     }
 }
