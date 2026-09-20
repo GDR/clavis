@@ -27,61 +27,6 @@ public struct SettingsView: View {
                     }
                 }
 
-                // Security & Session Timeout Section
-                SettingsGroup(title: "SECURITY & CACHE") {
-                    SettingsRow(
-                        icon: "timer",
-                        iconColor: Color(red: 1.0, green: 0.58, blue: 0.0),
-                        title: "Session Timeout",
-                        subtitle: "Require Touch ID authentication after inactivity"
-                    ) {
-                        Picker("", selection: Binding(
-                            get: { appState.selectedTimeout },
-                            set: { appState.setTimeout($0) }
-                        )) {
-                            ForEach(SessionTimeout.allCases) { timeout in
-                                Text(timeout.rawValue).tag(timeout)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                        .frame(width: 150)
-                    }
-
-                    Divider()
-
-                    SettingsRow(
-                        icon: "lock.shield.fill",
-                        iconColor: Color(red: 0.20, green: 0.78, blue: 0.35),
-                        title: "Auto-Lock on Sleep",
-                        subtitle: "Keys are purged from memory when macOS locks or sleeps"
-                    ) {
-                        Text("Active")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(DesignTokens.accentGreen)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(DesignTokens.accentGreen.opacity(0.12))
-                            .clipShape(Capsule())
-                    }
-
-                    Divider()
-
-                    SettingsRow(
-                        icon: "key.fill",
-                        iconColor: Color(red: 0.68, green: 0.32, blue: 0.88),
-                        title: "Active Cache Status",
-                        subtitle: "\(appState.cachedKeysCount) key(s) currently unlocked in memory"
-                    ) {
-                        Button("Lock All") {
-                            appState.lockNow()
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(appState.cachedKeysCount == 0)
-                    }
-                }
-
                 // SSH Integration Section
                 SettingsGroup(title: "SSH INTEGRATION") {
                     VStack(alignment: .leading, spacing: 10) {
@@ -138,7 +83,7 @@ public struct SettingsView: View {
             }
             .padding(20)
         }
-        .frame(width: 480, height: 460)
+        .frame(width: 480, height: 320)
     }
 }
 

@@ -306,7 +306,7 @@ public struct KeyDetailInspectorView: View {
                         Divider().background(DesignTokens.cardBorder)
                         SecurityPropertyRow(
                             label: "Session Cache",
-                            value: key.isHardware ? "Disabled (Prompt on each signature)" : "Active TTL Memory Cache"
+                            value: key.isHardware ? "Disabled (Prompt on each signature)" : (appState.selectedTimeout == .never ? "Disabled (Always Prompt)" : "Active (\(appState.selectedTimeout.rawValue))")
                         )
                         Divider().background(DesignTokens.cardBorder)
                         SecurityPropertyRow(
@@ -318,6 +318,83 @@ public struct KeyDetailInspectorView: View {
                     }
                     .padding(14)
                     .glassCard(cornerRadius: 10)
+                }
+
+                // Session Cache Section
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("SESSION CACHE")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(DesignTokens.textTertiary)
+
+                    if key.isHardware {
+                        HStack(spacing: 12) {
+                            Image(systemName: "lock.shield.fill")
+                                .font(.system(size: 20))
+                                .foregroundColor(DesignTokens.accentGreen)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Hardware Isolation (Always Prompt)")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(.primary)
+                                Text("Secure Enclave keys cannot be cached in session memory. Every signature strictly requires explicit Touch ID user presence.")
+                                    .font(.caption)
+                                    .foregroundColor(DesignTokens.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer()
+                        }
+                        .padding(14)
+                        .glassCard(cornerRadius: 10)
+                    } else {
+                        VStack(spacing: 10) {
+                            // Timeout Picker Row
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Cache Timeout")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundColor(.primary)
+                                    Text("Require Touch ID authentication after inactivity")
+                                        .font(.caption)
+                                        .foregroundColor(DesignTokens.textSecondary)
+                                }
+                                Spacer()
+                                Picker("", selection: Binding(
+                                    get: { appState.selectedTimeout },
+                                    set: { appState.setTimeout($0) }
+                                )) {
+                                    ForEach(SessionTimeout.allCases) { timeout in
+                                        Text(timeout.rawValue).tag(timeout)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .labelsHidden()
+                                .frame(width: 160)
+                            }
+
+                            Divider().background(DesignTokens.cardBorder)
+
+                            // Memory protection & auto-lock row
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Memory Protection")
+                                        .font(.system(size: 12, weight: .medium))
+                                    Text("Locked into non-pageable memory (mlock). Purged on screen lock or sleep.")
+                                        .font(.caption2)
+                                        .foregroundColor(DesignTokens.textSecondary)
+                                }
+                                Spacer()
+                                Text("Active")
+                                    .font(.caption2)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(DesignTokens.accentGreen)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(DesignTokens.accentGreen.opacity(0.12))
+                                    .clipShape(Capsule())
+                            }
+                        }
+                        .padding(14)
+                        .glassCard(cornerRadius: 10)
+                    }
                 }
             }
             .padding(24)
