@@ -262,6 +262,35 @@ public class KeychainManager {
         }
     }
 
+    private func validateAuthenticatedRecord(
+        _ record: StoredPrivateKeyRecord,
+        against key: Ed25519KeyInfo,
+        context: LAContext
+    ) throws {
+        guard record.label == key.label else {
+            throw PrivateKeyRecordError.labelMismatch(expected: key.label, actual: record.label)
+        }
+        guard record.algorithm.rawValue == key.algorithm else {
+            throw PrivateKeyRecordError.algorithmMismatch(expected: key.algorithm, actual: record.algorithm.rawValue)
+        }
+        guard record.storageType == key.storageType else {
+            throw PrivateKeyRecordError.storageMismatch(expected: key.storageType.rawValue, actual: record.storageType.rawValue)
+        }
+        guard record.purpose == key.purpose else {
+            ClavisLogger.log("SECURITY_ALERT", "Key purpose mismatch: record='\(record.purpose.rawValue)', metadata='\(key.purpose.rawValue)'")
+            throw PrivateKeyRecordError.purposeMismatch(
+                expected: key.purpose.rawValue,
+                actual: record.purpose.rawValue
+            )
+        }
+
+        let derivedPublicBlob = try Self.derivePublicKeyBlob(record: record, context: context)
+        guard derivedPublicBlob == key.publicKeyBlob else {
+            ClavisLogger.log("SECURITY_ALERT", "Public key mismatch for '\(key.label)'! Possible metadata tampering.")
+            throw PrivateKeyRecordError.publicKeyMismatch
+        }
+    }
+
     // Loads an authenticated record from Keychain.
     // If a legacy record is encountered, migrates it transparently using expected metadata,
     // saves the versioned StoredPrivateKeyRecord back to Keychain, and returns it.
@@ -337,12 +366,17 @@ public class KeychainManager {
         label: String,
         prompt: String,
         useCache: Bool,
+        requiredPurpose: KeyPurpose,
         operation: (UnsafeRawBufferPointer) throws -> T
     ) throws -> T {
         ClavisLogger.log("FETCH_KEY", "Access request for key '\(label)'")
 
         // 1. Check session cache
-        if useCache, let result = try sessionCache.withCachedBuffer(label: label, operation: operation) {
+        if useCache, let result = try sessionCache.withCachedBuffer(
+            label: label,
+            expectedPurpose: requiredPurpose,
+            operation: operation
+        ) {
             ClavisLogger.log("SESSION_CACHE", "Served key '\(label)' from active session cache (0 prompts)")
             return result
         }
@@ -375,6 +409,12 @@ public class KeychainManager {
                     actual: "\(record.algorithm.rawValue) / \(record.storageType.rawValue)"
                 )
             }
+            guard record.purpose == requiredPurpose else {
+                throw PrivateKeyRecordError.purposeNotAllowed(
+                    purpose: record.purpose.rawValue,
+                    operation: requiredPurpose == .general ? "general signing or Age decryption" : "the requested operation"
+                )
+            }
 
             var sensitiveData = record.keyData
             guard let secureBuffer = secureBufferFactory(&sensitiveData) else {
@@ -391,6 +431,7 @@ public class KeychainManager {
                 let result = try sessionCache.setAndWithBuffer(
                     label: label,
                     buffer: secureBuffer,
+                    purpose: record.purpose,
                     expectedGeneration: cacheGeneration,
                     operation: operation
                 )
@@ -418,7 +459,7 @@ public class KeychainManager {
 
     // Sign challenge data using Ed25519 private key within scoped seed buffer
     public func sign(label: String, data: Data, prompt: String, useCache: Bool = true) throws -> Data {
-        try withEd25519Seed(label: label, prompt: prompt, useCache: useCache) { seedBytes in
+        try withEd25519Seed(label: label, prompt: prompt, useCache: useCache, requiredPurpose: .general) { seedBytes in
             let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: seedBytes)
             return try privateKey.signature(for: data)
         }
@@ -426,7 +467,7 @@ public class KeychainManager {
 
     // Unwrap age file key directly using Ed25519 seed bytes without allocating intermediate Data or PrivateKey
     public func unwrapAgeFileKey(label: String, prompt: String, wrappedKey: Data, epkB64: String) throws -> Data {
-        try withEd25519Seed(label: label, prompt: prompt, useCache: true) { seedBytes in
+        try withEd25519Seed(label: label, prompt: prompt, useCache: true, requiredPurpose: .general) { seedBytes in
             try AgePluginCrypto.unwrapFileKey(
                 wrappedKey: wrappedKey,
                 epkB64: epkB64,
@@ -464,18 +505,27 @@ public class KeychainManager {
         useCache: Bool = true,
         existingContext: LAContext? = nil
     ) throws -> Data {
+        let isGitSigningRequest = SSHSIGPayload.parse(from: data) != nil
+        if key.purpose == .gitSigningOnly && !isGitSigningRequest {
+            throw PrivateKeyRecordError.purposeNotAllowed(
+                purpose: key.purpose.rawValue,
+                operation: "non-Git SSH signing"
+            )
+        }
+
         // Fast path for software keys already present in session cache
         if useCache && existingContext == nil && key.storageType != .secureEnclave {
             if key.algorithm == "ECDSA P-256" {
                 if let cachedSig = try sessionCache.withCachedP256(
                     label: key.label,
+                    expectedPurpose: key.purpose,
                     operation: { try $0.signature(for: data) }
                 ) {
                     ClavisLogger.log("SESSION_CACHE", "Served key '\(key.label)' (ECDSA P-256) from active session cache (0 prompts)")
                     return Self.formatECDSASignatureBlob(cachedSig)
                 }
             } else if key.algorithm == "Ed25519" {
-                if let cachedSig = try sessionCache.withCachedBuffer(label: key.label, operation: { seedBytes in
+                if let cachedSig = try sessionCache.withCachedBuffer(label: key.label, expectedPurpose: key.purpose, operation: { seedBytes in
                     let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: seedBytes)
                     return try privateKey.signature(for: data)
                 }) {
@@ -508,28 +558,16 @@ public class KeychainManager {
         )
         defer { record.wipe() }
 
-        // 2. Validate against public metadata (Fail-closed on tampering)
-        guard record.label == key.label else {
-            ClavisLogger.log("SECURITY_ALERT", "Key label mismatch: record='\(record.label)', requested='\(key.label)'")
-            throw PrivateKeyRecordError.labelMismatch(expected: key.label, actual: record.label)
-        }
-        guard record.algorithm.rawValue == key.algorithm else {
-            ClavisLogger.log("SECURITY_ALERT", "Algorithm mismatch: record='\(record.algorithm.rawValue)', requested='\(key.algorithm)'")
-            throw PrivateKeyRecordError.algorithmMismatch(expected: key.algorithm, actual: record.algorithm.rawValue)
-        }
-        guard record.storageType == key.storageType else {
-            ClavisLogger.log("SECURITY_ALERT", "Storage type mismatch: record='\(record.storageType.rawValue)', requested='\(key.storageType.rawValue)'")
-            throw PrivateKeyRecordError.storageMismatch(expected: key.storageType.rawValue, actual: record.storageType.rawValue)
+        // 2. Validate every policy field against the authenticated record.
+        try validateAuthenticatedRecord(record, against: key, context: context)
+        if record.purpose == .gitSigningOnly && !isGitSigningRequest {
+            throw PrivateKeyRecordError.purposeNotAllowed(
+                purpose: record.purpose.rawValue,
+                operation: "non-Git SSH signing"
+            )
         }
 
-        // 3. Verify public key derived from authoritative record matches requested blob
-        let derivedPublicBlob = try Self.derivePublicKeyBlob(record: record, context: context)
-        guard derivedPublicBlob == key.publicKeyBlob else {
-            ClavisLogger.log("SECURITY_ALERT", "Public key mismatch for '\(key.label)'! Possible metadata tampering.")
-            throw PrivateKeyRecordError.publicKeyMismatch
-        }
-
-        // 4. Execute signature based strictly on authoritative record attributes
+        // 3. Execute signature based strictly on authoritative record attributes
         switch record.algorithm {
         case .ecdsaP256:
             var localKeyToWipe: CachedP256SigningKey? = nil
@@ -563,6 +601,7 @@ public class KeychainManager {
                     ecdsaSig = try sessionCache.setAndWithP256(
                         label: key.label,
                         key: signingKey,
+                        purpose: record.purpose,
                         expectedGeneration: cacheGeneration,
                         operation: { try $0.signature(for: data) }
                     )
@@ -593,6 +632,7 @@ public class KeychainManager {
                 signature = try sessionCache.setAndWithBuffer(
                     label: key.label,
                     buffer: secureBuffer,
+                    purpose: record.purpose,
                     expectedGeneration: cacheGeneration,
                     operation: { seedBytes in
                         let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: seedBytes)
@@ -635,6 +675,8 @@ public class KeychainManager {
             expectedKeyInfo: key
         )
         defer { record.wipe() }
+
+        try validateAuthenticatedRecord(record, against: key, context: context)
 
         let cachedKey: GitCachedSigningKey
         switch record.algorithm {
@@ -731,6 +773,7 @@ public class KeychainManager {
             guard sessionCache.setP256(
                 label: label,
                 key: signingKey,
+                purpose: record.purpose,
                 expectedGeneration: cacheGeneration
             ) else {
                 signingKey.wipe()
@@ -748,6 +791,7 @@ public class KeychainManager {
             guard sessionCache.set(
                 label: label,
                 buffer: buf,
+                purpose: record.purpose,
                 expectedGeneration: cacheGeneration
             ) else {
                 buf.wipe()

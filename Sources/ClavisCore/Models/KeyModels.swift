@@ -18,7 +18,7 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
     }
 
     public var isAgeCompatible: Bool {
-        algorithm == "Ed25519" && storageType == .keychain
+        purpose == .general && algorithm == "Ed25519" && storageType == .keychain
     }
 
     public var ageRecipient: String {

@@ -175,6 +175,96 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         XCTAssertEqual(gitResponse.first, 14, "Git SSHSIG payload must be signed successfully")
     }
 
+    func testTamperedPublicPurposeCannotBroadenGitOnlyKey() throws {
+        let store = InMemoryPrivateKeyStore()
+        let manager = KeychainManager(
+            authenticator: AllowingAuthenticator(),
+            privateKeyStore: store,
+            sessionCache: makeSessionCache()
+        )
+        let original = try manager.generateKey(
+            label: "purpose-tamper-\(UUID().uuidString)",
+            keyPurpose: .gitSigningOnly
+        )
+        let gitPayload = SSHSIGPayload(
+            namespace: "git",
+            hashAlgorithm: "sha256",
+            messageHash: Data(repeating: 0x42, count: 32)
+        ).serialize()
+
+        // Prime the cache with the authoritative Git-only purpose.
+        _ = try manager.signSSH(key: original, data: gitPayload, prompt: "Git", useCache: true)
+
+        let tampered = Ed25519KeyInfo(
+            label: original.label,
+            publicKeyOpenSSH: original.publicKeyOpenSSH,
+            publicKeyBlob: original.publicKeyBlob,
+            fingerprint: original.fingerprint,
+            createdAt: original.createdAt,
+            algorithmName: original.algorithmName,
+            storage: original.storage,
+            biometricPolicy: original.biometricPolicy,
+            keyPurpose: .general
+        )
+
+        XCTAssertThrowsError(
+            try manager.signSSH(
+                key: tampered,
+                data: Data("ssh-userauth-challenge".utf8),
+                prompt: "SSH",
+                useCache: true
+            )
+        ) { error in
+            guard case PrivateKeyRecordError.purposeMismatch(let expected, let actual) = error else {
+                return XCTFail("Expected purposeMismatch, got \(error)")
+            }
+            XCTAssertEqual(expected, KeyPurpose.general.rawValue)
+            XCTAssertEqual(actual, KeyPurpose.gitSigningOnly.rawValue)
+        }
+
+        XCTAssertThrowsError(
+            try manager.authorizeGitSigningGrant(key: tampered, prompt: "Grant")
+        ) { error in
+            guard case PrivateKeyRecordError.purposeMismatch = error else {
+                return XCTFail("Expected purposeMismatch, got \(error)")
+            }
+        }
+    }
+
+    func testGitOnlyKeyCannotBeUsedForAgeOrGenericSigning() throws {
+        let manager = makeKeyManager()
+        let key = try manager.generateKey(
+            label: "git-only-operations-\(UUID().uuidString)",
+            keyPurpose: .gitSigningOnly
+        )
+
+        XCTAssertFalse(key.isAgeCompatible)
+        XCTAssertThrowsError(
+            try manager.unwrapAgeFileKey(
+                label: key.label,
+                prompt: "Age",
+                wrappedKey: Data(),
+                epkB64: ""
+            )
+        ) { error in
+            guard case PrivateKeyRecordError.purposeNotAllowed = error else {
+                return XCTFail("Expected purposeNotAllowed, got \(error)")
+            }
+        }
+        XCTAssertThrowsError(
+            try manager.sign(
+                label: key.label,
+                data: Data("arbitrary".utf8),
+                prompt: "Generic",
+                useCache: true
+            )
+        ) { error in
+            guard case PrivateKeyRecordError.purposeNotAllowed = error else {
+                return XCTFail("Expected purposeNotAllowed, got \(error)")
+            }
+        }
+    }
+
 
     func testSSHAgentServerRebaseGraceFlow() throws {
         let store = InMemoryPrivateKeyStore()

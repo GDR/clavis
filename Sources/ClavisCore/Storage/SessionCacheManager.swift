@@ -23,8 +23,8 @@ public enum SessionCacheError: LocalizedError, Equatable {
 public class SessionCacheManager {
     public static let shared = SessionCacheManager()
 
-    private var cache: [String: (buffer: SecureBuffer, expiresAt: Date, monotonicDeadline: DispatchTime)] = [:]
-    private var p256Cache: [String: (key: CachedP256SigningKey, expiresAt: Date, monotonicDeadline: DispatchTime)] = [:]
+    private var cache: [String: (buffer: SecureBuffer, purpose: KeyPurpose, expiresAt: Date, monotonicDeadline: DispatchTime)] = [:]
+    private var p256Cache: [String: (key: CachedP256SigningKey, purpose: KeyPurpose, expiresAt: Date, monotonicDeadline: DispatchTime)] = [:]
     private var unlockedSessions: [String: (expiresAt: Date, monotonicDeadline: DispatchTime)] = [:]
     private let lock = NSLock()
     private let defaults: UserDefaults
@@ -258,12 +258,16 @@ public class SessionCacheManager {
     /// method starts, or waits until the already-started operation completes.
     func withCachedBuffer<Result>(
         label: String,
+        expectedPurpose: KeyPurpose? = nil,
         operation: (UnsafeRawBufferPointer) throws -> Result
     ) throws -> Result? {
         lock.lock()
         defer { lock.unlock() }
 
         guard _currentTimeout != .never, let entry = cache[label] else {
+            return nil
+        }
+        guard expectedPurpose == nil || entry.purpose == expectedPurpose else {
             return nil
         }
 
@@ -289,6 +293,7 @@ public class SessionCacheManager {
     func setAndWithBuffer<Result>(
         label: String,
         buffer: SecureBuffer,
+        purpose: KeyPurpose = .general,
         expectedGeneration: UInt64,
         operation: (UnsafeRawBufferPointer) throws -> Result
     ) throws -> Result {
@@ -305,7 +310,7 @@ public class SessionCacheManager {
         }
         let expires = Date().addingTimeInterval(timeout)
         let deadline = DispatchTime.now() + timeout
-        cache[label] = (buffer, expires, deadline)
+        cache[label] = (buffer, purpose, expires, deadline)
         unlockedSessions[label] = (expires, deadline)
         rescheduleCleanupTimerLocked()
 
@@ -344,15 +349,17 @@ public class SessionCacheManager {
     func set(
         label: String,
         buffer: SecureBuffer,
+        purpose: KeyPurpose = .general,
         expectedGeneration: UInt64? = nil
     ) -> Bool {
-        setInternal(label: label, buffer: buffer, expectedGeneration: expectedGeneration, timeoutOverride: nil)
+        setInternal(label: label, buffer: buffer, purpose: purpose, expectedGeneration: expectedGeneration, timeoutOverride: nil)
     }
 
     @discardableResult
     func setInternal(
         label: String,
         buffer: SecureBuffer,
+        purpose: KeyPurpose = .general,
         expectedGeneration: UInt64? = nil,
         timeoutOverride: TimeInterval? = nil
     ) -> Bool {
@@ -371,7 +378,7 @@ public class SessionCacheManager {
         }
         let expires = Date().addingTimeInterval(timeout)
         let deadline = DispatchTime.now() + timeout
-        cache[label] = (buffer, expires, deadline)
+        cache[label] = (buffer, purpose, expires, deadline)
         unlockedSessions[label] = (expires, deadline)
         rescheduleCleanupTimerLocked()
         return true
@@ -423,12 +430,16 @@ public class SessionCacheManager {
 
     func withCachedP256<Result>(
         label: String,
+        expectedPurpose: KeyPurpose? = nil,
         operation: (CachedP256SigningKey) throws -> Result
     ) throws -> Result? {
         lock.lock()
         defer { lock.unlock() }
 
         guard _currentTimeout != .never, let entry = p256Cache[label] else {
+            return nil
+        }
+        guard expectedPurpose == nil || entry.purpose == expectedPurpose else {
             return nil
         }
 
@@ -449,6 +460,7 @@ public class SessionCacheManager {
     func setAndWithP256<Result>(
         label: String,
         key: CachedP256SigningKey,
+        purpose: KeyPurpose = .general,
         expectedGeneration: UInt64,
         operation: (CachedP256SigningKey) throws -> Result
     ) throws -> Result {
@@ -465,7 +477,7 @@ public class SessionCacheManager {
         }
         let expires = Date().addingTimeInterval(timeout)
         let deadline = DispatchTime.now() + timeout
-        p256Cache[label] = (key, expires, deadline)
+        p256Cache[label] = (key, purpose, expires, deadline)
         unlockedSessions[label] = (expires, deadline)
         rescheduleCleanupTimerLocked()
         return try operation(key)
@@ -475,15 +487,17 @@ public class SessionCacheManager {
     func setP256(
         label: String,
         key: CachedP256SigningKey,
+        purpose: KeyPurpose = .general,
         expectedGeneration: UInt64? = nil
     ) -> Bool {
-        setP256Internal(label: label, key: key, expectedGeneration: expectedGeneration, timeoutOverride: nil)
+        setP256Internal(label: label, key: key, purpose: purpose, expectedGeneration: expectedGeneration, timeoutOverride: nil)
     }
 
     @discardableResult
     func setP256Internal(
         label: String,
         key: CachedP256SigningKey,
+        purpose: KeyPurpose = .general,
         expectedGeneration: UInt64? = nil,
         timeoutOverride: TimeInterval? = nil
     ) -> Bool {
@@ -506,7 +520,7 @@ public class SessionCacheManager {
         }
         let expires = Date().addingTimeInterval(timeout)
         let deadline = DispatchTime.now() + timeout
-        p256Cache[label] = (key, expires, deadline)
+        p256Cache[label] = (key, purpose, expires, deadline)
         unlockedSessions[label] = (expires, deadline)
         rescheduleCleanupTimerLocked()
         return true

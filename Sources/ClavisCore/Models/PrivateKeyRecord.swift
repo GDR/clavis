@@ -74,6 +74,8 @@ public enum PrivateKeyRecordError: LocalizedError, Equatable {
     case metadataMismatch(field: String, expected: String, actual: String)
     case algorithmMismatch(expected: String, actual: String)
     case storageMismatch(expected: String, actual: String)
+    case purposeMismatch(expected: String, actual: String)
+    case purposeNotAllowed(purpose: String, operation: String)
     case publicKeyMismatch
     case legacyRecordUnmigrated(String)
 
@@ -91,6 +93,10 @@ public enum PrivateKeyRecordError: LocalizedError, Equatable {
             return "Security violation: algorithm mismatch (record has '\(actual)', requested '\(expected)'). Signing refused."
         case .storageMismatch(let expected, let actual):
             return "Security violation: storage type mismatch (record has '\(actual)', requested '\(expected)'). Signing refused."
+        case .purposeMismatch(let expected, let actual):
+            return "Security violation: key purpose mismatch (record has '\(actual)', requested '\(expected)'). Operation refused."
+        case .purposeNotAllowed(let purpose, let operation):
+            return "Security violation: key purpose '\(purpose)' does not permit \(operation)."
         case .publicKeyMismatch:
             return "Security violation: derived public key does not match public key metadata blob. Signing refused."
         case .legacyRecordUnmigrated(let label):
