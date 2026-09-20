@@ -198,6 +198,21 @@ struct KeyListView: View {
                 ImportKeySheet(appState: appState)
             }
         }
+        .alert(
+            "Error",
+            isPresented: Binding(
+                get: { appState.errorMessage != nil },
+                set: { if !$0 { appState.errorMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                appState.errorMessage = nil
+            }
+        } message: {
+            if let msg = appState.errorMessage {
+                Text(msg)
+            }
+        }
         .background {
             Group {
                 Button("") { appState.activeSheet = .create }
@@ -224,12 +239,13 @@ struct KeyListView: View {
     }
 
     private func deleteKey(label: String) {
+        defer { appState.refresh() }
         do {
             try KeychainManager.shared.deleteKey(label: label)
-            appState.refresh()
             statusMessage = "Deleted key '\(label)'."
         } catch {
-            appState.errorMessage = "Failed to delete key: \(error.localizedDescription)"
+            ClavisLogger.log("KEY_DELETE", "Failed to delete key '\(label)': \(error.localizedDescription)")
+            appState.errorMessage = error.localizedDescription
         }
     }
 }

@@ -230,10 +230,27 @@ public class KeychainManager {
         ClavisLogger.log("KEY_DELETE", "Deleting key '\(label)'...")
         let prompt = "Authenticate to permanently delete key '\(label)'"
         let context = try authenticator.authenticate(reason: prompt)
-        try revokeKeyCapabilities(label: label)
-        try privateKeyStore.remove(label: label, context: context, prompt: prompt)
+
+        var revocationError: Error?
+        do {
+            try revokeKeyCapabilities(label: label)
+        } catch {
+            revocationError = error
+            ClavisLogger.log("KEY_DELETE", "Revocation notice: \(error.localizedDescription). Proceeding with local key removal.")
+        }
+
+        do {
+            try privateKeyStore.remove(label: label, context: context, prompt: prompt)
+        } catch {
+            ClavisLogger.log("KEY_DELETE", "Warning: Keychain private key removal encountered error (\(error.localizedDescription)). Proceeding with metadata cleanup.")
+        }
         SeedStore.remove(label: label)
         try PublicKeyStore.removeChecked(label: label)
+        ClavisLogger.log("KEY_DELETE", "Key '\(label)' deleted successfully.")
+
+        if let revocationError {
+            throw revocationError
+        }
     }
 
     // MARK: - Authenticated Private Key Records & Verification

@@ -131,7 +131,8 @@ public final class AgentLifecycleManager: @unchecked Sendable {
 
         guard writeAll(packet, to: sock),
               let header = readExactly(4, from: sock) else {
-            throw AgentLifecycleError.agentControlFailed("agent did not acknowledge revocation")
+            _ = stopAgent()
+            throw AgentLifecycleError.agentControlFailed("agent did not acknowledge revocation (daemon terminated)")
         }
         var responseLength: UInt32 = 0
         _ = Swift.withUnsafeMutableBytes(of: &responseLength) { header.copyBytes(to: $0) }
@@ -139,7 +140,8 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         guard responseLength == 1,
               let response = readExactly(1, from: sock),
               response.first == 6 else {
-            throw AgentLifecycleError.agentControlFailed("agent rejected revocation")
+            _ = stopAgent()
+            throw AgentLifecycleError.agentControlFailed("agent rejected revocation (daemon terminated)")
         }
     }
 
