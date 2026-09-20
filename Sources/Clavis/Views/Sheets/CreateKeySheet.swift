@@ -2,26 +2,59 @@ import SwiftUI
 import ClavisCore
 import CryptoKit
 
-public enum KeyPurpose: String, CaseIterable, Identifiable {
-    case ssh = "SSH"
-    case git = "Git Signing"
-    case age = "age / agenix"
+public enum KeyTypePreset: String, CaseIterable, Identifiable {
+    case software = "software"
+    case hardware = "hardware"
 
     public var id: String { rawValue }
 
-    public var icon: String {
+    public var title: String {
         switch self {
-        case .ssh: return "terminal"
-        case .git: return "signature"
-        case .age: return "lock.doc"
+        case .software:
+            return "Software Key (Ed25519)"
+        case .hardware:
+            return "Hardware Key (Secure Enclave)"
         }
     }
 
-    public var description: String {
+    public var badge: String {
         switch self {
-        case .ssh: return "SSH authentication & server access"
-        case .git: return "Cryptographic commit signing"
-        case .age: return "Encrypt files & agenix secrets"
+        case .software:
+            return "KEYCHAIN"
+        case .hardware:
+            return "APPLE SILICON"
+        }
+    }
+
+    public var subtitle: String {
+        switch self {
+        case .software:
+            return "Standard Edwards-curve key. Supported by age/agenix, SSH, and Git commit signing, with session TTL memory caching."
+        case .hardware:
+            return "Hardware-bound NIST P-256 key isolated inside the Apple Silicon chip. Private key never leaves hardware. Always prompts Touch ID per operation."
+        }
+    }
+
+    public var icon: String {
+        switch self {
+        case .software:
+            return "key.fill"
+        case .hardware:
+            return "cpu"
+        }
+    }
+
+    public var storageType: KeyStorageType {
+        switch self {
+        case .software: return .keychain
+        case .hardware: return .secureEnclave
+        }
+    }
+
+    public var algorithm: KeyAlgorithm {
+        switch self {
+        case .software: return .ed25519
+        case .hardware: return .ecdsaP256
         }
     }
 }
@@ -31,11 +64,8 @@ public struct CreateKeySheet: View {
     @ObservedObject var appState: AppState
 
     @State private var keyName: String = ""
-    @State private var selectedPurpose: KeyPurpose = .age
-    @State private var selectedStorage: KeyStorageType = .keychain
-    @State private var selectedAlgorithm: KeyAlgorithm = .ed25519
+    @State private var selectedPreset: KeyTypePreset = .software
     @State private var selectedBiometricPolicy: BiometricPolicy = .userPresence
-    @State private var selectedTimeout: SessionTimeout = .fifteenMinutes
     @State private var isCreating = false
     @State private var errorMessage: String? = nil
 
@@ -50,7 +80,7 @@ public struct CreateKeySheet: View {
                 Text("Create New Key")
                     .font(.title2)
                     .fontWeight(.bold)
-                Text("Generate a new cryptographic key for SSH authentication, Git signing, or age encryption.")
+                Text("Select a key type preset. Storage and cryptographic algorithm are configured automatically.")
                     .font(.subheadline)
                     .foregroundColor(DesignTokens.textSecondary)
             }
@@ -79,79 +109,31 @@ public struct CreateKeySheet: View {
                     .textFieldStyle(.roundedBorder)
             }
 
-            // Purpose Selection
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Purpose")
+            // Mutually Exclusive Presets (Software vs Hardware)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Key Type")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(DesignTokens.textSecondary)
-                HStack(spacing: 10) {
-                    ForEach(KeyPurpose.allCases) { purpose in
-                        let isDisabled = (purpose == .age && selectedStorage == .secureEnclave)
-                        Button(action: {
-                            selectedPurpose = purpose
-                            if purpose == .age {
-                                selectedAlgorithm = .ed25519
-                                selectedStorage = .keychain
-                            }
-                        }) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Image(systemName: purpose.icon)
-                                        .foregroundColor(selectedPurpose == purpose ? DesignTokens.accentBlue : .secondary)
-                                    Spacer()
-                                    if selectedPurpose == purpose {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundColor(DesignTokens.accentBlue)
-                                            .font(.caption)
-                                    }
-                                }
-                                Text(purpose.rawValue)
-                                    .font(.subheadline)
-                                    .fontWeight(.medium)
-                                Text(isDisabled ? "Incompatible with hardware keys" : purpose.description)
-                                    .font(.caption2)
-                                    .foregroundColor(DesignTokens.textSecondary)
-                                    .lineLimit(2)
-                            }
-                            .padding(10)
-                            .frame(maxWidth: .infinity, minHeight: 70, alignment: .topLeading)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(selectedPurpose == purpose ? DesignTokens.accentBlue.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(selectedPurpose == purpose ? DesignTokens.accentBlue : DesignTokens.cardBorder, lineWidth: 1)
-                            )
-                            .opacity(isDisabled ? 0.45 : 1.0)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isDisabled)
-                    }
-                }
-            }
 
-            // Storage Selection
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Storage Target")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(DesignTokens.textSecondary)
-                HStack(spacing: 12) {
-                    // Keychain option
+                VStack(spacing: 10) {
+                    // Software Option
                     Button(action: {
-                        selectedStorage = .keychain
+                        selectedPreset = .software
                     }) {
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: "key.fill")
-                                .foregroundColor(selectedStorage == .keychain ? DesignTokens.accentBlue : .secondary)
-                            VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: KeyTypePreset.software.icon)
+                                .font(.system(size: 20))
+                                .foregroundColor(selectedPreset == .software ? DesignTokens.accentBlue : .secondary)
+                                .frame(width: 24, height: 24)
+
+                            VStack(alignment: .leading, spacing: 4) {
                                 HStack(spacing: 6) {
-                                    Text("Login Keychain")
+                                    Text(KeyTypePreset.software.title)
                                         .font(.subheadline)
-                                        .fontWeight(.medium)
-                                    Text("SOFTWARE")
+                                        .fontWeight(.semibold)
+                                        .foregroundColor(.primary)
+                                    Text(KeyTypePreset.software.badge)
                                         .font(.system(size: 9, weight: .bold))
                                         .padding(.horizontal, 4)
                                         .padding(.vertical, 1)
@@ -159,46 +141,61 @@ public struct CreateKeySheet: View {
                                         .foregroundColor(DesignTokens.textSecondary)
                                         .cornerRadius(3)
                                 }
-                                Text("Software key in macOS Keychain. Touch ID guarded, exportable seed.")
+
+                                Text(KeyTypePreset.software.subtitle)
                                     .font(.caption2)
                                     .foregroundColor(DesignTokens.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                HStack(spacing: 6) {
+                                    WorkflowTag(name: "SSH", isSupported: true)
+                                    WorkflowTag(name: "Git Signing", isSupported: true)
+                                    WorkflowTag(name: "age / agenix", isSupported: true)
+                                }
+                                .padding(.top, 4)
                             }
+
                             Spacer()
-                            if selectedStorage == .keychain {
+
+                            if selectedPreset == .software {
                                 Image(systemName: "checkmark.circle.fill")
                                     .foregroundColor(DesignTokens.accentBlue)
+                                    .font(.title3)
                             }
                         }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, minHeight: 56)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                         .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(selectedStorage == .keychain ? DesignTokens.accentBlue.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(selectedPreset == .software ? DesignTokens.accentBlue.opacity(0.10) : Color(nsColor: .controlBackgroundColor).opacity(0.5))
                         )
                         .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(selectedStorage == .keychain ? DesignTokens.accentBlue : DesignTokens.cardBorder, lineWidth: 1)
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(selectedPreset == .software ? DesignTokens.accentBlue : DesignTokens.cardBorder, lineWidth: selectedPreset == .software ? 1.5 : 1)
                         )
                     }
                     .buttonStyle(.plain)
 
-                    // Secure Enclave option
+                    // Hardware Option
+                    let isEnclaveAvailable = SecureEnclave.isAvailable
                     Button(action: {
-                        selectedStorage = .secureEnclave
-                        selectedAlgorithm = .ecdsaP256
-                        if selectedPurpose == .age {
-                            selectedPurpose = .ssh
+                        if isEnclaveAvailable {
+                            selectedPreset = .hardware
                         }
                     }) {
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: "cpu")
-                                .foregroundColor(selectedStorage == .secureEnclave ? DesignTokens.accentGreen : .secondary)
-                            VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: KeyTypePreset.hardware.icon)
+                                .font(.system(size: 20))
+                                .foregroundColor(selectedPreset == .hardware ? DesignTokens.accentGreen : .secondary)
+                                .frame(width: 24, height: 24)
+
+                            VStack(alignment: .leading, spacing: 4) {
                                 HStack(spacing: 6) {
-                                    Text("Secure Enclave")
+                                    Text(KeyTypePreset.hardware.title)
                                         .font(.subheadline)
-                                        .fontWeight(.medium)
-                                    Text("HARDWARE")
+                                        .fontWeight(.semibold)
+                                        .foregroundColor(.primary)
+                                    Text(KeyTypePreset.hardware.badge)
                                         .font(.system(size: 9, weight: .bold))
                                         .padding(.horizontal, 4)
                                         .padding(.vertical, 1)
@@ -206,33 +203,47 @@ public struct CreateKeySheet: View {
                                         .foregroundColor(DesignTokens.accentGreen)
                                         .cornerRadius(3)
                                 }
-                                Text("Bound to Apple Silicon hardware chip. Non-exportable private key (P-256).")
+
+                                Text(isEnclaveAvailable ? KeyTypePreset.hardware.subtitle : "Apple Secure Enclave is not available on this device.")
                                     .font(.caption2)
                                     .foregroundColor(DesignTokens.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                HStack(spacing: 6) {
+                                    WorkflowTag(name: "SSH", isSupported: true)
+                                    WorkflowTag(name: "Git Signing", isSupported: true)
+                                    WorkflowTag(name: "Incompatible with age", isSupported: false)
+                                }
+                                .padding(.top, 4)
                             }
+
                             Spacer()
-                            if selectedStorage == .secureEnclave {
+
+                            if selectedPreset == .hardware {
                                 Image(systemName: "checkmark.circle.fill")
                                     .foregroundColor(DesignTokens.accentGreen)
+                                    .font(.title3)
                             }
                         }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, minHeight: 56)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                         .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(selectedStorage == .secureEnclave ? DesignTokens.accentGreen.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(selectedPreset == .hardware ? DesignTokens.accentGreen.opacity(0.10) : Color(nsColor: .controlBackgroundColor).opacity(0.5))
                         )
                         .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(selectedStorage == .secureEnclave ? DesignTokens.accentGreen : DesignTokens.cardBorder, lineWidth: 1)
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(selectedPreset == .hardware ? DesignTokens.accentGreen : DesignTokens.cardBorder, lineWidth: selectedPreset == .hardware ? 1.5 : 1)
                         )
+                        .opacity(isEnclaveAvailable ? 1.0 : 0.45)
                     }
                     .buttonStyle(.plain)
+                    .disabled(!isEnclaveAvailable)
                 }
             }
 
-            // Biometric Policy Selector (Secure Enclave only)
-            if selectedStorage == .secureEnclave {
+            // Biometric Policy Selection (Hardware keys only)
+            if selectedPreset == .hardware {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Biometric Authentication Policy")
                         .font(.caption)
@@ -293,97 +304,6 @@ public struct CreateKeySheet: View {
                 }
             }
 
-            // Algorithm Selector
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Algorithm")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(DesignTokens.textSecondary)
-
-                HStack {
-                    Menu {
-                        ForEach(KeyAlgorithm.allCases) { algo in
-                            let isAlgoDisabled = (selectedPurpose == .age && algo != .ed25519) || (selectedStorage == .secureEnclave && algo != .ecdsaP256)
-                            Button(action: {
-                                selectedAlgorithm = algo
-                                if algo == .ecdsaP256 {
-                                    if selectedPurpose == .age {
-                                        selectedPurpose = .ssh
-                                    }
-                                    if SecureEnclave.isAvailable {
-                                        selectedStorage = .secureEnclave
-                                    }
-                                } else if selectedStorage == .secureEnclave {
-                                    selectedStorage = .keychain
-                                }
-                            }) {
-                                HStack {
-                                    Text(algo.rawValue)
-                                    if selectedAlgorithm == algo {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                            .disabled(isAlgoDisabled)
-                        }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Text(selectedAlgorithm.rawValue)
-                                .font(.system(size: 13, weight: .bold, design: .monospaced))
-                                .foregroundColor(.primary)
-
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(DesignTokens.textSecondary)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
-                        .cornerRadius(6)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(DesignTokens.cardBorder, lineWidth: 0.8)
-                        )
-                    }
-                    .menuStyle(.borderlessButton)
-                    .focusable(false)
-
-                    Spacer()
-
-                    Text(selectedPurpose == .age ? "Required for age / agenix (X25519 / Ed25519)" : selectedAlgorithm.description)
-                        .font(.caption2)
-                        .foregroundColor(DesignTokens.textTertiary)
-                        .lineLimit(1)
-                }
-                .padding(10)
-                .glassCard(cornerRadius: 8)
-
-                // Informative Compatibility Note
-                if selectedPurpose == .age {
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.shield.fill")
-                            .foregroundColor(DesignTokens.accentGreen)
-                            .font(.caption2)
-                        Text("age and agenix require an Ed25519 software key in Login Keychain. Apple Silicon Secure Enclave only supports NIST P-256, which cannot be used for age.")
-                            .font(.caption2)
-                            .foregroundColor(DesignTokens.textSecondary)
-                    }
-                    .padding(.horizontal, 4)
-                    .padding(.top, 2)
-                } else if selectedStorage == .secureEnclave || selectedAlgorithm == .ecdsaP256 {
-                    HStack(spacing: 6) {
-                        Image(systemName: "info.circle.fill")
-                            .foregroundColor(DesignTokens.accentOrange)
-                            .font(.caption2)
-                        Text("Secure Enclave & ECDSA P-256 are supported for SSH and Git signing, but are incompatible with age/agenix encryption.")
-                            .font(.caption2)
-                            .foregroundColor(DesignTokens.textSecondary)
-                    }
-                    .padding(.horizontal, 4)
-                    .padding(.top, 2)
-                }
-            }
-
             // Footer / Actions
             HStack {
                 Button("Cancel") {
@@ -397,7 +317,7 @@ public struct CreateKeySheet: View {
                     createKey()
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(DesignTokens.accentBlue)
+                .tint(selectedPreset == .hardware ? DesignTokens.accentGreen : DesignTokens.accentBlue)
                 .keyboardShortcut(.defaultAction)
                 .disabled(keyName.trimmingCharacters(in: .whitespaces).isEmpty || isCreating)
             }
@@ -417,14 +337,29 @@ public struct CreateKeySheet: View {
         do {
             _ = try appState.generateKey(
                 label: label,
-                algorithm: selectedAlgorithm.rawValue,
-                storageType: selectedStorage,
-                biometricPolicy: selectedStorage == .secureEnclave ? selectedBiometricPolicy : nil
+                algorithm: selectedPreset.algorithm.rawValue,
+                storageType: selectedPreset.storageType,
+                biometricPolicy: selectedPreset == .hardware ? selectedBiometricPolicy : nil
             )
             dismiss()
         } catch {
             errorMessage = error.localizedDescription
             isCreating = false
         }
+    }
+}
+
+private struct WorkflowTag: View {
+    let name: String
+    let isSupported: Bool
+
+    var body: some View {
+        Text(name)
+            .font(.system(size: 10, weight: .medium))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(isSupported ? Color.white.opacity(0.08) : Color.red.opacity(0.12))
+            .foregroundColor(isSupported ? DesignTokens.textSecondary : .red.opacity(0.8))
+            .cornerRadius(4)
     }
 }
