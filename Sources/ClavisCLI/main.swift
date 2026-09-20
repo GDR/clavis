@@ -13,6 +13,26 @@ func printErr(_ message: String) {
     }
 }
 
+func installTerminationSignalSources(cleanup: @escaping () -> Void) -> [DispatchSourceSignal] {
+    signal(SIGINT, SIG_IGN)
+    signal(SIGTERM, SIG_IGN)
+    signal(SIGHUP, SIG_IGN)
+    signal(SIGPIPE, SIG_IGN)
+
+    var isTerminating = false
+    return [SIGINT, SIGTERM].map { signalNumber in
+        let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
+        source.setEventHandler {
+            guard !isTerminating else { return }
+            isTerminating = true
+            cleanup()
+            exit(0)
+        }
+        source.resume()
+        return source
+    }
+}
+
 if let cliResult = CLIService.handle(args: CommandLine.arguments) {
     if !cliResult.output.isEmpty {
         printOut(cliResult.output)
@@ -55,22 +75,16 @@ if let cliResult = CLIService.handle(args: CommandLine.arguments) {
                 printErr(CLIMessages.Agent.alreadyRunning(pid: existingPid))
                 exit(1)
             }
-            signal(SIGINT) { _ in
+            let terminationSignalSources = installTerminationSignalSources {
                 SSHAgentServer.sharedInstance.stop()
                 SingleInstanceLock.agent.release()
-                exit(0)
             }
-            signal(SIGTERM) { _ in
-                SSHAgentServer.sharedInstance.stop()
-                SingleInstanceLock.agent.release()
-                exit(0)
-            }
-            signal(SIGHUP, SIG_IGN)
-            signal(SIGPIPE, SIG_IGN)
             do {
                 try SSHAgentServer.sharedInstance.start()
                 printOut(CLIMessages.Agent.daemonStarted(socketPath: SSHAgentServer.defaultSocketPath, pid: getpid()))
-                dispatchMain()
+                withExtendedLifetime(terminationSignalSources) {
+                    dispatchMain()
+                }
             } catch {
                 printErr("Failed to start SSH agent server: \(error.localizedDescription)")
                 SingleInstanceLock.agent.release()

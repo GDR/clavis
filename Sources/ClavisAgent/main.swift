@@ -1,22 +1,28 @@
 import Foundation
 import ClavisCore
 
-// Setup signal handling for graceful shutdown
-func setupSignalHandlers() {
-    signal(SIGINT) { _ in
-        ClavisLogger.log(.agentDaemon, "Received SIGINT, terminating...")
-        SSHAgentServer.sharedInstance.stop()
-        SingleInstanceLock.agent.release()
-        exit(0)
-    }
-    signal(SIGTERM) { _ in
-        ClavisLogger.log(.agentDaemon, "Received SIGTERM, terminating...")
-        SSHAgentServer.sharedInstance.stop()
-        SingleInstanceLock.agent.release()
-        exit(0)
-    }
-    signal(SIGHUP, SIG_IGN) // Ignore SIGHUP so closing parent terminal/GUI doesn't kill the agent
+// POSIX handlers only suppress default delivery. Cleanup runs later on the
+// main dispatch queue, where locking, Foundation, and logging are safe.
+func setupSignalHandlers() -> [DispatchSourceSignal] {
+    signal(SIGINT, SIG_IGN)
+    signal(SIGTERM, SIG_IGN)
+    signal(SIGHUP, SIG_IGN)
     signal(SIGPIPE, SIG_IGN)
+
+    var isTerminating = false
+    return [SIGINT, SIGTERM].map { signalNumber in
+        let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
+        source.setEventHandler {
+            guard !isTerminating else { return }
+            isTerminating = true
+            ClavisLogger.log(.agentDaemon, "Received signal \(signalNumber), terminating...")
+            SSHAgentServer.sharedInstance.stop()
+            SingleInstanceLock.agent.release()
+            exit(0)
+        }
+        source.resume()
+        return source
+    }
 }
 
 // Detach from parent session if running as daemon
@@ -30,12 +36,14 @@ guard SingleInstanceLock.agent.acquire() else {
     exit(0)
 }
 
-setupSignalHandlers()
+let terminationSignalSources = setupSignalHandlers()
 
 do {
     try SSHAgentServer.sharedInstance.start()
     ClavisLogger.log(.agentDaemon, "🔑 Clavis SSH Agent daemon active at \(SSHAgentServer.defaultSocketPath) (PID: \(getpid()))")
-    dispatchMain()
+    withExtendedLifetime(terminationSignalSources) {
+        dispatchMain()
+    }
 } catch {
     ClavisLogger.log(.agentDaemon, "Failed to start SSH agent server: \(error.localizedDescription)")
     SingleInstanceLock.agent.release()
