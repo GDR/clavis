@@ -6,6 +6,9 @@ public enum SSHAgentServerError: LocalizedError, Equatable {
     case socketCreationFailed(Int32)
     case socketBindFailed(String, Int32)
     case socketListenFailed(Int32)
+    case socketOptionFailed(Int32)
+    case unsafeSocketPath(String)
+    case socketPermissionFailed(String, Int32)
     case pathTooLong(String)
 
     public var errorDescription: String? {
@@ -18,6 +21,12 @@ public enum SSHAgentServerError: LocalizedError, Equatable {
             return "Failed to bind socket at \(path) (errno: \(code))"
         case .socketListenFailed(let code):
             return "Failed to listen on socket (errno: \(code))"
+        case .socketOptionFailed(let code):
+            return "Failed to configure socket security options (errno: \(code))"
+        case .unsafeSocketPath(let path):
+            return "Refusing unsafe SSH agent socket path: \(path)"
+        case .socketPermissionFailed(let path, let code):
+            return "Failed to enforce SSH agent socket permissions at \(path) (errno: \(code))"
         case .pathTooLong(let path):
             return "Socket path is too long: \(path)"
         }
@@ -114,22 +123,43 @@ public class SSHAgentServer {
         }
 
         let fileManager = FileManager.default
-        unlink(socketPath)
-
         let dir = (socketPath as NSString).deletingLastPathComponent
         if !fileManager.fileExists(atPath: dir) {
             try fileManager.createDirectory(atPath: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        } else {
-            try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir)
+        }
+        guard chmod(dir, 0o700) == 0, isSecureDirectory(dir) else {
+            throw SSHAgentServerError.socketPermissionFailed(dir, errno)
+        }
+
+        var existing = stat()
+        if lstat(socketPath, &existing) == 0 {
+            guard (existing.st_mode & S_IFMT) == S_IFSOCK, existing.st_uid == geteuid() else {
+                throw SSHAgentServerError.unsafeSocketPath(socketPath)
+            }
+            guard unlink(socketPath) == 0 else {
+                throw SSHAgentServerError.socketPermissionFailed(socketPath, errno)
+            }
+        } else if errno != ENOENT {
+            throw SSHAgentServerError.unsafeSocketPath(socketPath)
         }
 
         let sock = socket(AF_UNIX, SOCK_STREAM, 0)
         guard sock >= 0 else {
             throw SSHAgentServerError.socketCreationFailed(errno)
         }
+        var didStart = false
+        defer {
+            if !didStart {
+                close(sock)
+                serverSocket = -1
+                _ = unlink(socketPath)
+            }
+        }
 
         var nosigpipe = 1
-        setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout.size(ofValue: nosigpipe)))
+        guard setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout.size(ofValue: nosigpipe))) == 0 else {
+            throw SSHAgentServerError.socketOptionFailed(errno)
+        }
 
         self.serverSocket = sock
 
@@ -158,13 +188,16 @@ public class SSHAgentServer {
         }
 
         // Enforce strict 0600 permissions on the created socket file (read/write only by owner)
-        chmod(socketPath, S_IRUSR | S_IWUSR)
+        guard chmod(socketPath, S_IRUSR | S_IWUSR) == 0, isSecureSocketPath(socketPath) else {
+            throw SSHAgentServerError.socketPermissionFailed(socketPath, errno)
+        }
 
         guard listen(sock, 5) == 0 else {
             throw SSHAgentServerError.socketListenFailed(errno)
         }
 
         isRunning = true
+        didStart = true
         queue.async {
             self.acceptLoop()
         }
@@ -230,7 +263,11 @@ public class SSHAgentServer {
                 let clientExecutablePath = clientPid.flatMap { SSHAgentServer.getProcessPath(pid: $0) }
 
                 var optval: Int32 = 1
-                setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &optval, socklen_t(MemoryLayout<Int32>.size))
+                guard setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &optval, socklen_t(MemoryLayout<Int32>.size)) == 0,
+                      configureTimeouts(for: clientSocket) else {
+                    close(clientSocket)
+                    continue
+                }
 
                 guard reserveClientSlot() else {
                     ClavisLogger.log("SSH_AGENT_LIMIT", "Rejected connection because the concurrent client limit was reached.")
@@ -238,7 +275,6 @@ public class SSHAgentServer {
                     continue
                 }
 
-                configureTimeouts(for: clientSocket)
                 queue.async {
                     defer { self.releaseClientSlot() }
                     self.handleClient(
@@ -265,15 +301,15 @@ public class SSHAgentServer {
         stateLock.unlock()
     }
 
-    private func configureTimeouts(for socket: Int32) {
+    private func configureTimeouts(for socket: Int32) -> Bool {
         let seconds = floor(clientIdleTimeout)
         var timeout = timeval(
             tv_sec: Int(seconds),
             tv_usec: Int32((clientIdleTimeout - seconds) * 1_000_000)
         )
         let timeoutSize = socklen_t(MemoryLayout<timeval>.size)
-        setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, timeoutSize)
-        setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, timeoutSize)
+        return setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, timeoutSize) == 0 &&
+            setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, timeoutSize) == 0
     }
 
     private func handleClient(
@@ -358,6 +394,7 @@ public class SSHAgentServer {
 
         switch msgType {
         case 11: // SSH2_AGENTC_REQUEST_IDENTITIES
+            guard payload.count == 1 else { return Data([5]) }
             return handleRequestIdentities(clientPid: clientPid, clientExecutablePath: clientExecutablePath)
         case 13: // SSH2_AGENTC_SIGN_REQUEST
             return handleSignRequest(
@@ -413,7 +450,9 @@ public class SSHAgentServer {
         var reader = DataReader(data: payload)
         guard let keyBlob = reader.readWireData(),
               let dataToSign = reader.readWireData(),
-              let _ = reader.readUInt32() else { // Consumes 4-byte flags parameter
+              let flags = reader.readUInt32(),
+              flags == 0,
+              reader.isEOF else {
             ClavisLogger.log("SSH_AGENT_SIGN", "Failed to parse sign request wire payload.")
             return Data([5]) // SSH_AGENT_FAILURE
         }
@@ -554,5 +593,21 @@ public class SSHAgentServer {
             CharacterSet.controlCharacters.contains(scalar) ? "?" : Character(String(scalar))
         }
         return String(sanitized.prefix(512))
+    }
+
+    private func isSecureDirectory(_ path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0 &&
+            (info.st_mode & S_IFMT) == S_IFDIR &&
+            info.st_uid == geteuid() &&
+            (info.st_mode & 0o077) == 0
+    }
+
+    private func isSecureSocketPath(_ path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0 &&
+            (info.st_mode & S_IFMT) == S_IFSOCK &&
+            info.st_uid == geteuid() &&
+            (info.st_mode & 0o777) == 0o600
     }
 }

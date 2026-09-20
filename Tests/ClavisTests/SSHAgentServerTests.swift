@@ -230,6 +230,23 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         var flags: UInt32 = 0
         Swift.withUnsafeBytes(of: &flags) { validFramedPayload.append(contentsOf: $0) }
         XCTAssertEqual(server.processAgentRequest(payload: validFramedPayload), Data([5]))
+
+        XCTAssertEqual(
+            server.processAgentRequest(payload: Data([11, 0x00])),
+            Data([5]),
+            "Identities requests with trailing bytes must be rejected"
+        )
+
+        var unsupportedFlagsPayload = Data([13])
+        unsupportedFlagsPayload.appendWireString("non-existent-key-blob")
+        unsupportedFlagsPayload.appendWireString("hello world")
+        var unsupportedFlags = UInt32(1).bigEndian
+        Swift.withUnsafeBytes(of: &unsupportedFlags) { unsupportedFlagsPayload.append(contentsOf: $0) }
+        XCTAssertEqual(server.processAgentRequest(payload: unsupportedFlagsPayload), Data([5]))
+
+        var trailingPayload = validFramedPayload
+        trailingPayload.append(0x00)
+        XCTAssertEqual(server.processAgentRequest(payload: trailingPayload), Data([5]))
     }
 
 
