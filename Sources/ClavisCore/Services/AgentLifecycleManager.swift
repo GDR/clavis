@@ -40,12 +40,13 @@ public final class AgentLifecycleManager: @unchecked Sendable {
 
     public func locateAgentExecutable() -> URL? {
         let fileManager = FileManager.default
+        let selfExecURL = (Bundle.main.executableURL ?? CommandLine.arguments.first.map { URL(fileURLWithPath: $0) })?.resolvingSymlinksInPath()
 
         // Production: only the helper at the fixed app-bundle location is eligible.
-        if let bundleURL = Bundle.main.executableURL?.deletingLastPathComponent().deletingLastPathComponent() {
+        if let bundleURL = selfExecURL?.deletingLastPathComponent().deletingLastPathComponent() {
             let helperURL = bundleURL.appendingPathComponent("Helpers/clavis-agent")
             if fileManager.isExecutableFile(atPath: helperURL.path), isTrustedExecutable(helperURL) {
-                return helperURL
+                return helperURL.resolvingSymlinksInPath()
             }
         }
 
@@ -55,7 +56,15 @@ public final class AgentLifecycleManager: @unchecked Sendable {
            explicitPath.hasPrefix("/") {
             let candidate = URL(fileURLWithPath: explicitPath).standardizedFileURL
             if fileManager.isExecutableFile(atPath: candidate.path), isTrustedExecutable(candidate) {
-                return candidate
+                return candidate.resolvingSymlinksInPath()
+            }
+        }
+
+        // Sibling binary location (e.g. running directly from .build/release or bin directory)
+        if let execURL = selfExecURL {
+            let sibling = execURL.deletingLastPathComponent().appendingPathComponent("clavis-agent")
+            if fileManager.isExecutableFile(atPath: sibling.path), isTrustedExecutable(sibling) {
+                return sibling.resolvingSymlinksInPath()
             }
         }
 
@@ -63,15 +72,16 @@ public final class AgentLifecycleManager: @unchecked Sendable {
     }
 
     private func isTrustedExecutable(_ url: URL) -> Bool {
+        let resolved = url.resolvingSymlinksInPath()
         var info = stat()
-        guard lstat(url.path, &info) == 0,
+        guard lstat(resolved.path, &info) == 0,
               (info.st_mode & S_IFMT) == S_IFREG,
               info.st_uid == 0 || info.st_uid == geteuid(),
               (info.st_mode & 0o022) == 0 else {
             return false
         }
 
-        let parent = url.deletingLastPathComponent()
+        let parent = resolved.deletingLastPathComponent()
         var parentInfo = stat()
         guard lstat(parent.path, &parentInfo) == 0,
               (parentInfo.st_mode & S_IFMT) == S_IFDIR,
