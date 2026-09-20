@@ -73,7 +73,8 @@ public class KeychainManager {
                     keyData: seKey.dataRepresentation
                 )
                 defer { record.wipe() }
-                let recordData = try record.encode()
+                var recordData = try record.encode()
+                defer { Self.wipeData(&recordData) }
                 try privateKeyStore.save(label: label, data: recordData, accessControlFlags: policy.accessControlFlags)
                 pubKeyData = seKey.publicKey.x963Representation
             } else {
@@ -88,7 +89,8 @@ public class KeychainManager {
                     keyData: privateKey.rawRepresentation
                 )
                 defer { record.wipe() }
-                let recordData = try record.encode()
+                var recordData = try record.encode()
+                defer { Self.wipeData(&recordData) }
                 try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
                 pubKeyData = privateKey.publicKey.x963Representation
             }
@@ -199,7 +201,8 @@ public class KeychainManager {
             keyData: rawSeed
         )
         defer { record.wipe() }
-        let recordData = try record.encode()
+        var recordData = try record.encode()
+        defer { Self.wipeData(&recordData) }
         try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
 
         let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)
@@ -338,7 +341,7 @@ public class KeychainManager {
 
         // 2. Legacy records are accepted only when authoritative public metadata
         // identifies an exact supported format.
-        ClavisLogger.log("KEYCHAIN_MIGRATE", "Migrating legacy Keychain record for '\(label)' to StoredPrivateKeyRecord (v1)...")
+        ClavisLogger.log("KEYCHAIN_MIGRATE", "Migrating legacy Keychain record for '\(label)' to StoredPrivateKeyRecord (v\(StoredPrivateKeyRecord.currentVersion))...")
         guard let expected = expectedKeyInfo else {
             throw PrivateKeyRecordError.legacyRecordUnmigrated(label)
         }
@@ -363,7 +366,7 @@ public class KeychainManager {
         }
 
         let record = StoredPrivateKeyRecord(
-            version: 1,
+            version: StoredPrivateKeyRecord.currentVersion,
             label: label,
             algorithm: algorithm,
             storageType: storageType,
@@ -392,6 +395,13 @@ public class KeychainManager {
         ClavisLogger.log("KEYCHAIN_MIGRATE", "Successfully saved migrated record for '\(label)' to Keychain.")
 
         return record
+    }
+
+    private static func wipeData(_ data: inout Data) {
+        data.withUnsafeMutableBytes { raw in
+            if let base = raw.baseAddress { SecureMemory.zero(base, byteCount: raw.count) }
+        }
+        data.removeAll(keepingCapacity: false)
     }
 
     // Private scoped execution over the Ed25519 seed bytes held in a locked SecureBuffer.

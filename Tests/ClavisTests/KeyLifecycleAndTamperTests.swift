@@ -341,6 +341,33 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         }
     }
 
+    func testStoredPrivateKeyRecordV2UsesStrictBinaryEnvelope() throws {
+        let keyData = Data(repeating: 0xA5, count: 32)
+        let record = StoredPrivateKeyRecord(
+            label: "binary-record",
+            algorithm: .ed25519,
+            storageType: .keychain,
+            biometricPolicy: .userPresence,
+            keyPurpose: .gitSigningOnly,
+            keyData: keyData,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+
+        let encoded = try record.encode()
+        XCTAssertTrue(encoded.starts(with: Data("CLVPKR02".utf8)))
+        XCTAssertNotEqual(encoded.first, Character("{").asciiValue)
+        let decoded = try StoredPrivateKeyRecord.decode(from: encoded)
+        XCTAssertEqual(decoded, record)
+
+        var trailingGarbage = encoded
+        trailingGarbage.append(0x00)
+        XCTAssertThrowsError(try StoredPrivateKeyRecord.decode(from: trailingGarbage)) { error in
+            guard case PrivateKeyRecordError.corruptedRecord = error else {
+                return XCTFail("Expected corruptedRecord, got \(error)")
+            }
+        }
+    }
+
 
     func testTamperedAlgorithmInKeysJsonRefusesSigning() throws {
         let keyStore = InMemoryPrivateKeyStore()
@@ -540,7 +567,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let storedData = try keyStore.load(label: label, context: context, prompt: "Load")
         XCTAssertNotNil(storedData)
         let migratedRecord = try StoredPrivateKeyRecord.decode(from: storedData!)
-        XCTAssertEqual(migratedRecord.version, 1)
+        XCTAssertEqual(migratedRecord.version, StoredPrivateKeyRecord.currentVersion)
         XCTAssertEqual(migratedRecord.label, label)
         XCTAssertEqual(migratedRecord.algorithm, .ed25519)
         XCTAssertEqual(migratedRecord.storageType, .keychain)

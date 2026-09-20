@@ -8,7 +8,10 @@ import Security
 /// biometric policy, and private key payload. The public index (`~/.config/clavis/keys.json`)
 /// is treated strictly as an unauthenticated display cache.
 public struct StoredPrivateKeyRecord: Codable, Equatable {
-    public static let currentVersion: Int = 1
+    public static let currentVersion: Int = 2
+    private static let binaryMagic = Data("CLVPKR02".utf8)
+    private static let maximumLabelBytes = 1_024
+    private static let maximumKeyBytes = 65_536
 
     public let version: Int
     public let label: String
@@ -54,15 +57,139 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
     }
 
     public func encode() throws -> Data {
-        try JSONEncoder().encode(self)
+        // JSON v1 remains available only for tests and explicit legacy fixtures.
+        guard version == Self.currentVersion else {
+            guard version == 1 else { throw PrivateKeyRecordError.unsupportedVersion(version) }
+            return try JSONEncoder().encode(self)
+        }
+        guard let labelData = label.data(using: .utf8),
+              !labelData.isEmpty,
+              labelData.count <= Self.maximumLabelBytes,
+              keyData.count <= Self.maximumKeyBytes else {
+            throw PrivateKeyRecordError.corruptedRecord("Record field length exceeds the binary envelope limit")
+        }
+
+        var output = Self.binaryMagic
+        output.append(UInt8(version))
+        output.append(algorithm == .ed25519 ? 1 : 2)
+        output.append(storageType == .keychain ? 1 : 2)
+        output.append(purpose == .general ? 1 : 2)
+        switch biometricPolicy {
+        case nil: output.append(0)
+        case .userPresence: output.append(1)
+        case .biometryCurrentSet: output.append(2)
+        }
+        var timestamp = createdAt.timeIntervalSince1970.bitPattern.bigEndian
+        Swift.withUnsafeBytes(of: &timestamp) { output.append(contentsOf: $0) }
+        var labelLength = UInt16(labelData.count).bigEndian
+        Swift.withUnsafeBytes(of: &labelLength) { output.append(contentsOf: $0) }
+        output.append(labelData)
+        var keyLength = UInt32(keyData.count).bigEndian
+        Swift.withUnsafeBytes(of: &keyLength) { output.append(contentsOf: $0) }
+        output.append(keyData)
+        return output
     }
 
     public static func decode(from data: Data) throws -> StoredPrivateKeyRecord {
+        if data.starts(with: binaryMagic) {
+            return try decodeBinary(from: data)
+        }
+
+        // The only accepted non-binary representation is the deployed v1 JSON format.
         let record = try JSONDecoder().decode(StoredPrivateKeyRecord.self, from: data)
-        guard record.version <= currentVersion else {
+        guard record.version == 1 else {
             throw PrivateKeyRecordError.unsupportedVersion(record.version)
         }
         return record
+    }
+
+    private static func decodeBinary(from data: Data) throws -> StoredPrivateKeyRecord {
+        var reader = PrivateRecordBinaryReader(data: data, offset: binaryMagic.count)
+        guard let version = reader.readUInt8(), Int(version) == currentVersion,
+              let algorithmByte = reader.readUInt8(),
+              let storageByte = reader.readUInt8(),
+              let purposeByte = reader.readUInt8(),
+              let biometricByte = reader.readUInt8(),
+              let timestampBits = reader.readUInt64(),
+              let labelLength = reader.readUInt16(),
+              Int(labelLength) <= maximumLabelBytes,
+              let labelData = reader.readData(count: Int(labelLength)),
+              let label = String(data: labelData, encoding: .utf8),
+              !label.isEmpty,
+              let keyLength = reader.readUInt32(),
+              Int(keyLength) <= maximumKeyBytes,
+              let keyData = reader.readData(count: Int(keyLength)),
+              reader.isEOF else {
+            throw PrivateKeyRecordError.corruptedRecord("Malformed binary private-key record")
+        }
+
+        let algorithm: KeyAlgorithm
+        switch algorithmByte {
+        case 1: algorithm = .ed25519
+        case 2: algorithm = .ecdsaP256
+        default: throw PrivateKeyRecordError.corruptedRecord("Unknown algorithm identifier")
+        }
+        let storage: KeyStorageType
+        switch storageByte {
+        case 1: storage = .keychain
+        case 2: storage = .secureEnclave
+        default: throw PrivateKeyRecordError.corruptedRecord("Unknown storage identifier")
+        }
+        let purpose: KeyPurpose
+        switch purposeByte {
+        case 1: purpose = .general
+        case 2: purpose = .gitSigningOnly
+        default: throw PrivateKeyRecordError.corruptedRecord("Unknown purpose identifier")
+        }
+        let biometric: BiometricPolicy?
+        switch biometricByte {
+        case 0: biometric = nil
+        case 1: biometric = .userPresence
+        case 2: biometric = .biometryCurrentSet
+        default: throw PrivateKeyRecordError.corruptedRecord("Unknown biometric policy identifier")
+        }
+
+        return StoredPrivateKeyRecord(
+            version: Int(version),
+            label: label,
+            algorithm: algorithm,
+            storageType: storage,
+            biometricPolicy: biometric,
+            keyPurpose: purpose,
+            keyData: keyData,
+            createdAt: Date(timeIntervalSince1970: TimeInterval(bitPattern: timestampBits))
+        )
+    }
+}
+
+private struct PrivateRecordBinaryReader {
+    let data: Data
+    var offset: Int
+
+    var isEOF: Bool { offset == data.endIndex }
+
+    mutating func readUInt8() -> UInt8? {
+        guard offset < data.endIndex else { return nil }
+        defer { offset += 1 }
+        return data[offset]
+    }
+
+    mutating func readUInt16() -> UInt16? { readInteger(UInt16.self) }
+    mutating func readUInt32() -> UInt32? { readInteger(UInt32.self) }
+    mutating func readUInt64() -> UInt64? { readInteger(UInt64.self) }
+
+    mutating func readData(count: Int) -> Data? {
+        guard count >= 0, offset <= data.endIndex - count else { return nil }
+        defer { offset += count }
+        return data.subdata(in: offset..<(offset + count))
+    }
+
+    private mutating func readInteger<T: FixedWidthInteger>(_ type: T.Type) -> T? {
+        let size = MemoryLayout<T>.size
+        guard let bytes = readData(count: size) else { return nil }
+        var value: T = 0
+        _ = Swift.withUnsafeMutableBytes(of: &value) { bytes.copyBytes(to: $0) }
+        return T(bigEndian: value)
     }
 }
 
