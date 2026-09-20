@@ -4,9 +4,15 @@ import Security
 
 public protocol PrivateKeyStoring {
     func contains(label: String) -> Bool
-    func save(label: String, data: Data) throws
+    func save(label: String, data: Data, accessControlFlags: SecAccessControlCreateFlags) throws
     func load(label: String, context: LAContext, prompt: String) throws -> Data?
     func remove(label: String) throws
+}
+
+public extension PrivateKeyStoring {
+    func save(label: String, data: Data) throws {
+        try save(label: label, data: data, accessControlFlags: [.userPresence])
+    }
 }
 
 public enum PrivateKeyStoreError: LocalizedError {
@@ -63,8 +69,8 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
         return status == errSecSuccess || status == errSecInteractionNotAllowed
     }
 
-    public func save(label: String, data: Data) throws {
-        let accessControl = try PrivateKeyAccessControl.make()
+    public func save(label: String, data: Data, accessControlFlags: SecAccessControlCreateFlags = [.userPresence]) throws {
+        let accessControl = try PrivateKeyAccessControl.make(flags: accessControlFlags)
         let lookup: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
@@ -80,7 +86,7 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
         item[kSecValueData as String] = data
         item[kSecAttrAccessControl as String] = accessControl
         item[kSecAttrSynchronizable as String] = false
-        item[kSecAttrDescription as String] = "Clavis private key (user presence required)"
+        item[kSecAttrDescription as String] = "Clavis private key record"
 
         let status = SecItemAdd(item as CFDictionary, nil)
         guard status == errSecSuccess else {

@@ -57,12 +57,31 @@ public class KeychainManager {
                 effectivePolicy = policy
                 let accessControl = try PrivateKeyAccessControl.make(flags: policy.accessControlFlags)
                 let seKey = try SecureEnclave.P256.Signing.PrivateKey(accessControl: accessControl)
-                try privateKeyStore.save(label: label, data: seKey.dataRepresentation)
+
+                var record = StoredPrivateKeyRecord(
+                    label: label,
+                    algorithm: .ecdsaP256,
+                    storageType: .secureEnclave,
+                    biometricPolicy: policy,
+                    keyData: seKey.dataRepresentation
+                )
+                defer { record.wipe() }
+                let recordData = try record.encode()
+                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: policy.accessControlFlags)
                 pubKeyData = seKey.publicKey.x963Representation
             } else {
                 effectivePolicy = nil
                 let privateKey = P256.Signing.PrivateKey()
-                try privateKeyStore.save(label: label, data: privateKey.rawRepresentation)
+                var record = StoredPrivateKeyRecord(
+                    label: label,
+                    algorithm: .ecdsaP256,
+                    storageType: .keychain,
+                    biometricPolicy: nil,
+                    keyData: privateKey.rawRepresentation
+                )
+                defer { record.wipe() }
+                let recordData = try record.encode()
+                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
                 pubKeyData = privateKey.publicKey.x963Representation
             }
 
@@ -149,17 +168,18 @@ public class KeychainManager {
                 }
             }
         }
-        
-        try privateKeyStore.save(label: label, data: rawSeed)
 
-        let deletePublicQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: KeychainManager.publicServiceName,
-            kSecAttrAccount as String: label
-        ]
-        SecItemDelete(deletePublicQuery as CFDictionary)
+        var record = StoredPrivateKeyRecord(
+            label: label,
+            algorithm: .ed25519,
+            storageType: .keychain,
+            biometricPolicy: nil,
+            keyData: rawSeed
+        )
+        defer { record.wipe() }
+        let recordData = try record.encode()
+        try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
 
-        // Save public key metadata
         let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType)
         PublicKeyStore.save(keyInfo)
         return keyInfo
@@ -182,6 +202,115 @@ public class KeychainManager {
         try privateKeyStore.remove(label: label)
         PublicKeyStore.remove(label: label)
         sessionCache.remove(label: label)
+    }
+
+    // MARK: - Authenticated Private Key Records & Verification
+
+    // Derives the OpenSSH wire format public key blob directly from an authenticated private record.
+    public static func derivePublicKeyBlob(record: StoredPrivateKeyRecord, context: LAContext? = nil) throws -> Data {
+        switch record.algorithm {
+        case .ed25519:
+            guard record.keyData.count == 32 else {
+                throw PrivateKeyRecordError.corruptedRecord("Invalid Ed25519 seed length: \(record.keyData.count) bytes (expected 32)")
+            }
+            let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: record.keyData)
+            let pubKeyData = privateKey.publicKey.rawRepresentation
+            var blob = Data()
+            blob.appendWireString("ssh-ed25519")
+            blob.appendWireData(pubKeyData)
+            return blob
+
+        case .ecdsaP256:
+            let pubKeyData: Data
+            if record.storageType == .secureEnclave {
+                let authContext = context ?? LAContext()
+                let seKey = try SecureEnclave.P256.Signing.PrivateKey(
+                    dataRepresentation: record.keyData,
+                    authenticationContext: authContext
+                )
+                pubKeyData = seKey.publicKey.x963Representation
+            } else {
+                guard record.keyData.count == 32 else {
+                    throw PrivateKeyRecordError.corruptedRecord("Invalid P-256 scalar length: \(record.keyData.count) bytes (expected 32)")
+                }
+                let privateKey = try P256.Signing.PrivateKey(rawRepresentation: record.keyData)
+                pubKeyData = privateKey.publicKey.x963Representation
+            }
+
+            var blob = Data()
+            blob.appendWireString("ecdsa-sha2-nistp256")
+            blob.appendWireString("nistp256")
+            blob.appendWireData(pubKeyData)
+            return blob
+        }
+    }
+
+    // Loads an authenticated record from Keychain.
+    // If a legacy record is encountered, migrates it transparently using expected metadata,
+    // saves the versioned StoredPrivateKeyRecord back to Keychain, and returns it.
+    private func loadAuthenticatedRecord(
+        label: String,
+        context: LAContext,
+        prompt: String,
+        expectedKeyInfo: Ed25519KeyInfo?
+    ) throws -> StoredPrivateKeyRecord {
+        guard var rawData = try privateKeyStore.load(label: label, context: context, prompt: prompt) else {
+            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Private key not found for '\(label)'"])
+        }
+        defer {
+            rawData.withUnsafeMutableBytes { ptr in
+                if let base = ptr.baseAddress {
+                    SecureMemory.zero(base, byteCount: ptr.count)
+                }
+            }
+        }
+
+        // 1. Try decoding as modern StoredPrivateKeyRecord
+        if let record = try? StoredPrivateKeyRecord.decode(from: rawData) {
+            guard record.label == label else {
+                throw PrivateKeyRecordError.labelMismatch(expected: label, actual: record.label)
+            }
+            return record
+        }
+
+        // 2. Legacy record: raw seed or opaque CryptoKit SE token
+        ClavisLogger.log("KEYCHAIN_MIGRATE", "Migrating legacy Keychain record for '\(label)' to StoredPrivateKeyRecord (v1)...")
+        let algorithm: KeyAlgorithm
+        let storageType: KeyStorageType
+        let policy: BiometricPolicy?
+
+        if let expected = expectedKeyInfo {
+            algorithm = (expected.algorithm == "ECDSA P-256") ? .ecdsaP256 : .ed25519
+            storageType = expected.storageType
+            policy = expected.biometricPolicy
+        } else if rawData.count == 32 {
+            algorithm = .ed25519
+            storageType = .keychain
+            policy = nil
+        } else {
+            algorithm = .ecdsaP256
+            storageType = .secureEnclave
+            policy = .userPresence
+        }
+
+        let record = StoredPrivateKeyRecord(
+            version: 1,
+            label: label,
+            algorithm: algorithm,
+            storageType: storageType,
+            biometricPolicy: policy,
+            keyData: rawData,
+            createdAt: expectedKeyInfo?.createdAt ?? Date()
+        )
+
+        // Save migrated record back to Keychain
+        let flags = policy?.accessControlFlags ?? [.userPresence]
+        if let encoded = try? record.encode() {
+            try? privateKeyStore.save(label: label, data: encoded, accessControlFlags: flags)
+            ClavisLogger.log("KEYCHAIN_MIGRATE", "Successfully saved migrated record for '\(label)' to Keychain.")
+        }
+
+        return record
     }
 
     // Private scoped execution over the Ed25519 seed bytes held in a locked SecureBuffer.
@@ -213,17 +342,23 @@ public class KeychainManager {
                 throw SessionCacheError.invalidated
             }
 
-            guard var sensitiveData = try privateKeyStore.load(label: label, context: context, prompt: prompt) else {
-                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Private key seed not found for label '\(label)'"])
-            }
-            defer {
-                sensitiveData.withUnsafeMutableBytes { ptr in
-                    if let baseAddress = ptr.baseAddress {
-                        SecureMemory.zero(baseAddress, byteCount: ptr.count)
-                    }
-                }
+            var record = try loadAuthenticatedRecord(
+                label: label,
+                context: context,
+                prompt: prompt,
+                expectedKeyInfo: try fetchKeyInfo(label: label)
+            )
+            defer { record.wipe() }
+
+            // Security invariant: only software Ed25519 keys can be accessed as Ed25519 seeds
+            guard record.algorithm == .ed25519 && record.storageType == .keychain else {
+                throw PrivateKeyRecordError.algorithmMismatch(
+                    expected: "Ed25519",
+                    actual: "\(record.algorithm.rawValue) / \(record.storageType.rawValue)"
+                )
             }
 
+            var sensitiveData = record.keyData
             guard let secureBuffer = secureBufferFactory(&sensitiveData) else {
                 throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(label)'"])
             }
@@ -305,64 +440,96 @@ public class KeychainManager {
 
     // Sign challenge data for SSH Agent returning wire format signature blob
     public func signSSH(key: Ed25519KeyInfo, data: Data, prompt: String, useCache: Bool = true) throws -> Data {
-        if key.algorithm == "ECDSA P-256" {
-            var localKeyToWipe: CachedP256SigningKey? = nil
-            defer {
-                localKeyToWipe?.wipe()
+        // Fast path for software keys already present in session cache
+        if useCache && key.storageType != .secureEnclave {
+            if key.algorithm == "ECDSA P-256" {
+                if let cachedSig = try sessionCache.withCachedP256(
+                    label: key.label,
+                    operation: { try $0.signature(for: data) }
+                ) {
+                    ClavisLogger.log("SESSION_CACHE", "Served key '\(key.label)' (ECDSA P-256) from active session cache (0 prompts)")
+                    return formatECDSASignatureBlob(cachedSig)
+                }
+            } else if key.algorithm == "Ed25519" {
+                if let cachedSig = try sessionCache.withCachedBuffer(label: key.label, operation: { seedBytes in
+                    let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: seedBytes)
+                    return try privateKey.signature(for: data)
+                }) {
+                    ClavisLogger.log("SESSION_CACHE", "Served key '\(key.label)' from active session cache (0 prompts)")
+                    var sigBlob = Data()
+                    sigBlob.appendWireString("ssh-ed25519")
+                    sigBlob.appendWireData(cachedSig)
+                    return sigBlob
+                }
             }
+        }
+
+        let cacheGeneration = sessionCache.generationSnapshot()
+        let context = try authenticator.authenticate(reason: prompt)
+        guard sessionCache.isGenerationCurrent(cacheGeneration) else {
+            throw SessionCacheError.invalidated
+        }
+
+        // 1. Load authoritative record from Keychain
+        var record = try loadAuthenticatedRecord(
+            label: key.label,
+            context: context,
+            prompt: prompt,
+            expectedKeyInfo: key
+        )
+        defer { record.wipe() }
+
+        // 2. Validate against public metadata (Fail-closed on tampering)
+        guard record.label == key.label else {
+            ClavisLogger.log("SECURITY_ALERT", "Key label mismatch: record='\(record.label)', requested='\(key.label)'")
+            throw PrivateKeyRecordError.labelMismatch(expected: key.label, actual: record.label)
+        }
+        guard record.algorithm.rawValue == key.algorithm else {
+            ClavisLogger.log("SECURITY_ALERT", "Algorithm mismatch: record='\(record.algorithm.rawValue)', requested='\(key.algorithm)'")
+            throw PrivateKeyRecordError.algorithmMismatch(expected: key.algorithm, actual: record.algorithm.rawValue)
+        }
+        guard record.storageType == key.storageType else {
+            ClavisLogger.log("SECURITY_ALERT", "Storage type mismatch: record='\(record.storageType.rawValue)', requested='\(key.storageType.rawValue)'")
+            throw PrivateKeyRecordError.storageMismatch(expected: key.storageType.rawValue, actual: record.storageType.rawValue)
+        }
+
+        // 3. Verify public key derived from authoritative record matches requested blob
+        let derivedPublicBlob = try Self.derivePublicKeyBlob(record: record, context: context)
+        guard derivedPublicBlob == key.publicKeyBlob else {
+            ClavisLogger.log("SECURITY_ALERT", "Public key mismatch for '\(key.label)'! Possible metadata tampering.")
+            throw PrivateKeyRecordError.publicKeyMismatch
+        }
+
+        // 4. Execute signature based strictly on authoritative record attributes
+        switch record.algorithm {
+        case .ecdsaP256:
+            var localKeyToWipe: CachedP256SigningKey? = nil
+            defer { localKeyToWipe?.wipe() }
 
             let ecdsaSig: P256.Signing.ECDSASignature
-            if useCache && key.storageType != .secureEnclave, let cachedSignature = try sessionCache.withCachedP256(
-                label: key.label,
-                operation: { try $0.signature(for: data) }
-            ) {
-                ClavisLogger.log("SESSION_CACHE", "Served key '\(key.label)' (ECDSA P-256) from active session cache (0 prompts)")
-                ecdsaSig = cachedSignature
+            if record.storageType == .secureEnclave {
+                let seKey = try SecureEnclave.P256.Signing.PrivateKey(
+                    dataRepresentation: record.keyData,
+                    authenticationContext: context
+                )
+                localKeyToWipe = .secureEnclave(seKey)
+                guard let signingKey = localKeyToWipe else { throw SessionCacheError.invalidated }
+                ecdsaSig = try sessionCache.performIfGenerationCurrent(cacheGeneration) {
+                    try signingKey.signature(for: data)
+                }
             } else {
-                let cacheGeneration = sessionCache.generationSnapshot()
-                let context = try authenticator.authenticate(reason: prompt)
-                guard sessionCache.isGenerationCurrent(cacheGeneration) else {
-                    throw SessionCacheError.invalidated
+                var scalarData = record.keyData
+                guard let buf = secureBufferFactory(&scalarData) else {
+                    throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(key.label)'"])
                 }
-
-                guard var storedData = try privateKeyStore.load(label: key.label, context: context, prompt: prompt) else {
-                    throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key data not found for '\(key.label)'"])
-                }
-                defer {
-                    if key.storageType != .secureEnclave {
-                        storedData.withUnsafeMutableBytes { ptr in
-                            if let base = ptr.baseAddress {
-                                SecureMemory.zero(base, byteCount: ptr.count)
-                            }
-                        }
-                    }
-                }
-
-                if key.storageType == .secureEnclave {
-                    let seKey = try SecureEnclave.P256.Signing.PrivateKey(
-                        dataRepresentation: storedData,
-                        authenticationContext: context
-                    )
-                    localKeyToWipe = .secureEnclave(seKey)
-                } else {
-                    guard let buf = secureBufferFactory(&storedData) else {
-                        throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(key.label)'"])
-                    }
-                    localKeyToWipe = .software(buf)
-                }
-
-                guard let signingKey = localKeyToWipe else {
-                    throw SessionCacheError.invalidated
-                }
-
+                localKeyToWipe = .software(buf)
+                guard let signingKey = localKeyToWipe else { throw SessionCacheError.invalidated }
                 guard sessionCache.isGenerationCurrent(cacheGeneration) else {
                     signingKey.wipe()
                     throw SessionCacheError.invalidated
                 }
 
-                if useCache && key.storageType != .secureEnclave && sessionCache.currentTimeout != .never {
-                    // Ownership transfers to the cache even if the first
-                    // operation throws after insertion.
+                if useCache && sessionCache.currentTimeout != .never {
                     localKeyToWipe = nil
                     ecdsaSig = try sessionCache.setAndWithP256(
                         label: key.label,
@@ -376,34 +543,72 @@ public class KeychainManager {
                     }
                 }
             }
+            return formatECDSASignatureBlob(ecdsaSig)
 
-            let rawSig = ecdsaSig.rawRepresentation
-            let r = rawSig.prefix(32)
-            let s = rawSig.suffix(32)
+        case .ed25519:
+            guard record.storageType == .keychain else {
+                throw PrivateKeyRecordError.storageMismatch(expected: KeyStorageType.keychain.rawValue, actual: record.storageType.rawValue)
+            }
 
-            var innerBlob = Data()
-            innerBlob.append(KeychainManager.encodeSSHMPint(r))
-            innerBlob.append(KeychainManager.encodeSSHMPint(s))
+            var seedData = record.keyData
+            guard let secureBuffer = secureBufferFactory(&seedData) else {
+                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(key.label)'"])
+            }
+            guard sessionCache.isGenerationCurrent(cacheGeneration) else {
+                secureBuffer.wipe()
+                throw SessionCacheError.invalidated
+            }
+
+            let signature: Data
+            if useCache && sessionCache.currentTimeout != .never {
+                signature = try sessionCache.setAndWithBuffer(
+                    label: key.label,
+                    buffer: secureBuffer,
+                    expectedGeneration: cacheGeneration,
+                    operation: { seedBytes in
+                        let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: seedBytes)
+                        return try privateKey.signature(for: data)
+                    }
+                )
+            } else {
+                defer { secureBuffer.wipe() }
+                signature = try sessionCache.performIfGenerationCurrent(cacheGeneration) {
+                    guard let res = try secureBuffer.withUnsafeBytes({ seedBytes in
+                        let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: seedBytes)
+                        return try privateKey.signature(for: data)
+                    }) else {
+                        throw SessionCacheError.invalidated
+                    }
+                    return res
+                }
+            }
 
             var sigBlob = Data()
-            sigBlob.appendWireString("ecdsa-sha2-nistp256")
-            sigBlob.appendWireData(innerBlob)
+            sigBlob.appendWireString("ssh-ed25519")
+            sigBlob.appendWireData(signature)
             return sigBlob
         }
+    }
 
-        let signature = try sign(label: key.label, data: data, prompt: prompt, useCache: useCache)
+    private func formatECDSASignatureBlob(_ ecdsaSig: P256.Signing.ECDSASignature) -> Data {
+        let rawSig = ecdsaSig.rawRepresentation
+        let r = rawSig.prefix(32)
+        let s = rawSig.suffix(32)
+
+        var innerBlob = Data()
+        innerBlob.append(KeychainManager.encodeSSHMPint(r))
+        innerBlob.append(KeychainManager.encodeSSHMPint(s))
+
         var sigBlob = Data()
-        sigBlob.appendWireString("ssh-ed25519")
-        sigBlob.appendWireData(signature)
+        sigBlob.appendWireString("ecdsa-sha2-nistp256")
+        sigBlob.appendWireData(innerBlob)
         return sigBlob
     }
 
     // Unlock a key with Touch ID / password and place in session cache
     public func unlock(label: String, prompt: String? = nil) async throws {
-        guard let keyInfo = try fetchKeyInfo(label: label) else {
-            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key '\(label)' not found"])
-        }
-        guard keyInfo.storageType != .secureEnclave else {
+        // Fast preliminary check: if public metadata says hardware, fail fast
+        if let keyInfo = try fetchKeyInfo(label: label), keyInfo.storageType == .secureEnclave {
             throw SessionCacheError.hardwareNotCacheable
         }
 
@@ -418,22 +623,29 @@ public class KeychainManager {
             throw SessionCacheError.invalidated
         }
 
+        // Load authoritative record from Keychain
+        var record = try loadAuthenticatedRecord(
+            label: label,
+            context: context,
+            prompt: reason,
+            expectedKeyInfo: try fetchKeyInfo(label: label)
+        )
+        defer { record.wipe() }
+
+        // Hard invariant: never unlock hardware keys into session cache,
+        // regardless of what keys.json claimed!
+        guard record.storageType != .secureEnclave else {
+            throw SessionCacheError.hardwareNotCacheable
+        }
+
         guard let timeout = sessionCache.currentTimeout.timeInterval else {
             throw SessionCacheError.disabled
         }
-        guard var storedData = try privateKeyStore.load(label: label, context: context, prompt: reason) else {
-            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Private key not found for '\(label)'"])
-        }
-        defer {
-            storedData.withUnsafeMutableBytes { ptr in
-                if let base = ptr.baseAddress {
-                    SecureMemory.zero(base, byteCount: ptr.count)
-                }
-            }
-        }
 
-        if keyInfo.algorithm == "ECDSA P-256" {
-            guard let buf = secureBufferFactory(&storedData) else {
+        switch record.algorithm {
+        case .ecdsaP256:
+            var scalarData = record.keyData
+            guard let buf = secureBufferFactory(&scalarData) else {
                 throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(label)'"])
             }
             let signingKey = CachedP256SigningKey.software(buf)
@@ -445,8 +657,13 @@ public class KeychainManager {
                 signingKey.wipe()
                 throw SessionCacheError.invalidated
             }
-        } else if storedData.count == 32 {
-            guard let buf = secureBufferFactory(&storedData) else {
+
+        case .ed25519:
+            guard record.keyData.count == 32 else {
+                throw PrivateKeyRecordError.corruptedRecord("Invalid Ed25519 seed length: \(record.keyData.count)")
+            }
+            var seedData = record.keyData
+            guard let buf = secureBufferFactory(&seedData) else {
                 throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(label)'"])
             }
             guard sessionCache.set(
@@ -499,7 +716,17 @@ public class KeychainManager {
                         }
                         keyData.removeAll(keepingCapacity: false)
                     }
-                    try privateKeyStore.save(label: keyInfo.label, data: keyData)
+
+                    var record = StoredPrivateKeyRecord(
+                        label: keyInfo.label,
+                        algorithm: (keyInfo.algorithm == "ECDSA P-256") ? .ecdsaP256 : .ed25519,
+                        storageType: keyInfo.storageType,
+                        biometricPolicy: keyInfo.biometricPolicy,
+                        keyData: keyData
+                    )
+                    defer { record.wipe() }
+                    let recordData = try record.encode()
+                    try privateKeyStore.save(label: keyInfo.label, data: recordData, accessControlFlags: keyInfo.effectiveBiometricPolicy.accessControlFlags)
                 }
                 SeedStore.remove(label: keyInfo.label)
                 ClavisLogger.log("KEYCHAIN_MIGRATE", "Migrated '\(keyInfo.label)' from disk storage to a user-presence Keychain item.")
