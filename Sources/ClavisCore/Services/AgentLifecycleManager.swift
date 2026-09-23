@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 public enum AgentLifecycleError: LocalizedError, Equatable {
     case agentBinaryNotFound
@@ -71,6 +72,8 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         return nil
     }
 
+    public static var disableCodeSignatureCheckForTesting = false
+
     private func isTrustedExecutable(_ url: URL) -> Bool {
         let resolved = url.resolvingSymlinksInPath()
         var info = stat()
@@ -89,7 +92,60 @@ public final class AgentLifecycleManager: @unchecked Sendable {
               (parentInfo.st_mode & 0o022) == 0 else {
             return false
         }
-        return true
+
+        if Self.disableCodeSignatureCheckForTesting {
+            return true
+        }
+
+        return Self.verifyCodeSignature(of: resolved)
+    }
+
+    /// Verifies that the target executable has a valid code signature matching
+    /// Clavis signing identity or designated requirements.
+    public static func verifyCodeSignature(of url: URL) -> Bool {
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &staticCode) == errSecSuccess,
+              let targetCode = staticCode else {
+            ClavisLogger.log("AGENT_LIFECYCLE", "Failed to create SecStaticCode for \(url.path)")
+            return false
+        }
+
+        let flags = SecCSFlags()
+        guard SecStaticCodeCheckValidity(targetCode, flags, nil) == errSecSuccess else {
+            ClavisLogger.log("AGENT_LIFECYCLE", "Code signature validity check failed for \(url.path)")
+            return false
+        }
+
+        // Validate against current process designated requirement if available
+        var myCode: SecCode?
+        if SecCodeCopySelf([], &myCode) == errSecSuccess, let currentProcess = myCode {
+            var myStaticCode: SecStaticCode?
+            if SecCodeCopyStaticCode(currentProcess, [], &myStaticCode) == errSecSuccess,
+               let currentStaticCode = myStaticCode {
+                var myRequirement: SecRequirement?
+                if SecCodeCopyDesignatedRequirement(currentStaticCode, [], &myRequirement) == errSecSuccess,
+                   let req = myRequirement {
+                    if SecStaticCodeCheckValidity(targetCode, flags, req) == errSecSuccess {
+                        return true
+                    }
+                }
+            }
+        }
+
+        // Fallback for ad-hoc / standalone builds: verify code signing identifier matches Clavis or expected bundle prefix
+        var infoCF: CFDictionary?
+        let infoFlags = SecCSFlags(rawValue: UInt32(kSecCSSigningInformation))
+        if SecCodeCopySigningInformation(targetCode, infoFlags, &infoCF) == errSecSuccess,
+           let info = infoCF as? [String: Any] {
+            if let identifier = info[kSecCodeInfoIdentifier as String] as? String {
+                if identifier == "Clavis" || identifier == "com.clavis.clavis-agent" || identifier.hasPrefix("com.clavis.") {
+                    return true
+                }
+            }
+        }
+
+        ClavisLogger.log("AGENT_LIFECYCLE", "Code signature identity/requirement mismatch for \(url.path)")
+        return false
     }
 
     public func ensureAgentRunning() {

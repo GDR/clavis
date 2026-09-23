@@ -295,5 +295,20 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: tempPlistURL.path))
     }
 
+    func testAgentLifecycleCodeSignatureVerificationRejectsUnsignedOrMismatchedBinary() throws {
+        let fakeBinary = testRootURL.appendingPathComponent("fake-agent")
+        try "#!/bin/sh\necho fake\n".write(to: fakeBinary, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fakeBinary.path)
 
+        // Without disabling signature check, unsigned file must fail verification
+        AgentLifecycleManager.disableCodeSignatureCheckForTesting = false
+        XCTAssertFalse(AgentLifecycleManager.verifyCodeSignature(of: fakeBinary))
+
+        let lifecycle = AgentLifecycleManager()
+        // Setting environment to unsigned binary should be rejected by locateAgentExecutable
+        setenv("CLAVIS_AGENT_EXECUTABLE", fakeBinary.path, 1)
+        defer { unsetenv("CLAVIS_AGENT_EXECUTABLE") }
+
+        XCTAssertNil(lifecycle.locateAgentExecutable())
+    }
 }
