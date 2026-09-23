@@ -88,10 +88,16 @@ public struct ClavisLogger {
 
         let url = resolvedLogFileURL()
         guard prepareLogDirectory(for: url) else { return }
+
+        var checkStat = stat()
+        if lstat(url.path, &checkStat) == 0 {
+            guard (checkStat.st_mode & S_IFMT) == S_IFREG else { return }
+        }
+
         rotateIfNeeded(
             url: url,
             incomingByteCount: UInt64(data.count),
-            maximumFileSize: _customMaximumLogFileSize ?? defaultMaximumLogFileSize
+            maximumFileSize: effectiveMaximumLogFileSize
         )
 
         let descriptor = open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, S_IRUSR | S_IWUSR)
@@ -109,6 +115,33 @@ public struct ClavisLogger {
                 written += result
             }
         }
+    }
+
+    public static var effectiveMaximumLogFileSize: UInt64 {
+        if let custom = _customMaximumLogFileSize { return custom }
+        if let envStr = ProcessInfo.processInfo.environment["CLAVIS_MAX_LOG_SIZE"],
+           let envVal = UInt64(envStr), envVal >= 1024 {
+            return envVal
+        }
+        return defaultMaximumLogFileSize
+    }
+
+    public static func rotatedLogFiles() -> [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        let url = resolvedLogFileURL()
+        let fm = FileManager.default
+        var files: [URL] = []
+        if fm.fileExists(atPath: url.path) {
+            files.append(url)
+        }
+        for index in 1...retainedLogFileCount {
+            let rotURL = rotatedURL(for: url, index: index)
+            if fm.fileExists(atPath: rotURL.path) {
+                files.append(rotURL)
+            }
+        }
+        return files
     }
 
     private static func singleLine(_ value: String) -> String {
@@ -133,9 +166,33 @@ public struct ClavisLogger {
     }
 
     private static func rotateIfNeeded(url: URL, incomingByteCount: UInt64, maximumFileSize: UInt64) {
-        let fileSize = ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.uint64Value ?? 0
+        var statBuf = stat()
+        guard lstat(url.path, &statBuf) == 0 else { return }
+        guard (statBuf.st_mode & S_IFMT) == S_IFREG else { return }
+
+        let fileSize = UInt64(statBuf.st_size)
         guard fileSize > 0, fileSize + incomingByteCount > maximumFileSize else { return }
 
+        let lockPath = url.path + ".lock"
+        let lockFd = open(lockPath, O_WRONLY | O_CREAT | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        if lockFd >= 0 {
+            flock(lockFd, LOCK_EX)
+            defer {
+                flock(lockFd, LOCK_UN)
+                close(lockFd)
+            }
+
+            var currentStat = stat()
+            guard lstat(url.path, &currentStat) == 0,
+                  (currentStat.st_mode & S_IFMT) == S_IFREG else { return }
+            let currentSize = UInt64(currentStat.st_size)
+            guard currentSize > 0, currentSize + incomingByteCount > maximumFileSize else { return }
+
+            performRotation(url: url)
+        }
+    }
+
+    private static func performRotation(url: URL) {
         let fileManager = FileManager.default
         let oldestURL = rotatedURL(for: url, index: retainedLogFileCount)
         try? fileManager.removeItem(at: oldestURL)
@@ -146,12 +203,15 @@ public struct ClavisLogger {
                 let destination = rotatedURL(for: url, index: index + 1)
                 if fileManager.fileExists(atPath: source.path) {
                     try? fileManager.moveItem(at: source, to: destination)
+                    try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
                 }
             }
         }
 
         if fileManager.fileExists(atPath: url.path) {
-            try? fileManager.moveItem(at: url, to: rotatedURL(for: url, index: 1))
+            let firstRotated = rotatedURL(for: url, index: 1)
+            try? fileManager.moveItem(at: url, to: firstRotated)
+            try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: firstRotated.path)
         }
     }
 

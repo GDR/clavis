@@ -33,6 +33,46 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         XCTAssertTrue(contents.contains("message\\r\\n[AUTH] forged"))
     }
 
+    func testLoggerMultiGenerationRotationAndPermissions() throws {
+        ClavisLogger.customMaximumLogFileSize = 128
+        let logURL = try XCTUnwrap(ClavisLogger.customLogFileURL)
+
+        for index in 0..<20 {
+            ClavisLogger.log("TEST", "payload-\(index)-\(String(repeating: "a", count: 64))")
+        }
+
+        let fm = FileManager.default
+        XCTAssertTrue(fm.fileExists(atPath: logURL.path))
+        XCTAssertTrue(fm.fileExists(atPath: "\(logURL.path).1"))
+        XCTAssertTrue(fm.fileExists(atPath: "\(logURL.path).2"))
+        XCTAssertTrue(fm.fileExists(atPath: "\(logURL.path).3"))
+        XCTAssertFalse(fm.fileExists(atPath: "\(logURL.path).4"))
+
+        for index in 1...3 {
+            let path = "\(logURL.path).\(index)"
+            let attrs = try fm.attributesOfItem(atPath: path)
+            XCTAssertEqual((attrs[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        }
+
+        let rotatedList = ClavisLogger.rotatedLogFiles()
+        XCTAssertEqual(rotatedList.count, 4)
+    }
+
+    func testLoggerRejectsSymlinkLogFiles() throws {
+        let fakeTarget = testRootURL.appendingPathComponent("target-file.txt")
+        try "initial target content\n".write(to: fakeTarget, atomically: true, encoding: .utf8)
+
+        let logURL = try XCTUnwrap(ClavisLogger.customLogFileURL)
+        try FileManager.default.createSymbolicLink(at: logURL, withDestinationURL: fakeTarget)
+
+        ClavisLogger.log("MALICIOUS", "malicious payload trying to overwrite target")
+
+        let targetContent = try String(contentsOf: fakeTarget, encoding: .utf8)
+        XCTAssertEqual(targetContent, "initial target content\n")
+
+        try? FileManager.default.removeItem(at: logURL)
+    }
+
 
     func testSingleInstanceLockAcquireAndRelease() {
         let tempURL = testRootURL.appendingPathComponent("clavis_test_\(UUID().uuidString).lock")
