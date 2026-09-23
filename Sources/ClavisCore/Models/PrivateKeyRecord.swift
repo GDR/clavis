@@ -204,7 +204,6 @@ public enum PrivateKeyRecordError: LocalizedError, Equatable {
     case purposeMismatch(expected: String, actual: String)
     case purposeNotAllowed(purpose: String, operation: String)
     case publicKeyMismatch
-    case legacyRecordUnmigrated(String)
 
     public var errorDescription: String? {
         switch self {
@@ -226,8 +225,6 @@ public enum PrivateKeyRecordError: LocalizedError, Equatable {
             return "Security violation: key purpose '\(purpose)' does not permit \(operation)."
         case .publicKeyMismatch:
             return "Security violation: derived public key does not match public key metadata blob. Signing refused."
-        case .legacyRecordUnmigrated(let label):
-            return "Legacy private key record for '\(label)' could not be migrated safely."
         }
     }
 }

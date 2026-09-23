@@ -85,21 +85,13 @@ class ClavisBaseTestCase: XCTestCase {
         PublicKeyStore.disableKeychainMirrorForTesting = true
         ClavisLogger.customLogFileURL = testRootURL.appendingPathComponent("clavis.log")
         ClavisLogger.customMaximumLogFileSize = nil
-        SeedStore.customSeedsDirectory = testRootURL.appendingPathComponent("seeds", isDirectory: true)
-        SeedStore.customMasterKEKURL = testRootURL.appendingPathComponent("master.kek")
-        SeedStore.useSoftwareMasterKeyForTesting = true
-        SeedStore.resetMasterKeyCacheForTesting()
     }
 
     override func tearDownWithError() throws {
-        SeedStore.resetMasterKeyCacheForTesting()
         PublicKeyStore.customStorageURL = nil
         PublicKeyStore.disableKeychainMirrorForTesting = false
         ClavisLogger.customLogFileURL = nil
         ClavisLogger.customMaximumLogFileSize = nil
-        SeedStore.customSeedsDirectory = nil
-        SeedStore.customMasterKEKURL = nil
-        SeedStore.useSoftwareMasterKeyForTesting = false
         if let testRootURL {
             try? FileManager.default.removeItem(at: testRootURL)
         }

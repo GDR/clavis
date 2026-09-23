@@ -6,9 +6,8 @@ import AppKit
 
 public class KeychainManager {
     public static let privateServiceName = "com.clavis.private-record.v2"
-    public static let legacyPrivateServiceName = "com.clavis.ed25519"
     public static let publicServiceName = "com.clavis.ed25519.pub"
-    public static let shared = KeychainManager(migrateLegacyStorage: true)
+    public static let shared = KeychainManager()
 
     private let authenticator: UserAuthenticating
     private let privateKeyStore: PrivateKeyStoring
@@ -25,17 +24,13 @@ public class KeychainManager {
         },
         agentGrantRevoker: @escaping (String) throws -> Void = { label in
             try AgentLifecycleManager.shared.invalidateAgentGrant(label: label)
-        },
-        migrateLegacyStorage: Bool = false
+        }
     ) {
         self.authenticator = authenticator
         self.privateKeyStore = privateKeyStore
         self.sessionCache = sessionCache
         self.secureBufferFactory = secureBufferFactory
         self.agentGrantRevoker = agentGrantRevoker
-        if migrateLegacyStorage {
-            migrateLegacySeedFiles()
-        }
     }
 
     // Generate new Key and save private seed (guarded by Touch ID) and public metadata (unencrypted)
@@ -244,7 +239,6 @@ public class KeychainManager {
         } catch {
             ClavisLogger.log("KEY_DELETE", "Warning: Keychain private key removal encountered error (\(error.localizedDescription)). Proceeding with metadata cleanup.")
         }
-        SeedStore.remove(label: label)
         try PublicKeyStore.removeChecked(label: label)
         ClavisLogger.log("KEY_DELETE", "Key '\(label)' deleted successfully.")
 
@@ -343,7 +337,6 @@ public class KeychainManager {
             }
         }
 
-        // 1. Decode a modern record without downgrading malformed or future data to legacy.
         do {
             let record = try StoredPrivateKeyRecord.decode(from: rawData)
             guard record.label == label else {
@@ -353,70 +346,8 @@ public class KeychainManager {
         } catch let error as PrivateKeyRecordError {
             throw error
         } catch {
-            let firstNonWhitespace = rawData.first { byte in
-                byte != 0x20 && byte != 0x09 && byte != 0x0A && byte != 0x0D
-            }
-            if firstNonWhitespace == 0x7B || firstNonWhitespace == 0x5B {
-                throw PrivateKeyRecordError.corruptedRecord("Malformed versioned private-key record")
-            }
+            throw PrivateKeyRecordError.corruptedRecord("Malformed private-key record: \(error.localizedDescription)")
         }
-
-        // 2. Legacy records are accepted only when authoritative public metadata
-        // identifies an exact supported format.
-        ClavisLogger.log("KEYCHAIN_MIGRATE", "Migrating legacy Keychain record for '\(label)' to StoredPrivateKeyRecord (v\(StoredPrivateKeyRecord.currentVersion))...")
-        guard let expected = expectedKeyInfo else {
-            throw PrivateKeyRecordError.legacyRecordUnmigrated(label)
-        }
-        let algorithm: KeyAlgorithm
-        let storageType: KeyStorageType
-        let policy: BiometricPolicy?
-
-        if expected.algorithm == "Ed25519", expected.storageType == .keychain, rawData.count == 32 {
-            algorithm = .ed25519
-            storageType = .keychain
-            policy = nil
-        } else if expected.algorithm == "ECDSA P-256", expected.storageType == .keychain, rawData.count == 32 {
-            algorithm = .ecdsaP256
-            storageType = .keychain
-            policy = nil
-        } else if expected.algorithm == "ECDSA P-256", expected.storageType == .secureEnclave {
-            algorithm = .ecdsaP256
-            storageType = .secureEnclave
-            policy = expected.biometricPolicy ?? .userPresence
-        } else {
-            throw PrivateKeyRecordError.legacyRecordUnmigrated(label)
-        }
-
-        let record = StoredPrivateKeyRecord(
-            version: StoredPrivateKeyRecord.currentVersion,
-            label: label,
-            algorithm: algorithm,
-            storageType: storageType,
-            biometricPolicy: policy,
-            keyPurpose: expected.keyPurpose,
-            keyData: rawData,
-            createdAt: expected.createdAt
-        )
-
-        let derivedPublicBlob = try Self.derivePublicKeyBlob(record: record, context: context)
-        guard derivedPublicBlob == expected.publicKeyBlob else {
-            throw PrivateKeyRecordError.publicKeyMismatch
-        }
-
-        // Save migrated record back to Keychain. Failure is propagated so the
-        // caller never proceeds under an unpersisted migration assumption.
-        let flags = policy?.accessControlFlags ?? [.userPresence]
-        var encoded = try record.encode()
-        defer {
-            encoded.withUnsafeMutableBytes { raw in
-                if let base = raw.baseAddress { SecureMemory.zero(base, byteCount: raw.count) }
-            }
-            encoded.removeAll(keepingCapacity: false)
-        }
-        try privateKeyStore.save(label: label, data: encoded, accessControlFlags: flags)
-        ClavisLogger.log("KEYCHAIN_MIGRATE", "Successfully saved migrated record for '\(label)' to Keychain.")
-
-        return record
     }
 
     private static func wipeData(_ data: inout Data) {
@@ -905,42 +836,7 @@ public class KeychainManager {
         )
     }
 
-    private func migrateLegacySeedFiles() {
-        for keyInfo in PublicKeyStore.loadAll() where SeedStore.hasSeedFile(label: keyInfo.label) {
-            do {
-                if !privateKeyStore.contains(label: keyInfo.label) {
-                    guard var keyData = SeedStore.load(label: keyInfo.label) else {
-                        ClavisLogger.log("KEYCHAIN_MIGRATE", "Could not decrypt legacy seed for '\(keyInfo.label)'; keeping the original file.")
-                        continue
-                    }
-                    defer {
-                        keyData.withUnsafeMutableBytes { raw in
-                            if let base = raw.baseAddress {
-                                SecureMemory.zero(base, byteCount: raw.count)
-                            }
-                        }
-                        keyData.removeAll(keepingCapacity: false)
-                    }
 
-                    var record = StoredPrivateKeyRecord(
-                        label: keyInfo.label,
-                        algorithm: (keyInfo.algorithm == "ECDSA P-256") ? .ecdsaP256 : .ed25519,
-                        storageType: keyInfo.storageType,
-                        biometricPolicy: keyInfo.biometricPolicy,
-                        keyData: keyData
-                    )
-                    defer { record.wipe() }
-                    let recordData = try record.encode()
-                    try privateKeyStore.save(label: keyInfo.label, data: recordData, accessControlFlags: keyInfo.effectiveBiometricPolicy.accessControlFlags)
-                }
-                SeedStore.remove(label: keyInfo.label)
-                ClavisLogger.log("KEYCHAIN_MIGRATE", "Migrated '\(keyInfo.label)' from disk storage to a user-presence Keychain item.")
-            } catch {
-                ClavisLogger.log("KEYCHAIN_MIGRATE", "Failed to migrate '\(keyInfo.label)': \(error.localizedDescription)")
-            }
-        }
-        SeedStore.removeMasterKeyIfUnused()
-    }
 
     private func validateLabel(_ label: String) throws {
         let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)

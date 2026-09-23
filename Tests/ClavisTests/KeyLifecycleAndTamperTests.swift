@@ -186,111 +186,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
     }
 
 
-    func testSeedStoreEnvelopeEncryptionCycle() throws {
-        let label = "test_envelope_\(UUID().uuidString)"
 
-        var randomSeed = Data(count: 32)
-        _ = randomSeed.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
-
-        try SeedStore.save(label: label, seedData: randomSeed)
-        let loaded = SeedStore.load(label: label)
-
-        XCTAssertEqual(loaded, randomSeed)
-    }
-
-
-    func testSeedStoreEncryptedFileFormat() throws {
-        let label = "test_format_\(UUID().uuidString)"
-
-        let secretBytes = Data([0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04,
-                                0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
-                                0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00,
-                                0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0])
-        try SeedStore.save(label: label, seedData: secretBytes)
-
-        let fileURL = SeedStore.seedFileURL(label: label)
-        let fileData = try Data(contentsOf: fileURL)
-
-        // Must start with magic header "CLV1" (0x43, 0x4C, 0x56, 0x01)
-        XCTAssertEqual(fileData.prefix(4), Data([0x43, 0x4C, 0x56, 0x01]))
-
-        // Must include 65-byte P-256 public key + at least 28-byte ChaChaPoly box
-        XCTAssertGreaterThanOrEqual(fileData.count, 4 + 65 + 28)
-
-        // Raw secret bytes must NOT appear anywhere in the ciphertext
-        XCTAssertNil(fileData.range(of: secretBytes))
-    }
-
-
-    func testSeedStoreLegacyPlaintextMigration() throws {
-        let label = "test_legacy_\(UUID().uuidString)"
-
-        let legacySeed = Data(repeating: 0x7A, count: 32)
-        let fileURL = SeedStore.seedFileURL(label: label)
-
-        // Write raw unencrypted seed directly to disk (simulating pre-envelope legacy Clavis)
-        try legacySeed.write(to: fileURL, options: .atomic)
-        XCTAssertEqual(try Data(contentsOf: fileURL), legacySeed)
-
-        // Loading should return the plaintext seed AND automatically migrate the file to CLV1
-        let loaded = SeedStore.load(label: label)
-        XCTAssertEqual(loaded, legacySeed)
-
-        // Verify that file on disk is now an encrypted envelope
-        let migratedFileData = try Data(contentsOf: fileURL)
-        XCTAssertEqual(migratedFileData.prefix(4), Data([0x43, 0x4C, 0x56, 0x01]))
-        XCTAssertNil(migratedFileData.range(of: legacySeed))
-
-        // Subsequent load should successfully decrypt from the new envelope
-        let reloaded = SeedStore.load(label: label)
-        XCTAssertEqual(reloaded, legacySeed)
-    }
-
-
-    func testSeedStoreFindsLegacySanitizedFilename() throws {
-        let label = "legacy/path"
-        let legacyURL = SeedStore.seedsDirectory.appendingPathComponent("legacy_path.key")
-        let seed = Data(repeating: 0x4C, count: 32)
-        try seed.write(to: legacyURL, options: .atomic)
-
-        XCTAssertEqual(SeedStore.load(label: label), seed)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyURL.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: SeedStore.seedFileURL(label: label).path))
-    }
-
-
-    func testSeedStoreTamperedCiphertextFails() throws {
-        let label = "test_tamper_\(UUID().uuidString)"
-
-        let seed = Data(repeating: 0x33, count: 32)
-        try SeedStore.save(label: label, seedData: seed)
-
-        let fileURL = SeedStore.seedFileURL(label: label)
-        var fileData = try Data(contentsOf: fileURL)
-
-        // Flip a bit in the encrypted payload (past the 69-byte header)
-        fileData[75] ^= 0xFF
-        try fileData.write(to: fileURL, options: .atomic)
-
-        // ChaChaPoly MAC authentication must reject tampered data and return nil
-        let loaded = SeedStore.load(label: label)
-        XCTAssertNil(loaded)
-    }
-
-
-    func testSeedStorePathUsesCollisionResistantIdentifier() {
-        let maliciousLabel = "../../etc/passwd"
-        let url = SeedStore.seedFileURL(label: maliciousLabel)
-
-        XCTAssertFalse(url.path.contains(".."))
-        XCTAssertFalse(url.path.contains("/etc/passwd"))
-        XCTAssertTrue(url.lastPathComponent.hasPrefix("sha256-"))
-        XCTAssertEqual(url.lastPathComponent.count, 7 + 64 + 4)
-        XCTAssertNotEqual(
-            SeedStore.seedFileURL(label: "a/b"),
-            SeedStore.seedFileURL(label: "a_b")
-        )
-    }
 
 
     func testKeyManagerRejectsControlCharactersInLabel() {
@@ -539,40 +435,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
     }
 
 
-    func testLegacyRecordMigrationOnAccess() throws {
-        let keyStore = InMemoryPrivateKeyStore()
-        let keyManager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore,
-            sessionCache: makeSessionCache()
-        )
 
-        let label = "legacy-migration-\(UUID().uuidString)"
-        let privateKey = Curve25519.Signing.PrivateKey()
-        let rawSeed = privateKey.rawRepresentation
-
-        // Pre-v1 legacy storage: raw 32 bytes saved directly into privateKeyStore
-        try keyStore.save(label: label, data: rawSeed)
-
-        let keyInfo = try keyManager.makeKeyInfo(label: label, privateKey: privateKey)
-        PublicKeyStore.save(keyInfo)
-
-        // Access via signSSH
-        let testData = "hello legacy".data(using: .utf8)!
-        let sigBlob = try keyManager.signSSH(key: keyInfo, data: testData, prompt: "Sign")
-        XCTAssertFalse(sigBlob.isEmpty)
-
-        // After access, verify the Keychain item was transparently migrated to StoredPrivateKeyRecord
-        let context = LAContext()
-        let storedData = try keyStore.load(label: label, context: context, prompt: "Load")
-        XCTAssertNotNil(storedData)
-        let migratedRecord = try StoredPrivateKeyRecord.decode(from: storedData!)
-        XCTAssertEqual(migratedRecord.version, StoredPrivateKeyRecord.currentVersion)
-        XCTAssertEqual(migratedRecord.label, label)
-        XCTAssertEqual(migratedRecord.algorithm, .ed25519)
-        XCTAssertEqual(migratedRecord.storageType, .keychain)
-        XCTAssertEqual(migratedRecord.keyData, rawSeed)
-    }
 
 
     func testRebuildPublicIndexFromKeychain() throws {
@@ -810,54 +673,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         XCTAssertNil(query[kSecAttrAccessGroup as String])
     }
 
-    func testKeychainPrivateKeyStoreCopiesLegacyServiceOnceWithoutDeletingFallback() throws {
-        let currentService = "com.clavis.tests.current"
-        let legacyService = "com.clavis.tests.legacy"
-        let encoded = Data([0x01, 0x02, 0x03])
-        var currentItemExists = false
-        var legacyReadCount = 0
-        var addCallCount = 0
-        var deleteCallCount = 0
 
-        let store = KeychainPrivateKeyStore(
-            serviceName: currentService,
-            legacyServiceNames: [legacyService],
-            addItem: { item in
-                let dictionary = item as NSDictionary
-                XCTAssertEqual(dictionary[kSecAttrService as String] as? String, currentService)
-                XCTAssertNotNil(dictionary[kSecAttrAccessControl as String])
-                currentItemExists = true
-                addCallCount += 1
-                return errSecSuccess
-            },
-            deleteItem: { _ in
-                deleteCallCount += 1
-                return errSecSuccess
-            },
-            updateItem: { _, _ in currentItemExists ? errSecSuccess : errSecItemNotFound },
-            copyItem: { query in
-                let dictionary = query as NSDictionary
-                let service = dictionary[kSecAttrService as String] as? String
-                if service == currentService {
-                    return currentItemExists
-                        ? (errSecSuccess, encoded as AnyObject)
-                        : (errSecItemNotFound, nil)
-                }
-                if service == legacyService {
-                    legacyReadCount += 1
-                    return (errSecSuccess, encoded as AnyObject)
-                }
-                return (errSecItemNotFound, nil)
-            }
-        )
-
-        let context = LAContext()
-        XCTAssertEqual(try store.load(label: "legacy-key", context: context, prompt: "Use key"), encoded)
-        XCTAssertEqual(try store.load(label: "legacy-key", context: context, prompt: "Use key"), encoded)
-        XCTAssertEqual(legacyReadCount, 1)
-        XCTAssertEqual(addCallCount, 1)
-        XCTAssertEqual(deleteCallCount, 0, "Migration must retain the old item as a recovery fallback")
-    }
 
     func testKeychainPrivateKeyStoreLoadFailureDoesNotRewriteOrDeleteItem() throws {
         var addCallCount = 0
