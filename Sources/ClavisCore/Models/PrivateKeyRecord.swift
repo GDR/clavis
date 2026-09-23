@@ -18,12 +18,16 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
     public let algorithm: KeyAlgorithm
     public let storageType: KeyStorageType
     public let biometricPolicy: BiometricPolicy?
-    public let keyPurpose: KeyPurpose?
+    public let keyPurpose: KeyPurpose
     public var keyData: Data
     public let createdAt: Date
 
     public var purpose: KeyPurpose {
-        keyPurpose ?? .general
+        keyPurpose
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, label, algorithm, storageType, biometricPolicy, keyPurpose, keyData, createdAt
     }
 
     public init(
@@ -32,7 +36,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         algorithm: KeyAlgorithm,
         storageType: KeyStorageType,
         biometricPolicy: BiometricPolicy? = nil,
-        keyPurpose: KeyPurpose? = nil,
+        keyPurpose: KeyPurpose,
         keyData: Data,
         createdAt: Date = Date()
     ) {
@@ -44,6 +48,30 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         self.keyPurpose = keyPurpose
         self.keyData = keyData
         self.createdAt = createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.version = try container.decode(Int.self, forKey: .version)
+        self.label = try container.decode(String.self, forKey: .label)
+        self.algorithm = try container.decode(KeyAlgorithm.self, forKey: .algorithm)
+        self.storageType = try container.decode(KeyStorageType.self, forKey: .storageType)
+        self.biometricPolicy = try container.decodeIfPresent(BiometricPolicy.self, forKey: .biometricPolicy)
+        self.keyPurpose = try container.decodeIfPresent(KeyPurpose.self, forKey: .keyPurpose) ?? .general
+        self.keyData = try container.decode(Data.self, forKey: .keyData)
+        self.createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(label, forKey: .label)
+        try container.encode(algorithm, forKey: .algorithm)
+        try container.encode(storageType, forKey: .storageType)
+        try container.encodeIfPresent(biometricPolicy, forKey: .biometricPolicy)
+        try container.encode(keyPurpose, forKey: .keyPurpose)
+        try container.encode(keyData, forKey: .keyData)
+        try container.encode(createdAt, forKey: .createdAt)
     }
 
     /// Wipes sensitive key material in place.

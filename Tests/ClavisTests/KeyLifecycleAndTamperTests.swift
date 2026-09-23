@@ -203,6 +203,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             algorithm: .ed25519,
             storageType: .keychain,
             biometricPolicy: nil,
+            keyPurpose: .general,
             keyData: dummyKeyData
         )
 
@@ -214,6 +215,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         XCTAssertEqual(decoded.algorithm, .ed25519)
         XCTAssertEqual(decoded.storageType, .keychain)
         XCTAssertNil(decoded.biometricPolicy)
+        XCTAssertEqual(decoded.keyPurpose, .general)
         XCTAssertEqual(decoded.keyData, dummyKeyData)
 
         // Test wiping
@@ -226,6 +228,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             label: "future",
             algorithm: .ed25519,
             storageType: .keychain,
+            keyPurpose: .general,
             keyData: Data([0xAA])
         )
         let futureData = try JSONEncoder().encode(futureRecord)
@@ -319,6 +322,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             algorithm: .ecdsaP256,
             storageType: .secureEnclave,
             biometricPolicy: .userPresence,
+            keyPurpose: .general,
             keyData: fakeSEData
         )
         let recordData = try record.encode()
@@ -405,6 +409,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             algorithm: .ecdsaP256,
             storageType: .secureEnclave,
             biometricPolicy: .userPresence,
+            keyPurpose: .general,
             keyData: Data(repeating: 0x55, count: 64)
         )
         let recordData = try record.encode()
