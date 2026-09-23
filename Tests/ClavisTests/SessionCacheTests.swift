@@ -687,5 +687,36 @@ final class SessionCacheTests: ClavisBaseTestCase {
         XCTAssertNil(GitSigningGraceManager.shared.getValidGrant(for: label))
     }
 
+    func testSystemEventMonitorDarwinScreenLockClearsCacheAndGitGrace() throws {
+        let testNotif = "com.clavis.test.screenlock." + UUID().uuidString
+        SystemEventMonitor.customScreenLockNotificationName = testNotif
+        defer {
+            SystemEventMonitor.customScreenLockNotificationName = nil
+        }
 
+        let cache = SessionCacheManager(observeSystemEvents: true)
+        let label = "darwin-test-\(UUID().uuidString)"
+        cache.set(label: label, key: Curve25519.Signing.PrivateKey())
+        XCTAssertTrue(cache.isKeyUnlocked(label: label))
+
+        let grace = GitSigningGraceManager(observeSystemEvents: true)
+        _ = grace.recordGrant(
+            keyLabel: label,
+            clientIdentity: "/usr/bin/git",
+            context: LAContext()
+        )
+        XCTAssertNotNil(grace.getValidGrant(for: label))
+
+        // Trigger Darwin notification via GCD without CFRunLoop
+        SystemEventMonitor.postDarwinNotification(testNotif)
+
+        let exp = expectation(description: "Wait for GCD Darwin notification delivery")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) {
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
+
+        XCTAssertFalse(cache.isKeyUnlocked(label: label), "Cache must be cleared upon Darwin screen lock")
+        XCTAssertNil(grace.getValidGrant(for: label), "Git grace grant must be revoked upon Darwin screen lock")
+    }
 }

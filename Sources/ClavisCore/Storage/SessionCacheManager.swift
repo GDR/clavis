@@ -87,23 +87,17 @@ public class SessionCacheManager {
         self.cleanupTimer = timer
 
         if observeSystemEvents {
-            DistributedNotificationCenter.default().addObserver(
-                self,
-                selector: #selector(clearCache),
-                name: NSNotification.Name("com.apple.screenIsLocked"),
-                object: nil,
-                suspensionBehavior: .deliverImmediately
-            )
-            NSWorkspace.shared.notificationCenter.addObserver(
-                self,
-                selector: #selector(clearCache),
-                name: NSWorkspace.willSleepNotification,
-                object: nil
-            )
+            SystemEventMonitor.shared.addHandler(id: "SessionCacheManager-\(ObjectIdentifier(self))") { [weak self] in
+                self?.clearCache()
+            }
         }
     }
 
     deinit {
+        if observeSystemEvents {
+            SystemEventMonitor.shared.removeHandler(id: "SessionCacheManager-\(ObjectIdentifier(self))")
+        }
+
         // 1. Exclude new timer operations
         cleanupTimer?.setEventHandler(handler: nil)
 

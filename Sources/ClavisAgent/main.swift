@@ -41,8 +41,9 @@ let terminationSignalSources = setupSignalHandlers()
 do {
     try SSHAgentServer.sharedInstance.start()
     ClavisLogger.log(.agentDaemon, "🔑 Clavis SSH Agent daemon active at \(SSHAgentServer.defaultSocketPath) (PID: \(getpid()))")
+    _ = SystemEventMonitor.shared
     withExtendedLifetime(terminationSignalSources) {
-        dispatchMain()
+        RunLoop.main.run()
     }
 } catch {
     ClavisLogger.log(.agentDaemon, "Failed to start SSH agent server: \(error.localizedDescription)")

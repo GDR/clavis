@@ -226,8 +226,10 @@ public final class GitSigningGraceManager: @unchecked Sendable {
     private var recentSignatures: [String: Date] = [:]
     private let timerQueue = DispatchQueue(label: "com.clavis.git-grace.timer", qos: .userInitiated)
     private var expirationTimer: DispatchSourceTimer?
+    private let observeSystemEvents: Bool
 
     public init(observeSystemEvents: Bool = true) {
+        self.observeSystemEvents = observeSystemEvents
         let timer = DispatchSource.makeTimerSource(queue: timerQueue)
         timer.setEventHandler { [weak self] in
             self?.expireActiveGrant()
@@ -237,29 +239,20 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         expirationTimer = timer
 
         if observeSystemEvents {
-            DistributedNotificationCenter.default().addObserver(
-                self,
-                selector: #selector(handleScreenLocked),
-                name: Self.screenIsLockedNotification,
-                object: nil,
-                suspensionBehavior: .deliverImmediately
-            )
-            NSWorkspace.shared.notificationCenter.addObserver(
-                self,
-                selector: #selector(handleSystemSleep),
-                name: NSWorkspace.willSleepNotification,
-                object: nil
-            )
+            SystemEventMonitor.shared.addHandler(id: "GitSigningGraceManager-\(ObjectIdentifier(self))") { [weak self] in
+                self?.invalidateAll(broadcast: true)
+            }
         }
     }
 
     deinit {
+        if observeSystemEvents {
+            SystemEventMonitor.shared.removeHandler(id: "GitSigningGraceManager-\(ObjectIdentifier(self))")
+        }
         expirationTimer?.setEventHandler(handler: nil)
         expirationTimer?.cancel()
         expirationTimer = nil
         activeGrant?.invalidate()
-        DistributedNotificationCenter.default().removeObserver(self)
-        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     public var currentActiveGrant: GitSigningGrant? {
