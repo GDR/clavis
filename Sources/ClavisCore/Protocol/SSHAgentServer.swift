@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Darwin
 
 public enum SSHAgentServerError: LocalizedError, Equatable {
     case socketAlreadyInUse(String)
@@ -241,6 +242,37 @@ public class SSHAgentServer {
         return nil
     }
 
+    /// Resolves a process-instance-bound identity for Git signing grants.
+    /// Incorporates the executable path, parent process path/PID, process start time,
+    /// and process group to prevent other arbitrary background processes from hijacking grants.
+    public static func resolveClientIdentity(pid: pid_t, processPath: String) -> String {
+        let stdPath = URL(fileURLWithPath: processPath).standardizedFileURL.path
+
+        var procInfo = proc_bsdinfo()
+        let ret = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &procInfo, Int32(MemoryLayout<proc_bsdinfo>.size))
+        guard ret == MemoryLayout<proc_bsdinfo>.size else {
+            return "\(stdPath):pid:\(pid)"
+        }
+
+        let ppid = pid_t(procInfo.pbi_ppid)
+        let pgid = procInfo.pbi_pgid
+        let startTime = procInfo.pbi_start_tvsec
+
+        if ppid > 1, let parentPath = getProcessPath(pid: ppid) {
+            var parentInfo = proc_bsdinfo()
+            let pRet = proc_pidinfo(ppid, PROC_PIDTBSDINFO, 0, &parentInfo, Int32(MemoryLayout<proc_bsdinfo>.size))
+            if pRet == MemoryLayout<proc_bsdinfo>.size {
+                let parentStart = parentInfo.pbi_start_tvsec
+                let stdParentPath = URL(fileURLWithPath: parentPath).standardizedFileURL.path
+                return "\(stdPath)|parent:\(stdParentPath):\(ppid):\(parentStart)|pgid:\(pgid)"
+            }
+            let stdParentPath = URL(fileURLWithPath: parentPath).standardizedFileURL.path
+            return "\(stdPath)|parent:\(stdParentPath):\(ppid)|pgid:\(pgid)"
+        }
+
+        return "\(stdPath)|self:\(pid):\(startTime)|pgid:\(pgid)"
+    }
+
     private func acceptLoop() {
         while isRunning {
             let listeningSock = serverSocket
@@ -469,7 +501,7 @@ public class SSHAgentServer {
             return Data([5])
         }
         let clientDesc = "\(Self.safeProcessPath(processPath)) (PID \(pid))"
-        let clientIdentity = URL(fileURLWithPath: processPath).standardizedFileURL.path
+        let clientIdentity = SSHAgentServer.resolveClientIdentity(pid: pid, processPath: processPath)
 
         // Domain verification: Parse signed payload as OpenSSH SSHSIG (strict Git format)
         let gitSSHSIG = SSHSIGPayload.parse(from: dataToSign)

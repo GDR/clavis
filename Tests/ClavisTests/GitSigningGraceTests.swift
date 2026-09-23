@@ -340,5 +340,27 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         XCTAssertNil(GitSigningGraceManager.shared.getValidGrant(for: label))
     }
 
+    func testResolveClientIdentityDifferentiatesProcesses() {
+        let currentPid = getpid()
+        guard let currentPath = SSHAgentServer.getProcessPath(pid: currentPid) else {
+            return
+        }
 
+        let identity1 = SSHAgentServer.resolveClientIdentity(pid: currentPid, processPath: currentPath)
+        let identity2 = SSHAgentServer.resolveClientIdentity(pid: currentPid, processPath: currentPath)
+
+        // Same process call must produce identical identity
+        XCTAssertEqual(identity1, identity2)
+        XCTAssertTrue(identity1.contains(currentPath))
+
+        // Different executable paths or different processes must produce distinct identities
+        let fakeIdentity = SSHAgentServer.resolveClientIdentity(pid: currentPid, processPath: "/usr/bin/git")
+        XCTAssertNotEqual(identity1, fakeIdentity)
+
+        // PID 1 (launchd) has no parent or init parent, must differ from current process
+        if let launchdPath = SSHAgentServer.getProcessPath(pid: 1) {
+            let launchdIdentity = SSHAgentServer.resolveClientIdentity(pid: 1, processPath: launchdPath)
+            XCTAssertNotEqual(identity1, launchdIdentity)
+        }
+    }
 }
