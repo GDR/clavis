@@ -60,25 +60,35 @@ public class AppState: ObservableObject {
             forName: GitSigningGraceManager.gitGraceUpdatedNotification,
             object: nil,
             queue: .main
-        ) { [weak self] notif in
+        ) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self else { return }
-                if let active = notif.userInfo?["active"] as? Bool, active,
-                   let label = notif.userInfo?["keyLabel"] as? String,
-                   let sec = notif.userInfo?["remainingSeconds"] as? Int,
-                   let ops = notif.userInfo?["remainingOperations"] as? Int {
-                    self.activeGitGrace = ActiveGitGraceInfo(
-                        keyLabel: label,
-                        remainingSeconds: sec,
-                        remainingOperations: ops
-                    )
-                } else {
-                    self.activeGitGrace = nil
-                }
+                self.updateGitGraceState()
             }
         }
 
         refresh()
+    }
+
+    @MainActor
+    public func updateGitGraceState() {
+        if let localGrant = GitSigningGraceManager.shared.currentActiveGrant {
+            self.activeGitGrace = ActiveGitGraceInfo(
+                keyLabel: localGrant.keyLabel,
+                remainingSeconds: localGrant.remainingSeconds,
+                remainingOperations: localGrant.remainingOperations
+            )
+            return
+        }
+        if let remote = agentLifecycle.queryAgentGitGrace() {
+            self.activeGitGrace = ActiveGitGraceInfo(
+                keyLabel: remote.keyLabel,
+                remainingSeconds: remote.remainingSeconds,
+                remainingOperations: remote.remainingOperations
+            )
+        } else {
+            self.activeGitGrace = nil
+        }
     }
 
     public func refresh() {
@@ -90,6 +100,7 @@ public class AppState: ObservableObject {
             selectedTimeout = sessionCache.currentTimeout
             launchAtLogin = LaunchAtLoginManager.shared.isEnabled
             errorMessage = nil
+            updateGitGraceState()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -97,6 +108,7 @@ public class AppState: ObservableObject {
 
     public func endGitSigningSession() {
         GitSigningGraceManager.shared.invalidateAll()
+        try? agentLifecycle.sendLockAllToAgent()
         activeGitGrace = nil
         refresh()
     }

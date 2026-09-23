@@ -116,6 +116,7 @@ public struct CLIService {
         case .lock:
             SessionCacheManager.shared.clearCache()
             GitSigningGraceManager.shared.invalidateAll()
+            try? AgentLifecycleManager.shared.sendLockAllToAgent()
             return CLICommandResult(exitCode: 0, output: CLIMessages.lockedAll)
 
         case .delete:

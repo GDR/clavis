@@ -54,6 +54,11 @@ public extension Data {
         append(data)
     }
 
+    mutating func appendWireUInt32(_ value: UInt32) {
+        var big = value.bigEndian
+        Swift.withUnsafeBytes(of: &big) { append(contentsOf: $0) }
+    }
+
     // Helper to format an integer as an SSH mpint (RFC 4251 section 5)
     static func encodeSSHMPint(_ bytes: Data) -> Data {
         var d = bytes

@@ -311,4 +311,43 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
 
         XCTAssertNil(lifecycle.locateAgentExecutable())
     }
+
+    @MainActor
+    func testAppStateIgnoresSpoofedGitGraceNotificationUserInfo() throws {
+        let cache = makeSessionCache()
+        let socketPath = testRootURL.appendingPathComponent("spoof.sock").path
+        let server = SSHAgentServer(socketPath: socketPath)
+        let lifecycle = AgentLifecycleManager(socketPath: socketPath)
+        let appState = AppState(
+            keyManager: makeKeyManager(sessionCache: cache),
+            sessionCache: cache,
+            sshAgentServer: server,
+            agentLifecycle: lifecycle
+        )
+
+        GitSigningGraceManager.shared.invalidateAll(broadcast: false)
+        XCTAssertNil(appState.activeGitGrace)
+
+        // Send forged notification with fake active grant
+        DistributedNotificationCenter.default().postNotificationName(
+            GitSigningGraceManager.gitGraceUpdatedNotification,
+            object: nil,
+            userInfo: [
+                "active": true,
+                "keyLabel": "forged-stolen-key",
+                "remainingSeconds": 9999,
+                "remainingOperations": 500
+            ],
+            deliverImmediately: true
+        )
+
+        // Wait for main actor runloop tick
+        let deadline = Date().addingTimeInterval(0.2)
+        while Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+
+        // AppState must verify against authoritative state and reject the forged notification
+        XCTAssertNil(appState.activeGitGrace, "AppState must not adopt spoofed userInfo from unauthenticated distributed notifications")
+    }
 }

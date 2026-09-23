@@ -211,6 +211,102 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         }
     }
 
+    /// Queries the running agent daemon for the current active Git signing grant over the secure socket.
+    public func queryAgentGitGrace() -> (keyLabel: String, remainingSeconds: Int, remainingOperations: Int)? {
+        guard FileManager.default.fileExists(atPath: socketPath) else { return nil }
+        let sock = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard sock >= 0 else { return nil }
+        defer { close(sock) }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = socketPath.utf8CString
+        guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else { return nil }
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            let raw = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: CChar.self)
+            for (index, byte) in pathBytes.enumerated() { raw[index] = byte }
+        }
+        let addrLength = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
+        let connected = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(sock, $0, addrLength)
+            }
+        }
+        guard connected == 0 else { return nil }
+
+        let payload = Data([SSHAgentServer.queryGitGraceRequest])
+        var packet = Data()
+        var length = UInt32(payload.count).bigEndian
+        Swift.withUnsafeBytes(of: &length) { packet.append(contentsOf: $0) }
+        packet.append(payload)
+
+        guard writeAll(packet, to: sock),
+              let header = readExactly(4, from: sock) else {
+            return nil
+        }
+        var responseLength: UInt32 = 0
+        _ = Swift.withUnsafeMutableBytes(of: &responseLength) { header.copyBytes(to: $0) }
+        responseLength = UInt32(bigEndian: responseLength)
+        guard responseLength > 1,
+              let response = readExactly(Int(responseLength), from: sock),
+              response.first == 6 else {
+            return nil
+        }
+
+        var reader = DataReader(data: Data(response.dropFirst()))
+        guard let label = reader.readWireString(),
+              let seconds = reader.readUInt32(),
+              let operations = reader.readUInt32() else {
+            return nil
+        }
+
+        if label.isEmpty { return nil }
+        return (label, Int(seconds), Int(operations))
+    }
+
+    /// Instructs the running agent daemon to purge all cached session secrets and Git grace periods over the secure socket.
+    public func sendLockAllToAgent() throws {
+        guard FileManager.default.fileExists(atPath: socketPath) else { return }
+        let sock = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard sock >= 0 else { return }
+        defer { close(sock) }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = socketPath.utf8CString
+        guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else { return }
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            let raw = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: CChar.self)
+            for (index, byte) in pathBytes.enumerated() { raw[index] = byte }
+        }
+        let addrLength = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
+        let connected = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(sock, $0, addrLength)
+            }
+        }
+        guard connected == 0 else { return }
+
+        let payload = Data([SSHAgentServer.lockAllRequest])
+        var packet = Data()
+        var length = UInt32(payload.count).bigEndian
+        Swift.withUnsafeBytes(of: &length) { packet.append(contentsOf: $0) }
+        packet.append(payload)
+
+        guard writeAll(packet, to: sock),
+              let header = readExactly(4, from: sock) else {
+            return
+        }
+        var responseLength: UInt32 = 0
+        _ = Swift.withUnsafeMutableBytes(of: &responseLength) { header.copyBytes(to: $0) }
+        responseLength = UInt32(bigEndian: responseLength)
+        guard responseLength == 1,
+              let response = readExactly(1, from: sock),
+              response.first == 6 else {
+            return
+        }
+    }
+
     private func writeAll(_ data: Data, to fd: Int32) -> Bool {
         data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return false }

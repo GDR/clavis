@@ -239,20 +239,6 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         if observeSystemEvents {
             DistributedNotificationCenter.default().addObserver(
                 self,
-                selector: #selector(handleLockAll),
-                name: Self.lockAllNotification,
-                object: nil,
-                suspensionBehavior: .deliverImmediately
-            )
-            DistributedNotificationCenter.default().addObserver(
-                self,
-                selector: #selector(handleEndGitGrace),
-                name: Self.endGitGraceNotification,
-                object: nil,
-                suspensionBehavior: .deliverImmediately
-            )
-            DistributedNotificationCenter.default().addObserver(
-                self,
                 selector: #selector(handleScreenLocked),
                 name: Self.screenIsLockedNotification,
                 object: nil,
@@ -276,12 +262,17 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
-    @objc private func handleLockAll() {
-        invalidateAll(broadcast: false)
-    }
-
-    @objc private func handleEndGitGrace() {
-        invalidateAll(broadcast: false)
+    public var currentActiveGrant: GitSigningGrant? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let grant = activeGrant else { return nil }
+        if grant.isValid {
+            return grant
+        } else {
+            activeGrant?.invalidate()
+            activeGrant = nil
+            return nil
+        }
     }
 
     @objc private func handleScreenLocked() {

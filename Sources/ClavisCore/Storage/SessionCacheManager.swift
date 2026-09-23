@@ -89,13 +89,6 @@ public class SessionCacheManager {
         if observeSystemEvents {
             DistributedNotificationCenter.default().addObserver(
                 self,
-                selector: #selector(handleDistributedClearCache),
-                name: NSNotification.Name("com.clavis.lockAll"),
-                object: nil,
-                suspensionBehavior: .deliverImmediately
-            )
-            DistributedNotificationCenter.default().addObserver(
-                self,
                 selector: #selector(clearCache),
                 name: NSNotification.Name("com.apple.screenIsLocked"),
                 object: nil,
@@ -138,11 +131,7 @@ public class SessionCacheManager {
         clearCacheInternal(broadcast: true)
     }
 
-    @objc private func handleDistributedClearCache() {
-        clearCacheInternal(broadcast: false)
-    }
-
-    private func clearCacheInternal(broadcast: Bool) {
+    internal func clearCacheInternal(broadcast: Bool) {
         lock.lock()
         generation &+= 1
         cleanupTimer?.schedule(deadline: .distantFuture)

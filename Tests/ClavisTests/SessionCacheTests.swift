@@ -645,13 +645,13 @@ final class SessionCacheTests: ClavisBaseTestCase {
     }
 
 
-    func testDistributedLockAllNotification() throws {
+    func testDistributedLockAllNotificationIsIgnoredToPreventDoS() throws {
         let cache = SessionCacheManager(observeSystemEvents: true)
         let label = "dist-test-\(UUID().uuidString)"
         cache.set(label: label, key: Curve25519.Signing.PrivateKey())
         XCTAssertTrue(cache.isKeyUnlocked(label: label))
 
-        // Simulate broadcast from another process
+        // Simulate rogue broadcast from another process in the user session
         DistributedNotificationCenter.default().postNotificationName(
             NSNotification.Name("com.clavis.lockAll"),
             object: nil,
@@ -659,17 +659,32 @@ final class SessionCacheTests: ClavisBaseTestCase {
             deliverImmediately: true
         )
 
-        // Allow runloop tick for notification delivery
-        let deadline = Date().addingTimeInterval(0.5)
-        var cleared = false
+        // Cache must remain intact (not wiped by unauthenticated distributed notification)
+        let deadline = Date().addingTimeInterval(0.1)
         while Date() < deadline {
-            if !cache.isKeyUnlocked(label: label) {
-                cleared = true
-                break
-            }
             RunLoop.current.run(until: Date().addingTimeInterval(0.01))
         }
-        XCTAssertTrue(cleared, "Cache should be cleared after receiving com.clavis.lockAll distributed notification")
+        XCTAssertTrue(cache.isKeyUnlocked(label: label), "Cache must NOT be cleared by unauthenticated com.clavis.lockAll distributed notification")
+    }
+
+    func testSocketLockAllRequestClearsCacheAndGrants() throws {
+        let testSockPath = testRootURL.appendingPathComponent("lockall-socket.sock").path
+        let server = SSHAgentServer(socketPath: testSockPath)
+        try server.start()
+        defer { server.stop() }
+
+        let label = "grant-\(UUID().uuidString)"
+        _ = GitSigningGraceManager.shared.recordGrant(
+            keyLabel: label,
+            clientIdentity: "/usr/bin/git",
+            context: LAContext()
+        )
+        XCTAssertNotNil(GitSigningGraceManager.shared.getValidGrant(for: label))
+
+        let lifecycle = AgentLifecycleManager(socketPath: testSockPath)
+        try lifecycle.sendLockAllToAgent()
+
+        XCTAssertNil(GitSigningGraceManager.shared.getValidGrant(for: label))
     }
 
 
