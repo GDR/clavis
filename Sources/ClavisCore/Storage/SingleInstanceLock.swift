@@ -13,7 +13,7 @@ public final class SingleInstanceLock: @unchecked Sendable {
     public static var customLockFileURL: URL? = nil
 
     private var lockFd: Int32 = -1
-    private let lock = NSLock()
+    private let lock = NSRecursiveLock()
 
     public init(name: String = "clavis", bringToFrontOnConflict: Bool = true, customLockFileURL: URL? = nil) {
         self.name = name
@@ -34,13 +34,35 @@ public final class SingleInstanceLock: @unchecked Sendable {
         shared.lockFileURL
     }
 
-    /// Reads the PID stored in the lock file, verifying if that process is currently alive.
+    /// Reads the PID stored in the lock file, verifying that the process is alive
+    /// and actively holding the advisory flock (preventing stale PID reuse attacks).
     public var lockOwnerPID: pid_t? {
-        guard let data = try? Data(contentsOf: lockFileURL),
-              let pidString = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              let pid = pid_t(pidString), pid > 0 else {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if lockFd >= 0 {
+            return getpid()
+        }
+
+        let path = lockFileURL.path
+        let fd = open(path, O_RDONLY)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+
+        // Test if an exclusive flock is actively held by another process.
+        // If flock succeeds, no active process holds the lock; the lock file is stale.
+        if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+            flock(fd, LOCK_UN)
             return nil
         }
+
+        // Lock is actively held by another process. Read the PID.
+        var buffer = [CChar](repeating: 0, count: 32)
+        let bytesRead = read(fd, &buffer, buffer.count - 1)
+        guard bytesRead > 0 else { return nil }
+        let pidString = String(cString: buffer).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let pid = pid_t(pidString), pid > 0 else { return nil }
+
         // Verify process is active
         if kill(pid, 0) == 0 {
             return pid
@@ -106,10 +128,11 @@ public final class SingleInstanceLock: @unchecked Sendable {
         defer { lock.unlock() }
 
         if lockFd >= 0 {
+            ftruncate(lockFd, 0)
             flock(lockFd, LOCK_UN)
             close(lockFd)
             lockFd = -1
-            try? FileManager.default.removeItem(at: lockFileURL)
+            // Note: We deliberately do not unlink lockFileURL to prevent flock split-brain race conditions.
             ClavisLogger.log("LOCK", "Single instance lock '\(name)' released.")
         }
     }

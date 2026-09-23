@@ -100,6 +100,24 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         duplicateGuiLock.release()
     }
 
+    func testSingleInstanceLockStaleLockIgnored() throws {
+        let staleURL = testRootURL.appendingPathComponent("test_stale_\(UUID().uuidString).lock")
+        defer { try? FileManager.default.removeItem(at: staleURL) }
+
+        // Write PID 1 (launchd, always running) to a file WITHOUT holding flock
+        try "1\n".write(to: staleURL, atomically: true, encoding: .utf8)
+
+        let staleLock = SingleInstanceLock(name: "test-stale", bringToFrontOnConflict: false, customLockFileURL: staleURL)
+
+        // lockOwnerPID must return nil because flock is not held, despite PID 1 being alive
+        XCTAssertNil(staleLock.lockOwnerPID)
+
+        // acquire() must succeed and take over the stale lock file
+        XCTAssertTrue(staleLock.acquire())
+        XCTAssertEqual(staleLock.lockOwnerPID, getpid())
+        staleLock.release()
+    }
+
 
     func testSSHAgentServerIsSocketListeningAndCollisionPrevention() throws {
         let testSockPath = testRootURL.appendingPathComponent("t-listen.sock").path

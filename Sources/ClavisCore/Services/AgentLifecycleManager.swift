@@ -243,6 +243,15 @@ public final class AgentLifecycleManager: @unchecked Sendable {
             return false
         }
 
+        // Verify that the target PID is actually a clavis-agent process before sending any signals
+        guard SSHAgentServer.getProcessName(pid: pid) == "clavis-agent" else {
+            ClavisLogger.log("AGENT_LIFECYCLE", "PID \(pid) is not a clavis-agent process; refusing to signal")
+            if FileManager.default.fileExists(atPath: socketPath) {
+                try? FileManager.default.removeItem(atPath: socketPath)
+            }
+            return false
+        }
+
         ClavisLogger.log("AGENT_LIFECYCLE", "Stopping agent daemon PID \(pid)")
         kill(pid, SIGTERM)
 
@@ -255,8 +264,8 @@ public final class AgentLifecycleManager: @unchecked Sendable {
             usleep(50_000)
         }
 
-        // Force kill if still alive
-        if kill(pid, 0) == 0 {
+        // Force kill if still alive and verified as clavis-agent
+        if kill(pid, 0) == 0, SSHAgentServer.getProcessName(pid: pid) == "clavis-agent" {
             ClavisLogger.log("AGENT_LIFECYCLE", "Forcefully killing agent daemon PID \(pid)")
             kill(pid, SIGKILL)
             usleep(50_000)
