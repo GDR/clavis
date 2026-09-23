@@ -42,23 +42,30 @@ public class SSHAgentServer {
 
     public let socketPath: String
     private let maxConcurrentClients: Int
+    private let maxConcurrentClientsPerPID: Int
     private let clientIdleTimeout: TimeInterval
+    private let handshakeTimeout: TimeInterval
     private let keyManager: KeychainManager
     private let stateLock = NSLock()
     private var _serverSocket: Int32 = -1
     private var _isRunning = false
     private var _activeClientCount = 0
+    private var _clientPIDCounts: [pid_t: Int] = [:]
     private let queue = DispatchQueue(label: "com.clavis.ssh-agent", attributes: .concurrent)
 
     public init(
         socketPath: String = SSHAgentServer.defaultSocketPath,
         maxConcurrentClients: Int = 32,
+        maxConcurrentClientsPerPID: Int = 8,
         clientIdleTimeout: TimeInterval = 30,
+        handshakeTimeout: TimeInterval = 2.0,
         keyManager: KeychainManager = .shared
     ) {
         self.socketPath = socketPath
         self.maxConcurrentClients = max(1, maxConcurrentClients)
+        self.maxConcurrentClientsPerPID = max(1, maxConcurrentClientsPerPID)
         self.clientIdleTimeout = max(0.1, clientIdleTimeout)
+        self.handshakeTimeout = max(0.05, min(clientIdleTimeout, handshakeTimeout))
         self.keyManager = keyManager
     }
 
@@ -296,19 +303,19 @@ public class SSHAgentServer {
 
                 var optval: Int32 = 1
                 guard setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &optval, socklen_t(MemoryLayout<Int32>.size)) == 0,
-                      configureTimeouts(for: clientSocket) else {
+                      configureTimeouts(for: clientSocket, timeoutInterval: handshakeTimeout) else {
                     close(clientSocket)
                     continue
                 }
 
-                guard reserveClientSlot() else {
-                    ClavisLogger.log("SSH_AGENT_LIMIT", "Rejected connection because the concurrent client limit was reached.")
+                guard reserveClientSlot(clientPid: clientPid) else {
+                    ClavisLogger.log("SSH_AGENT_LIMIT", "Rejected connection because concurrent client limit or per-PID limit was reached (PID: \(clientPid.map(String.init) ?? "unknown")).")
                     close(clientSocket)
                     continue
                 }
 
                 queue.async {
-                    defer { self.releaseClientSlot() }
+                    defer { self.releaseClientSlot(clientPid: clientPid) }
                     self.handleClient(
                         socket: clientSocket,
                         clientPid: clientPid,
@@ -319,25 +326,37 @@ public class SSHAgentServer {
         }
     }
 
-    private func reserveClientSlot() -> Bool {
+    internal func reserveClientSlot(clientPid: pid_t? = nil) -> Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
         guard _activeClientCount < maxConcurrentClients else { return false }
+        if let pid = clientPid {
+            let count = _clientPIDCounts[pid] ?? 0
+            guard count < maxConcurrentClientsPerPID else { return false }
+            _clientPIDCounts[pid] = count + 1
+        }
         _activeClientCount += 1
         return true
     }
 
-    private func releaseClientSlot() {
+    internal func releaseClientSlot(clientPid: pid_t? = nil) {
         stateLock.lock()
+        defer { stateLock.unlock() }
         _activeClientCount = max(0, _activeClientCount - 1)
-        stateLock.unlock()
+        if let pid = clientPid {
+            if let count = _clientPIDCounts[pid], count > 1 {
+                _clientPIDCounts[pid] = count - 1
+            } else {
+                _clientPIDCounts.removeValue(forKey: pid)
+            }
+        }
     }
 
-    private func configureTimeouts(for socket: Int32) -> Bool {
-        let seconds = floor(clientIdleTimeout)
+    private func configureTimeouts(for socket: Int32, timeoutInterval: TimeInterval) -> Bool {
+        let seconds = floor(timeoutInterval)
         var timeout = timeval(
             tv_sec: Int(seconds),
-            tv_usec: Int32((clientIdleTimeout - seconds) * 1_000_000)
+            tv_usec: Int32((timeoutInterval - seconds) * 1_000_000)
         )
         let timeoutSize = socklen_t(MemoryLayout<timeval>.size)
         return setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, timeoutSize) == 0 &&
@@ -351,11 +370,17 @@ public class SSHAgentServer {
     ) {
         defer { close(clientSocket) }
 
+        var isFirstPacket = true
         while isRunning {
+            if !isFirstPacket {
+                _ = configureTimeouts(for: clientSocket, timeoutInterval: clientIdleTimeout)
+            }
+
             var lengthHeader = UInt32(0)
             if !readFullBytes(from: clientSocket, buffer: &lengthHeader, count: 4) {
                 break
             }
+            isFirstPacket = false
 
             let msgLength = Int(UInt32(bigEndian: lengthHeader))
             if msgLength <= 0 || msgLength > 65536 { break }

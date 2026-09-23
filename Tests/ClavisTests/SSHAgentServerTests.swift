@@ -303,5 +303,36 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         )
     }
 
+    func testSSHAgentServerPerPIDClientLimit() {
+        let server = SSHAgentServer(
+            maxConcurrentClients: 10,
+            maxConcurrentClientsPerPID: 2
+        )
 
+        let pidA: pid_t = 1000
+        let pidB: pid_t = 2000
+
+        // PID A can reserve up to 2 slots
+        XCTAssertTrue(server.reserveClientSlot(clientPid: pidA))
+        XCTAssertTrue(server.reserveClientSlot(clientPid: pidA))
+        // 3rd attempt by PID A must be rejected
+        XCTAssertFalse(server.reserveClientSlot(clientPid: pidA))
+
+        // PID B can still reserve slots
+        XCTAssertTrue(server.reserveClientSlot(clientPid: pidB))
+        XCTAssertTrue(server.reserveClientSlot(clientPid: pidB))
+        XCTAssertFalse(server.reserveClientSlot(clientPid: pidB))
+
+        // Releasing a slot for PID A allows PID A to reserve again
+        server.releaseClientSlot(clientPid: pidA)
+        XCTAssertTrue(server.reserveClientSlot(clientPid: pidA))
+        XCTAssertFalse(server.reserveClientSlot(clientPid: pidA))
+
+        // Cleanup
+        server.releaseClientSlot(clientPid: pidA)
+        server.releaseClientSlot(clientPid: pidA)
+        server.releaseClientSlot(clientPid: pidB)
+        server.releaseClientSlot(clientPid: pidB)
+        XCTAssertEqual(server.activeClientCount, 0)
+    }
 }
