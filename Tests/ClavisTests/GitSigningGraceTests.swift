@@ -363,4 +363,20 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             XCTAssertNotEqual(identity1, launchdIdentity)
         }
     }
+
+    func testGitSigningPromptBypassesModalInHeadlessSession() {
+        let previousProvider = GitSigningPrompt.sessionCheckProvider
+        defer { GitSigningPrompt.sessionCheckProvider = previousProvider }
+
+        // Simulate headless/non-GUI environment
+        GitSigningPrompt.sessionCheckProvider = { false }
+
+        let start = Date()
+        let choice = GitSigningPrompt.displayModal(keyLabel: "test-key", clientDesc: "git (PID 9999)")
+        let elapsed = Date().timeIntervalSince(start)
+
+        // Must return .singleShot immediately (< 0.5s), avoiding the 30-second CFUserNotificationDisplayAlert hang
+        XCTAssertEqual(choice, .singleShot)
+        XCTAssertLessThan(elapsed, 0.5)
+    }
 }

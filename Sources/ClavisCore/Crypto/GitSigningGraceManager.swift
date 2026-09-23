@@ -3,6 +3,7 @@ import LocalAuthentication
 import CryptoKit
 import CoreFoundation
 import AppKit
+import CoreGraphics
 
 public enum GitSigningPromptChoice: Equatable {
     case grantFiveMinutes
@@ -147,11 +148,26 @@ public struct GitSigningPromptStrings {
 }
 
 public enum GitSigningPrompt {
+    public static var isGUISessionActive: Bool {
+        guard let sessionDict = CGSessionCopyCurrentDictionary() as? [String: Any] else {
+            return false
+        }
+        return (sessionDict["kCGSSessionOnConsoleKey"] as? Bool) ?? false
+    }
+
+    /// Pluggable provider for checking GUI session availability (useful for testing)
+    public static var sessionCheckProvider: () -> Bool = { isGUISessionActive }
+
     public static func displayModal(
         keyLabel: String,
         clientDesc: String,
         timeout: TimeInterval = 30.0
     ) -> GitSigningPromptChoice {
+        guard sessionCheckProvider() else {
+            ClavisLogger.log("GIT_GRACE", "Headless or non-GUI session detected; bypassing modal alert and defaulting to single-shot signing.")
+            return .singleShot
+        }
+
         var responseFlags: CFOptionFlags = 0
         let strings = GitSigningPromptStrings.current
         let header = strings.header as CFString
