@@ -443,5 +443,110 @@ final class AgePluginTests: ClavisBaseTestCase {
         XCTAssertThrowsError(try AgePluginCrypto.unwrapFileKey(wrappedKey: Data([1, 2, 3]), epkB64: epkB64, ed25519Seed: seed))
     }
 
+    func testAgePluginIdentityV1UserCancellationAbortsImmediately() throws {
+        let key1 = Ed25519KeyInfo(
+            label: "key1",
+            publicKeyOpenSSH: "ssh-ed25519 AAAA... key1",
+            publicKeyBlob: Data(repeating: 1, count: 32),
+            fingerprint: "SHA256:key1",
+            createdAt: Date(),
+            algorithmName: "Ed25519",
+            storage: .keychain,
+            keyPurpose: .general
+        )
+        let key2 = Ed25519KeyInfo(
+            label: "key2",
+            publicKeyOpenSSH: "ssh-ed25519 AAAA... key2",
+            publicKeyBlob: Data(repeating: 2, count: 32),
+            fingerprint: "SHA256:key2",
+            createdAt: Date(),
+            algorithmName: "Ed25519",
+            storage: .keychain,
+            keyPurpose: .general
+        )
 
+        var requestedKeys: [String] = []
+        var outputs: [String] = []
+
+        let unwrapInputs = [
+            "-> add-identity key1",
+            "-> add-identity key2",
+            "-> recipient-stanza 0 clavis ZmFrZS1lcGs=",
+            "ZmFrZS13cmFwcGVk",
+            "-> unwrap-file-key",
+            "-> done"
+        ]
+        var inputIdx = 0
+
+        AgePluginClavis.handleIdentityV1(
+            inputProvider: {
+                guard inputIdx < unwrapInputs.count else { return nil }
+                defer { inputIdx += 1 }
+                return unwrapInputs[inputIdx]
+            },
+            outputHandler: { outputs.append($0) },
+            fetchKeys: { [key1, key2] },
+            unwrapKey: { label, _, _, _ in
+                requestedKeys.append(label)
+                throw UserAuthenticationError.rejected(nil)
+            }
+        )
+
+        // Only the first key was attempted before cancellation aborted the sequence
+        XCTAssertEqual(requestedKeys, ["key1"], "User cancellation must abort immediately without trying subsequent keys")
+        XCTAssertTrue(outputs.contains("-> error identity User cancelled authentication"))
+    }
+
+    func testAgePluginIdentityV1EmptyIdentitiesStopsOnUnwrapFailure() throws {
+        let key1 = Ed25519KeyInfo(
+            label: "key1",
+            publicKeyOpenSSH: "ssh-ed25519 AAAA... key1",
+            publicKeyBlob: Data(repeating: 1, count: 32),
+            fingerprint: "SHA256:key1",
+            createdAt: Date(),
+            algorithmName: "Ed25519",
+            storage: .keychain,
+            keyPurpose: .general
+        )
+        let key2 = Ed25519KeyInfo(
+            label: "key2",
+            publicKeyOpenSSH: "ssh-ed25519 AAAA... key2",
+            publicKeyBlob: Data(repeating: 2, count: 32),
+            fingerprint: "SHA256:key2",
+            createdAt: Date(),
+            algorithmName: "Ed25519",
+            storage: .keychain,
+            keyPurpose: .general
+        )
+
+        var requestedKeys: [String] = []
+        var outputs: [String] = []
+
+        // No "add-identity" lines: identities.isEmpty == true
+        let unwrapInputs = [
+            "-> recipient-stanza 0 clavis ZmFrZS1lcGs=",
+            "ZmFrZS13cmFwcGVk",
+            "-> unwrap-file-key",
+            "-> done"
+        ]
+        var inputIdx = 0
+
+        AgePluginClavis.handleIdentityV1(
+            inputProvider: {
+                guard inputIdx < unwrapInputs.count else { return nil }
+                defer { inputIdx += 1 }
+                return unwrapInputs[inputIdx]
+            },
+            outputHandler: { outputs.append($0) },
+            fetchKeys: { [key1, key2] },
+            unwrapKey: { label, _, _, _ in
+                requestedKeys.append(label)
+                throw AgePluginError.decryptionFailed
+            }
+        )
+
+        // When identities is empty and decryption fails on key1, it must not cycle to key2
+        XCTAssertEqual(requestedKeys, ["key1"], "When identities is empty, decryption failure must not cycle through all keys in keychain")
+        XCTAssertTrue(outputs.contains("-> error identity Failed to unwrap stanza 0"))
+    }
 }

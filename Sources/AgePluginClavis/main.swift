@@ -2,6 +2,7 @@ import Foundation
 import CryptoKit
 import ClavisCore
 import Darwin
+import LocalAuthentication
 
 private final class BoundedStdinLineReader {
     private let maximumLineBytes: Int
@@ -428,14 +429,49 @@ public struct AgePluginClavis {
                     unwrapped = true
                     break
                 } catch {
+                    if isAuthenticationCancellation(error) {
+                        outputHandler("-> error identity User cancelled authentication")
+                        return
+                    }
+                    // When identities were not explicitly provided by the caller,
+                    // stop attempting further keys to prevent Touch ID prompt flooding / DoS attacks.
+                    if identities.isEmpty {
+                        break
+                    }
                     continue
                 }
             }
 
             if !unwrapped {
                 outputHandler("-> error identity Failed to unwrap stanza \(stanza.index)")
+                if identities.isEmpty {
+                    return
+                }
             }
         }
+    }
+
+    private static func isAuthenticationCancellation(_ error: Error) -> Bool {
+        if let authError = error as? UserAuthenticationError {
+            switch authError {
+            case .timedOut:
+                return true
+            case .rejected(let underlying):
+                if let laError = underlying as? LAError {
+                    return laError.code == .userCancel || laError.code == .userFallback || laError.code == .appCancel || laError.code == .systemCancel
+                }
+                return true
+            }
+        }
+        if let laError = error as? LAError {
+            return laError.code == .userCancel || laError.code == .userFallback || laError.code == .appCancel || laError.code == .systemCancel
+        }
+        let nsError = error as NSError
+        if nsError.domain == LAErrorDomain {
+            let code = LAError.Code(rawValue: nsError.code)
+            return code == .userCancel || code == .userFallback || code == .appCancel || code == .systemCancel
+        }
+        return false
     }
 
     private static func wipeData(_ data: inout Data) {
