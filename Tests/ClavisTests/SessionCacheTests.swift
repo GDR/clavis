@@ -96,6 +96,80 @@ final class SessionCacheTests: ClavisBaseTestCase {
         XCTAssertEqual(cache.cachedCount, 0)
     }
 
+    func testSetAndWithBufferWipesOnOperationFailure() throws {
+        let cache = makeSessionCache()
+        cache.clearCache()
+        cache.currentTimeout = .fiveMinutes
+
+        var wiped = false
+        var raw = Data(repeating: 0x42, count: 32)
+        guard let buffer = SecureBuffer(consuming: &raw, onWipe: { wiped = true }) else {
+            XCTFail("Failed to allocate SecureBuffer")
+            return
+        }
+
+        struct CustomTestError: Error, Equatable {}
+
+        XCTAssertThrowsError(
+            try cache.setAndWithBuffer(
+                label: "fail-test",
+                buffer: buffer,
+                expectedGeneration: cache.generationSnapshot(),
+                operation: { _ in
+                    throw CustomTestError()
+                }
+            )
+        ) { error in
+            XCTAssertEqual(error as? CustomTestError, CustomTestError())
+        }
+
+        // Buffer must be wiped immediately upon error
+        XCTAssertTrue(wiped)
+        XCTAssertTrue(buffer.isWiped)
+
+        // Cache must not contain the failed entry
+        XCTAssertNil(cache.getBuffer(label: "fail-test"))
+        XCTAssertFalse(cache.isKeyUnlocked(label: "fail-test"))
+        XCTAssertEqual(cache.cachedCount, 0)
+    }
+
+    func testSetAndWithP256WipesOnOperationFailure() throws {
+        let cache = makeSessionCache()
+        cache.clearCache()
+        cache.currentTimeout = .fiveMinutes
+
+        var wiped = false
+        var raw = Data(repeating: 0x33, count: 32)
+        guard let buffer = SecureBuffer(consuming: &raw, onWipe: { wiped = true }) else {
+            XCTFail("Failed to allocate SecureBuffer")
+            return
+        }
+
+        struct CustomP256TestError: Error, Equatable {}
+
+        XCTAssertThrowsError(
+            try cache.setAndWithP256(
+                label: "fail-p256",
+                key: .software(buffer),
+                expectedGeneration: cache.generationSnapshot(),
+                operation: { _ in
+                    throw CustomP256TestError()
+                }
+            )
+        ) { error in
+            XCTAssertEqual(error as? CustomP256TestError, CustomP256TestError())
+        }
+
+        // Key must be wiped immediately upon error
+        XCTAssertTrue(wiped)
+        XCTAssertTrue(buffer.isWiped)
+
+        // Cache must not contain the failed entry
+        XCTAssertNil(cache.getP256(label: "fail-p256"))
+        XCTAssertFalse(cache.isKeyUnlocked(label: "fail-p256"))
+        XCTAssertEqual(cache.cachedCount, 0)
+    }
+
 
     func testSecureBufferAllocationAndRAMLocking() {
         let secretData = Data([0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04])

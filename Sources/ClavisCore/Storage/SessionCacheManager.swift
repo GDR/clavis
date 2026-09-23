@@ -288,8 +288,9 @@ public class SessionCacheManager {
         return result
     }
 
-    /// Atomically validates the generation, stores a seed buffer, and starts
-    /// the first operation. Lock events cannot slip between those steps.
+    /// Atomically validates the generation, executes the operation, and caches
+    /// the buffer only upon success. If the operation throws, the buffer is
+    /// immediately wiped from RAM and the key is not cached.
     func setAndWithBuffer<Result>(
         label: String,
         buffer: SecureBuffer,
@@ -305,6 +306,23 @@ public class SessionCacheManager {
             throw SessionCacheError.invalidated
         }
 
+        let result: Result
+        do {
+            guard let opResult = try buffer.withUnsafeBytes(operation) else {
+                buffer.wipe()
+                throw SessionCacheError.invalidated
+            }
+            result = opResult
+        } catch {
+            buffer.wipe()
+            throw error
+        }
+
+        guard expectedGeneration == generation else {
+            buffer.wipe()
+            throw SessionCacheError.invalidated
+        }
+
         if let old = cache.removeValue(forKey: label) {
             old.buffer.wipe()
         }
@@ -314,9 +332,6 @@ public class SessionCacheManager {
         unlockedSessions[label] = (expires, deadline)
         rescheduleCleanupTimerLocked()
 
-        guard let result = try buffer.withUnsafeBytes(operation) else {
-            throw SessionCacheError.invalidated
-        }
         return result
     }
 
@@ -476,6 +491,19 @@ public class SessionCacheManager {
             throw SessionCacheError.invalidated
         }
 
+        let result: Result
+        do {
+            result = try operation(key)
+        } catch {
+            key.wipe()
+            throw error
+        }
+
+        guard expectedGeneration == generation else {
+            key.wipe()
+            throw SessionCacheError.invalidated
+        }
+
         if let old = p256Cache.removeValue(forKey: label) {
             old.key.wipe()
         }
@@ -484,7 +512,7 @@ public class SessionCacheManager {
         p256Cache[label] = (key, purpose, expires, deadline)
         unlockedSessions[label] = (expires, deadline)
         rescheduleCleanupTimerLocked()
-        return try operation(key)
+        return result
     }
 
     @discardableResult
