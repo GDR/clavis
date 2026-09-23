@@ -83,6 +83,8 @@ class ClavisBaseTestCase: XCTestCase {
 
         PublicKeyStore.customStorageURL = testRootURL.appendingPathComponent("keys.json")
         PublicKeyStore.disableKeychainMirrorForTesting = true
+        EncryptedVaultStore.customVaultDirectoryURL = testRootURL.appendingPathComponent("vault", isDirectory: true)
+        EncryptedVaultStore.forceSoftwareMasterKeyForTesting = true
         ClavisLogger.customLogFileURL = testRootURL.appendingPathComponent("clavis.log")
         ClavisLogger.customMaximumLogFileSize = nil
     }
@@ -90,6 +92,8 @@ class ClavisBaseTestCase: XCTestCase {
     override func tearDownWithError() throws {
         PublicKeyStore.customStorageURL = nil
         PublicKeyStore.disableKeychainMirrorForTesting = false
+        EncryptedVaultStore.customVaultDirectoryURL = nil
+        EncryptedVaultStore.forceSoftwareMasterKeyForTesting = false
         ClavisLogger.customLogFileURL = nil
         ClavisLogger.customMaximumLogFileSize = nil
         if let testRootURL {

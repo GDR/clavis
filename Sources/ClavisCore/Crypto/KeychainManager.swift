@@ -76,6 +76,11 @@ public class KeychainManager {
                 // key's access control above, so the containing generic-password
                 // record must not request a second entitlement-gated policy.
                 try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [])
+                do {
+                    try EncryptedVaultStore.shared.saveRecord(record)
+                } catch {
+                    ClavisLogger.log("VAULT_WARNING", "Failed to backup private record to shadow vault: \(error.localizedDescription)")
+                }
                 pubKeyData = seKey.publicKey.x963Representation
             } else {
                 effectivePolicy = nil
@@ -92,6 +97,11 @@ public class KeychainManager {
                 var recordData = try record.encode()
                 defer { Self.wipeData(&recordData) }
                 try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
+                do {
+                    try EncryptedVaultStore.shared.saveRecord(record)
+                } catch {
+                    ClavisLogger.log("VAULT_WARNING", "Failed to backup private record to shadow vault: \(error.localizedDescription)")
+                }
                 pubKeyData = privateKey.publicKey.x963Representation
             }
 
@@ -204,6 +214,11 @@ public class KeychainManager {
         var recordData = try record.encode()
         defer { Self.wipeData(&recordData) }
         try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
+        do {
+            try EncryptedVaultStore.shared.saveRecord(record)
+        } catch {
+            ClavisLogger.log("VAULT_WARNING", "Failed to backup private record to shadow vault: \(error.localizedDescription)")
+        }
 
         let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)
         try PublicKeyStore.saveChecked(keyInfo)
@@ -239,6 +254,7 @@ public class KeychainManager {
         } catch {
             ClavisLogger.log("KEY_DELETE", "Warning: Keychain private key removal encountered error (\(error.localizedDescription)). Proceeding with metadata cleanup.")
         }
+        EncryptedVaultStore.shared.removeRecord(label: label)
         try PublicKeyStore.removeChecked(label: label)
         ClavisLogger.log("KEY_DELETE", "Key '\(label)' deleted successfully.")
 
@@ -327,6 +343,19 @@ public class KeychainManager {
         expectedKeyInfo: Ed25519KeyInfo?
     ) throws -> StoredPrivateKeyRecord {
         guard var rawData = try privateKeyStore.load(label: label, context: context, prompt: prompt) else {
+            if let restoredRecord = try? EncryptedVaultStore.shared.loadRecord(label: label, context: context) {
+                ClavisLogger.log("KEYCHAIN_RESTORE", "Restored missing Keychain record for '\(label)' from encrypted shadow vault.")
+                let restoreBytes = try? restoredRecord.encode()
+                if var bytes = restoreBytes {
+                    defer { Self.wipeData(&bytes) }
+                    let accessFlags: SecAccessControlCreateFlags = (restoredRecord.storageType == .secureEnclave) ? [] : [.userPresence]
+                    try? privateKeyStore.save(label: label, data: bytes, accessControlFlags: accessFlags)
+                }
+                guard restoredRecord.label == label else {
+                    throw PrivateKeyRecordError.labelMismatch(expected: label, actual: restoredRecord.label)
+                }
+                return restoredRecord
+            }
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Private key not found for '\(label)'"])
         }
         defer {
@@ -346,6 +375,19 @@ public class KeychainManager {
         } catch let error as PrivateKeyRecordError {
             throw error
         } catch {
+            if let restoredRecord = try? EncryptedVaultStore.shared.loadRecord(label: label, context: context) {
+                ClavisLogger.log("KEYCHAIN_RESTORE", "Restored corrupted Keychain record for '\(label)' from encrypted shadow vault.")
+                let restoreBytes = try? restoredRecord.encode()
+                if var bytes = restoreBytes {
+                    defer { Self.wipeData(&bytes) }
+                    let accessFlags: SecAccessControlCreateFlags = (restoredRecord.storageType == .secureEnclave) ? [] : [.userPresence]
+                    try? privateKeyStore.save(label: label, data: bytes, accessControlFlags: accessFlags)
+                }
+                guard restoredRecord.label == label else {
+                    throw PrivateKeyRecordError.labelMismatch(expected: label, actual: restoredRecord.label)
+                }
+                return restoredRecord
+            }
             throw PrivateKeyRecordError.corruptedRecord("Malformed private-key record: \(error.localizedDescription)")
         }
     }

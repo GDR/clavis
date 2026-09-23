@@ -708,4 +708,75 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         XCTAssertEqual(addCallCount, 0)
         XCTAssertEqual(deleteCallCount, 0)
     }
+
+    func testRestoreKeyFromEncryptedVaultWhenKeychainDeleted() throws {
+        let keyStore = InMemoryPrivateKeyStore()
+        let manager = KeychainManager(
+            authenticator: AllowingAuthenticator(),
+            privateKeyStore: keyStore,
+            sessionCache: makeSessionCache(),
+            secureBufferFactory: { SecureBuffer(consuming: &$0) },
+            agentGrantRevoker: { _ in }
+        )
+
+        let label = "shadow-restore-\(UUID().uuidString)"
+        let keyInfo = try manager.generateKey(label: label)
+        XCTAssertTrue(keyStore.contains(label: label))
+        XCTAssertTrue(EncryptedVaultStore.shared.containsRecord(label: label))
+
+        // Simulate third-party unauthenticated SecItemDelete bypassing Clavis
+        try keyStore.remove(label: label, context: nil, prompt: "")
+        XCTAssertFalse(keyStore.contains(label: label))
+
+        // Subsequent sign operation must transparently recover key from EncryptedVaultStore
+        let payload = Data("audit-message".utf8)
+        let signature = try manager.sign(label: label, data: payload, prompt: "Sign with restored key")
+        XCTAssertFalse(signature.isEmpty)
+
+        // Verify key was restored back to Keychain
+        XCTAssertTrue(keyStore.contains(label: label))
+
+        // Verify signature against public key
+        let ed25519PubKey = try Curve25519.Signing.PublicKey(rawRepresentation: keyInfo.publicKeyBlob.subdata(in: 19..<51))
+        XCTAssertTrue(ed25519PubKey.isValidSignature(signature, for: payload))
+
+        // Legitimate deletion must remove from both Keychain and EncryptedVaultStore
+        try manager.deleteKey(label: label)
+        XCTAssertFalse(keyStore.contains(label: label))
+        XCTAssertFalse(EncryptedVaultStore.shared.containsRecord(label: label))
+    }
+
+    func testRestoreKeyFromEncryptedVaultWhenKeychainCorrupted() throws {
+        let keyStore = InMemoryPrivateKeyStore()
+        let manager = KeychainManager(
+            authenticator: AllowingAuthenticator(),
+            privateKeyStore: keyStore,
+            sessionCache: makeSessionCache(),
+            secureBufferFactory: { SecureBuffer(consuming: &$0) },
+            agentGrantRevoker: { _ in }
+        )
+
+        let label = "shadow-corrupt-\(UUID().uuidString)"
+        let keyInfo = try manager.generateKey(label: label)
+        XCTAssertTrue(keyStore.contains(label: label))
+
+        // Overwrite Keychain with garbage data
+        try keyStore.save(label: label, data: Data("tampered-garbage-data".utf8))
+
+        // Subsequent sign operation must recover key from EncryptedVaultStore
+        let payload = Data("corrupted-key-test".utf8)
+        let signature = try manager.sign(label: label, data: payload, prompt: "Sign with restored key")
+        XCTAssertFalse(signature.isEmpty)
+
+        // Verify key was restored in Keychain
+        let restoredData = try keyStore.load(label: label, context: LAContext(), prompt: "")
+        XCTAssertNotNil(restoredData)
+        let record = try StoredPrivateKeyRecord.decode(from: restoredData!)
+        XCTAssertEqual(record.label, label)
+
+        let ed25519PubKey = try Curve25519.Signing.PublicKey(rawRepresentation: keyInfo.publicKeyBlob.subdata(in: 19..<51))
+        XCTAssertTrue(ed25519PubKey.isValidSignature(signature, for: payload))
+
+        try manager.deleteKey(label: label)
+    }
 }
