@@ -206,12 +206,9 @@ struct MenuBarView: View {
         .padding(14)
         .frame(width: 320)
         .background(
-            VisualEffectView(material: .popover, blendingMode: .behindWindow)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+            WindowAccessor { window in
+                WindowManager.shared.menuBarWindow = window
+            }
         )
         .onAppear {
             appState.refresh()
@@ -219,6 +216,7 @@ struct MenuBarView: View {
     }
 
     private func confirmQuit() {
+        WindowManager.shared.dismissMenuBarExtra()
         let alert = NSAlert()
         alert.messageText = "Quit Clavis?"
         if appState.isSocketActive {
@@ -354,5 +352,32 @@ private struct MenuBarActionItem: View {
         .buttonStyle(.plain)
         .focusable(false)
         .onHover { isHovered = $0 }
+    }
+}
+
+private struct WindowAccessor: NSViewRepresentable {
+    let onWindow: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = WindowObserverView()
+        view.onWindow = onWindow
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if let window = nsView.window {
+            onWindow(window)
+        }
+    }
+
+    private final class WindowObserverView: NSView {
+        var onWindow: ((NSWindow) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window {
+                onWindow?(window)
+            }
+        }
     }
 }

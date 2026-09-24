@@ -4,10 +4,35 @@ import AppKit
 @MainActor
 public class WindowManager: NSObject, NSWindowDelegate {
     public static let shared = WindowManager()
-    private var keyManagerWindow: NSWindow?
-    private var settingsWindow: NSWindow?
+    internal var keyManagerWindow: NSWindow?
+    internal var settingsWindow: NSWindow?
+    public weak var menuBarWindow: NSWindow?
+
+    public func dismissMenuBarExtra() {
+        for window in NSApp.windows {
+            if let button = findStatusBarButton(in: window.contentView), button.state == .on {
+                button.performClick(nil)
+                return
+            }
+        }
+        menuBarWindow?.orderOut(nil)
+    }
+
+    private func findStatusBarButton(in view: NSView?) -> NSStatusBarButton? {
+        guard let view else { return nil }
+        if let button = view as? NSStatusBarButton {
+            return button
+        }
+        for subview in view.subviews {
+            if let found = findStatusBarButton(in: subview) {
+                return found
+            }
+        }
+        return nil
+    }
 
     public func openKeyManager(sheet: KeyManagerSheet? = nil) {
+        dismissMenuBarExtra()
         NSApp.setActivationPolicy(.regular)
         AppState.shared.activeSheet = sheet
 
@@ -50,6 +75,7 @@ public class WindowManager: NSObject, NSWindowDelegate {
     }
 
     public func openSettings() {
+        dismissMenuBarExtra()
         NSApp.setActivationPolicy(.regular)
 
         if let window = settingsWindow {
