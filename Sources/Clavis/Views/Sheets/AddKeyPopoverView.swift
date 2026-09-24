@@ -85,6 +85,7 @@ private struct AddKeyPopoverRow: View {
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
+        .disableFocusEffect()
         .onHover { isHovered = $0 }
     }
 }
