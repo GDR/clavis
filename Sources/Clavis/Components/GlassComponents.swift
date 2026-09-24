@@ -18,7 +18,27 @@ public struct GlassCardModifier: ViewModifier {
     }
 }
 
+@available(macOS 26.0, *)
 public struct LiquidGlassButtonGroup<Content: View>: View {
+    public var spacing: CGFloat
+    @ViewBuilder let content: () -> Content
+
+    public init(spacing: CGFloat = 6, @ViewBuilder content: @escaping () -> Content) {
+        self.spacing = spacing
+        self.content = content
+    }
+
+    public var body: some View {
+        GlassEffectContainer(spacing: spacing) {
+            HStack(spacing: spacing) {
+                content()
+            }
+        }
+    }
+}
+
+@available(macOS 26.0, *)
+public struct LiquidGlassSegmentedBar<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     public init(@ViewBuilder content: @escaping () -> Content) {
@@ -26,72 +46,36 @@ public struct LiquidGlassButtonGroup<Content: View>: View {
     }
 
     public var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 0) {
             content()
         }
-        .padding(4)
-        .background(FirstMouseView())
-        .background(
-            Capsule()
-                .fill(Color.white.opacity(0.06))
-                .background(.ultraThinMaterial, in: Capsule())
-        )
-        .overlay(
-            Capsule()
-                .stroke(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.18),
-                            Color.white.opacity(0.06)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 0.8
-                )
-        )
-        .shadow(color: Color.black.opacity(0.25), radius: 4, x: 0, y: 2)
+        .frame(height: 26)
+        .glassEffect(.regular.interactive(), in: .capsule)
     }
 }
 
-public struct LiquidGlassCircleModifier: ViewModifier {
-    public var size: CGFloat = 28
+public struct MacOSGlassSegmentDivider: View {
+    public init() {}
+
+    public var body: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.16))
+            .frame(width: 1, height: 14)
+    }
+}
+
+public struct LiquidGlassSegmentModifier: ViewModifier {
+    public var width: CGFloat = 30
     @State private var isHovered = false
 
     public func body(content: Content) -> some View {
         content
-            .frame(width: size, height: size)
-            .contentShape(Circle())
+            .frame(width: width, height: 26)
             .background(
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(isHovered ? 0.22 : 0.14),
-                                Color.white.opacity(isHovered ? 0.10 : 0.04)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .background(.ultraThinMaterial, in: Circle())
+                Rectangle()
+                    .fill(isHovered ? Color.white.opacity(0.12) : Color.clear)
             )
-            .overlay(
-                Circle()
-                    .stroke(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(isHovered ? 0.35 : 0.22),
-                                Color.white.opacity(isHovered ? 0.12 : 0.06)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 0.8
-                    )
-            )
-            .contentShape(Circle())
-            .shadow(color: Color.black.opacity(0.2), radius: 3, x: 0, y: 1)
+            .contentShape(Rectangle())
             .onHover { isHovered = $0 }
     }
 }
@@ -101,12 +85,25 @@ public extension View {
         self.modifier(GlassCardModifier(cornerRadius: cornerRadius, strokeColor: strokeColor))
     }
 
+    func liquidGlassSegment(width: CGFloat = 30) -> some View {
+        self.modifier(LiquidGlassSegmentModifier(width: width))
+    }
+
     func liquidGlassCircle(size: CGFloat = 28) -> some View {
-        self.modifier(LiquidGlassCircleModifier(size: size))
+        self.modifier(LiquidGlassSegmentModifier(width: size))
     }
 
     func liquidGlassRowSelection(isSelected: Bool, isHovered: Bool = false, cornerRadius: CGFloat = 10) -> some View {
         self.modifier(LiquidGlassRowSelectionModifier(isSelected: isSelected, isHovered: isHovered, cornerRadius: cornerRadius))
+    }
+
+    @ViewBuilder
+    func disableFocusEffect() -> some View {
+        if #available(macOS 14.0, *) {
+            self.focusable(false).focusEffectDisabled()
+        } else {
+            self.focusable(false)
+        }
     }
 }
 

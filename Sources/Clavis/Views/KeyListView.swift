@@ -69,7 +69,21 @@ struct KeyListView: View {
                                 .padding(.vertical, 6)
                             }
                         }
+
+                        // Bottom Toolbar: Unified 2x Liquid Glass Capsule placed bottom-right
+                        HStack(spacing: 8) {
+                            Spacer()
+
+                            UnifiedGlassToolbarPill(
+                                appState: appState,
+                                showingAddPopover: $showingAddPopover,
+                                statusMessage: $statusMessage
+                            )
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 16)
                     }
+                    .frame(maxHeight: .infinity)
                 }
                 .frame(width: 318)
                 .frame(maxHeight: .infinity)
@@ -87,102 +101,30 @@ struct KeyListView: View {
                     DesignTokens.inspectorBackground
                         .ignoresSafeArea()
 
-                    VStack(spacing: 0) {
-                        // Top Toolbar matching Figma node 39:185 & 39:191
-                        HStack {
-                            Spacer()
-
-                            // Figma Liquid Glass Button Group
-                            LiquidGlassButtonGroup {
-                                // Add Key Button (+)
-                                Button(action: {
-                                    showingAddPopover.toggle()
-                                }) {
-                                    Image(systemName: "plus")
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundColor(Color.white.opacity(0.85))
-                                        .frame(width: 28, height: 28)
-                                        .contentShape(Circle())
-                                }
-                                .buttonStyle(.plain)
-                                .liquidGlassCircle(size: 28)
-                                .focusable(false)
-                                .help("Add or Import Key")
-                                .popover(isPresented: $showingAddPopover, arrowEdge: .bottom) {
-                                    AddKeyPopoverView(
-                                        onNewKey: {
-                                            showingAddPopover = false
-                                            appState.activeSheet = .create
-                                        },
-                                        onImportKey: {
-                                            showingAddPopover = false
-                                            appState.activeSheet = .importKey
-                                        }
-                                    )
-                                }
-
-                                // Lock All Button
-                                Button(action: {
-                                    appState.lockNow()
-                                    statusMessage = "All cached keys locked."
-                                }) {
-                                    Image(systemName: "lock.fill")
-                                        .font(.system(size: 12, weight: .medium))
-                                        .foregroundColor(appState.cachedKeysCount > 0 ? DesignTokens.accentGreen : Color.white.opacity(0.55))
-                                        .frame(width: 28, height: 28)
-                                        .contentShape(Circle())
-                                }
-                                .buttonStyle(.plain)
-                                .liquidGlassCircle(size: 28)
-                                .focusable(false)
-                                .disabled(appState.cachedKeysCount == 0)
-                                .help(appState.cachedKeysCount > 0 ? "Lock All Keys" : "No Unlocked Keys")
-
-                                // Settings Button
-                                Button(action: {
-                                    WindowManager.shared.openSettings()
-                                }) {
-                                    Image(systemName: "gearshape")
-                                        .font(.system(size: 12, weight: .medium))
-                                        .foregroundColor(Color.white.opacity(0.85))
-                                        .frame(width: 28, height: 28)
-                                        .contentShape(Circle())
-                                }
-                                .buttonStyle(.plain)
-                                .liquidGlassCircle(size: 28)
-                                .focusable(false)
-                                .help("Settings (Auto Start, Timeout, Nix)")
+                    // Inspector Details or Empty State
+                    if let key = selectedKey {
+                        KeyDetailInspectorView(
+                            key: key,
+                            appState: appState,
+                            onDelete: {
+                                deleteKey(label: key.label)
                             }
-                            .padding(.trailing, 20)
-                            .padding(.top, 10)
+                        )
+                    } else {
+                        VStack(spacing: 12) {
+                            Image(systemName: "key.fill")
+                                .font(.system(size: 48))
+                                .foregroundColor(DesignTokens.textSecondary.opacity(0.4))
+                            Text("No Key Selected")
+                                .font(.title3)
+                                .foregroundColor(DesignTokens.textSecondary)
+                            Text("Select an identity from the sidebar to inspect its public credentials and security attributes.")
+                                .font(.caption)
+                                .foregroundColor(DesignTokens.textTertiary)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 300)
                         }
-                        .frame(height: 48)
-
-                        // Inspector Details or Empty State
-                        if let key = selectedKey {
-                            KeyDetailInspectorView(
-                                key: key,
-                                appState: appState,
-                                onDelete: {
-                                    deleteKey(label: key.label)
-                                }
-                            )
-                        } else {
-                            VStack(spacing: 12) {
-                                Image(systemName: "key.fill")
-                                    .font(.system(size: 48))
-                                    .foregroundColor(DesignTokens.textSecondary.opacity(0.4))
-                                Text("No Key Selected")
-                                    .font(.title3)
-                                    .foregroundColor(DesignTokens.textSecondary)
-                                Text("Select an identity from the sidebar to inspect its public credentials and security attributes.")
-                                    .font(.caption)
-                                    .foregroundColor(DesignTokens.textTertiary)
-                                    .multilineTextAlignment(.center)
-                                    .frame(maxWidth: 300)
-                            }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -305,3 +247,125 @@ private struct KeySidebarRowView: View {
         }
     }
 }
+
+// MARK: - Unified 2x Liquid Glass Toolbar Capsule
+
+private struct UnifiedGlassToolbarPill: View {
+    @ObservedObject var appState: AppState
+    @Binding var showingAddPopover: Bool
+    @Binding var statusMessage: String?
+
+    var body: some View {
+        Group {
+            if #available(macOS 26.0, *) {
+                pillContent
+                    .glassEffect(.regular.interactive(), in: .capsule)
+            } else {
+                pillContent
+                    .background(
+                        Capsule()
+                            .fill(Color.white.opacity(0.08))
+                            .background(.ultraThinMaterial, in: Capsule())
+                    )
+            }
+        }
+        .background(FirstMouseView())
+        .overlay(
+            Capsule()
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.32),
+                            Color.white.opacity(0.08)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.8
+                )
+        )
+        .shadow(color: Color.black.opacity(0.20), radius: 5, x: 0, y: 2)
+    }
+
+    private var pillContent: some View {
+        HStack(spacing: 2) {
+            // Add Key (+)
+            ToolbarCapsuleButton(
+                icon: "plus",
+                iconSize: 13,
+                iconColor: Color.white.opacity(0.90),
+                isActive: showingAddPopover,
+                help: "Add or Import Key",
+                action: { showingAddPopover.toggle() }
+            )
+            .popover(isPresented: $showingAddPopover, arrowEdge: .top) {
+                AddKeyPopoverView(
+                    onNewKey: {
+                        showingAddPopover = false
+                        appState.activeSheet = .create
+                    },
+                    onImportKey: {
+                        showingAddPopover = false
+                        appState.activeSheet = .importKey
+                    }
+                )
+            }
+
+            // Lock All
+            ToolbarCapsuleButton(
+                icon: "lock.fill",
+                iconSize: 12,
+                iconColor: appState.cachedKeysCount > 0 ? DesignTokens.accentGreen : Color.white.opacity(0.40),
+                isDisabled: appState.cachedKeysCount == 0,
+                help: appState.cachedKeysCount > 0 ? "Lock All Keys" : "No Unlocked Keys",
+                action: {
+                    appState.lockNow()
+                    statusMessage = "All cached keys locked."
+                }
+            )
+
+            // Settings
+            ToolbarCapsuleButton(
+                icon: "gearshape",
+                iconSize: 12,
+                iconColor: Color.white.opacity(0.90),
+                help: "Settings (Auto Start, Timeout, Nix)",
+                action: { WindowManager.shared.openSettings() }
+            )
+        }
+        .padding(.horizontal, 4)
+        .frame(height: 32)
+    }
+}
+
+private struct ToolbarCapsuleButton: View {
+    let icon: String
+    var iconSize: CGFloat = 12
+    var iconColor: Color = Color.white.opacity(0.90)
+    var isActive: Bool = false
+    var isDisabled: Bool = false
+    let help: String
+    let action: () -> Void
+
+    @State private var isHovered: Bool = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: iconSize, weight: .medium))
+                .foregroundColor(iconColor)
+                .frame(width: 26, height: 26)
+                .background(
+                    Circle()
+                        .fill(isActive ? Color.white.opacity(0.20) : (isHovered && !isDisabled ? Color.white.opacity(0.14) : Color.clear))
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disableFocusEffect()
+        .disabled(isDisabled)
+        .help(help)
+        .onHover { isHovered = $0 }
+    }
+}
+
