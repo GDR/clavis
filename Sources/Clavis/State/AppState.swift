@@ -61,8 +61,8 @@ public class AppState: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
+            guard let self else { return }
             Task { @MainActor in
-                guard let self = self else { return }
                 self.updateGitGraceState()
             }
         }
