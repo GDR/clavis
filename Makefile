@@ -8,10 +8,13 @@ BINARIES := $(BUILD_DIR)/Clavis $(BUILD_DIR)/clavis-agent $(BUILD_DIR)/clavis-cl
 SDKROOT ?= $(shell env -u SDKROOT /usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null)
 export SDKROOT
 
+CLAVIS_KEYCHAIN ?= $(KEYCHAIN_PATH)
+
 CLAVIS_SIGN_IDENTITY ?= $(shell \
-	if /usr/bin/security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Development"; then \
+	TARGET_KEYCHAIN="$(if $(CLAVIS_KEYCHAIN),$(CLAVIS_KEYCHAIN),)"; \
+	if /usr/bin/security find-identity -v -p codesigning $$TARGET_KEYCHAIN 2>/dev/null | grep -q "Apple Development"; then \
 		echo "Apple Development"; \
-	elif /usr/bin/security find-identity -v -p codesigning 2>/dev/null | grep -q "Clavis Local Development"; then \
+	elif /usr/bin/security find-identity -v -p codesigning $$TARGET_KEYCHAIN 2>/dev/null | grep -q "Clavis Local Development"; then \
 		echo "Clavis Local Development"; \
 	elif [ "$${CLAVIS_ALLOW_ADHOC_SIGNING:-0}" = "1" ]; then \
 		echo "-"; \
@@ -44,8 +47,10 @@ sign:
 			exit 1; \
 		fi; \
 		echo "  Signing $$binary..."; \
+		KEYCHAIN_ARG="$(if $(CLAVIS_KEYCHAIN),--keychain $(CLAVIS_KEYCHAIN),)"; \
 		/usr/bin/codesign \
 			--force \
+			$$KEYCHAIN_ARG \
 			--sign "$(CLAVIS_SIGN_IDENTITY)" \
 			--identifier "Clavis" \
 			--options runtime \
