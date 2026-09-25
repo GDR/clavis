@@ -1,6 +1,11 @@
 import Foundation
 import ClavisCore
 
+guard PlatformSupport.hasSecureEnclave else {
+    FileHandle.standardError.write(Data((PlatformSupport.unsupportedMessage + "\n").utf8))
+    exit(1)
+}
+
 func printOut(_ message: String) {
     if let data = (message + "\n").data(using: .utf8) {
         FileHandle.standardOutput.write(data)

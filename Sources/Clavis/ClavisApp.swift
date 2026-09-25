@@ -42,6 +42,14 @@ struct ClavisApp: App {
     @StateObject private var appState = AppState.shared
 
     init() {
+        guard PlatformSupport.hasSecureEnclave else {
+            let alert = NSAlert()
+            alert.messageText = "Clavis cannot run on this Mac"
+            alert.informativeText = PlatformSupport.unsupportedMessage
+            alert.alertStyle = .critical
+            alert.runModal()
+            exit(1)
+        }
         guard SingleInstanceLock.gui.acquire() else {
             ClavisLogger.log("APP_START", "Another instance of Clavis GUI is already running. Exiting duplicate process.")
             exit(0)

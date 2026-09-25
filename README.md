@@ -2,6 +2,11 @@
 
 **Clavis** is a native macOS Swift / SwiftUI application that securely manages Ed25519 private keys in macOS Keychain with Touch ID protection, acts as an SSH Agent daemon (`SSH_AUTH_SOCK`), signs Git commits (`gpg.format = ssh`), interfaces with `sops-nix` via `age-plugin-clavis`, and provides a Menu Bar status item + Key Management Window UI.
 
+Clavis requires a Mac with Secure Enclave support (Apple silicon, an Intel Mac
+with a T2 chip, or a 2016–2017 MacBook Pro with Touch Bar and T1). It exits on
+unsupported Macs. Ed25519 keys remain software keys in Keychain; Secure Enclave
+protects the recovery vault master key and can directly hold P-256 signing keys.
+
 ---
 
 ## ✨ Features

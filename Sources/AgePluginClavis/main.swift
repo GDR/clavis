@@ -76,6 +76,10 @@ public struct AgePluginClavis {
     static let maximumInteractiveUnwrapAttempts = 8
 
     public static func main() {
+        guard PlatformSupport.hasSecureEnclave else {
+            FileHandle.standardError.write(Data((PlatformSupport.unsupportedMessage + "\n").utf8))
+            exit(1)
+        }
         let args = CommandLine.arguments
 
         if args.contains("--age-plugin=recipient-V1") {

@@ -1,6 +1,11 @@
 import Foundation
 import ClavisCore
 
+guard PlatformSupport.hasSecureEnclave else {
+    FileHandle.standardError.write(Data((PlatformSupport.unsupportedMessage + "\n").utf8))
+    exit(1)
+}
+
 // POSIX handlers only suppress default delivery. Cleanup runs later on the
 // main dispatch queue, where locking, Foundation, and logging are safe.
 func setupSignalHandlers() -> [DispatchSourceSignal] {
