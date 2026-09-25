@@ -779,4 +779,30 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
         try manager.deleteKey(label: label)
     }
+
+    func testLegacySoftwareVaultIsPreservedAndRejectedOutsideTestMode() throws {
+        guard PlatformSupport.hasSecureEnclave else {
+            throw XCTSkip("Secure Enclave is unavailable")
+        }
+
+        _ = try EncryptedVaultStore.shared.ensureMasterKey()
+        let masterURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.key")
+        let originalMaster = try Data(contentsOf: masterURL)
+        XCTAssertEqual(originalMaster.first, 0x02)
+
+        EncryptedVaultStore.forceSoftwareMasterKeyForTesting = false
+        defer { EncryptedVaultStore.forceSoftwareMasterKeyForTesting = true }
+
+        XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKey()) { error in
+            guard case EncryptedVaultStore.VaultError.softwareMasterKeyUnsupported = error else {
+                return XCTFail("Unexpected vault error: \(error)")
+            }
+        }
+        XCTAssertEqual(try Data(contentsOf: masterURL), originalMaster)
+
+        let manager = makeKeyManager()
+        let label = "blocked-legacy-\(UUID().uuidString)"
+        XCTAssertThrowsError(try manager.generateKey(label: label))
+        XCTAssertNil(try manager.fetchKeyInfo(label: label))
+    }
 }

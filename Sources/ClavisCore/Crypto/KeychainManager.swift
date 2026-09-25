@@ -47,6 +47,7 @@ public class KeychainManager {
         if try fetchKeyInfo(label: label) != nil || privateKeyStore.contains(label: label) {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key with label '\(label)' already exists. Delete it first before generating a new key with this label."])
         }
+        _ = try EncryptedVaultStore.shared.ensureMasterKey()
 
         if algorithm == "ECDSA P-256" {
             let pubKeyData: Data
@@ -167,6 +168,7 @@ public class KeychainManager {
         guard seedData.count == 32 else {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid Ed25519 seed length (must be 32 bytes)"])
         }
+        _ = try EncryptedVaultStore.shared.ensureMasterKey()
         let privateKey = try seedData.withUnsafeBytes { raw in
             try Curve25519.Signing.PrivateKey(rawRepresentation: raw)
         }

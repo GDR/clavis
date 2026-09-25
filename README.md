@@ -34,6 +34,12 @@ no development certificate is available. A specific certificate can be selected
 with `CLAVIS_SIGN_IDENTITY`.
 
 Private records use the Login Keychain with `SecAccessControl` authentication.
+The recovery vault never creates or opens a file-backed software master key in
+normal builds. If an older `master.key` uses that format, Clavis preserves the
+vault files and refuses new key creation or import until the vault is replaced
+with a Secure Enclave backed vault. Automatic migration is not yet provided.
+Existing Keychain records remain available for signing. Do not delete the old
+vault files as a migration shortcut: they may be the only recovery copy of a key.
 The build script gives every certificate-signed Clavis executable the original
 GUI Code Signing Identifier (`Clavis`), so existing GUI-created records and all
 shipped clients have the same designated requirement without restricted

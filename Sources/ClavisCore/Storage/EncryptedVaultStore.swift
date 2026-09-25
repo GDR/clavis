@@ -12,9 +12,34 @@ import Security
 public final class EncryptedVaultStore: @unchecked Sendable {
     public static let shared = EncryptedVaultStore()
     public static var customVaultDirectoryURL: URL? = nil
-    public static var forceSoftwareMasterKeyForTesting: Bool = false
+    static var forceSoftwareMasterKeyForTesting: Bool = false
+
+    private static var allowSoftwareMasterKeyForTesting: Bool {
+        #if DEBUG
+        return forceSoftwareMasterKeyForTesting
+        #else
+        return false
+        #endif
+    }
 
     private let lock = NSLock()
+
+    public enum VaultError: LocalizedError {
+        case secureEnclaveRequired
+        case softwareMasterKeyUnsupported
+        case incompleteMasterKey
+
+        public var errorDescription: String? {
+            switch self {
+            case .secureEnclaveRequired:
+                return "Secure Enclave is required to protect the Clavis recovery vault."
+            case .softwareMasterKeyUnsupported:
+                return "This vault uses an old software master key. Its files were preserved; migrate the vault before creating more keys."
+            case .incompleteMasterKey:
+                return "The recovery vault master key is incomplete or invalid. Its files were preserved."
+            }
+        }
+    }
 
     public var vaultDirectoryURL: URL {
         if let custom = Self.customVaultDirectoryURL { return custom }
@@ -37,17 +62,35 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     }
 
     public func ensureMasterKey() throws -> P256.KeyAgreement.PublicKey {
-        try? FileManager.default.createDirectory(at: vaultDirectoryURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        guard PlatformSupport.hasSecureEnclave || Self.allowSoftwareMasterKeyForTesting else {
+            throw VaultError.secureEnclaveRequired
+        }
+        try FileManager.default.createDirectory(at: vaultDirectoryURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
 
         let pubURL = vaultDirectoryURL.appendingPathComponent("master.pub")
         let keyURL = vaultDirectoryURL.appendingPathComponent("master.key")
 
-        if let pubData = try? Data(contentsOf: pubURL),
-           let pubKey = try? P256.KeyAgreement.PublicKey(rawRepresentation: pubData) {
+        let hasPublicKey = FileManager.default.fileExists(atPath: pubURL.path)
+        let hasPrivateKey = FileManager.default.fileExists(atPath: keyURL.path)
+        guard hasPublicKey == hasPrivateKey else {
+            throw VaultError.incompleteMasterKey
+        }
+        if hasPublicKey {
+            let privateData = try Data(contentsOf: keyURL)
+            guard let keyType = privateData.first else {
+                throw VaultError.incompleteMasterKey
+            }
+            guard keyType == 0x01 || (keyType == 0x02 && Self.allowSoftwareMasterKeyForTesting) else {
+                throw keyType == 0x02 ? VaultError.softwareMasterKeyUnsupported : VaultError.incompleteMasterKey
+            }
+            let pubData = try Data(contentsOf: pubURL)
+            guard let pubKey = try? P256.KeyAgreement.PublicKey(rawRepresentation: pubData) else {
+                throw VaultError.incompleteMasterKey
+            }
             return pubKey
         }
 
-        let useSE = SecureEnclave.isAvailable && !Self.forceSoftwareMasterKeyForTesting
+        let useSE = !Self.allowSoftwareMasterKeyForTesting
 
         if useSE {
             let accessControl = try PrivateKeyAccessControl.make(flags: [.privateKeyUsage, .userPresence])
@@ -120,6 +163,9 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     }
 
     public func loadRecord(label: String, context: LAContext? = nil) throws -> StoredPrivateKeyRecord? {
+        guard PlatformSupport.hasSecureEnclave || Self.allowSoftwareMasterKeyForTesting else {
+            throw VaultError.secureEnclaveRequired
+        }
         lock.lock()
         defer { lock.unlock() }
 
@@ -166,6 +212,9 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             )
             sharedSecret = try seKey.sharedSecretFromKeyAgreement(with: ephemeralPubKey)
         } else if keyType == 0x02 {
+            guard Self.allowSoftwareMasterKeyForTesting else {
+                throw VaultError.softwareMasterKeyUnsupported
+            }
             let swKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: Data(keyData))
             sharedSecret = try swKey.sharedSecretFromKeyAgreement(with: ephemeralPubKey)
         } else {
