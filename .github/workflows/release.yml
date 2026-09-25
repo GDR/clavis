@@ -25,9 +25,11 @@ jobs:
 
       - name: Resolve Release Tag
         id: release_tag
+        env:
+          INPUT_TAG_NAME: ${{ inputs.tag_name }}
         run: |
-          if [ -n "${{ inputs.tag_name }}" ]; then
-            echo "tag=${{ inputs.tag_name }}" >> "$GITHUB_OUTPUT"
+          if [ -n "$INPUT_TAG_NAME" ]; then
+            echo "tag=$INPUT_TAG_NAME" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
             echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           else
@@ -65,11 +67,19 @@ jobs:
           security find-identity -p codesigning "$KEYCHAIN_PATH"
 
       - name: Build, Sign, and Package
+        env:
+          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
         run: |
           security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
           security default-keychain -s "$KEYCHAIN_PATH"
           security list-keychains -s "$KEYCHAIN_PATH" $(security list-keychains | tr -d '"') /Library/Keychains/System.keychain
-          make package CLAVIS_SIGN_IDENTITY="Apple Development" CLAVIS_KEYCHAIN="$KEYCHAIN_PATH"
+          RELEASE_VERSION="${RELEASE_TAG#v}"
+          RELEASE_VERSION="${RELEASE_VERSION%%-*}"
+          make package \
+            CLAVIS_VERSION="$RELEASE_VERSION" \
+            CLAVIS_BUILD_VERSION="$GITHUB_RUN_NUMBER" \
+            CLAVIS_SIGN_IDENTITY="Apple Development" \
+            CLAVIS_KEYCHAIN="$KEYCHAIN_PATH"
 
       - name: Create Draft Release
         uses: softprops/action-gh-release@v2
@@ -78,5 +88,7 @@ jobs:
           draft: true
           generate_release_notes: true
           files: |
+            clavis-macos-arm64.dmg
+            clavis-macos-arm64.dmg.sha256
             clavis-macos-arm64.tar.gz
             clavis-macos-arm64.tar.gz.sha256
