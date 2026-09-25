@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag (e.g. v0.1.0). Leave empty if pushing to a tagged commit.'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Release Draft
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve Release Tag
+        id: release_tag
+        run: |
+          if [ -n "${{ inputs.tag_name }}" ]; then
+            echo "tag=${{ inputs.tag_name }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v0.1.0-draft-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Apple Certificate
+        env:
+          CERT_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          CERT_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PWD: ${{ secrets.MACOS_KEYCHAIN_PWD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+
+          echo "$CERT_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" -P "$CERT_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+      - name: Build and Sign
+        run: |
+          CLAVIS_SIGN_IDENTITY="Apple Development" ./build.sh
+
+      - name: Package Artifacts
+        run: |
+          tar -czf clavis-macos-arm64.tar.gz -C .build/release Clavis clavis-agent clavis-cli age-plugin-clavis
+          shasum -a 256 clavis-macos-arm64.tar.gz > clavis-macos-arm64.tar.gz.sha256
+
+      - name: Create Draft Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_tag.outputs.tag }}
+          draft: true
+          generate_release_notes: true
+          files: |
+            clavis-macos-arm64.tar.gz
+            clavis-macos-arm64.tar.gz.sha256
