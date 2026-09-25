@@ -26,6 +26,7 @@ build:
 		echo "❌ Active Xcode returned an invalid macOS SDK path: $$SDKROOT" >&2; \
 		exit 1; \
 	fi
+	@mkdir -p .build && touch .build/.metadata_never_index
 	@echo "🔨 Building Clavis (GUI), clavis-agent, clavis-cli, and age-plugin-clavis ($(CONFIG))..."
 	@echo "  Using macOS SDK: $$SDKROOT"
 	swift build -c $(CONFIG)
@@ -84,6 +85,7 @@ package: all
 	@echo "✅ Created clavis-macos-arm64.tar.gz and checksum."
 
 test:
+	@mkdir -p .build && touch .build/.metadata_never_index
 	swift test
 
 clean:
