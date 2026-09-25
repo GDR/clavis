@@ -50,14 +50,9 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
 
-      - name: Build and Sign
+      - name: Build, Sign, and Package
         run: |
-          CLAVIS_SIGN_IDENTITY="Apple Development" ./build.sh
-
-      - name: Package Artifacts
-        run: |
-          tar -czf clavis-macos-arm64.tar.gz -C .build/release Clavis clavis-agent clavis-cli age-plugin-clavis
-          shasum -a 256 clavis-macos-arm64.tar.gz > clavis-macos-arm64.tar.gz.sha256
+          make package CLAVIS_SIGN_IDENTITY="Apple Development"
 
       - name: Create Draft Release
         uses: softprops/action-gh-release@v2
