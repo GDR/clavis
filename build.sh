@@ -82,9 +82,11 @@ for binary in "${BINARIES[@]}"; do
             echo "❌ Expected certificate signing, but $binary has an ad-hoc signature." >&2
             exit 1
         fi
-        if ! /usr/bin/grep -Fq "TeamIdentifier=P7P693LH69" <<<"$SIGNING_DETAILS"; then
-            echo "❌ $binary is not signed by the team required by its Keychain access group." >&2
-            exit 1
+        if [[ -n "${CLAVIS_EXPECTED_TEAM_ID:-}" ]]; then
+            if ! /usr/bin/grep -Fq "TeamIdentifier=$CLAVIS_EXPECTED_TEAM_ID" <<<"$SIGNING_DETAILS"; then
+                echo "❌ $binary is not signed by expected TeamIdentifier '$CLAVIS_EXPECTED_TEAM_ID'." >&2
+                exit 1
+            fi
         fi
     fi
 done
