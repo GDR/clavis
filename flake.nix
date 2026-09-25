@@ -18,107 +18,41 @@
       in
       rec {
         packages = {
-          clavis = if isDarwin then pkgs.stdenv.mkDerivation {
+          clavis = if pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isAarch64 then pkgs.stdenv.mkDerivation rec {
             pname = "clavis";
-            version = "0.1.0";
-            src = ./.;
+            version = "0.1.0-draft-7fc8435";
+
+            src = pkgs.fetchurl {
+              url = "https://github.com/GDR/clavis/releases/download/v${version}/clavis-macos-arm64.tar.gz";
+              hash = "sha256-KFhmWYyd1d6jLV5IZ42+TCGS6/W768lohtybucEwRLs=";
+            };
+
+            sourceRoot = ".";
 
             dontConfigure = true;
+            dontBuild = true;
             dontFixup = true;
-
-            buildPhase = ''
-              export HOME=$TMPDIR
-              export DEVELOPER_DIR="${builtins.getEnv "APPLE_XCODE_DEVELOPER_DIR"}"
-
-              if [ -z "$DEVELOPER_DIR" ]; then
-                if [ -d "/Applications/Xcode.app/Contents/Developer" ]; then
-                  export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
-                elif [ -d "/Applications/Xcode-beta.app/Contents/Developer" ]; then
-                  export DEVELOPER_DIR="/Applications/Xcode-beta.app/Contents/Developer"
-                elif [ -d "/Applications/Xcode-27.app/Contents/Developer" ]; then
-                  export DEVELOPER_DIR="/Applications/Xcode-27.app/Contents/Developer"
-                elif [ -d "/Applications/Xcode-26.app/Contents/Developer" ]; then
-                  export DEVELOPER_DIR="/Applications/Xcode-26.app/Contents/Developer"
-                fi
-              fi
-
-              if [ -n "$DEVELOPER_DIR" ] && [ -x /usr/bin/xcrun ]; then
-                export SDKROOT="$(DEVELOPER_DIR="$DEVELOPER_DIR" env -u SDKROOT /usr/bin/xcrun --sdk macosx --show-sdk-path)"
-                export PATH="$DEVELOPER_DIR/usr/bin:/usr/bin:$PATH"
-              elif [ -x /usr/bin/xcrun ]; then
-                export SDKROOT="$(env -u SDKROOT /usr/bin/xcrun --sdk macosx --show-sdk-path)"
-              elif [ -d /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk ]; then
-                export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
-              fi
-
-              /usr/bin/xcrun swift build -c release --disable-sandbox
-            '';
 
             installPhase = ''
               mkdir -p $out/bin
-              cp .build/release/Clavis $out/bin/clavis
-              cp .build/release/clavis-agent $out/bin/clavis-agent
-              cp .build/release/clavis-cli $out/bin/clavis-cli
-              cp .build/release/age-plugin-clavis $out/bin/age-plugin-clavis
+              cp Clavis $out/bin/clavis
+              cp clavis-agent $out/bin/clavis-agent
+              cp clavis-cli $out/bin/clavis-cli
+              cp age-plugin-clavis $out/bin/age-plugin-clavis
+              cp -R Clavis_ClavisCore.bundle $out/bin/Clavis_ClavisCore.bundle
 
-              # macOS Application Bundle for nix-darwin / home-manager
-              mkdir -p $out/Applications/Clavis.app/Contents/MacOS
-              mkdir -p $out/Applications/Clavis.app/Contents/Helpers
-              mkdir -p $out/Applications/Clavis.app/Contents/Resources
-              cp .build/release/Clavis $out/Applications/Clavis.app/Contents/MacOS/Clavis
-              cp .build/release/clavis-agent $out/Applications/Clavis.app/Contents/Helpers/clavis-agent
-
-              cat << 'EOF' > $out/Applications/Clavis.app/Contents/Info.plist
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleExecutable</key>
-    <string>Clavis</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.clavis.app</string>
-    <key>CFBundleName</key>
-    <string>Clavis</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-</dict>
-</plist>
-EOF
-
-              for binary in \
-                $out/bin/clavis \
-                $out/bin/clavis-agent \
-                $out/bin/clavis-cli \
-                $out/bin/age-plugin-clavis \
-                $out/Applications/Clavis.app/Contents/MacOS/Clavis \
-                $out/Applications/Clavis.app/Contents/Helpers/clavis-agent; do
-                /usr/bin/codesign \
-                  --force \
-                  --sign - \
-                  --options runtime \
-                  --timestamp=none \
-                  --entitlements $src/Entitlements.plist \
-                  "$binary"
-                /usr/bin/codesign --verify --strict --verbose=2 "$binary"
-              done
-
-              /usr/bin/codesign \
-                --force \
-                --sign - \
-                --options runtime \
-                --timestamp=none \
-                --entitlements $src/Entitlements.plist \
-                $out/Applications/Clavis.app
-              /usr/bin/codesign --verify --deep --strict --verbose=2 $out/Applications/Clavis.app
+              # Preserve the complete application bundle and its CI signature.
+              mkdir -p $out/Applications
+              cp -R Clavis.app $out/Applications/Clavis.app
             '';
+
+            meta = with pkgs.lib; {
+              description = "Native macOS Swift/SwiftUI Ed25519 Keychain SSH Agent & age plugin with Touch ID";
+              homepage = "https://github.com/GDR/clavis";
+              license = licenses.mit;
+              platforms = [ "aarch64-darwin" ];
+              mainProgram = "clavis";
+            };
           } else pkgs.hello;
 
           default = packages.clavis;
@@ -144,6 +78,13 @@ EOF
               exec "${packages.clavis}/bin/clavis-cli" "$@"
             '';
             name = "clavis-cli";
+          };
+
+          age-plugin = flake-utils.lib.mkApp {
+            drv = pkgs.writeShellScriptBin "age-plugin-clavis" ''
+              exec "${packages.clavis}/bin/age-plugin-clavis" "$@"
+            '';
+            name = "age-plugin-clavis";
           };
 
           default = apps.clavis;

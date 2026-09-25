@@ -28,10 +28,11 @@ protects the recovery vault master key and can directly hold P-256 signing keys.
 make
 ```
 
-The Makefile (or `./build.sh`) signs every release executable with the hardened runtime and
-the required entitlements, then verifies each signature. It fails closed when
-no development certificate is available. A specific certificate can be selected
-with `CLAVIS_SIGN_IDENTITY`.
+The Makefile (or `./build.sh`) assembles a complete `Clavis.app`, including the
+SwiftPM localization bundle and command-line helpers, then signs the standalone
+executables, nested helpers, and final application bundle with the hardened
+runtime. It fails closed when no development certificate is available. A
+specific certificate can be selected with `CLAVIS_SIGN_IDENTITY`.
 
 Private records use the Login Keychain with `SecAccessControl` authentication.
 The recovery vault never creates or opens a file-backed software master key in
@@ -51,8 +52,12 @@ recovery fallback and is no longer consulted after the copy succeeds.
 
 For an explicitly local, non-distributable build without a certificate, opt in
 to ad-hoc signing with `make CLAVIS_ALLOW_ADHOC_SIGNING=1`. The Nix package
-is likewise ad-hoc signed for local nix-darwin / Home Manager installation and
-must not be treated as a trusted release artifact.
+downloads the pinned GitHub release archive and preserves its existing code
+signatures; it does not rebuild or re-sign the binaries.
+
+`make package` also creates `clavis-macos-arm64.dmg` for graphical installation.
+Open the disk image and drag `Clavis.app` to the Applications shortcut. The DMG
+and Nix archive are published together with SHA-256 checksum files.
 
 ### 2. Build using Nix
 ```bash

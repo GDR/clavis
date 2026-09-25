@@ -3,5 +3,9 @@ result
 .DS_Store
 .direnv/
 .plans/
+clavis-macos-*.tar.gz
+clavis-macos-*.tar.gz.sha256
+clavis-macos-*.dmg
+clavis-macos-*.dmg.sha256
 *.md
 !README.md
