@@ -206,11 +206,27 @@ test:
     swift test
 
 # Build and relaunch Clavis.app locally
-run config="debug": (sign config)
+run config="debug":
     #!/usr/bin/env bash
-    echo "🚀 Relaunching Clavis.app..."
+    set -euo pipefail
+    echo "🛑 Terminating running Clavis instance..."
     killall Clavis 2>/dev/null || true
-    open ".build/{{ config }}/Clavis.app"
+    for _ in {1..50}; do
+        pgrep -x Clavis >/dev/null || break
+        sleep 0.1
+    done
+    if pgrep -x Clavis >/dev/null; then
+        echo "❌ Clavis did not exit" >&2
+        exit 1
+    fi
+
+    just sign "{{ config }}"
+
+    echo "🚀 Relaunching Clavis ({{ config }})..."
+    mkdir -p ".build/{{ config }}"
+    nohup ".build/{{ config }}/Clavis.app/Contents/MacOS/Clavis" \
+        >>".build/{{ config }}/run.log" 2>&1 &
+    disown
 
 # Clean build artifacts
 clean:
