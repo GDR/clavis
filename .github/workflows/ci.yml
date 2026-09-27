@@ -17,15 +17,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Just
+        uses: extra-steve/setup-just@v2
+
       - name: Run Tests
-        run: |
-          ./build.sh test
+        run: just test
 
       - name: Build & Package (Ad-hoc)
-        run: |
-          make package \
-            CLAVIS_ALLOW_ADHOC_SIGNING=1 \
-            CLAVIS_BUILD_VERSION="$GITHUB_RUN_NUMBER"
+        env:
+          CLAVIS_ALLOW_ADHOC_SIGNING: "1"
+          CLAVIS_BUILD_VERSION: ${{ github.run_number }}
+        run: just package
 
       - name: Upload PR Build Artifacts
         uses: actions/upload-artifact@v4
