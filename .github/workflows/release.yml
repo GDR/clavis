@@ -1,49 +1,33 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
-      tag_name:
-        description: 'Release tag (e.g. v0.2.0). Leave empty if pushing to a tagged commit.'
+      bump:
+        description: 'Version bump'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - custom
+        default: minor
+      custom_version:
+        description: 'Explicit version (e.g. 0.3.0, used only when bump=custom)'
         required: false
         type: string
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
-  release-please:
-    name: Release Please
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-    steps:
-      - uses: googleapis/release-please-action@v4
-        id: release
-        with:
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-
-  build-and-release:
-    name: Build & Release Package
+  release:
+    name: Build, Sign & Publish Release
     runs-on: macos-26
-    needs: release-please
-    if: |
-      !cancelled() &&
-      needs.release-please.result != 'failure' &&
-      (
-        needs.release-please.outputs.release_created == 'true' ||
-        startsWith(github.ref, 'refs/tags/v') ||
-        github.event_name == 'workflow_dispatch'
-      )
 
     steps:
       - name: Checkout repository
@@ -51,21 +35,78 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve Release Tag
-        id: release_tag
-        env:
-          INPUT_TAG_NAME: ${{ inputs.tag_name }}
-          RP_TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+      - name: Run Tests
         run: |
-          if [ -n "$INPUT_TAG_NAME" ]; then
-            echo "tag=$INPUT_TAG_NAME" >> "$GITHUB_OUTPUT"
-          elif [ -n "$RP_TAG_NAME" ]; then
-            echo "tag=$RP_TAG_NAME" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=v0.1.1-draft-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          fi
+          ./build.sh test
+
+      - name: Resolve & Bump Version
+        id: semver
+        env:
+          BUMP: ${{ inputs.bump }}
+          CUSTOM_VER: ${{ inputs.custom_version }}
+        run: |
+          python3 - << 'EOF'
+          import os, re, subprocess, sys
+
+          ref = os.environ.get("GITHUB_REF", "")
+          bump = os.environ.get("BUMP", "minor")
+          custom_ver = os.environ.get("CUSTOM_VER", "").lstrip("v").strip()
+
+          with open("justfile", "r") as f:
+              justfile_content = f.read()
+
+          m = re.search(r'version := env_var_or_default\("CLAVIS_VERSION",\s*"([^"]+)"\)', justfile_content)
+          current_ver = m.group(1) if m else "0.1.1"
+
+          if ref.startswith("refs/tags/v"):
+              tag = ref.replace("refs/tags/", "")
+              new_ver = tag.lstrip("v")
+          else:
+              parts = [int(x) for x in current_ver.split(".")]
+              while len(parts) < 3:
+                  parts.append(0)
+              major, minor, patch = parts[0], parts[1], parts[2]
+
+              if bump == "patch":
+                  new_ver = f"{major}.{minor}.{patch + 1}"
+              elif bump == "minor":
+                  new_ver = f"{major}.{minor + 1}.0"
+              elif bump == "major":
+                  new_ver = f"{major + 1}.0.0"
+              elif bump == "custom":
+                  if not custom_ver:
+                      sys.exit("Error: custom_version input is required when bump=custom")
+                  new_ver = custom_ver
+              else:
+                  new_ver = f"{major}.{minor + 1}.0"
+
+              tag = f"v{new_ver}"
+              print(f"Bumping version: {current_ver} -> {new_ver} ({tag})")
+
+              # Update justfile
+              updated_justfile = re.sub(
+                  r'(version := env_var_or_default\("CLAVIS_VERSION",\s*")[^"]+("\))',
+                  rf'\g<1>{new_ver}\g<2>',
+                  justfile_content
+              )
+              with open("justfile", "w") as f:
+                  f.write(updated_justfile)
+
+              # Commit & tag
+              subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
+              subprocess.run(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"], check=True)
+              subprocess.run(["git", "commit", "-am", f"chore(release): {tag}"], check=True)
+              subprocess.run(["git", "tag", "-a", tag, "-m", f"Release {tag}"], check=True)
+              subprocess.run(["git", "push", "origin", "main"], check=True)
+              subprocess.run(["git", "push", "origin", tag], check=True)
+
+          # Export outputs for subsequent steps
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          if github_output:
+              with open(github_output, "a") as f:
+                  f.write(f"version={new_ver}\n")
+                  f.write(f"tag={tag}\n")
+          EOF
 
       - name: Install Apple Certificate
         env:
@@ -82,7 +123,6 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
           security default-keychain -s "$KEYCHAIN_PATH"
 
-          # Download and import Apple Worldwide Developer Relations (WWDR) intermediate CA certificates
           curl -fSsL https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer -o "$RUNNER_TEMP/AppleWWDRCAG3.cer"
           security import "$RUNNER_TEMP/AppleWWDRCAG3.cer" -k "$KEYCHAIN_PATH" -T /usr/bin/codesign
 
@@ -99,26 +139,26 @@ jobs:
 
       - name: Build, Sign, and Package
         env:
-          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.semver.outputs.version }}
         run: |
           security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
           security default-keychain -s "$KEYCHAIN_PATH"
           security list-keychains -s "$KEYCHAIN_PATH" $(security list-keychains | tr -d '"') /Library/Keychains/System.keychain
-          RELEASE_VERSION="${RELEASE_TAG#v}"
-          RELEASE_VERSION="${RELEASE_VERSION%%-*}"
           make package \
             CLAVIS_VERSION="$RELEASE_VERSION" \
             CLAVIS_BUILD_VERSION="$GITHUB_RUN_NUMBER" \
             CLAVIS_SIGN_IDENTITY="Apple Development" \
             CLAVIS_KEYCHAIN="$KEYCHAIN_PATH"
 
-      - name: Upload Release Assets
+      - name: Publish GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
+          RELEASE_TAG: ${{ steps.semver.outputs.tag }}
         run: |
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --draft --title "$RELEASE_TAG" --generate-notes
+            gh release create "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              --generate-notes
           fi
           gh release upload "$RELEASE_TAG" \
             clavis-macos-arm64.dmg \
