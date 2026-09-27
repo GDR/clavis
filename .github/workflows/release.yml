@@ -2,38 +2,69 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release tag (e.g. v0.1.0). Leave empty if pushing to a tagged commit.'
+        description: 'Release tag (e.g. v0.2.0). Leave empty if pushing to a tagged commit.'
         required: false
         type: string
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
   build-and-release:
-    name: Build & Release Draft
+    name: Build & Release Package
     runs-on: macos-26
+    needs: release-please
+    if: |
+      !cancelled() &&
+      needs.release-please.result != 'failure' &&
+      (
+        needs.release-please.outputs.release_created == 'true' ||
+        startsWith(github.ref, 'refs/tags/v') ||
+        github.event_name == 'workflow_dispatch'
+      )
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name || (github.event_name == 'workflow_dispatch' && inputs.tag_name) || github.ref }}
 
       - name: Resolve Release Tag
         id: release_tag
         env:
           INPUT_TAG_NAME: ${{ inputs.tag_name }}
+          RP_TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         run: |
           if [ -n "$INPUT_TAG_NAME" ]; then
             echo "tag=$INPUT_TAG_NAME" >> "$GITHUB_OUTPUT"
+          elif [ -n "$RP_TAG_NAME" ]; then
+            echo "tag=$RP_TAG_NAME" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
             echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=v0.1.0-draft-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "tag=v0.1.1-draft-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Install Apple Certificate
@@ -81,14 +112,17 @@ jobs:
             CLAVIS_SIGN_IDENTITY="Apple Development" \
             CLAVIS_KEYCHAIN="$KEYCHAIN_PATH"
 
-      - name: Create Draft Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.release_tag.outputs.tag }}
-          draft: true
-          generate_release_notes: true
-          files: |
-            clavis-macos-arm64.dmg
-            clavis-macos-arm64.dmg.sha256
-            clavis-macos-arm64.tar.gz
-            clavis-macos-arm64.tar.gz.sha256
+      - name: Upload Release Assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --draft --title "$RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" \
+            clavis-macos-arm64.dmg \
+            clavis-macos-arm64.dmg.sha256 \
+            clavis-macos-arm64.tar.gz \
+            clavis-macos-arm64.tar.gz.sha256 \
+            --clobber
