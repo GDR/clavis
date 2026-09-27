@@ -3,7 +3,7 @@ import SwiftUI
 public enum DesignTokens {
     // Backgrounds & Glass (translucent for true behindWindow frosted blur)
     public static let windowBackground = Color(nsColor: NSColor(calibratedRed: 0.09, green: 0.09, blue: 0.10, alpha: 0.50))
-    public static let sidebarBackground = Color(nsColor: NSColor(calibratedRed: 0.12, green: 0.12, blue: 0.14, alpha: 0.45))
+    public static let sidebarBackground = Color(nsColor: NSColor(calibratedRed: 0.12, green: 0.12, blue: 0.14, alpha: 0.0))
     public static let inspectorBackground = Color(nsColor: NSColor(calibratedRed: 0.10, green: 0.10, blue: 0.12, alpha: 0.50))
     public static let menuBarBackground = Color(nsColor: NSColor(name: nil) { appearance in
         if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {

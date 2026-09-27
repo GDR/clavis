@@ -26,14 +26,9 @@ struct KeyListView: View {
             HStack(spacing: 0) {
                 // Sidebar: Key List Pane (318px)
                 ZStack(alignment: .topLeading) {
-                    // Sidebar Frosted Glass
-                    VisualEffectView(material: .sidebar, blendingMode: .behindWindow)
-                        .ignoresSafeArea()
-
-                    // Translucent dark tint to preserve contrast
+                    // Let the full-window frost show through with a light tint for text contrast.
                     DesignTokens.sidebarBackground
                         .ignoresSafeArea()
-
 
                     VStack(alignment: .leading, spacing: 12) {
                         // Title header — top padding to clear macOS window controls (traffic lights)
@@ -368,4 +363,3 @@ private struct ToolbarCapsuleButton: View {
         .onHover { isHovered = $0 }
     }
 }
-
