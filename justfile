@@ -87,11 +87,6 @@ sign config=config: (bundle config)
 
     echo "🔐 Signing binaries with identity: '$identity'..."
 
-    keychain_args=()
-    if [ -n "$keychain" ]; then
-        keychain_args=(--keychain "$keychain")
-    fi
-
     sign_and_verify() {
         local target="$1"
         local is_deep="${2:-0}"
@@ -104,7 +99,7 @@ sign config=config: (bundle config)
         echo "  Signing $target..."
         /usr/bin/codesign \
             --force \
-            "${keychain_args[@]}" \
+            ${keychain:+--keychain "$keychain"} \
             --sign "$identity" \
             --identifier "Clavis" \
             --options runtime \
