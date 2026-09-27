@@ -205,18 +205,12 @@ struct MenuBarView: View {
         }
         .padding(14)
         .frame(width: 320)
-        .background(
-            ZStack {
-                VisualEffectView(material: .menu, blendingMode: .behindWindow)
-                DesignTokens.menuBarBackground
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .ignoresSafeArea()
-        )
+        .modifier(MenuBarBackgroundModifier())
         .background(
             WindowAccessor { window in
                 window.isOpaque = false
                 window.backgroundColor = .clear
+                window.hasShadow = false
                 WindowManager.shared.menuBarWindow = window
             }
         )
@@ -362,6 +356,25 @@ private struct MenuBarActionItem: View {
         .buttonStyle(.plain)
         .focusable(false)
         .onHover { isHovered = $0 }
+    }
+}
+
+private struct MenuBarBackgroundModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .glassEffect(
+                    .regular,
+                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                )
+        } else {
+            content
+                .background(
+                    VisualEffectView(material: .menu, blendingMode: .behindWindow)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .ignoresSafeArea()
+                )
+        }
     }
 }
 
