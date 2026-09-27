@@ -206,7 +206,17 @@ struct MenuBarView: View {
         .padding(14)
         .frame(width: 320)
         .background(
+            ZStack {
+                VisualEffectView(material: .menu, blendingMode: .behindWindow)
+                DesignTokens.menuBarBackground
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .ignoresSafeArea()
+        )
+        .background(
             WindowAccessor { window in
+                window.isOpaque = false
+                window.backgroundColor = .clear
                 WindowManager.shared.menuBarWindow = window
             }
         )
