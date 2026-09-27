@@ -94,6 +94,7 @@
           name = "clavis-dev-shell";
 
           packages = with pkgs; [
+            just
             git
             cmake
             ninja

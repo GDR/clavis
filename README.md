@@ -23,16 +23,23 @@ protects the recovery vault master key and can directly hold P-256 signing keys.
 
 ## 🚀 Quick Start
 
-### 1. Build and sign using Swift Package Manager
+### 1. Build and sign using Just / Swift Package Manager
 ```bash
-make
+just
+# or ./build.sh (or make)
 ```
 
-The Makefile (or `./build.sh`) assembles a complete `Clavis.app`, including the
+The `justfile` (invoked via `just`, `./build.sh`, or `make`) assembles a complete `Clavis.app`, including the
 SwiftPM localization bundle and command-line helpers, then signs the standalone
 executables, nested helpers, and final application bundle with the hardened
 runtime. It fails closed when no development certificate is available. A
 specific certificate can be selected with `CLAVIS_SIGN_IDENTITY`.
+
+For local development and relaunching:
+```bash
+just run debug
+# or ./build.sh run debug
+```
 
 Private records use the Login Keychain with `SecAccessControl` authentication.
 The recovery vault never creates or opens a file-backed software master key in
@@ -51,11 +58,11 @@ service owned by the current signed client. The old record is retained as a
 recovery fallback and is no longer consulted after the copy succeeds.
 
 For an explicitly local, non-distributable build without a certificate, opt in
-to ad-hoc signing with `make CLAVIS_ALLOW_ADHOC_SIGNING=1`. The Nix package
+to ad-hoc signing with `CLAVIS_ALLOW_ADHOC_SIGNING=1 just`. The Nix package
 downloads the pinned GitHub release archive and preserves its existing code
 signatures; it does not rebuild or re-sign the binaries.
 
-`make package` also creates `clavis-macos-arm64.dmg` for graphical installation.
+`just package` (or `make package`) also creates `clavis-macos-arm64.dmg` for graphical installation.
 Open the disk image and drag `Clavis.app` to the Applications shortcut. The DMG
 and Nix archive are published together with SHA-256 checksum files.
 
