@@ -43,10 +43,18 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         let fileManager = FileManager.default
         let selfExecURL = (Bundle.main.executableURL ?? CommandLine.arguments.first.map { URL(fileURLWithPath: $0) })?.resolvingSymlinksInPath()
 
-        // Production: only the helper at the fixed app-bundle location is eligible.
+        // Production: prefer the bundled helper app so macOS can associate
+        // authentication prompts with its name and icon.
         if let bundleURL = selfExecURL?.deletingLastPathComponent().deletingLastPathComponent() {
-            let helperURL = bundleURL.appendingPathComponent("Helpers/clavis-agent")
-            if fileManager.isExecutableFile(atPath: helperURL.path), isTrustedExecutable(helperURL) {
+            let helpersURL = bundleURL.appendingPathComponent("Helpers")
+            let helperURLs = [
+                helpersURL.appendingPathComponent("Clavis Agent.app/Contents/MacOS/clavis-agent"),
+                // Keep compatibility with app bundles created before the helper
+                // became a nested application bundle.
+                helpersURL.appendingPathComponent("clavis-agent")
+            ]
+            for helperURL in helperURLs
+            where fileManager.isExecutableFile(atPath: helperURL.path) && isTrustedExecutable(helperURL) {
                 return helperURL.resolvingSymlinksInPath()
             }
         }

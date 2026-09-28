@@ -36,6 +36,7 @@ bundle config=config: (build config)
     set -euo pipefail
     build_dir=".build/{{ config }}"
     app_bundle="$build_dir/Clavis.app"
+    agent_bundle="$app_bundle/Contents/Helpers/Clavis Agent.app"
     resource_bundle="$build_dir/Clavis_ClavisCore.bundle"
     contents="$app_bundle/Contents"
 
@@ -46,18 +47,32 @@ bundle config=config: (build config)
 
     echo "📦 Assembling Clavis.app..."
     rm -rf "$app_bundle"
-    mkdir -p "$contents/MacOS" "$contents/Helpers" "$contents/Resources"
+    mkdir -p "$contents/MacOS" \
+             "$contents/Helpers" \
+             "$contents/Resources" \
+             "$agent_bundle/Contents/MacOS" \
+             "$agent_bundle/Contents/Resources"
 
     cp "$build_dir/Clavis" "$contents/MacOS/Clavis"
-    cp "$build_dir/clavis-agent" "$contents/Helpers/clavis-agent"
+    cp "$build_dir/clavis-agent" "$agent_bundle/Contents/MacOS/clavis-agent"
     cp "$build_dir/clavis-cli" "$contents/Helpers/clavis-cli"
     cp "$build_dir/age-plugin-clavis" "$contents/Helpers/age-plugin-clavis"
 
     cp packaging/macos/Info.plist "$contents/Info.plist"
+    cp packaging/macos/AgentInfo.plist "$agent_bundle/Contents/Info.plist"
+    if [ -f packaging/macos/AppIcon.icns ]; then
+        cp packaging/macos/AppIcon.icns "$contents/Resources/AppIcon.icns"
+        cp packaging/macos/AppIcon.icns "$agent_bundle/Contents/Resources/AppIcon.icns"
+    fi
     /usr/bin/plutil -replace CFBundleShortVersionString -string "{{ version }}" "$contents/Info.plist"
     /usr/bin/plutil -replace CFBundleVersion -string "{{ build_version }}" "$contents/Info.plist"
+    /usr/bin/plutil -replace CFBundleShortVersionString -string "{{ version }}" "$agent_bundle/Contents/Info.plist"
+    /usr/bin/plutil -replace CFBundleVersion -string "{{ build_version }}" "$agent_bundle/Contents/Info.plist"
     /usr/bin/ditto "$resource_bundle" "$contents/Resources/Clavis_ClavisCore.bundle"
+    /usr/bin/ditto "$resource_bundle" "$agent_bundle/Contents/Resources/Clavis_ClavisCore.bundle"
     /usr/bin/plutil -lint "$contents/Info.plist"
+    /usr/bin/plutil -lint "$agent_bundle/Contents/Info.plist"
+    test -d "$agent_bundle/Contents/Resources/Clavis_ClavisCore.bundle"
 
 # Codesign standalone binaries and the .app bundle
 sign config=config: (bundle config)
@@ -65,6 +80,7 @@ sign config=config: (bundle config)
     set -euo pipefail
     build_dir=".build/{{ config }}"
     app_bundle="$build_dir/Clavis.app"
+    agent_bundle="$app_bundle/Contents/Helpers/Clavis Agent.app"
     keychain="{{ keychain }}"
     entitlements="Entitlements.plist"
 
@@ -97,6 +113,7 @@ sign config=config: (bundle config)
         fi
 
         echo "  Signing $target..."
+        /usr/bin/xattr -cr "$target" 2>/dev/null || true
         /usr/bin/codesign \
             --force \
             ${keychain:+--keychain "$keychain"} \
@@ -143,11 +160,14 @@ sign config=config: (bundle config)
                   "$build_dir/clavis-agent" \
                   "$build_dir/clavis-cli" \
                   "$build_dir/age-plugin-clavis" \
-                  "$app_bundle/Contents/Helpers/clavis-agent" \
                   "$app_bundle/Contents/Helpers/clavis-cli" \
                   "$app_bundle/Contents/Helpers/age-plugin-clavis"; do
         sign_and_verify "$binary" 0
     done
+
+    # Sign the nested agent app so macOS can attribute authentication prompts
+    # to a bundle with the Clavis icon instead of a generic executable.
+    sign_and_verify "$agent_bundle" 1
 
     # Sign the top-level Clavis.app bundle
     sign_and_verify "$app_bundle" 1
@@ -204,14 +224,14 @@ test:
 run config="debug":
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "🛑 Terminating running Clavis instance..."
-    killall Clavis 2>/dev/null || true
+    echo "🛑 Terminating running Clavis and clavis-agent instances..."
+    killall Clavis clavis-agent 2>/dev/null || true
     for _ in {1..50}; do
-        pgrep -x Clavis >/dev/null || break
+        pgrep -x "Clavis|clavis-agent" >/dev/null || break
         sleep 0.1
     done
-    if pgrep -x Clavis >/dev/null; then
-        echo "❌ Clavis did not exit" >&2
+    if pgrep -x "Clavis|clavis-agent" >/dev/null; then
+        echo "❌ Processes did not exit" >&2
         exit 1
     fi
 
