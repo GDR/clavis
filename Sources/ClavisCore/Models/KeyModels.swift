@@ -66,7 +66,7 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
     }
 
     public var badgeTitle: String {
-        isHardware ? "Hardware" : "Software"
+        isHardware ? ClavisUIStrings.Badges.hardware : ClavisUIStrings.Badges.software
     }
 
     public var effectiveBiometricPolicy: BiometricPolicy {
@@ -105,18 +105,18 @@ public enum KeyPurpose: String, CaseIterable, Identifiable, Codable {
     public var title: String {
         switch self {
         case .general:
-            return "General (SSH & Git)"
+            return ClavisUIStrings.KeyPurposeStrings.generalTitle
         case .gitSigningOnly:
-            return "Git Signing Only"
+            return ClavisUIStrings.KeyPurposeStrings.gitSigningOnlyTitle
         }
     }
 
     public var subtitle: String {
         switch self {
         case .general:
-            return "Available for SSH login and Git commit/tag signing"
+            return ClavisUIStrings.KeyPurposeStrings.generalSubtitle
         case .gitSigningOnly:
-            return "Restricted strictly to Git commits. Hidden from SSH login"
+            return ClavisUIStrings.KeyPurposeStrings.gitSigningOnlySubtitle
         }
     }
 }
@@ -130,18 +130,18 @@ public enum BiometricPolicy: String, CaseIterable, Identifiable, Codable {
     public var title: String {
         switch self {
         case .userPresence:
-            return "User Presence"
+            return ClavisUIStrings.BiometricPolicyStrings.userPresenceTitle
         case .biometryCurrentSet:
-            return "Strict Biometrics"
+            return ClavisUIStrings.BiometricPolicyStrings.currentSetTitle
         }
     }
 
     public var subtitle: String {
         switch self {
         case .userPresence:
-            return "Touch ID, Apple Watch, or device password fallback"
+            return ClavisUIStrings.BiometricPolicyStrings.userPresenceSubtitle
         case .biometryCurrentSet:
-            return "Touch ID only. Invalidated if system fingerprints change"
+            return ClavisUIStrings.BiometricPolicyStrings.currentSetSubtitle
         }
     }
 
@@ -192,6 +192,15 @@ public enum SessionTimeout: String, CaseIterable, Identifiable, Codable {
         case .fiveMinutes: return 300
         case .fifteenMinutes: return 900
         case .oneHour: return 3600
+        }
+    }
+
+    public var localizedTitle: String {
+        switch self {
+        case .never: return ClavisUIStrings.SessionTimeout.never
+        case .fiveMinutes: return ClavisUIStrings.SessionTimeout.fiveMinutes
+        case .fifteenMinutes: return ClavisUIStrings.SessionTimeout.fifteenMinutes
+        case .oneHour: return ClavisUIStrings.SessionTimeout.oneHour
         }
     }
 }

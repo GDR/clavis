@@ -56,7 +56,7 @@ public struct KeyDetailInspectorView: View {
                             .fontWeight(.bold)
                             .foregroundColor(.primary)
 
-                        Text("\(key.algorithm) · \(key.badgeTitle) Key")
+                        Text(ClavisUIStrings.Inspector.keySubtitle(algorithm: key.algorithm, isHardware: key.isHardware))
                             .font(.subheadline)
                             .foregroundColor(DesignTokens.textSecondary)
 
@@ -105,7 +105,7 @@ public struct KeyDetailInspectorView: View {
                         HStack(spacing: 4) {
                             Image(systemName: "hand.raised.fill")
                                 .font(.system(size: 10))
-                            Text("Always Prompt")
+                            Text(ClavisUIStrings.Inspector.alwaysPromptBadge)
                                 .font(.system(size: 11, weight: .medium))
                         }
                         .padding(.horizontal, 8)
@@ -119,18 +119,18 @@ public struct KeyDetailInspectorView: View {
                     Menu {
                         if key.isAgeCompatible {
                             Button(action: copyRecipient) {
-                                Label("Copy age Recipient", systemImage: "doc.on.doc")
+                                Label(ClavisUIStrings.Inspector.copyAgeRecipientMenu, systemImage: "doc.on.doc")
                             }
                         }
                         Button(action: copyOpenSSH) {
-                            Label("Copy OpenSSH Key", systemImage: "terminal")
+                            Label(ClavisUIStrings.Inspector.copyOpenSSHKeyMenu, systemImage: "terminal")
                         }
                         Button(action: copyFingerprint) {
-                            Label("Copy Fingerprint", systemImage: "number")
+                            Label(ClavisUIStrings.Inspector.copyFingerprintMenu, systemImage: "number")
                         }
                         Divider()
                         Button(role: .destructive, action: { showingDeleteAlert = true }) {
-                            Label("Delete Key…", systemImage: "trash")
+                            Label(ClavisUIStrings.Inspector.deleteKeyMenu, systemImage: "trash")
                         }
                     } label: {
                         Image(systemName: "ellipsis")
@@ -160,7 +160,7 @@ public struct KeyDetailInspectorView: View {
 
                 // Public Identity Section
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("PUBLIC IDENTITY")
+                    Text(ClavisUIStrings.Inspector.publicIdentitySection)
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(DesignTokens.textTertiary)
 
@@ -174,12 +174,12 @@ public struct KeyDetailInspectorView: View {
                                         .lineLimit(1)
                                         .truncationMode(.middle)
                                         .textSelection(.enabled)
-                                    Text("Recipient for age and agenix encryption")
+                                    Text(ClavisUIStrings.Inspector.ageRecipientDescription)
                                         .font(.caption2)
                                         .foregroundColor(DesignTokens.textSecondary)
                                 }
                                 Spacer()
-                                Button("Copy Recipient", action: copyRecipient)
+                                Button(ClavisUIStrings.Inspector.copyRecipientButton, action: copyRecipient)
                                     .buttonStyle(.borderedProminent)
                                     .tint(DesignTokens.accentBlue)
                                     .controlSize(.small)
@@ -191,7 +191,7 @@ public struct KeyDetailInspectorView: View {
                             HStack(spacing: 8) {
                                 Image(systemName: "info.circle")
                                     .foregroundColor(DesignTokens.textTertiary)
-                                Text(key.isHardware ? "Hardware key (Secure Enclave / P-256) is incompatible with age & agenix." : "\(key.algorithm) key cannot be used for age / agenix (requires Curve25519).")
+                                Text(key.isHardware ? ClavisUIStrings.Inspector.hardwareAgeIncompatible : ClavisUIStrings.Inspector.algorithmAgeIncompatible(key.algorithm))
                                     .font(.caption2)
                                     .foregroundColor(DesignTokens.textSecondary)
                             }
@@ -206,7 +206,7 @@ public struct KeyDetailInspectorView: View {
                         // OpenSSH Key (Primary for GitHub / servers)
                         HStack(alignment: .top) {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text("OpenSSH Public Key")
+                                Text(ClavisUIStrings.Inspector.openSSHPublicKey)
                                     .font(.system(size: 12, weight: .semibold))
                                     .foregroundColor(.primary)
                                 Text(key.publicKeyOpenSSH)
@@ -214,12 +214,12 @@ public struct KeyDetailInspectorView: View {
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                                     .textSelection(.enabled)
-                                Text("For GitHub, GitLab, and ~/.ssh/authorized_keys")
+                                Text(ClavisUIStrings.Inspector.openSSHDescription)
                                     .font(.caption2)
                                     .foregroundColor(DesignTokens.textSecondary)
                             }
                             Spacer()
-                            Button("Copy SSH Key", action: copyOpenSSH)
+                            Button(ClavisUIStrings.Inspector.copySSHKeyButton, action: copyOpenSSH)
                                 .buttonStyle(.borderedProminent)
                                 .tint(DesignTokens.accentBlue)
                                 .controlSize(.small)
@@ -232,10 +232,10 @@ public struct KeyDetailInspectorView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 4) {
-                                    Text("Fingerprint")
+                                    Text(ClavisUIStrings.Inspector.fingerprint)
                                         .font(.caption2)
                                         .foregroundColor(DesignTokens.textSecondary)
-                                    Text("(Verification hash, not for GitHub)")
+                                    Text(ClavisUIStrings.Inspector.fingerprintVerificationHint)
                                         .font(.system(size: 10))
                                         .foregroundColor(DesignTokens.textTertiary)
                                 }
@@ -250,7 +250,7 @@ public struct KeyDetailInspectorView: View {
                             }
                             .buttonStyle(.borderless)
                             .focusable(false)
-                            .help("Copy SHA-256 Fingerprint")
+                            .help(ClavisUIStrings.Inspector.copyFingerprintHelp)
                         }
                     }
                     .padding(14)
@@ -260,7 +260,7 @@ public struct KeyDetailInspectorView: View {
                 // Used By / Integrations
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Text("USED BY")
+                        Text(ClavisUIStrings.Inspector.usedBySection)
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(DesignTokens.textTertiary)
                         Spacer()
@@ -269,22 +269,22 @@ public struct KeyDetailInspectorView: View {
                     VStack(spacing: 8) {
                         IntegrationRow(
                             name: "age-plugin-clavis",
-                            detail: key.isAgeCompatible ? "Registered CLI plugin" : "Incompatible (\(key.algorithm) not supported by age)",
-                            status: key.isAgeCompatible ? "Ready" : "Unsupported",
+                            detail: key.isAgeCompatible ? ClavisUIStrings.Inspector.agePluginRegistered : ClavisUIStrings.Inspector.agePluginIncompatible(key.algorithm),
+                            status: key.isAgeCompatible ? ClavisUIStrings.Inspector.statusReady : ClavisUIStrings.Inspector.statusUnsupported,
                             isActive: key.isAgeCompatible
                         )
                         Divider().background(DesignTokens.cardBorder)
                         IntegrationRow(
                             name: "agenix",
-                            detail: key.isAgeCompatible ? "NixOS secret workflow" : (key.isHardware ? "Hardware key incompatible with agenix" : "Incompatible with \(key.algorithm)"),
-                            status: key.isAgeCompatible ? "Configured" : "Incompatible",
+                            detail: key.isAgeCompatible ? ClavisUIStrings.Inspector.agenixWorkflow : (key.isHardware ? ClavisUIStrings.Inspector.agenixHardwareIncompatible : ClavisUIStrings.Inspector.agenixAlgorithmIncompatible(key.algorithm)),
+                            status: key.isAgeCompatible ? ClavisUIStrings.Inspector.statusConfigured : ClavisUIStrings.Inspector.statusIncompatible,
                             isActive: key.isAgeCompatible
                         )
                         Divider().background(DesignTokens.cardBorder)
                         IntegrationRow(
                             name: "ssh-agent socket",
                             detail: "~/.ssh/clavis.sock",
-                            status: appState.isSocketActive ? "Active" : "Offline",
+                            status: appState.isSocketActive ? ClavisUIStrings.Inspector.statusActive : ClavisUIStrings.Inspector.statusOffline,
                             isActive: appState.isSocketActive
                         )
                     }
@@ -294,27 +294,27 @@ public struct KeyDetailInspectorView: View {
 
                 // Security Inspector
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("SECURITY")
+                    Text(ClavisUIStrings.Inspector.securitySection)
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(DesignTokens.textTertiary)
 
                     VStack(spacing: 8) {
                         SecurityPropertyRow(
-                            label: "Storage",
-                            value: key.isHardware ? "Apple Secure Enclave (Hardware Chip)" : "macOS Login Keychain (Software)"
+                            label: ClavisUIStrings.Inspector.storageLabel,
+                            value: key.isHardware ? ClavisUIStrings.Inspector.storageHardwareEnclave : ClavisUIStrings.Inspector.storageSoftwareKeychain
                         )
                         Divider().background(DesignTokens.cardBorder)
                         SecurityPropertyRow(
-                            label: "Session Cache",
-                            value: key.isHardware ? "Disabled (Prompt on each signature)" : (appState.selectedTimeout == .never ? "Disabled (Always Prompt)" : "Active (\(appState.selectedTimeout.rawValue))")
+                            label: ClavisUIStrings.Inspector.sessionCacheLabel,
+                            value: key.isHardware ? ClavisUIStrings.Inspector.sessionCacheHardwarePrompt : (appState.selectedTimeout == .never ? ClavisUIStrings.Inspector.sessionCacheAlwaysPrompt : ClavisUIStrings.Inspector.sessionCacheActiveTimeout(appState.selectedTimeout.localizedTitle))
                         )
                         Divider().background(DesignTokens.cardBorder)
                         SecurityPropertyRow(
-                            label: "Authentication",
-                            value: key.isHardware ? (key.biometricPolicy == .biometryCurrentSet ? "Touch ID Only (Strict Current Set)" : "User Presence (Touch ID / Watch / Password)") : "Touch ID (Protected Seed)"
+                            label: ClavisUIStrings.Inspector.authenticationLabel,
+                            value: key.isHardware ? (key.biometricPolicy == .biometryCurrentSet ? ClavisUIStrings.Inspector.authTouchIdOnlyStrict : ClavisUIStrings.Inspector.authUserPresence) : ClavisUIStrings.Inspector.authTouchIdProtectedSeed
                         )
                         Divider().background(DesignTokens.cardBorder)
-                        SecurityPropertyRow(label: "Created", value: formattedDate)
+                        SecurityPropertyRow(label: ClavisUIStrings.Inspector.created, value: formattedDate)
                     }
                     .padding(14)
                     .glassCard(cornerRadius: 10)
@@ -322,7 +322,7 @@ public struct KeyDetailInspectorView: View {
 
                 // Session Cache Section
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("SESSION CACHE")
+                    Text(ClavisUIStrings.Inspector.sessionCacheSection)
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(DesignTokens.textTertiary)
 
@@ -332,10 +332,10 @@ public struct KeyDetailInspectorView: View {
                                 .font(.system(size: 20))
                                 .foregroundColor(DesignTokens.accentGreen)
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(key.biometricPolicy == .biometryCurrentSet ? "Hardware Isolation (Strict Biometrics)" : "Hardware Isolation (User Presence)")
+                                Text(key.biometricPolicy == .biometryCurrentSet ? ClavisUIStrings.Inspector.hardwareIsolationStrictTitle : ClavisUIStrings.Inspector.hardwareIsolationPresenceTitle)
                                     .font(.system(size: 13, weight: .semibold))
                                     .foregroundColor(.primary)
-                                Text(key.biometricPolicy == .biometryCurrentSet ? "Secure Enclave strictly requires Touch ID matching the current biometric enrollment. Device password fallback is disabled. Changes to enrolled fingerprints will invalidate this key." : "Secure Enclave keys cannot be cached in session memory. Every signature requires explicit Touch ID user presence (password fallback allowed).")
+                                Text(key.biometricPolicy == .biometryCurrentSet ? ClavisUIStrings.Inspector.hardwareIsolationStrictDesc : ClavisUIStrings.Inspector.hardwareIsolationPresenceDesc)
                                     .font(.caption)
                                     .foregroundColor(DesignTokens.textSecondary)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -349,10 +349,10 @@ public struct KeyDetailInspectorView: View {
                             // Timeout Picker Row
                             HStack {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text("Cache Timeout")
+                                    Text(ClavisUIStrings.Inspector.cacheTimeoutTitle)
                                         .font(.system(size: 13, weight: .semibold))
                                         .foregroundColor(.primary)
-                                    Text("Require Touch ID authentication after inactivity")
+                                    Text(ClavisUIStrings.Inspector.cacheTimeoutSubtitle)
                                         .font(.caption)
                                         .foregroundColor(DesignTokens.textSecondary)
                                 }
@@ -362,7 +362,7 @@ public struct KeyDetailInspectorView: View {
                                     set: { appState.setTimeout($0) }
                                 )) {
                                     ForEach(SessionTimeout.allCases) { timeout in
-                                        Text(timeout.rawValue).tag(timeout)
+                                        Text(timeout.localizedTitle).tag(timeout)
                                     }
                                 }
                                 .pickerStyle(.menu)
@@ -375,14 +375,14 @@ public struct KeyDetailInspectorView: View {
                             // Memory protection & auto-lock row
                             HStack {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text("Memory Protection")
+                                    Text(ClavisUIStrings.Inspector.memoryProtectionTitle)
                                         .font(.system(size: 12, weight: .medium))
-                                    Text("Locked into non-pageable memory (mlock). Purged on screen lock or sleep.")
+                                    Text(ClavisUIStrings.Inspector.memoryProtectionSubtitle)
                                         .font(.caption2)
                                         .foregroundColor(DesignTokens.textSecondary)
                                 }
                                 Spacer()
-                                Text("Active")
+                                Text(ClavisUIStrings.Inspector.statusActive)
                                     .font(.caption2)
                                     .fontWeight(.medium)
                                     .foregroundColor(DesignTokens.accentGreen)
@@ -413,19 +413,19 @@ public struct KeyDetailInspectorView: View {
     private func copyRecipient() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(key.ageRecipient, forType: .string)
-        showFeedback("Copied age recipient to clipboard")
+        showFeedback(ClavisUIStrings.Inspector.feedbackCopiedRecipient)
     }
 
     private func copyFingerprint() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(key.fingerprint, forType: .string)
-        showFeedback("Copied fingerprint to clipboard")
+        showFeedback(ClavisUIStrings.Inspector.feedbackCopiedFingerprint)
     }
 
     private func copyOpenSSH() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(key.publicKeyOpenSSH, forType: .string)
-        showFeedback("Copied OpenSSH public key to clipboard")
+        showFeedback(ClavisUIStrings.Inspector.feedbackCopiedOpenSSH)
     }
 
     private func toggleLock() {
@@ -433,7 +433,7 @@ public struct KeyDetailInspectorView: View {
         if isUnlocked {
             do {
                 try appState.lockKey(label: key.label)
-                showFeedback("Locked '\(key.label)'")
+                showFeedback(ClavisUIStrings.Inspector.feedbackLockedKey(key.label))
             } catch {
                 appState.errorMessage = error.localizedDescription
             }
@@ -444,7 +444,7 @@ public struct KeyDetailInspectorView: View {
                     try await appState.unlockKey(label: key.label)
                     await MainActor.run {
                         isUnlocking = false
-                        showFeedback("Unlocked '\(key.label)'")
+                        showFeedback(ClavisUIStrings.Inspector.feedbackUnlockedKey(key.label))
                     }
                 } catch {
                     await MainActor.run {

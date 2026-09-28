@@ -673,15 +673,15 @@ public class SSHAgentServer {
     }
 
     static func sshAuthenticationReason(keyLabel: String) -> String {
-        "use \u{201c}\(keyLabel)\u{201d} for SSH authentication"
+        ClavisUIStrings.Prompt.sshAuthentication(keyLabel: keyLabel)
     }
 
     static func gitCommitSigningReason(keyLabel: String) -> String {
-        "sign a Git commit with \u{201c}\(keyLabel)\u{201d}"
+        ClavisUIStrings.Prompt.gitCommitSigning(keyLabel: keyLabel)
     }
 
     static func gitSigningSessionReason(keyLabel: String) -> String {
-        "authorize a 5-minute Git signing session with \u{201c}\(keyLabel)\u{201d}"
+        ClavisUIStrings.Prompt.gitSigningSession(keyLabel: keyLabel)
     }
 
     private func isSecureDirectory(_ path: String) -> Bool {

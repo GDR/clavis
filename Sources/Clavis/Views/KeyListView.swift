@@ -33,10 +33,10 @@ struct KeyListView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         // Title header — top padding to clear macOS window controls (traffic lights)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("Keys")
+                            Text(ClavisUIStrings.KeyList.title)
                                 .font(.system(size: 24, weight: .semibold))
                                 .foregroundColor(.primary)
-                            Text("\(appState.keys.count) \(appState.keys.count == 1 ? "identity" : "identities") available")
+                            Text(ClavisUIStrings.KeyList.identitiesAvailable(count: appState.keys.count))
                                 .font(.system(size: 12))
                                 .foregroundColor(DesignTokens.textSecondary)
                         }
@@ -110,10 +110,10 @@ struct KeyListView: View {
                             Image(systemName: "key.fill")
                                 .font(.system(size: 48))
                                 .foregroundColor(DesignTokens.textSecondary.opacity(0.4))
-                            Text("No Key Selected")
+                            Text(ClavisUIStrings.KeyList.noKeySelectedTitle)
                                 .font(.title3)
                                 .foregroundColor(DesignTokens.textSecondary)
-                            Text("Select an identity from the sidebar to inspect its public credentials and security attributes.")
+                            Text(ClavisUIStrings.KeyList.noKeySelectedSubtitle)
                                 .font(.caption)
                                 .foregroundColor(DesignTokens.textTertiary)
                                 .multilineTextAlignment(.center)
@@ -136,13 +136,13 @@ struct KeyListView: View {
             }
         }
         .alert(
-            "Error",
+            ClavisUIStrings.Common.error,
             isPresented: Binding(
                 get: { appState.errorMessage != nil },
                 set: { if !$0 { appState.errorMessage = nil } }
             )
         ) {
-            Button("OK", role: .cancel) {
+            Button(ClavisUIStrings.Common.ok, role: .cancel) {
                 appState.errorMessage = nil
             }
         } message: {
@@ -179,7 +179,7 @@ struct KeyListView: View {
         defer { appState.refresh() }
         do {
             try KeychainManager.shared.deleteKey(label: label)
-            statusMessage = "Deleted key '\(label)'."
+            statusMessage = ClavisUIStrings.KeyList.deletedKey(label: label)
         } catch {
             ClavisLogger.log("KEY_DELETE", "Failed to delete key '\(label)': \(error.localizedDescription)")
             appState.errorMessage = error.localizedDescription
@@ -290,7 +290,7 @@ private struct UnifiedGlassToolbarPill: View {
                 iconSize: 13,
                 iconColor: Color.white.opacity(0.90),
                 isActive: showingAddPopover,
-                help: "Add or Import Key",
+                help: ClavisUIStrings.KeyList.addOrImportKeyHelp,
                 action: { showingAddPopover.toggle() }
             )
             .popover(isPresented: $showingAddPopover, arrowEdge: .top) {
@@ -312,10 +312,10 @@ private struct UnifiedGlassToolbarPill: View {
                 iconSize: 12,
                 iconColor: appState.cachedKeysCount > 0 ? DesignTokens.accentGreen : Color.white.opacity(0.40),
                 isDisabled: appState.cachedKeysCount == 0,
-                help: appState.cachedKeysCount > 0 ? "Lock All Keys" : "No Unlocked Keys",
+                help: appState.cachedKeysCount > 0 ? ClavisUIStrings.KeyList.lockAllKeysHelp : ClavisUIStrings.KeyList.noUnlockedKeysHelp,
                 action: {
                     appState.lockNow()
-                    statusMessage = "All cached keys locked."
+                    statusMessage = ClavisUIStrings.KeyList.allCachedKeysLocked
                 }
             )
 
@@ -324,7 +324,7 @@ private struct UnifiedGlassToolbarPill: View {
                 icon: "gearshape",
                 iconSize: 12,
                 iconColor: Color.white.opacity(0.90),
-                help: "Settings (Auto Start, Timeout, Nix)",
+                help: ClavisUIStrings.KeyList.settingsHelp,
                 action: { WindowManager.shared.openSettings() }
             )
         }

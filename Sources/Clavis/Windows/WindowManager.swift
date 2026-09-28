@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ClavisCore
 
 @MainActor
 public class WindowManager: NSObject, NSWindowDelegate {
@@ -51,7 +52,7 @@ public class WindowManager: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Clavis"
+        window.title = ClavisUIStrings.Common.appName
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.titlebarSeparatorStyle = .none
@@ -93,7 +94,7 @@ public class WindowManager: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Settings"
+        window.title = ClavisUIStrings.Settings.windowTitle
         window.contentViewController = hostingController
         window.center()
         window.isReleasedWhenClosed = false

@@ -26,10 +26,10 @@ public struct ImportKeySheet: View {
         VStack(alignment: .leading, spacing: 18) {
             // Header
             VStack(alignment: .leading, spacing: 4) {
-                Text("Import Existing Key")
+                Text(ClavisUIStrings.ImportKey.title)
                     .font(.title2)
                     .fontWeight(.bold)
-                Text("Import a raw 32-byte Ed25519 private seed into the secure macOS Keychain.")
+                Text(ClavisUIStrings.ImportKey.subtitle)
                     .font(.subheadline)
                     .foregroundColor(DesignTokens.textSecondary)
             }
@@ -50,27 +50,27 @@ public struct ImportKeySheet: View {
 
             // Key Label Field
             VStack(alignment: .leading, spacing: 6) {
-                Text("Key Name / Label")
+                Text(ClavisUIStrings.ImportKey.nameLabel)
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(DesignTokens.textSecondary)
-                TextField("e.g. Work SSH, Legacy Server, backup_identity", text: $keyLabel)
+                TextField(ClavisUIStrings.ImportKey.namePlaceholder, text: $keyLabel)
                     .textFieldStyle(.roundedBorder)
             }
 
             // Seed Input Field
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("32-Byte Raw Seed (Hex)")
+                    Text(ClavisUIStrings.ImportKey.seedLabel)
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(DesignTokens.textSecondary)
                     Spacer()
-                    Text("64 hex characters")
+                    Text(ClavisUIStrings.ImportKey.seedHint)
                         .font(.caption2)
                         .foregroundColor(DesignTokens.textTertiary)
                 }
-                SecureField("Paste 64-character hexadecimal seed...", text: $seedHex)
+                SecureField(ClavisUIStrings.ImportKey.seedPlaceholder, text: $seedHex)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
             }
@@ -80,11 +80,11 @@ public struct ImportKeySheet: View {
                 Image(systemName: isValidSeed ? "checkmark.seal.fill" : "questionmark.circle")
                     .foregroundColor(isValidSeed ? DesignTokens.accentGreen : .secondary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(isValidSeed ? "Valid Ed25519 Seed Detected" : "Waiting for valid 64-char hex seed...")
+                    Text(isValidSeed ? ClavisUIStrings.ImportKey.seedValid : ClavisUIStrings.ImportKey.seedWaiting)
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(isValidSeed ? DesignTokens.accentGreen : DesignTokens.textSecondary)
-                    Text("Compatible with OpenSSH (ssh-ed25519) and age/agenix encryption")
+                    Text(ClavisUIStrings.ImportKey.seedCompatibility)
                         .font(.caption2)
                         .foregroundColor(DesignTokens.textTertiary)
                 }
@@ -95,19 +95,19 @@ public struct ImportKeySheet: View {
 
             // Integration Checkboxes
             VStack(alignment: .leading, spacing: 8) {
-                Text("Enable Integrations")
+                Text(ClavisUIStrings.ImportKey.integrationsLabel)
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(DesignTokens.textSecondary)
 
                 HStack(spacing: 12) {
-                    Toggle("SSH Agent", isOn: $useSSH)
+                    Toggle(ClavisUIStrings.ImportKey.integrationSSH, isOn: $useSSH)
                         .toggleStyle(.checkbox)
                         .font(.subheadline)
-                    Toggle("Git Signing", isOn: $useGitSigning)
+                    Toggle(ClavisUIStrings.ImportKey.integrationGit, isOn: $useGitSigning)
                         .toggleStyle(.checkbox)
                         .font(.subheadline)
-                    Toggle("age / agenix", isOn: $useAge)
+                    Toggle(ClavisUIStrings.ImportKey.integrationAge, isOn: $useAge)
                         .toggleStyle(.checkbox)
                         .font(.subheadline)
                 }
@@ -118,10 +118,10 @@ public struct ImportKeySheet: View {
                 Image(systemName: "lock.shield.fill")
                     .foregroundColor(DesignTokens.accentBlue)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Destination: Login Keychain")
+                    Text(ClavisUIStrings.ImportKey.storageTitle)
                         .font(.caption)
                         .fontWeight(.medium)
-                    Text("Guarded by macOS Keychain access control and biometric authentication.")
+                    Text(ClavisUIStrings.ImportKey.storageSubtitle)
                         .font(.caption2)
                         .foregroundColor(DesignTokens.textSecondary)
                 }
@@ -132,14 +132,14 @@ public struct ImportKeySheet: View {
 
             // Actions
             HStack {
-                Button("Cancel") {
+                Button(ClavisUIStrings.Common.cancel) {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
 
                 Spacer()
 
-                Button("Import Key") {
+                Button(ClavisUIStrings.ImportKey.button) {
                     importKey()
                 }
                 .buttonStyle(.borderedProminent)
@@ -157,7 +157,7 @@ public struct ImportKeySheet: View {
         let label = keyLabel.trimmingCharacters(in: .whitespaces)
 
         guard !label.isEmpty, var seedData = decodeSeedHex() else {
-            errorMessage = "Please enter a valid label and 64-character hex seed."
+            errorMessage = ClavisUIStrings.ImportKey.errorInvalidInput
             return
         }
         // Release our SwiftUI-owned representation as soon as the wipeable

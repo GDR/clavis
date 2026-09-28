@@ -28,9 +28,9 @@ public enum UserAuthenticationError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .timedOut:
-            return "User authentication timed out"
+            return ClavisUIStrings.Auth.errorTimedOut
         case .rejected(let error):
-            return error?.localizedDescription ?? "User authentication failed or was cancelled"
+            return error?.localizedDescription ?? ClavisUIStrings.Auth.errorRejected
         }
     }
 }

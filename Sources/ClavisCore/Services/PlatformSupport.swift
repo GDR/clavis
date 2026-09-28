@@ -6,5 +6,7 @@ public enum PlatformSupport {
         SecureEnclave.isAvailable
     }
 
-    public static let unsupportedMessage = "Clavis requires a Mac with Secure Enclave support."
+    public static var unsupportedMessage: String {
+        ClavisUIStrings.App.unsupportedMessage
+    }
 }
