@@ -12,7 +12,7 @@ public struct AddKeyPopoverView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("ADD KEY")
+            Text(ClavisUIStrings.AddKeyPopover.header)
                 .font(.system(size: 10, weight: .bold))
                 .foregroundColor(DesignTokens.textTertiary)
                 .padding(.horizontal, 10)
@@ -21,17 +21,17 @@ public struct AddKeyPopoverView: View {
 
             AddKeyPopoverRow(
                 icon: "plus",
-                title: "New Key…",
+                title: ClavisUIStrings.AddKeyPopover.newKeyTitle,
                 shortcut: "⌘N",
-                subtitle: "Generate a new cryptographic identity",
+                subtitle: ClavisUIStrings.AddKeyPopover.newKeySubtitle,
                 action: onNewKey
             )
 
             AddKeyPopoverRow(
                 icon: "arrow.down",
-                title: "Import Key…",
+                title: ClavisUIStrings.AddKeyPopover.importKeyTitle,
                 shortcut: "⇧⌘I",
-                subtitle: "Store an existing private key securely",
+                subtitle: ClavisUIStrings.AddKeyPopover.importKeySubtitle,
                 action: onImportKey
             )
         }

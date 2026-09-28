@@ -102,17 +102,17 @@ public struct CreateKeySheet: View {
 
             // Name Field
             VStack(alignment: .leading, spacing: 6) {
-                Text("Key Name")
+                Text(ClavisUIStrings.CreateKey.nameLabel)
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(DesignTokens.textSecondary)
-                TextField("e.g. Personal age, Work GitHub, staging-server", text: $keyName)
+                TextField(ClavisUIStrings.CreateKey.nameExamplePlaceholder, text: $keyName)
                     .textFieldStyle(.roundedBorder)
             }
 
             // Mutually Exclusive Presets (Software vs Hardware)
             VStack(alignment: .leading, spacing: 8) {
-                Text("Key Type")
+                Text(ClavisUIStrings.CreateKey.typeLabel)
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(DesignTokens.textSecondary)
@@ -149,9 +149,9 @@ public struct CreateKeySheet: View {
                                     .fixedSize(horizontal: false, vertical: true)
 
                                 HStack(spacing: 6) {
-                                    WorkflowTag(name: "SSH", isSupported: true)
-                                    WorkflowTag(name: "Git Signing", isSupported: true)
-                                    WorkflowTag(name: "age / agenix", isSupported: true)
+                                    WorkflowTag(name: ClavisUIStrings.CreateKey.tagSSH, isSupported: true)
+                                    WorkflowTag(name: ClavisUIStrings.CreateKey.tagGitSigning, isSupported: true)
+                                    WorkflowTag(name: ClavisUIStrings.CreateKey.tagAge, isSupported: true)
                                 }
                                 .padding(.top, 4)
                             }
@@ -205,15 +205,15 @@ public struct CreateKeySheet: View {
                                         .cornerRadius(3)
                                 }
 
-                                Text(isEnclaveAvailable ? KeyTypePreset.hardware.subtitle : "Apple Secure Enclave is not available on this device.")
+                                Text(isEnclaveAvailable ? KeyTypePreset.hardware.subtitle : ClavisUIStrings.CreateKey.enclaveUnavailable)
                                     .font(.caption2)
                                     .foregroundColor(DesignTokens.textSecondary)
                                     .fixedSize(horizontal: false, vertical: true)
 
                                 HStack(spacing: 6) {
-                                    WorkflowTag(name: "SSH", isSupported: true)
-                                    WorkflowTag(name: "Git Signing", isSupported: true)
-                                    WorkflowTag(name: "Incompatible with age", isSupported: false)
+                                    WorkflowTag(name: ClavisUIStrings.CreateKey.tagSSH, isSupported: true)
+                                    WorkflowTag(name: ClavisUIStrings.CreateKey.tagGitSigning, isSupported: true)
+                                    WorkflowTag(name: ClavisUIStrings.CreateKey.tagAgeIncompatible, isSupported: false)
                                 }
                                 .padding(.top, 4)
                             }
@@ -246,7 +246,7 @@ public struct CreateKeySheet: View {
             // Biometric Policy Selection (Hardware keys only)
             if selectedPreset == .hardware {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Biometric Authentication Policy")
+                    Text(ClavisUIStrings.CreateKey.biometricPolicyLabel)
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(DesignTokens.textSecondary)
@@ -295,7 +295,7 @@ public struct CreateKeySheet: View {
                             Image(systemName: "exclamationmark.shield.fill")
                                 .foregroundColor(DesignTokens.accentOrange)
                                 .font(.caption2)
-                            Text("Warning: Adding or removing any fingerprint in macOS Touch ID settings will permanently invalidate this key.")
+                            Text(ClavisUIStrings.CreateKey.biometricWarning)
                                 .font(.caption2)
                                 .foregroundColor(DesignTokens.textSecondary)
                         }
@@ -307,7 +307,7 @@ public struct CreateKeySheet: View {
 
             // Key Purpose (Domain Isolation)
             VStack(alignment: .leading, spacing: 6) {
-                Text("Key Purpose & Scope")
+                Text(ClavisUIStrings.CreateKey.purposeLabel)
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(DesignTokens.textSecondary)
@@ -354,14 +354,14 @@ public struct CreateKeySheet: View {
 
             // Footer / Actions
             HStack {
-                Button("Cancel") {
+                Button(ClavisUIStrings.Common.cancel) {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
 
                 Spacer()
 
-                Button("Create Key") {
+                Button(ClavisUIStrings.CreateKey.generateButton) {
                     createKey()
                 }
                 .buttonStyle(.borderedProminent)

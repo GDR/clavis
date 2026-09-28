@@ -36,7 +36,7 @@ public struct KeyBadge: View {
                 .frame(width: 4.5, height: 4.5)
                 .shadow(color: tintColor.opacity(0.8), radius: 2.5)
 
-            Text(isHardware ? "Hardware" : "Software")
+            Text(isHardware ? ClavisUIStrings.Badges.hardware : ClavisUIStrings.Badges.software)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(Color.white.opacity(0.92))
         }
@@ -78,7 +78,7 @@ public struct PurposeBadge: View {
             HStack(spacing: 3) {
                 Image(systemName: "arrow.triangle.branch")
                     .font(.system(size: 8, weight: .bold))
-                Text("Git Only")
+                Text(ClavisUIStrings.Badges.gitOnly)
                     .font(.system(size: 9, weight: .semibold))
             }
             .foregroundColor(.orange)

@@ -222,15 +222,15 @@ struct MenuBarView: View {
     private func confirmQuit() {
         WindowManager.shared.dismissMenuBarExtra()
         let alert = NSAlert()
-        alert.messageText = "Quit Clavis?"
+        alert.messageText = ClavisUIStrings.MenuBar.quitConfirmationTitle
         if appState.isSocketActive {
-            alert.informativeText = "Clavis and its background SSH Agent will stop. Active caches and Git signing sessions will be cleared."
+            alert.informativeText = ClavisUIStrings.MenuBar.quitConfirmationDetailsWithAgent
         } else {
-            alert.informativeText = "Clavis will stop and active caches will be cleared."
+            alert.informativeText = ClavisUIStrings.MenuBar.quitConfirmationDetailsSimple
         }
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "Quit Clavis")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: ClavisUIStrings.MenuBar.quit)
+        alert.addButton(withTitle: ClavisUIStrings.Common.cancel)
 
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
@@ -296,7 +296,7 @@ private struct MenuBarIdentityRow: View {
                         Image(systemName: "checkmark")
                             .font(.system(size: 9, weight: .bold))
                     }
-                    Text(isCopied ? "Copied" : "Copy")
+                    Text(isCopied ? ClavisUIStrings.Common.copied : ClavisUIStrings.Common.copy)
                         .font(.system(size: 11, weight: .medium))
                 }
                 .padding(.horizontal, 9)

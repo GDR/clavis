@@ -173,7 +173,7 @@ public class AppState: ObservableObject {
     public func remainingTimeFormatted(label: String) -> String? {
         guard let remaining = sessionCache.remainingTime(label: label) else { return nil }
         let mins = max(1, Int(ceil(remaining / 60)))
-        return "\(mins) min remaining"
+        return ClavisUIStrings.Common.minRemaining(mins)
     }
 
     public func generateKey(

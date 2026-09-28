@@ -44,8 +44,8 @@ struct ClavisApp: App {
     init() {
         guard PlatformSupport.hasSecureEnclave else {
             let alert = NSAlert()
-            alert.messageText = "Clavis cannot run on this Mac"
-            alert.informativeText = PlatformSupport.unsupportedMessage
+            alert.messageText = ClavisUIStrings.App.unsupportedTitle
+            alert.informativeText = ClavisUIStrings.App.unsupportedMessage
             alert.alertStyle = .critical
             alert.runModal()
             exit(1)
@@ -78,7 +78,7 @@ struct ClavisApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra("Clavis", systemImage: appState.isSocketActive ? "key.fill" : "key") {
+        MenuBarExtra(ClavisUIStrings.Common.appName, systemImage: appState.isSocketActive ? "key.fill" : "key") {
             MenuBarView()
                 .environmentObject(appState)
         }
