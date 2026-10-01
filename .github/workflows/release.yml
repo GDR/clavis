@@ -21,25 +21,51 @@ on:
     tags:
       - 'v*'
 
+# Default to read-only; the release job opts in to the single extra permission it needs.
 permissions:
-  contents: write
+  contents: read
+
+# Never run two releases at once (both bump the version and push to main).
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
+  test:
+    name: Test
+    runs-on: macos-26
+    # Runs with a read-only token and no access to signing secrets.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Just
+        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.0.0
+
+      - name: Run Tests
+        run: just test
+
   release:
     name: Build, Sign & Publish Release
+    needs: test
     runs-on: macos-26
+    # Manual runs bump the version and push to main, so they are only valid from main.
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
       - name: Set up Just
-        uses: extractions/setup-just@v2
-
-      - name: Run Tests
-        run: just test
+        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.0.0
 
       - name: Resolve & Bump Version
         id: semver
@@ -52,7 +78,18 @@ jobs:
 
           ref = os.environ.get("GITHUB_REF", "")
           bump = os.environ.get("BUMP", "minor")
-          custom_ver = os.environ.get("CUSTOM_VER", "").lstrip("v").strip()
+          custom_ver = os.environ.get("CUSTOM_VER", "").strip()
+          if custom_ver.startswith("v"):
+              custom_ver = custom_ver[1:]
+
+          # The version is written into the justfile and used in git tags and file names, so
+          # it must be a plain MAJOR.MINOR.PATCH string from either input source.
+          VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+
+          def require_version(value, source):
+              if not VERSION_RE.fullmatch(value):
+                  sys.exit(f"Error: {source} must look like 1.2.3, got {value!r}")
+              return value
 
           with open("justfile", "r") as f:
               justfile_content = f.read()
@@ -62,7 +99,7 @@ jobs:
 
           if ref.startswith("refs/tags/v"):
               tag = ref.replace("refs/tags/", "")
-              new_ver = tag.lstrip("v")
+              new_ver = require_version(tag[1:], "tag name")
           else:
               parts = [int(x) for x in current_ver.split(".")]
               while len(parts) < 3:
@@ -78,7 +115,7 @@ jobs:
               elif bump == "custom":
                   if not custom_ver:
                       sys.exit("Error: custom_version input is required when bump=custom")
-                  new_ver = custom_ver
+                  new_ver = require_version(custom_ver, "custom_version")
               else:
                   new_ver = f"{major}.{minor + 1}.0"
 
@@ -132,7 +169,8 @@ jobs:
           security import "$RUNNER_TEMP/AppleWWDRCAG6.cer" -k "$KEYCHAIN_PATH" -T /usr/bin/codesign
 
           echo "$CERT_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" -P "$CERT_PWD" -A -T /usr/bin/codesign -T /usr/bin/security
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" -P "$CERT_PWD" -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
           security list-keychains -s "$KEYCHAIN_PATH" $(security list-keychains | tr -d '"') /Library/Keychains/System.keychain
 
@@ -165,5 +203,12 @@ jobs:
             clavis-macos-arm64.dmg \
             clavis-macos-arm64.dmg.sha256 \
             clavis-macos-arm64.tar.gz \
-            clavis-macos-arm64.tar.gz.sha256 \
-            --clobber
+            clavis-macos-arm64.tar.gz.sha256
+
+      - name: Remove temporary keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+          rm -f "$RUNNER_TEMP/cert.p12"
