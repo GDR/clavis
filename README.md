@@ -13,7 +13,7 @@ protects the recovery vault master key and can directly hold P-256 signing keys.
 
 - **Native macOS SwiftUI & AppKit**: Built directly using `CryptoKit`, `Security`, and `LocalAuthentication` frameworks.
 - **Unencrypted Public Key Listing**: `ssh-add -l` and `SSH2_AGENTC_REQUEST_IDENTITIES` respond instantly **without triggering Touch ID prompts**.
-- **Touch ID Gated Signing**: Every SSH-agent signature request requires fresh user authentication and displays the requesting executable path. Age decryption can reuse the configured session cache.
+- **Touch ID Gated Signing**: Every SSH-agent signature request requires fresh user authentication, and the prompt names the requesting process (executable name and PID). Prompts are shown one at a time, and repeated denials trigger a short cooldown. Note that with `ssh -A` the requesting process is the local `ssh` client relaying a remote request. Age decryption can reuse the configured session cache.
 - **Clamshell & Lid-Closed Fallback**: Supports Apple Watch double-click and macOS User Password fallback (`.deviceOwnerAuthentication`).
 - **In-Memory Session Cache & Auto-Lock**: Configurable cache TTL (Off, 5 min, 15 min, 1 hour) for scoped application and age operations. SSH-agent signing deliberately bypasses this cache. Cached material is purged when the screen locks, workspace sleeps, or upon clicking "Lock Now".
 - **`age-plugin-clavis` Integration**: CLI tool that translates Ed25519 keys to X25519 Montgomery keys for `age` and `sops-nix` secret decryption.
