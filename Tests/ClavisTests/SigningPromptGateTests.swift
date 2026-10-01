@@ -70,8 +70,8 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
 
     func testPromptsNameTheRequester() {
         XCTAssertEqual(
-            SSHAgentServer.sshAuthenticationReason(keyLabel: "Main Key", requester: "ssh (PID 42)"),
-            "use \u{201c}Main Key\u{201d} for SSH authentication (requested by ssh (PID 42))"
+            SSHAgentServer.dataSigningReason(keyLabel: "Main Key", requester: "/usr/bin/ssh (PID 42)"),
+            "sign data requested by /usr/bin/ssh (PID 42) with \u{201c}Main Key\u{201d}"
         )
         XCTAssertEqual(
             SSHAgentServer.gitCommitSigningReason(keyLabel: "Main Key", requester: "ssh-keygen (PID 7)"),
@@ -80,16 +80,22 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
     }
 
     func testRequesterDescriptionIsDisplaySafe() {
-        XCTAssertEqual(SSHAgentServer.requesterDescription(processPath: "/usr/bin/ssh", pid: 42), "ssh (PID 42)")
+        XCTAssertEqual(SSHAgentServer.requesterDescription(processPath: "/usr/bin/ssh", pid: 42), "/usr/bin/ssh (PID 42)")
+        XCTAssertNotEqual(
+            SSHAgentServer.requesterDescription(processPath: "/usr/bin/ssh", pid: 42),
+            SSHAgentServer.requesterDescription(processPath: "/tmp/ssh", pid: 42)
+        )
         // Control, newline and bidi-format characters are removed.
         let hostile = "/tmp/evil\n\u{202E}Approve\u{0007}"
         let described = SSHAgentServer.requesterDescription(processPath: hostile, pid: 1)
         XCTAssertFalse(described.contains("\n"))
         XCTAssertFalse(described.unicodeScalars.contains("\u{202E}"))
         XCTAssertFalse(described.unicodeScalars.contains("\u{0007}"))
-        // Bounded length and a non-empty fallback.
+        // Bounded length, keeping the end of a long path, and a non-empty fallback.
         let long = "/tmp/" + String(repeating: "a", count: 500)
-        XCTAssertLessThanOrEqual(SSHAgentServer.requesterDescription(processPath: long, pid: 1).count, 48 + " (PID 1)".count)
+        let describedLong = SSHAgentServer.requesterDescription(processPath: long, pid: 1)
+        XCTAssertLessThanOrEqual(describedLong.count, 80 + " (PID 1)".count)
+        XCTAssertTrue(describedLong.hasSuffix(String(repeating: "a", count: 80) + " (PID 1)"))
         XCTAssertEqual(SSHAgentServer.requesterDescription(processPath: "/", pid: 3), "/ (PID 3)")
     }
 }

@@ -287,6 +287,9 @@ public enum ClavisUIStrings {
         public static func sshAuthentication(keyLabel: String, requester: String) -> String {
             localizedFormat("prompt.ssh_auth_requester", "use \u{201c}%1$@\u{201d} for SSH authentication (requested by %2$@)", keyLabel, requester)
         }
+        public static func dataSigning(keyLabel: String, requester: String) -> String {
+            localizedFormat("prompt.sign_data_requester", "sign data requested by %2$@ with \u{201c}%1$@\u{201d}", keyLabel, requester)
+        }
         public static func gitCommitSigning(keyLabel: String, requester: String) -> String {
             localizedFormat("prompt.git_commit_requester", "sign a Git commit with \u{201c}%1$@\u{201d} (requested by %2$@)", keyLabel, requester)
         }
