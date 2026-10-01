@@ -68,6 +68,41 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
         XCTAssertNoThrow(try gate.run { })
     }
 
+    func testSystemSSHWarnsWhenTheAgentMayBeForwarded() {
+        let requester = "ssh (PID 42)"
+        let forwarded = SSHAgentServer.sshAuthenticationReason(
+            keyLabel: "Main Key",
+            requester: requester,
+            processPath: "/usr/bin/ssh"
+        )
+        XCTAssertEqual(
+            forwarded,
+            "use \u{201c}Main Key\u{201d} for SSH authentication (requested by ssh (PID 42)). This request may come from a forwarded agent; the remote host is not visible"
+        )
+        XCTAssertTrue(forwarded.contains("forwarded agent"))
+        XCTAssertTrue(forwarded.contains("remote host is not visible"))
+        XCTAssertTrue(forwarded.contains(requester))
+
+        let standardized = SSHAgentServer.sshAuthenticationReason(
+            keyLabel: "Main Key",
+            requester: requester,
+            processPath: "/usr/bin/./ssh"
+        )
+        XCTAssertEqual(standardized, forwarded)
+
+        let homebrew = SSHAgentServer.sshAuthenticationReason(
+            keyLabel: "Main Key",
+            requester: requester,
+            processPath: "/opt/homebrew/bin/ssh"
+        )
+        XCTAssertEqual(
+            homebrew,
+            "use \u{201c}Main Key\u{201d} for SSH authentication (requested by ssh (PID 42))"
+        )
+        XCTAssertFalse(homebrew.contains("forwarded agent"))
+        XCTAssertFalse(homebrew.contains("remote host is not visible"))
+    }
+
     func testPromptsNameTheRequester() {
         XCTAssertEqual(
             SSHAgentServer.sshAuthenticationReason(keyLabel: "Main Key", requester: "ssh (PID 42)"),

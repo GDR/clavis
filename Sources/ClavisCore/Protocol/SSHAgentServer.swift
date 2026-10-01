@@ -690,8 +690,13 @@ public class SSHAgentServer {
                     GitSigningGraceManager.shared.recordGitSignature(for: matchingKey.label, clientIdentity: clientIdentity)
                 }
             } else {
-                // Non-Git signing request (e.g. SSH login): Grace period NEVER applies
-                let prompt = Self.sshAuthenticationReason(keyLabel: matchingKey.label, requester: requester)
+                // Non-Git signing request (e.g. SSH login): Grace period NEVER applies.
+                // Agent forwarding (`ssh -A`) is relayed by local /usr/bin/ssh, which hides the remote host.
+                let prompt = Self.sshAuthenticationReason(
+                    keyLabel: matchingKey.label,
+                    requester: requester,
+                    processPath: processPath
+                )
                 ClavisLogger.log("SSH_AGENT_SIGN", "Initiating SSH login signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
                 sigBlob = try promptedSign(key: matchingKey, data: dataToSign, prompt: prompt)
             }
@@ -720,6 +725,16 @@ public class SSHAgentServer {
 
     static func sshAuthenticationReason(keyLabel: String, requester: String) -> String {
         ClavisUIStrings.Prompt.sshAuthentication(keyLabel: keyLabel, requester: requester)
+    }
+
+    /// Selects the SSH authentication prompt for `processPath` after standardizing it.
+    /// Only Apple's `/usr/bin/ssh` is treated as a possible forwarded-agent relay.
+    static func sshAuthenticationReason(keyLabel: String, requester: String, processPath: String) -> String {
+        let standardized = URL(fileURLWithPath: processPath).standardizedFileURL.path
+        if standardized == "/usr/bin/ssh" {
+            return ClavisUIStrings.Prompt.sshAuthenticationFromForwardedAgent(keyLabel: keyLabel, requester: requester)
+        }
+        return sshAuthenticationReason(keyLabel: keyLabel, requester: requester)
     }
 
     static func gitCommitSigningReason(keyLabel: String, requester: String) -> String {

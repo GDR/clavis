@@ -287,6 +287,15 @@ public enum ClavisUIStrings {
         public static func sshAuthentication(keyLabel: String, requester: String) -> String {
             localizedFormat("prompt.ssh_auth_requester", "use \u{201c}%1$@\u{201d} for SSH authentication (requested by %2$@)", keyLabel, requester)
         }
+        /// `ssh -A` presents the local `/usr/bin/ssh` as the peer, so the dialog cannot name the remote host.
+        public static func sshAuthenticationFromForwardedAgent(keyLabel: String, requester: String) -> String {
+            localizedFormat(
+                "prompt.ssh_auth_forwarded_agent",
+                "use \u{201c}%1$@\u{201d} for SSH authentication (requested by %2$@). This request may come from a forwarded agent; the remote host is not visible",
+                keyLabel,
+                requester
+            )
+        }
         public static func gitCommitSigning(keyLabel: String, requester: String) -> String {
             localizedFormat("prompt.git_commit_requester", "sign a Git commit with \u{201c}%1$@\u{201d} (requested by %2$@)", keyLabel, requester)
         }
