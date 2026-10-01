@@ -172,9 +172,12 @@ public enum GitSigningPrompt {
         let strings = GitSigningPromptStrings.current
         let header = strings.header as CFString
         let message = strings.messageTemplate(keyLabel, clientDesc) as CFString
-        let defaultBtn = strings.allowFiveMinutesButton as CFString
+        // The default button (Return) must be the least privileged way forward. Granting a
+        // 5-minute session is an explicit, non-default choice so a stray keypress while the
+        // modal appears mid-typing cannot enable unattended signing.
+        let defaultBtn = strings.singleShotButton as CFString
         let alternateBtn = strings.cancelButton as CFString
-        let otherBtn = strings.singleShotButton as CFString
+        let otherBtn = strings.allowFiveMinutesButton as CFString
 
         let status = CFUserNotificationDisplayAlert(
             timeout,
@@ -194,14 +197,21 @@ public enum GitSigningPrompt {
             return .cancel
         }
 
-        let response = responseFlags & 0x3
-        switch response {
+        return choice(forResponseFlags: responseFlags)
+    }
+
+    /// Maps a `CFUserNotification` response to a choice. Anything unexpected
+    /// (including the timeout/cancel response) is `.cancel`.
+    ///
+    /// Button layout: default = Sign Once, alternate = Cancel, other = Grant 5 Minutes.
+    static func choice(forResponseFlags responseFlags: CFOptionFlags) -> GitSigningPromptChoice {
+        switch responseFlags & 0x3 {
         case CFOptionFlags(kCFUserNotificationDefaultResponse):
-            return .grantFiveMinutes
+            return .singleShot
         case CFOptionFlags(kCFUserNotificationAlternateResponse):
             return .cancel
         case CFOptionFlags(kCFUserNotificationOtherResponse):
-            return .singleShot
+            return .grantFiveMinutes
         default:
             return .cancel
         }
