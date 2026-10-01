@@ -20,6 +20,9 @@ public final class GitSigningGrant: @unchecked Sendable {
     private var _remainingOperations: Int
     private var authorizedContext: LAContext?
     internal let clientIdentity: String
+    /// Set for grants issued to a live peer. Descendants of this process may use the
+    /// grant; other processes that share `clientIdentity` may not.
+    internal let approvedProcess: GitApprovedProcess?
 
     public init(
         keyLabel: String,
@@ -34,6 +37,7 @@ public final class GitSigningGrant: @unchecked Sendable {
         self._remainingOperations = maxOperations
         self.authorizedContext = nil
         self.clientIdentity = clientIdentity
+        self.approvedProcess = nil
     }
 
     internal init(
@@ -41,7 +45,8 @@ public final class GitSigningGrant: @unchecked Sendable {
         duration: TimeInterval = 300.0,
         maxOperations: Int = 200,
         clientIdentity: String,
-        authorizedContext: LAContext
+        authorizedContext: LAContext,
+        approvedProcess: GitApprovedProcess? = nil
     ) {
         self.keyLabel = keyLabel
         self.grantedAt = Date()
@@ -50,6 +55,7 @@ public final class GitSigningGrant: @unchecked Sendable {
         self._remainingOperations = maxOperations
         self.clientIdentity = clientIdentity
         self.authorizedContext = authorizedContext
+        self.approvedProcess = approvedProcess
     }
 
     public var remainingOperations: Int {
@@ -71,14 +77,34 @@ public final class GitSigningGrant: @unchecked Sendable {
     }
 
     /// Decrements operations counter and returns true if operation is permitted.
-    internal func consumeOperation(clientIdentity: String) -> Bool {
+    internal func consumeOperation(
+        clientIdentity: String,
+        peerProcess: GitApprovedProcess? = nil
+    ) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard self.clientIdentity == clientIdentity else { return false }
+        guard allowsClient(clientIdentity: clientIdentity, peerProcess: peerProcess) else { return false }
         guard _remainingOperations > 0 else { return false }
         guard DispatchTime.now() < deadline else { return false }
         _remainingOperations -= 1
         return true
+    }
+
+    /// Identity-string grants keep the legacy exact match. A process-bound grant
+    /// admits only the approved pid (same start time) and its descendants.
+    private func allowsClient(clientIdentity: String, peerProcess: GitApprovedProcess?) -> Bool {
+        if let approvedProcess {
+            guard let peerProcess else { return false }
+            let covered = SSHAgentServer.gitGrantCoversPeer(peer: peerProcess, approved: approvedProcess)
+            if !covered {
+                ClavisLogger.log(
+                    "SECURITY_ALERT",
+                    "Rejected Git signing grant for '\(keyLabel)': peer PID \(peerProcess.pid) is outside the approved process tree."
+                )
+            }
+            return covered
+        }
+        return self.clientIdentity == clientIdentity
     }
 
     internal func withAuthorizedContext<Result>(
@@ -304,6 +330,7 @@ public final class GitSigningGraceManager: @unchecked Sendable {
     internal func withGrant<Result>(
         for keyLabel: String,
         clientIdentity: String,
+        peerProcess: GitApprovedProcess? = nil,
         operation: (LAContext) throws -> Result
     ) rethrows -> Result? {
         lock.lock()
@@ -311,7 +338,7 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         guard let grant = activeGrant, grant.keyLabel == keyLabel else {
             return nil
         }
-        guard grant.consumeOperation(clientIdentity: clientIdentity) else {
+        guard grant.consumeOperation(clientIdentity: clientIdentity, peerProcess: peerProcess) else {
             if !grant.isValid {
                 grant.invalidate()
                 activeGrant = nil
@@ -356,7 +383,8 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         clientIdentity: String,
         duration: TimeInterval = 300.0,
         maxOperations: Int = 200,
-        context: LAContext
+        context: LAContext,
+        approvedProcess: GitApprovedProcess? = nil
     ) -> GitSigningGrant {
         lock.lock()
         defer { lock.unlock() }
@@ -367,7 +395,8 @@ public final class GitSigningGraceManager: @unchecked Sendable {
             duration: duration,
             maxOperations: maxOperations,
             clientIdentity: clientIdentity,
-            authorizedContext: context
+            authorizedContext: context,
+            approvedProcess: approvedProcess
         )
         activeGrant = grant
         expirationTimer?.schedule(deadline: grant.deadline)

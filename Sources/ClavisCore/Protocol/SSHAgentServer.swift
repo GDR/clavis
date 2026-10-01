@@ -34,6 +34,18 @@ public enum SSHAgentServerError: LocalizedError, Equatable {
     }
 }
 
+/// Process instance that a Git signing grant was approved for.
+struct GitApprovedProcess: Equatable, Sendable {
+    let pid: pid_t
+    let startTime: UInt64
+}
+
+/// Parent and start time from a single `proc_pidinfo` read.
+struct ProcessParentSnapshot: Equatable {
+    var startTime: UInt64
+    var parentPid: pid_t
+}
+
 public class SSHAgentServer {
     internal static let invalidateKeyRequest: UInt8 = 240
     internal static let queryGitGraceRequest: UInt8 = 241
@@ -259,10 +271,67 @@ public class SSHAgentServer {
 
     /// Process start time in microseconds since the epoch; stable across `exec`, changes on PID reuse.
     static func processStartTime(pid: pid_t) -> UInt64? {
+        processParentSnapshot(pid: pid)?.startTime
+    }
+
+    /// One `proc_pidinfo` snapshot: start time plus parent pid.
+    static func processParentSnapshot(pid: pid_t) -> ProcessParentSnapshot? {
         var info = proc_bsdinfo()
         let size = Int32(MemoryLayout<proc_bsdinfo>.size)
         guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
-        return info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
+        return ProcessParentSnapshot(
+            startTime: info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec,
+            parentPid: pid_t(info.pbi_ppid)
+        )
+    }
+
+    /// `true` when `peer` is the approved process instance or a live descendant of it.
+    /// The walk stops at pid 1, a cycle, or a missing snapshot. A sibling that merely
+    /// shares the approved process's parent does not match.
+    static func gitGrantCoversPeer(
+        peerPid: pid_t,
+        peerStartTime: UInt64,
+        approvedPid: pid_t,
+        approvedStartTime: UInt64,
+        processInfo: (pid_t) -> ProcessParentSnapshot?
+    ) -> Bool {
+        guard peerPid > 0, approvedPid > 1 else { return false }
+
+        var current = peerPid
+        var assertedStartTime: UInt64? = peerStartTime
+        var seen = Set<pid_t>()
+        seen.reserveCapacity(8)
+
+        for _ in 0..<64 {
+            guard seen.insert(current).inserted else { return false }
+            guard let info = processInfo(current) else { return false }
+            if let assertedStartTime, info.startTime != assertedStartTime {
+                return false
+            }
+            if current == approvedPid && info.startTime == approvedStartTime {
+                return true
+            }
+            if current <= 1 {
+                return false
+            }
+            let parent = info.parentPid
+            if parent <= 0 || parent == current {
+                return false
+            }
+            current = parent
+            assertedStartTime = nil
+        }
+        return false
+    }
+
+    static func gitGrantCoversPeer(peer: GitApprovedProcess, approved: GitApprovedProcess) -> Bool {
+        gitGrantCoversPeer(
+            peerPid: peer.pid,
+            peerStartTime: peer.startTime,
+            approvedPid: approved.pid,
+            approvedStartTime: approved.startTime,
+            processInfo: processParentSnapshot(pid:)
+        )
     }
 
     /// `true` while `pid` is still the same process image that was attributed when the
@@ -277,9 +346,9 @@ public class SSHAgentServer {
         return currentPath == path && currentStart == startTime
     }
 
-    /// Resolves a process-instance-bound identity for Git signing grants.
-    /// Incorporates the executable path, parent process path/PID, process start time,
-    /// and process group to prevent other arbitrary background processes from hijacking grants.
+    /// Groups recent Git signatures by executable, parent, and process group.
+    /// When `ppid > 1` the string omits the signing process instance, so it must not
+    /// authorize a grant: grants are bound to `GitApprovedProcess` and its descendants.
     public static func resolveClientIdentity(pid: pid_t, processPath: String) -> String {
         let stdPath = URL(fileURLWithPath: processPath).standardizedFileURL.path
 
@@ -602,6 +671,9 @@ public class SSHAgentServer {
         let clientDesc = "\(Self.safeProcessPath(processPath)) (PID \(pid))"
         let requester = Self.requesterDescription(processPath: processPath, pid: pid)
         let clientIdentity = SSHAgentServer.resolveClientIdentity(pid: pid, processPath: processPath)
+        let peerProcess = SSHAgentServer.processStartTime(pid: pid).map {
+            GitApprovedProcess(pid: pid, startTime: $0)
+        }
 
         // Domain verification: Parse signed payload as OpenSSH SSHSIG (strict Git format)
         let gitSSHSIG = SSHSIGPayload.parse(from: dataToSign)
@@ -620,6 +692,7 @@ public class SSHAgentServer {
                 if let grantedSignature = try GitSigningGraceManager.shared.withGrant(
                     for: matchingKey.label,
                     clientIdentity: clientIdentity,
+                    peerProcess: peerProcess,
                     operation: { context in
                         try keyManager.signSSH(
                             key: matchingKey,
@@ -647,6 +720,10 @@ public class SSHAgentServer {
                         return Data([5]) // SSH_AGENT_FAILURE
 
                     case .grantFiveMinutes:
+                        guard let peerProcess else {
+                            ClavisLogger.log("SECURITY_ALERT", "Refusing Git signing grant: peer PID \(pid) has no process start time.")
+                            return Data([5])
+                        }
                         ClavisLogger.log("GIT_GRACE", "User approved 5-minute Git signing session. Authorizing via Touch ID...")
                         let authPrompt = Self.gitSigningSessionReason(keyLabel: matchingKey.label)
                         let grant = try promptGate.run {
@@ -655,13 +732,15 @@ public class SSHAgentServer {
                                 prompt: authPrompt,
                                 clientIdentity: clientIdentity,
                                 duration: 300.0,
-                                maxOperations: 200
+                                maxOperations: 200,
+                                approvedProcess: peerProcess
                             )
                         }
                         // Perform the commit #2 signature under the newly created grant
                         guard let grantedSignature = try GitSigningGraceManager.shared.withGrant(
                             for: matchingKey.label,
                             clientIdentity: clientIdentity,
+                            peerProcess: peerProcess,
                             operation: { context in
                                 try keyManager.signSSH(
                                     key: matchingKey,

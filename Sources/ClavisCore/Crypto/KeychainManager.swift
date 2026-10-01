@@ -738,7 +738,8 @@ public class KeychainManager {
         prompt: String,
         clientIdentity: String,
         duration: TimeInterval = 300.0,
-        maxOperations: Int = 200
+        maxOperations: Int = 200,
+        approvedProcess: GitApprovedProcess? = nil
     ) throws -> GitSigningGrant {
         let context = try authenticator.authenticate(reason: prompt)
         var record = try loadAuthenticatedRecord(
@@ -756,7 +757,8 @@ public class KeychainManager {
             clientIdentity: clientIdentity,
             duration: duration,
             maxOperations: maxOperations,
-            context: context
+            context: context,
+            approvedProcess: approvedProcess
         )
     }
 
