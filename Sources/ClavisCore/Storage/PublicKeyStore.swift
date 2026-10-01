@@ -21,7 +21,7 @@ public struct PublicKeyStore {
         if let customStorageURL { return customStorageURL }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(".config/clavis", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         return dir.appendingPathComponent("keys.json")
     }
 
@@ -46,12 +46,23 @@ public struct PublicKeyStore {
             try saveToKeychainChecked(info)
         }
         let data = try JSONEncoder().encode(current)
+        try writeIndex(data)
+    }
+
+    /// Writes the index with owner-only permissions. The index is not a trust root (private
+    /// records are authoritative), but there is no reason for it to be readable or writable
+    /// by anyone else, and the parent directory also holds the log and vault.
+    private static func writeIndex(_ data: Data) throws {
+        let directory = storageURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(
-            at: storageURL.deletingLastPathComponent(),
+            at: directory,
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
+        // Best effort: a caller-supplied directory may not be ours to chmod.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
         try data.write(to: storageURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: storageURL.path)
     }
 
     public static func remove(label: String) {
@@ -65,7 +76,7 @@ public struct PublicKeyStore {
         }
         let data = try JSONEncoder().encode(current)
         do {
-            try data.write(to: storageURL, options: .atomic)
+            try writeIndex(data)
         } catch {
             // Avoid leaving a stale authoritative-looking file after the mirror
             // was successfully removed; a later load can rebuild an empty index.
@@ -156,7 +167,7 @@ public struct PublicKeyStore {
         let keychainKeys = loadAllFromKeychain()
         if !keychainKeys.isEmpty {
             if let data = try? JSONEncoder().encode(keychainKeys) {
-                try? data.write(to: storageURL, options: .atomic)
+                try? writeIndex(data)
             }
         }
         return keychainKeys
