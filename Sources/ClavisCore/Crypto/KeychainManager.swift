@@ -72,11 +72,10 @@ public class KeychainManager {
                 defer { record.wipe() }
                 var recordData = try record.encode()
                 defer { Self.wipeData(&recordData) }
-                // The serialized value is only an opaque, device-bound Secure
-                // Enclave reference. Authentication is enforced by the hardware
-                // key's access control above, so the containing generic-password
-                // record must not request a second entitlement-gated policy.
-                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [])
+                // The serialized value is an opaque Secure Enclave reference.
+                // The hardware key keeps its own biometric policy above; user
+                // presence here only protects the handle from other processes.
+                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
                 do {
                     try EncryptedVaultStore.shared.saveRecord(record)
                 } catch {
@@ -363,8 +362,7 @@ public class KeychainManager {
                 let restoreBytes = try? restoredRecord.encode()
                 if var bytes = restoreBytes {
                     defer { Self.wipeData(&bytes) }
-                    let accessFlags: SecAccessControlCreateFlags = (restoredRecord.storageType == .secureEnclave) ? [] : [.userPresence]
-                    try? privateKeyStore.save(label: label, data: bytes, accessControlFlags: accessFlags)
+                    try? privateKeyStore.save(label: label, data: bytes, accessControlFlags: [.userPresence])
                 }
                 guard restoredRecord.label == label else {
                     throw PrivateKeyRecordError.labelMismatch(expected: label, actual: restoredRecord.label)
@@ -395,8 +393,7 @@ public class KeychainManager {
                 let restoreBytes = try? restoredRecord.encode()
                 if var bytes = restoreBytes {
                     defer { Self.wipeData(&bytes) }
-                    let accessFlags: SecAccessControlCreateFlags = (restoredRecord.storageType == .secureEnclave) ? [] : [.userPresence]
-                    try? privateKeyStore.save(label: label, data: bytes, accessControlFlags: accessFlags)
+                    try? privateKeyStore.save(label: label, data: bytes, accessControlFlags: [.userPresence])
                 }
                 guard restoredRecord.label == label else {
                     throw PrivateKeyRecordError.labelMismatch(expected: label, actual: restoredRecord.label)
