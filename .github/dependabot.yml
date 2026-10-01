@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # Actions are pinned to commit SHAs; Dependabot proposes SHA bumps with the release tag
+  # in the trailing comment, so updates stay reviewable.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
