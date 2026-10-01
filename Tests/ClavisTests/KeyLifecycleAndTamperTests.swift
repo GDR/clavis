@@ -128,6 +128,30 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
     }
 
 
+    func testImportedSeedHonorsGitSigningOnlyPurpose() throws {
+        let keyManager = makeKeyManager()
+        let label = "imported_git_only_\(UUID().uuidString)"
+        defer { try? keyManager.deleteKey(label: label) }
+        var seed = Data(repeating: 0x3c, count: 32)
+
+        let info = try keyManager.importKey(label: label, consuming: &seed, keyPurpose: .gitSigningOnly)
+
+        XCTAssertEqual(info.purpose, .gitSigningOnly)
+        XCTAssertEqual(try keyManager.fetchKeyInfo(label: label)?.purpose, .gitSigningOnly)
+
+        let server = SSHAgentServer(keyManager: keyManager)
+        XCTAssertNil(server.handleRequestIdentities().range(of: info.publicKeyBlob),
+                     "An imported git-only key must not be advertised for SSH login")
+
+        var signRequest = Data()
+        signRequest.appendWireData(info.publicKeyBlob)
+        signRequest.appendWireData(Data("ssh-userauth-challenge".utf8))
+        var flags: UInt32 = 0
+        Swift.withUnsafeBytes(of: &flags) { signRequest.append(contentsOf: $0) }
+        XCTAssertEqual(server.handleSignRequest(payload: signRequest, clientPid: getpid()), Data([5]))
+    }
+
+
     func testP256KeyGenerationAndSSHSigning() throws {
         let keyManager = makeKeyManager()
         let testLabel = "test_p256_\(UUID().uuidString)"
