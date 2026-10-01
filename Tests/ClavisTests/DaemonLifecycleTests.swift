@@ -360,6 +360,20 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
     }
 
 
+    func testLaunchAgentPlistIsStructurallySafeForHostilePaths() throws {
+        let hostile = "/tmp/a&b</string><key>RunAtLoad</key><false/>\"'\n<string>x/agent"
+        let data = try LaunchAtLoginManager.launchAgentPlistData(executable: hostile)
+
+        let parsed = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]
+        )
+        XCTAssertEqual(parsed["Label"] as? String, LaunchAtLoginManager.launchAgentLabel)
+        XCTAssertEqual(parsed["ProgramArguments"] as? [String], [hostile, "--daemon"])
+        XCTAssertEqual(parsed["RunAtLoad"] as? Bool, true, "Path content must not inject keys")
+        XCTAssertEqual(Set(parsed.keys), ["Label", "ProgramArguments", "RunAtLoad", "KeepAlive", "ProcessType"])
+    }
+
+
     func testLaunchAtLoginManager() {
         let tempPlistURL = FileManager.default.temporaryDirectory.appendingPathComponent("clavis_launch_\(UUID().uuidString).plist")
         LaunchAtLoginManager.customLaunchAgentURL = tempPlistURL
@@ -386,7 +400,9 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fakeBinary.path)
 
         // Without disabling signature check, unsigned file must fail verification
+        #if DEBUG
         AgentLifecycleManager.disableCodeSignatureCheckForTesting = false
+        #endif
         XCTAssertFalse(AgentLifecycleManager.verifyCodeSignature(of: fakeBinary))
 
         let lifecycle = AgentLifecycleManager()
