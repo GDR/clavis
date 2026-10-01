@@ -4,6 +4,9 @@ public struct ClavisLogger {
     private static let lock = NSLock()
     private static let defaultMaximumLogFileSize: UInt64 = 1_048_576
     private static let retainedLogFileCount = 3
+    /// The security audit log is kept longer than the general log so that routine activity
+    /// can never rotate security evidence away.
+    private static let retainedSecurityLogFileCount = 10
     private static let maximumMessageBytes = 8_192
     private static var _customLogFileURL: URL?
     private static var _customMaximumLogFileSize: UInt64?
@@ -47,6 +50,41 @@ public struct ClavisLogger {
         return dir.appendingPathComponent("clavis.log")
     }
 
+    /// Categories mirrored into the separate, longer-retained security log.
+    private static let securityCategories: Set<String> = [
+        "SECURITY", "SECURITY_ALERT", "LOCK", "GIT_GRACE",
+        "SSH_AGENT_SIGN", "TOUCH_ID_RESULT", "KEY_DELETE"
+    ]
+
+    /// High-frequency, low-value categories. These are dropped unless verbose logging is on, so
+    /// they cannot flood the log or leak per-request metadata by default.
+    private static let verboseOnlyCategories: Set<String> = [
+        "SSH_AGENT_REQ", "SSH_AGENT_IDENTITIES", "KEY_LIST"
+    ]
+
+    /// Enabled with `CLAVIS_VERBOSE_LOG=1` for troubleshooting.
+    public static var isVerboseLoggingEnabled: Bool {
+        if let override = _customVerbose { return override }
+        return ProcessInfo.processInfo.environment["CLAVIS_VERBOSE_LOG"] == "1"
+    }
+
+    private static var _customVerbose: Bool?
+    internal static var customVerbose: Bool? {
+        get { lock.lock(); defer { lock.unlock() }; return _customVerbose }
+        set { lock.lock(); _customVerbose = newValue; lock.unlock() }
+    }
+
+    public static var securityLogFileURL: URL {
+        lock.lock()
+        defer { lock.unlock() }
+        return securityURL(for: resolvedLogFileURL())
+    }
+
+    private static func securityURL(for generalURL: URL) -> URL {
+        let base = generalURL.deletingPathExtension().lastPathComponent
+        return generalURL.deletingLastPathComponent().appendingPathComponent("\(base).security.log")
+    }
+
     public enum Category: String {
         case security = "SECURITY"
         case sshAgent = "SSH_AGENT"
@@ -74,6 +112,8 @@ public struct ClavisLogger {
     }
 
     public static func log(_ category: String, _ message: String) {
+        if verboseOnlyCategories.contains(category) && !isVerboseLoggingEnabled { return }
+
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
         let timestamp = formatter.string(from: Date())
@@ -83,10 +123,20 @@ public struct ClavisLogger {
         print(line, terminator: "")
 
         let data = Data(line.utf8)
+        let isSecurityEvent = securityCategories.contains(safeCategory)
+
         lock.lock()
         defer { lock.unlock() }
 
         let url = resolvedLogFileURL()
+        append(data, to: url, retainedFiles: retainedLogFileCount)
+        if isSecurityEvent {
+            append(data, to: securityURL(for: url), retainedFiles: retainedSecurityLogFileCount)
+        }
+    }
+
+    /// Must be called with `lock` held.
+    private static func append(_ data: Data, to url: URL, retainedFiles: Int) {
         guard prepareLogDirectory(for: url) else { return }
 
         var checkStat = stat()
@@ -97,7 +147,8 @@ public struct ClavisLogger {
         rotateIfNeeded(
             url: url,
             incomingByteCount: UInt64(data.count),
-            maximumFileSize: effectiveMaximumLogFileSize
+            maximumFileSize: effectiveMaximumLogFileSize,
+            retainedFiles: retainedFiles
         )
 
         let descriptor = open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, S_IRUSR | S_IWUSR)
@@ -165,7 +216,7 @@ public struct ClavisLogger {
         }
     }
 
-    private static func rotateIfNeeded(url: URL, incomingByteCount: UInt64, maximumFileSize: UInt64) {
+    private static func rotateIfNeeded(url: URL, incomingByteCount: UInt64, maximumFileSize: UInt64, retainedFiles: Int) {
         var statBuf = stat()
         guard lstat(url.path, &statBuf) == 0 else { return }
         guard (statBuf.st_mode & S_IFMT) == S_IFREG else { return }
@@ -188,17 +239,17 @@ public struct ClavisLogger {
             let currentSize = UInt64(currentStat.st_size)
             guard currentSize > 0, currentSize + incomingByteCount > maximumFileSize else { return }
 
-            performRotation(url: url)
+            performRotation(url: url, retainedFiles: retainedFiles)
         }
     }
 
-    private static func performRotation(url: URL) {
+    private static func performRotation(url: URL, retainedFiles: Int) {
         let fileManager = FileManager.default
-        let oldestURL = rotatedURL(for: url, index: retainedLogFileCount)
+        let oldestURL = rotatedURL(for: url, index: retainedFiles)
         try? fileManager.removeItem(at: oldestURL)
 
-        if retainedLogFileCount > 1 {
-            for index in stride(from: retainedLogFileCount - 1, through: 1, by: -1) {
+        if retainedFiles > 1 {
+            for index in stride(from: retainedFiles - 1, through: 1, by: -1) {
                 let source = rotatedURL(for: url, index: index)
                 let destination = rotatedURL(for: url, index: index + 1)
                 if fileManager.fileExists(atPath: source.path) {

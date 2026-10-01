@@ -17,6 +17,7 @@ protects the recovery vault master key and can directly hold P-256 signing keys.
 - **Clamshell & Lid-Closed Fallback**: Supports Apple Watch double-click and macOS User Password fallback (`.deviceOwnerAuthentication`).
 - **In-Memory Session Cache & Auto-Lock**: Configurable cache TTL (Off, 5 min, 15 min, 1 hour) for scoped application and age operations. SSH-agent signing deliberately bypasses this cache. Cached material is purged when the screen locks, workspace sleeps, or upon clicking "Lock Now".
 - **`age-plugin-clavis` Integration**: CLI tool that translates Ed25519 keys to X25519 Montgomery keys for `age` and `sops-nix` secret decryption.
+- **Logs**: `~/.config/clavis/clavis.log` (3 x 1 MiB) holds general activity; security-relevant events (alerts, signing, locks, deletions, Git sessions) are also written to `clavis.security.log` (10 x 1 MiB) so routine activity cannot rotate them away. Per-request protocol chatter (`SSH_AGENT_REQ`, identity listings, key listings) is off by default; set `CLAVIS_VERBOSE_LOG=1` for troubleshooting. Logs contain key labels and requesting executable paths and are `0600` in a `0700` directory.
 - **Flake Integration**: Ready for Nix Flakes on macOS (`nix build`, `nix develop`).
 
 ---
