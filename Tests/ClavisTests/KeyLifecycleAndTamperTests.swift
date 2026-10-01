@@ -356,6 +356,109 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
     }
 
 
+    func testDowngradedBiometricPolicyInKeysJsonRefusesSigning() throws {
+        let keyStore = InMemoryPrivateKeyStore()
+        let cache = makeSessionCache()
+        let keyManager = KeychainManager(
+            authenticator: AllowingAuthenticator(),
+            privateKeyStore: keyStore,
+            sessionCache: cache
+        )
+
+        let label = "tamper-policy-\(UUID().uuidString)"
+        let record = StoredPrivateKeyRecord(
+            version: 1,
+            label: label,
+            algorithm: .ecdsaP256,
+            storageType: .secureEnclave,
+            biometricPolicy: .biometryCurrentSet,
+            keyPurpose: .general,
+            keyData: Data(repeating: 0xEE, count: 64)
+        )
+        try keyStore.save(label: label, data: try record.encode())
+
+        // Attacker edits keys.json to claim the key only needs the weaker default policy,
+        // which would make Clavis prompt with a weaker LocalAuthentication policy.
+        let downgraded = Ed25519KeyInfo(
+            label: label,
+            publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA... \(label)",
+            publicKeyBlob: Data([1, 2, 3]),
+            fingerprint: "SHA256:fake",
+            createdAt: Date(),
+            algorithmName: "ECDSA P-256",
+            storage: .secureEnclave,
+            biometricPolicy: .userPresence
+        )
+
+        XCTAssertThrowsError(try keyManager.signSSH(key: downgraded, data: Data("payload".utf8), prompt: "Sign")) { error in
+            guard case PrivateKeyRecordError.metadataMismatch(let field, let expected, let actual) = error else {
+                return XCTFail("Expected metadataMismatch, got \(error)")
+            }
+            XCTAssertEqual(field, "biometricPolicy")
+            XCTAssertEqual(expected, BiometricPolicy.userPresence.rawValue)
+            XCTAssertEqual(actual, BiometricPolicy.biometryCurrentSet.rawValue)
+        }
+        XCTAssertEqual(cache.cachedCount, 0)
+    }
+
+    func testStrengthenedBiometricPolicyInKeysJsonAlsoFailsClosed() throws {
+        let keyManager = KeychainManager(
+            authenticator: AllowingAuthenticator(),
+            privateKeyStore: InMemoryPrivateKeyStore(),
+            sessionCache: makeSessionCache()
+        )
+        let original = try keyManager.generateKey(
+            label: "tamper-policy-up-\(UUID().uuidString)",
+            algorithm: "Ed25519",
+            storageType: .keychain
+        )
+        let tampered = Ed25519KeyInfo(
+            label: original.label,
+            publicKeyOpenSSH: original.publicKeyOpenSSH,
+            publicKeyBlob: original.publicKeyBlob,
+            fingerprint: original.fingerprint,
+            createdAt: original.createdAt,
+            algorithmName: original.algorithmName,
+            storage: original.storage,
+            biometricPolicy: .biometryCurrentSet
+        )
+
+        XCTAssertThrowsError(try keyManager.signSSH(key: tampered, data: Data("payload".utf8), prompt: "Sign")) { error in
+            guard case PrivateKeyRecordError.metadataMismatch(let field, _, _) = error else {
+                return XCTFail("Expected metadataMismatch, got \(error)")
+            }
+            XCTAssertEqual(field, "biometricPolicy")
+        }
+        // The untampered key still signs: legacy nil policy == userPresence.
+        XCTAssertNoThrow(try keyManager.signSSH(key: original, data: Data("payload".utf8), prompt: "Sign"))
+    }
+
+    func testKeysJsonIsWrittenOwnerOnly() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("clavis-perm-\(UUID().uuidString)")
+        let file = directory.appendingPathComponent("keys.json")
+        let previous = PublicKeyStore.customStorageURL
+        PublicKeyStore.customStorageURL = file
+        defer {
+            PublicKeyStore.customStorageURL = previous
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let key = Ed25519KeyInfo(
+            label: "perm-test",
+            publicKeyOpenSSH: "ssh-ed25519 AAAA perm-test",
+            publicKeyBlob: Data([1]),
+            fingerprint: "SHA256:perm",
+            createdAt: Date()
+        )
+        PublicKeyStore.save(key)
+
+        let fileMode = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int
+        let dirMode = try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? Int
+        XCTAssertEqual(fileMode, 0o600)
+        XCTAssertEqual(dirMode, 0o700)
+    }
+
+
     func testTamperedPublicKeyBlobInKeysJsonRefusesSigning() throws {
         let keyStore = InMemoryPrivateKeyStore()
         let keyManager = KeychainManager(
