@@ -52,36 +52,31 @@ public final class LaunchAtLoginManager: @unchecked Sendable {
 
         // Fallback: Create LaunchAgent plist in ~/Library/LaunchAgents/
         let agentExec = AgentLifecycleManager.shared.locateAgentExecutable()?.path ?? (Bundle.main.executablePath ?? ProcessInfo.processInfo.arguments[0])
-        let plistContent = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-            <key>Label</key>
-            <string>\(Self.launchAgentLabel)</string>
-            <key>ProgramArguments</key>
-            <array>
-                <string>\(agentExec)</string>
-                <string>--daemon</string>
-            </array>
-            <key>RunAtLoad</key>
-            <true/>
-            <key>KeepAlive</key>
-            <false/>
-            <key>ProcessType</key>
-            <string>Interactive</string>
-        </dict>
-        </plist>
-        """
 
         do {
+            let plistData = try Self.launchAgentPlistData(executable: agentExec)
             let parentDir = Self.launchAgentURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
-            try plistContent.write(to: Self.launchAgentURL, atomically: true, encoding: .utf8)
+            try plistData.write(to: Self.launchAgentURL, options: .atomic)
+            // launchd rejects agent plists that are writable by group or others.
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: Self.launchAgentURL.path)
             ClavisLogger.log("AUTO_START", "Created LaunchAgent at \(Self.launchAgentURL.path)")
         } catch {
             ClavisLogger.log("AUTO_START", "Failed to write LaunchAgent: \(error.localizedDescription)")
         }
+    }
+
+    /// Builds the LaunchAgent property list with `PropertyListSerialization`, so a path that
+    /// contains XML-significant characters can never alter the plist structure.
+    static func launchAgentPlistData(executable: String) throws -> Data {
+        let plist: [String: Any] = [
+            "Label": launchAgentLabel,
+            "ProgramArguments": [executable, "--daemon"],
+            "RunAtLoad": true,
+            "KeepAlive": false,
+            "ProcessType": "Interactive"
+        ]
+        return try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
     }
 
     private func disableLaunchAtLogin() {

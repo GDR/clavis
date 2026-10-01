@@ -80,7 +80,11 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         return nil
     }
 
+    #if DEBUG
+    /// Test-only escape hatch. It does not exist in release builds, so nothing in a shipped
+    /// binary can switch off agent code-signature verification.
     public static var disableCodeSignatureCheckForTesting = false
+    #endif
 
     private func isTrustedExecutable(_ url: URL) -> Bool {
         let resolved = url.resolvingSymlinksInPath()
@@ -101,9 +105,11 @@ public final class AgentLifecycleManager: @unchecked Sendable {
             return false
         }
 
+        #if DEBUG
         if Self.disableCodeSignatureCheckForTesting {
             return true
         }
+        #endif
 
         return Self.verifyCodeSignature(of: resolved)
     }
