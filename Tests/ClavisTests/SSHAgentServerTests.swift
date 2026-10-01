@@ -335,4 +335,60 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         server.releaseClientSlot(clientPid: pidB)
         XCTAssertEqual(server.activeClientCount, 0)
     }
+
+    // MARK: - Peer process binding
+
+    func testPeerProcessUnchangedForCurrentProcess() throws {
+        let pid = getpid()
+        let path = try XCTUnwrap(SSHAgentServer.getProcessPath(pid: pid))
+        let start = try XCTUnwrap(SSHAgentServer.processStartTime(pid: pid))
+
+        XCTAssertTrue(SSHAgentServer.peerProcessUnchanged(pid: pid, path: path, startTime: start))
+        XCTAssertFalse(SSHAgentServer.peerProcessUnchanged(pid: pid, path: path + "-other", startTime: start))
+        XCTAssertFalse(SSHAgentServer.peerProcessUnchanged(pid: pid, path: path, startTime: start &+ 1),
+                       "A different start time means the PID was recycled")
+    }
+
+    func testPeerProcessUnchangedIsFalseForMissingProcess() {
+        XCTAssertFalse(SSHAgentServer.peerProcessUnchanged(pid: 999_999, path: "/bin/sh", startTime: 1))
+    }
+
+    func testPeerProcessChangeAfterExecIsDetected() throws {
+        // Child blocks on stdin, then exec()s a different binary while keeping its PID
+        // (and any inherited sockets), which is exactly what the connection check must catch.
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sh")
+        child.arguments = ["-c", "read line; exec /bin/sleep 30"]
+        let stdin = Pipe()
+        child.standardInput = stdin
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        try child.run()
+        defer { child.terminate(); child.waitUntilExit() }
+
+        let pid = child.processIdentifier
+        var attributed: String?
+        let attributeDeadline = Date().addingTimeInterval(3)
+        while attributed == nil, Date() < attributeDeadline {
+            attributed = SSHAgentServer.getProcessPath(pid: pid)
+            if attributed == nil { Thread.sleep(forTimeInterval: 0.01) }
+        }
+        let path = try XCTUnwrap(attributed)
+        let start = try XCTUnwrap(SSHAgentServer.processStartTime(pid: pid))
+        XCTAssertTrue(SSHAgentServer.peerProcessUnchanged(pid: pid, path: path, startTime: start))
+
+        stdin.fileHandleForWriting.write(Data("go\n".utf8))
+        try stdin.fileHandleForWriting.close()
+
+        var detected = false
+        let detectDeadline = Date().addingTimeInterval(3)
+        while Date() < detectDeadline {
+            if !SSHAgentServer.peerProcessUnchanged(pid: pid, path: path, startTime: start) {
+                detected = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertTrue(detected, "exec() of a different image must invalidate the attributed identity")
+    }
 }

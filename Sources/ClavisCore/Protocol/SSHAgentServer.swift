@@ -254,6 +254,26 @@ public class SSHAgentServer {
         return nil
     }
 
+    /// Process start time in microseconds since the epoch; stable across `exec`, changes on PID reuse.
+    static func processStartTime(pid: pid_t) -> UInt64? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
+    }
+
+    /// `true` while `pid` is still the same process image that was attributed when the
+    /// connection was accepted. A peer that `exec`s a different binary after connecting
+    /// (keeping the inherited socket) or a recycled PID would otherwise keep the identity,
+    /// and therefore the Git signing grant, of the executable seen at `accept()`.
+    static func peerProcessUnchanged(pid: pid_t, path: String, startTime: UInt64) -> Bool {
+        guard let currentPath = getProcessPath(pid: pid),
+              let currentStart = processStartTime(pid: pid) else {
+            return false
+        }
+        return currentPath == path && currentStart == startTime
+    }
+
     /// Resolves a process-instance-bound identity for Git signing grants.
     /// Incorporates the executable path, parent process path/PID, process start time,
     /// and process group to prevent other arbitrary background processes from hijacking grants.
@@ -305,6 +325,7 @@ public class SSHAgentServer {
                 var pidLen = socklen_t(MemoryLayout<pid_t>.size)
                 let clientPid: pid_t? = (getsockopt(clientSocket, SOL_LOCAL, LOCAL_PEERPID, &peerPid, &pidLen) == 0 && peerPid > 0) ? peerPid : nil
                 let clientExecutablePath = clientPid.flatMap { SSHAgentServer.getProcessPath(pid: $0) }
+                let clientStartTime = clientPid.flatMap { SSHAgentServer.processStartTime(pid: $0) }
 
                 var optval: Int32 = 1
                 guard setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &optval, socklen_t(MemoryLayout<Int32>.size)) == 0,
@@ -324,7 +345,8 @@ public class SSHAgentServer {
                     self.handleClient(
                         socket: clientSocket,
                         clientPid: clientPid,
-                        clientExecutablePath: clientExecutablePath
+                        clientExecutablePath: clientExecutablePath,
+                        clientStartTime: clientStartTime
                     )
                 }
             }
@@ -371,7 +393,8 @@ public class SSHAgentServer {
     private func handleClient(
         socket clientSocket: Int32,
         clientPid: pid_t? = nil,
-        clientExecutablePath: String? = nil
+        clientExecutablePath: String? = nil,
+        clientStartTime: UInt64? = nil
     ) {
         defer { close(clientSocket) }
 
@@ -386,6 +409,12 @@ public class SSHAgentServer {
                 break
             }
             isFirstPacket = false
+
+            if let pid = clientPid, let path = clientExecutablePath, let start = clientStartTime,
+               !Self.peerProcessUnchanged(pid: pid, path: path, startTime: start) {
+                ClavisLogger.log("SECURITY_ALERT", "Dropping connection: peer PID \(pid) is no longer the process attributed at accept (exec or PID reuse).")
+                break
+            }
 
             let msgLength = Int(UInt32(bigEndian: lengthHeader))
             if msgLength <= 0 || msgLength > 65536 { break }
