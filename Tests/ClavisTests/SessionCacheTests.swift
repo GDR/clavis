@@ -669,7 +669,9 @@ final class SessionCacheTests: ClavisBaseTestCase {
 
     func testSocketLockAllRequestClearsCacheAndGrants() throws {
         let testSockPath = testRootURL.appendingPathComponent("lockall-socket.sock").path
-        let server = SSHAgentServer(socketPath: testSockPath)
+        // The xctest runner is not a Clavis-signed binary; simulate a trusted Clavis peer here.
+        // The refusal path is covered by SSHAgentServerTests.testControlOpcodeOverRealSocketIsRefusedForNonClavisPeer.
+        let server = SSHAgentServer(socketPath: testSockPath, controlPeerValidator: { _ in true })
         try server.start()
         defer { server.stop() }
 

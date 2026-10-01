@@ -37,11 +37,66 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         let response = SSHAgentServer(keyManager: makeKeyManager()).processAgentRequest(
             payload: request,
             clientPid: getpid(),
-            clientExecutablePath: "/Applications/Clavis.app/Contents/MacOS/Clavis"
+            clientExecutablePath: "/Applications/Clavis.app/Contents/MacOS/Clavis",
+            isTrustedControlPeer: { true }
         )
 
         XCTAssertEqual(response, Data([6]))
         XCTAssertNil(GitSigningGraceManager.shared.getValidGrant(for: label))
+    }
+
+    func testControlOpcodesAreRefusedForUntrustedPeers() throws {
+        let label = "untrusted-\(UUID().uuidString)"
+        GitSigningGraceManager.shared.invalidateAll(broadcast: false)
+        defer { GitSigningGraceManager.shared.invalidateAll(broadcast: false) }
+        _ = GitSigningGraceManager.shared.recordGrant(
+            keyLabel: label,
+            clientIdentity: "/usr/bin/git",
+            context: LAContext()
+        )
+        let server = SSHAgentServer(keyManager: makeKeyManager())
+
+        var invalidate = Data([SSHAgentServer.invalidateKeyRequest])
+        invalidate.appendWireString(label)
+        let requests = [invalidate, Data([SSHAgentServer.queryGitGraceRequest]), Data([SSHAgentServer.lockAllRequest])]
+        for request in requests {
+            // Default (no trust callback) and an explicit "untrusted" peer are both refused.
+            XCTAssertEqual(server.processAgentRequest(payload: request), Data([5]))
+            XCTAssertEqual(server.processAgentRequest(payload: request, isTrustedControlPeer: { false }), Data([5]))
+        }
+        XCTAssertNotNil(GitSigningGraceManager.shared.getValidGrant(for: label),
+                        "A refused control request must not revoke or reveal the grant")
+    }
+
+    func testTrustCallbackIsNotEvaluatedForStandardAgentMessages() {
+        let server = SSHAgentServer(keyManager: makeKeyManager())
+        var evaluated = false
+        _ = server.processAgentRequest(payload: Data([11]), isTrustedControlPeer: { evaluated = true; return true })
+        XCTAssertFalse(evaluated)
+    }
+
+    func testControlOpcodeOverRealSocketIsRefusedForNonClavisPeer() throws {
+        let socketPath = testRootURL.appendingPathComponent("control.sock").path
+        let server = SSHAgentServer(socketPath: socketPath, keyManager: makeKeyManager())
+        try server.start()
+        defer { server.stop() }
+
+        let fd = try connectUnixSocket(path: socketPath)
+        defer { close(fd) }
+        var packet = Data()
+        packet.appendWireUInt32(1)
+        packet.append(SSHAgentServer.lockAllRequest)
+        XCTAssertEqual(packet.withUnsafeBytes { write(fd, $0.baseAddress, packet.count) }, packet.count)
+
+        var header = [UInt8](repeating: 0, count: 5)
+        var received = 0
+        while received < header.count {
+            let n = read(fd, &header[received], header.count - received)
+            if n <= 0 { break }
+            received += n
+        }
+        // The xctest runner is not a Clavis-signed binary, so the request must be refused.
+        XCTAssertEqual(header, [0, 0, 0, 1, 5])
     }
 
 

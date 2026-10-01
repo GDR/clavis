@@ -35,6 +35,55 @@ enum ClavisCodeTrust {
         team.utf8.count == 10 && team.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) }
     }
 
+    /// Returns `true` only if the process on the other end of a connected AF_UNIX
+    /// socket is a Clavis binary (see the type documentation).
+    ///
+    /// Identity comes from `LOCAL_PEERTOKEN` (the peer's audit token, which includes
+    /// the PID version), so it cannot be confused by PID reuse, and a peer that
+    /// `exec`ed after connecting no longer resolves to a valid guest. A forwarded
+    /// agent connection (`ssh -A`) is relayed by `/usr/bin/ssh` and is therefore
+    /// never a Clavis peer.
+    static func isTrustedPeer(socket fd: Int32) -> Bool {
+        var token = audit_token_t()
+        var length = socklen_t(MemoryLayout<audit_token_t>.size)
+        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &length) == 0,
+              length == socklen_t(MemoryLayout<audit_token_t>.size) else {
+            return false
+        }
+        let tokenData = withUnsafeBytes(of: &token) { Data($0) }
+        let attributes = [kSecGuestAttributeAudit as String: tokenData] as CFDictionary
+        var guest: SecCode?
+        guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &guest) == errSecSuccess, let guest else {
+            return false
+        }
+        return isTrusted(guest: guest, requirement: requirement, allowIdentifierOnlyDevelopmentFallback: allowsDevelopmentFallback)
+    }
+
+    #if DEBUG
+    static let allowsDevelopmentFallback = true
+    #else
+    static let allowsDevelopmentFallback = false
+    #endif
+
+    static func isTrusted(
+        guest: SecCode,
+        requirement: SecRequirement?,
+        allowIdentifierOnlyDevelopmentFallback: Bool
+    ) -> Bool {
+        if let requirement {
+            return SecCodeCheckValidity(guest, [], requirement) == errSecSuccess
+        }
+        guard allowIdentifierOnlyDevelopmentFallback,
+              SecCodeCheckValidity(guest, [], nil) == errSecSuccess else {
+            return false
+        }
+        var staticGuest: SecStaticCode?
+        guard SecCodeCopyStaticCode(guest, [], &staticGuest) == errSecSuccess, let staticGuest else {
+            return false
+        }
+        return signingIdentifier(of: staticGuest) == sharedIdentifier
+    }
+
     static func currentTeamIdentifier() -> String? {
         var selfCode: SecCode?
         var staticSelf: SecStaticCode?
