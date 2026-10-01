@@ -740,7 +740,13 @@ public class KeychainManager {
         duration: TimeInterval = 300.0,
         maxOperations: Int = 200
     ) throws -> GitSigningGrant {
-        let context = try authenticator.authenticate(reason: prompt)
+        // Match signSSH: strict biometric keys must not accept a password fallback.
+        // The returned context is reused for later signatures, so a weaker policy here
+        // would quietly downgrade every signature under the grant.
+        let laPolicy: LAPolicy = (key.biometricPolicy == .biometryCurrentSet)
+            ? .deviceOwnerAuthenticationWithBiometrics
+            : .deviceOwnerAuthentication
+        let context = try authenticator.authenticate(reason: prompt, policy: laPolicy)
         var record = try loadAuthenticatedRecord(
             label: key.label,
             context: context,
@@ -748,6 +754,20 @@ public class KeychainManager {
             expectedKeyInfo: key
         )
         defer { record.wipe() }
+
+        // keys.json chose the LocalAuthentication policy above and is not authenticated.
+        // If the Keychain record requires the current biometric set, refuse a context
+        // that was evaluated with a weaker policy and do not record the grant.
+        let recordPolicy = record.biometricPolicy ?? .userPresence
+        if recordPolicy == .biometryCurrentSet && laPolicy != .deviceOwnerAuthenticationWithBiometrics {
+            context.invalidate()
+            ClavisLogger.log("SECURITY_ALERT", "Refusing Git signing grant for '\(key.label)': record requires biometryCurrentSet but the authentication context was not evaluated with biometrics.")
+            throw PrivateKeyRecordError.metadataMismatch(
+                field: "biometricPolicy",
+                expected: BiometricPolicy.userPresence.rawValue,
+                actual: recordPolicy.rawValue
+            )
+        }
 
         try validateAuthenticatedRecord(record, against: key, context: context)
 

@@ -408,4 +408,216 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             .singleShot
         )
     }
+
+    func testAuthorizeGitSigningGrantUsesBiometricsForCurrentSet() throws {
+        let store = InMemoryPrivateKeyStore()
+        let authenticator = PolicyCapturingAuthenticator()
+        let manager = KeychainManager(authenticator: authenticator, privateKeyStore: store)
+        defer { GitSigningGraceManager.shared.invalidateAll(broadcast: false) }
+
+        let label = "strict-grant-\(UUID().uuidString)"
+        let key = try installEd25519Record(
+            store: store,
+            label: label,
+            recordPolicy: .biometryCurrentSet,
+            publishedPolicy: .biometryCurrentSet
+        )
+
+        let grant = try manager.authorizeGitSigningGrant(
+            key: key,
+            prompt: "Grant",
+            clientIdentity: "/usr/bin/git"
+        )
+
+        XCTAssertEqual(authenticator.policies, [.deviceOwnerAuthenticationWithBiometrics])
+        XCTAssertEqual(GitSigningGraceManager.shared.getValidGrant(for: label)?.keyLabel, grant.keyLabel)
+        XCTAssertTrue(grant.isValid)
+    }
+
+    func testAuthorizeGitSigningGrantRejectsWeakerContextForStrictRecord() throws {
+        let store = InMemoryPrivateKeyStore()
+        let authenticator = PolicyCapturingAuthenticator()
+        let manager = KeychainManager(authenticator: authenticator, privateKeyStore: store)
+        defer { GitSigningGraceManager.shared.invalidateAll(broadcast: false) }
+
+        let label = "downgraded-grant-\(UUID().uuidString)"
+        let key = try installEd25519Record(
+            store: store,
+            label: label,
+            recordPolicy: .biometryCurrentSet,
+            publishedPolicy: .userPresence
+        )
+
+        XCTAssertThrowsError(
+            try manager.authorizeGitSigningGrant(
+                key: key,
+                prompt: "Grant",
+                clientIdentity: "/usr/bin/git"
+            )
+        ) { error in
+            guard case PrivateKeyRecordError.metadataMismatch(let field, let expected, let actual) = error else {
+                return XCTFail("Expected metadataMismatch, got \(error)")
+            }
+            XCTAssertEqual(field, "biometricPolicy")
+            XCTAssertEqual(expected, BiometricPolicy.userPresence.rawValue)
+            XCTAssertEqual(actual, BiometricPolicy.biometryCurrentSet.rawValue)
+        }
+
+        XCTAssertEqual(authenticator.policies, [.deviceOwnerAuthentication])
+        XCTAssertNil(GitSigningGraceManager.shared.getValidGrant(for: label))
+
+        let context = try XCTUnwrap(authenticator.contexts.last)
+        context.interactionNotAllowed = true
+        let evaluated = expectation(description: "invalidated context cannot be reused")
+        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "reuse") { success, error in
+            XCTAssertFalse(success)
+            XCTAssertEqual((error as? LAError)?.code, .invalidContext)
+            evaluated.fulfill()
+        }
+        wait(for: [evaluated], timeout: 2)
+    }
+
+    func testFailedSignatureUnderNewGrantInvalidatesGrant() throws {
+        let store = LoadFailingPrivateKeyStore(failOnLoadNumber: 3)
+        let manager = KeychainManager(authenticator: CountingAuthenticator(), privateKeyStore: store)
+        let server = SSHAgentServer(keyManager: manager)
+        let label = "grant-fail-\(UUID().uuidString)"
+        let keyInfo = try manager.generateKey(label: label, keyPurpose: .general)
+
+        GitSigningGraceManager.promptProvider = { _, _ in .grantFiveMinutes }
+        defer {
+            GitSigningGraceManager.promptProvider = { keyLabel, clientDesc in
+                GitSigningPrompt.displayModal(keyLabel: keyLabel, clientDesc: clientDesc)
+            }
+            GitSigningGraceManager.shared.invalidateAll(broadcast: false)
+        }
+
+        let makeGitSignRequest: () -> Data = {
+            let gitPayload = SSHSIGPayload(
+                namespace: "git",
+                hashAlgorithm: "sha256",
+                messageHash: Data(repeating: 0x77, count: 32)
+            ).serialize()
+            var req = Data()
+            req.appendWireData(keyInfo.publicKeyBlob)
+            req.appendWireData(gitPayload)
+            var flags: UInt32 = 0
+            Swift.withUnsafeBytes(of: &flags) { req.append(contentsOf: $0) }
+            return req
+        }
+
+        let first = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
+        XCTAssertEqual(first.first, 14)
+
+        let second = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
+        XCTAssertEqual(second, Data([5]))
+        XCTAssertNil(
+            GitSigningGraceManager.shared.getValidGrant(for: label),
+            "A signature failure under a new grant must invalidate that grant"
+        )
+    }
+
+    private func installEd25519Record(
+        store: InMemoryPrivateKeyStore,
+        label: String,
+        recordPolicy: BiometricPolicy?,
+        publishedPolicy: BiometricPolicy?
+    ) throws -> Ed25519KeyInfo {
+        let privateKey = Curve25519.Signing.PrivateKey()
+        var record = StoredPrivateKeyRecord(
+            label: label,
+            algorithm: .ed25519,
+            storageType: .keychain,
+            biometricPolicy: recordPolicy,
+            keyPurpose: .general,
+            keyData: privateKey.rawRepresentation
+        )
+        defer { record.wipe() }
+        try store.save(label: label, data: try record.encode())
+        let blob = try KeychainManager.derivePublicKeyBlob(record: record)
+        return Ed25519KeyInfo(
+            label: label,
+            publicKeyOpenSSH: "ssh-ed25519 \(blob.base64EncodedString()) \(label)",
+            publicKeyBlob: blob,
+            fingerprint: "SHA256:test",
+            createdAt: Date(),
+            algorithmName: "Ed25519",
+            storage: .keychain,
+            biometricPolicy: publishedPolicy,
+            keyPurpose: .general
+        )
+    }
+}
+
+private final class PolicyCapturingAuthenticator: UserAuthenticating {
+    private let lock = NSLock()
+    private var recordedPolicies: [LAPolicy] = []
+    private var recordedContexts: [LAContext] = []
+
+    var policies: [LAPolicy] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedPolicies
+    }
+
+    var contexts: [LAContext] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedContexts
+    }
+
+    func authenticate(reason: String, policy: LAPolicy) throws -> LAContext {
+        capture(policy: policy)
+    }
+
+    func authenticate(reason: String, policy: LAPolicy) async throws -> LAContext {
+        capture(policy: policy)
+    }
+
+    private func capture(policy: LAPolicy) -> LAContext {
+        let context = LAContext()
+        lock.lock()
+        recordedPolicies.append(policy)
+        recordedContexts.append(context)
+        lock.unlock()
+        return context
+    }
+}
+
+private final class LoadFailingPrivateKeyStore: PrivateKeyStoring {
+    private let inner = InMemoryPrivateKeyStore()
+    private let lock = NSLock()
+    private var loads = 0
+    private let failOnLoadNumber: Int
+
+    init(failOnLoadNumber: Int) {
+        self.failOnLoadNumber = failOnLoadNumber
+    }
+
+    func contains(label: String) -> Bool {
+        inner.contains(label: label)
+    }
+
+    func save(label: String, data: Data, accessControlFlags: SecAccessControlCreateFlags) throws {
+        try inner.save(label: label, data: data, accessControlFlags: accessControlFlags)
+    }
+
+    func load(label: String, context: LAContext, prompt: String) throws -> Data? {
+        lock.lock()
+        loads += 1
+        let shouldFail = loads >= failOnLoadNumber
+        lock.unlock()
+        if shouldFail {
+            throw NSError(
+                domain: "ClavisTest",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "injected private-key load failure"]
+            )
+        }
+        return try inner.load(label: label, context: context, prompt: prompt)
+    }
+
+    func remove(label: String, context: LAContext?, prompt: String) throws {
+        try inner.remove(label: label, context: context, prompt: prompt)
+    }
 }
