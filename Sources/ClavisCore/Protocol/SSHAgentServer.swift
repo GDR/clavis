@@ -49,6 +49,7 @@ public class SSHAgentServer {
     private let handshakeTimeout: TimeInterval
     private let keyManager: KeychainManager
     private let controlPeerValidator: (Int32) -> Bool
+    private let promptGate: SigningPromptGate
     private let stateLock = NSLock()
     private var _serverSocket: Int32 = -1
     private var _isRunning = false
@@ -63,8 +64,10 @@ public class SSHAgentServer {
         clientIdleTimeout: TimeInterval = 30,
         handshakeTimeout: TimeInterval = 2.0,
         keyManager: KeychainManager = .shared,
+        promptGate: SigningPromptGate = SigningPromptGate(),
         controlPeerValidator: ((Int32) -> Bool)? = nil
     ) {
+        self.promptGate = promptGate
         self.controlPeerValidator = controlPeerValidator ?? { ClavisCodeTrust.isTrustedPeer(socket: $0) }
         self.socketPath = socketPath
         self.maxConcurrentClients = max(1, maxConcurrentClients)
@@ -254,6 +257,26 @@ public class SSHAgentServer {
         return nil
     }
 
+    /// Process start time in microseconds since the epoch; stable across `exec`, changes on PID reuse.
+    static func processStartTime(pid: pid_t) -> UInt64? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
+    }
+
+    /// `true` while `pid` is still the same process image that was attributed when the
+    /// connection was accepted. A peer that `exec`s a different binary after connecting
+    /// (keeping the inherited socket) or a recycled PID would otherwise keep the identity,
+    /// and therefore the Git signing grant, of the executable seen at `accept()`.
+    static func peerProcessUnchanged(pid: pid_t, path: String, startTime: UInt64) -> Bool {
+        guard let currentPath = getProcessPath(pid: pid),
+              let currentStart = processStartTime(pid: pid) else {
+            return false
+        }
+        return currentPath == path && currentStart == startTime
+    }
+
     /// Resolves a process-instance-bound identity for Git signing grants.
     /// Incorporates the executable path, parent process path/PID, process start time,
     /// and process group to prevent other arbitrary background processes from hijacking grants.
@@ -305,6 +328,7 @@ public class SSHAgentServer {
                 var pidLen = socklen_t(MemoryLayout<pid_t>.size)
                 let clientPid: pid_t? = (getsockopt(clientSocket, SOL_LOCAL, LOCAL_PEERPID, &peerPid, &pidLen) == 0 && peerPid > 0) ? peerPid : nil
                 let clientExecutablePath = clientPid.flatMap { SSHAgentServer.getProcessPath(pid: $0) }
+                let clientStartTime = clientPid.flatMap { SSHAgentServer.processStartTime(pid: $0) }
 
                 var optval: Int32 = 1
                 guard setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &optval, socklen_t(MemoryLayout<Int32>.size)) == 0,
@@ -324,7 +348,8 @@ public class SSHAgentServer {
                     self.handleClient(
                         socket: clientSocket,
                         clientPid: clientPid,
-                        clientExecutablePath: clientExecutablePath
+                        clientExecutablePath: clientExecutablePath,
+                        clientStartTime: clientStartTime
                     )
                 }
             }
@@ -371,7 +396,8 @@ public class SSHAgentServer {
     private func handleClient(
         socket clientSocket: Int32,
         clientPid: pid_t? = nil,
-        clientExecutablePath: String? = nil
+        clientExecutablePath: String? = nil,
+        clientStartTime: UInt64? = nil
     ) {
         defer { close(clientSocket) }
 
@@ -386,6 +412,12 @@ public class SSHAgentServer {
                 break
             }
             isFirstPacket = false
+
+            if let pid = clientPid, let path = clientExecutablePath, let start = clientStartTime,
+               !Self.peerProcessUnchanged(pid: pid, path: path, startTime: start) {
+                ClavisLogger.log("SECURITY_ALERT", "Dropping connection: peer PID \(pid) is no longer the process attributed at accept (exec or PID reuse).")
+                break
+            }
 
             let msgLength = Int(UInt32(bigEndian: lengthHeader))
             if msgLength <= 0 || msgLength > 65536 { break }
@@ -568,6 +600,7 @@ public class SSHAgentServer {
             return Data([5])
         }
         let clientDesc = "\(Self.safeProcessPath(processPath)) (PID \(pid))"
+        let requester = Self.requesterDescription(processPath: processPath, pid: pid)
         let clientIdentity = SSHAgentServer.resolveClientIdentity(pid: pid, processPath: processPath)
 
         // Domain verification: Parse signed payload as OpenSSH SSHSIG (strict Git format)
@@ -616,13 +649,15 @@ public class SSHAgentServer {
                     case .grantFiveMinutes:
                         ClavisLogger.log("GIT_GRACE", "User approved 5-minute Git signing session. Authorizing via Touch ID...")
                         let authPrompt = Self.gitSigningSessionReason(keyLabel: matchingKey.label)
-                        let grant = try keyManager.authorizeGitSigningGrant(
-                            key: matchingKey,
-                            prompt: authPrompt,
-                            clientIdentity: clientIdentity,
-                            duration: 300.0,
-                            maxOperations: 200
-                        )
+                        let grant = try promptGate.run {
+                            try keyManager.authorizeGitSigningGrant(
+                                key: matchingKey,
+                                prompt: authPrompt,
+                                clientIdentity: clientIdentity,
+                                duration: 300.0,
+                                maxOperations: 200
+                            )
+                        }
                         // Perform the commit #2 signature under the newly created grant
                         guard let grantedSignature = try GitSigningGraceManager.shared.withGrant(
                             for: matchingKey.label,
@@ -644,36 +679,21 @@ public class SSHAgentServer {
 
                     case .singleShot:
                         ClavisLogger.log("GIT_GRACE", "User chose single-shot signing.")
-                        let prompt = Self.gitCommitSigningReason(keyLabel: matchingKey.label)
-                        sigBlob = try keyManager.signSSH(
-                            key: matchingKey,
-                            data: dataToSign,
-                            prompt: prompt,
-                            useCache: false
-                        )
+                        let prompt = Self.gitCommitSigningReason(keyLabel: matchingKey.label, requester: requester)
+                        sigBlob = try promptedSign(key: matchingKey, data: dataToSign, prompt: prompt)
                         GitSigningGraceManager.shared.recordGitSignature(for: matchingKey.label, clientIdentity: clientIdentity)
                     }
                 } else {
                     // Commit #1 (single commit / first in a potential sequence) -> standard Touch ID, no dialog
-                    let prompt = Self.gitCommitSigningReason(keyLabel: matchingKey.label)
-                    sigBlob = try keyManager.signSSH(
-                        key: matchingKey,
-                        data: dataToSign,
-                        prompt: prompt,
-                        useCache: false
-                    )
+                    let prompt = Self.gitCommitSigningReason(keyLabel: matchingKey.label, requester: requester)
+                    sigBlob = try promptedSign(key: matchingKey, data: dataToSign, prompt: prompt)
                     GitSigningGraceManager.shared.recordGitSignature(for: matchingKey.label, clientIdentity: clientIdentity)
                 }
             } else {
                 // Non-Git signing request (e.g. SSH login): Grace period NEVER applies
-                let prompt = Self.sshAuthenticationReason(keyLabel: matchingKey.label)
+                let prompt = Self.sshAuthenticationReason(keyLabel: matchingKey.label, requester: requester)
                 ClavisLogger.log("SSH_AGENT_SIGN", "Initiating SSH login signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
-                sigBlob = try keyManager.signSSH(
-                    key: matchingKey,
-                    data: dataToSign,
-                    prompt: prompt,
-                    useCache: false
-                )
+                sigBlob = try promptedSign(key: matchingKey, data: dataToSign, prompt: prompt)
             }
 
             var response = Data()
@@ -696,6 +716,34 @@ public class SSHAgentServer {
 
     static func sshAuthenticationReason(keyLabel: String) -> String {
         ClavisUIStrings.Prompt.sshAuthentication(keyLabel: keyLabel)
+    }
+
+    static func sshAuthenticationReason(keyLabel: String, requester: String) -> String {
+        ClavisUIStrings.Prompt.sshAuthentication(keyLabel: keyLabel, requester: requester)
+    }
+
+    static func gitCommitSigningReason(keyLabel: String, requester: String) -> String {
+        ClavisUIStrings.Prompt.gitCommitSigning(keyLabel: keyLabel, requester: requester)
+    }
+
+    /// Short, display-safe description of the requesting process for system auth prompts:
+    /// executable name (not the full path) and PID. Control and format characters are
+    /// stripped and the length is bounded so a hostile executable name cannot reshape the prompt.
+    static func requesterDescription(processPath: String, pid: pid_t) -> String {
+        let name = (processPath as NSString).lastPathComponent
+        let cleaned = String(String.UnicodeScalarView(name.unicodeScalars.filter {
+            !CharacterSet.controlCharacters.contains($0) && !CharacterSet.newlines.contains($0)
+        }))
+        let bounded = String(cleaned.prefix(48))
+        return "\(bounded.isEmpty ? "unknown" : bounded) (PID \(pid))"
+    }
+
+    /// Runs a signature that presents its own authentication prompt through the prompt gate
+    /// (one prompt at a time, cooldown after repeated denials).
+    private func promptedSign(key: Ed25519KeyInfo, data: Data, prompt: String) throws -> Data {
+        try promptGate.run {
+            try keyManager.signSSH(key: key, data: data, prompt: prompt, useCache: false)
+        }
     }
 
     static func gitCommitSigningReason(keyLabel: String) -> String {

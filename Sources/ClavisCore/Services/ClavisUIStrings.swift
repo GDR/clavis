@@ -260,10 +260,6 @@ public enum ClavisUIStrings {
         public static var seedValid: String { localized("import_key.seed_valid", "Valid Ed25519 Seed Detected") }
         public static var seedWaiting: String { localized("import_key.seed_waiting", "Waiting for valid 64-char hex seed...") }
         public static var seedCompatibility: String { localized("import_key.seed_compatibility", "Compatible with OpenSSH (ssh-ed25519) and age/agenix encryption") }
-        public static var integrationsLabel: String { localized("import_key.integrations_label", "Enable Integrations") }
-        public static var integrationSSH: String { localized("import_key.integration_ssh", "SSH Agent") }
-        public static var integrationGit: String { localized("import_key.integration_git", "Git Signing") }
-        public static var integrationAge: String { localized("import_key.integration_age", "age / agenix") }
         public static var storageTitle: String { localized("import_key.storage_title", "Destination: Login Keychain") }
         public static var storageSubtitle: String { localized("import_key.storage_subtitle", "Guarded by macOS Keychain access control and biometric authentication.") }
         public static var button: String { localized("import_key.button", "Import Key") }
@@ -287,6 +283,12 @@ public enum ClavisUIStrings {
     public enum Prompt {
         public static func sshAuthentication(keyLabel: String) -> String {
             localizedFormat("prompt.ssh_auth", "use \u{201c}%@\u{201d} for SSH authentication", keyLabel)
+        }
+        public static func sshAuthentication(keyLabel: String, requester: String) -> String {
+            localizedFormat("prompt.ssh_auth_requester", "use \u{201c}%1$@\u{201d} for SSH authentication (requested by %2$@)", keyLabel, requester)
+        }
+        public static func gitCommitSigning(keyLabel: String, requester: String) -> String {
+            localizedFormat("prompt.git_commit_requester", "sign a Git commit with \u{201c}%1$@\u{201d} (requested by %2$@)", keyLabel, requester)
         }
         public static func gitCommitSigning(keyLabel: String) -> String {
             localizedFormat("prompt.git_commit", "sign a Git commit with \u{201c}%@\u{201d}", keyLabel)

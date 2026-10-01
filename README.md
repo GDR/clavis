@@ -13,10 +13,12 @@ protects the recovery vault master key and can directly hold P-256 signing keys.
 
 - **Native macOS SwiftUI & AppKit**: Built directly using `CryptoKit`, `Security`, and `LocalAuthentication` frameworks.
 - **Unencrypted Public Key Listing**: `ssh-add -l` and `SSH2_AGENTC_REQUEST_IDENTITIES` respond instantly **without triggering Touch ID prompts**.
-- **Touch ID Gated Signing**: Every SSH-agent signature request requires fresh user authentication and displays the requesting executable path. Age decryption can reuse the configured session cache.
+- **Touch ID Gated Signing**: Every SSH-agent signature request requires fresh user authentication, and the prompt names the requesting process (executable name and PID). Prompts are shown one at a time, and repeated denials trigger a short cooldown. Note that with `ssh -A` the requesting process is the local `ssh` client relaying a remote request. Age decryption can reuse the configured session cache.
 - **Clamshell & Lid-Closed Fallback**: Supports Apple Watch double-click and macOS User Password fallback (`.deviceOwnerAuthentication`).
 - **In-Memory Session Cache & Auto-Lock**: Configurable cache TTL (Off, 5 min, 15 min, 1 hour) for scoped application and age operations. SSH-agent signing deliberately bypasses this cache. Cached material is purged when the screen locks, workspace sleeps, or upon clicking "Lock Now".
+- **Git Signing Sessions**: After repeated commits (rebase, cherry-pick) Clavis can offer a 5-minute / 200-signature session bound to the requesting `ssh-keygen` process, its parent `git` process and process group. This is a convenience, not an isolation boundary: code that runs under the same `git` process (for example repository hooks) can present the same identity while a session is active. Choose "Sign Once" when working in repositories you do not trust.
 - **`age-plugin-clavis` Integration**: CLI tool that translates Ed25519 keys to X25519 Montgomery keys for `age` and `sops-nix` secret decryption.
+- **Logs**: `~/.config/clavis/clavis.log` (3 x 1 MiB) holds general activity; security-relevant events (alerts, signing, locks, deletions, Git sessions) are also written to `clavis.security.log` (10 x 1 MiB) so routine activity cannot rotate them away. Per-request protocol chatter (`SSH_AGENT_REQ`, identity listings, key listings) is off by default; set `CLAVIS_VERBOSE_LOG=1` for troubleshooting. Logs contain key labels and requesting executable paths and are `0600` in a `0700` directory.
 - **Flake Integration**: Ready for Nix Flakes on macOS (`nix build`, `nix develop`).
 
 ---
@@ -68,6 +70,28 @@ signatures; it does not rebuild or re-sign the binaries.
 `just package` (or `make package`) also creates `clavis-macos-arm64.dmg` for graphical installation.
 Open the disk image and drag `Clavis.app` to the Applications shortcut. The DMG
 and Nix archive are published together with SHA-256 checksum files.
+
+#### Release signing and notarization
+
+Releases are built by `.github/workflows/release.yml`. Local and CI builds default to an
+`Apple Development` certificate, which is not distributable: Gatekeeper cannot verify it and
+the signature has no secure timestamp. For distributable builds:
+
+- Set the repository variable `CLAVIS_SIGN_IDENTITY` to `Developer ID Application` (and
+  `CLAVIS_EXPECTED_TEAM_ID` to your 10-character team ID so a wrong certificate fails the build).
+  Developer ID builds automatically use secure timestamps (`CLAVIS_TIMESTAMP=auto`).
+- Set `CLAVIS_NOTARIZE=1` (repository variable) with the secrets `NOTARY_KEY_BASE64`,
+  `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID` to submit the DMG to Apple, staple the ticket and
+  validate it with `spctl` before the checksum is computed. Locally, use
+  `CLAVIS_NOTARIZE=1 CLAVIS_NOTARY_PROFILE=<notarytool keychain profile> just package`.
+- Each release publishes a GitHub build-provenance attestation for the DMG and archive
+  (`gh attestation verify clavis-macos-arm64.dmg --repo <owner>/clavis`). Set the repository
+  variable `CLAVIS_ATTEST=0` to opt out (for example on a plan without attestations).
+
+Changing the signing certificate changes the Keychain designated requirement of the app. Records
+written by an `Apple Development` build are migrated by the existing authenticated-copy flow, but
+test the upgrade with a throwaway key on a spare account before shipping the first Developer ID
+build, and keep the recovery vault until it has been verified.
 
 ### 2. Build using Nix
 ```bash

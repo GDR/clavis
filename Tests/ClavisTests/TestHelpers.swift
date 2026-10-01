@@ -87,6 +87,7 @@ class ClavisBaseTestCase: XCTestCase {
         EncryptedVaultStore.forceSoftwareMasterKeyForTesting = true
         ClavisLogger.customLogFileURL = testRootURL.appendingPathComponent("clavis.log")
         ClavisLogger.customMaximumLogFileSize = nil
+        ClavisLogger.customVerbose = nil
     }
 
     override func tearDownWithError() throws {
@@ -96,6 +97,7 @@ class ClavisBaseTestCase: XCTestCase {
         EncryptedVaultStore.forceSoftwareMasterKeyForTesting = false
         ClavisLogger.customLogFileURL = nil
         ClavisLogger.customMaximumLogFileSize = nil
+        ClavisLogger.customVerbose = nil
         if let testRootURL {
             try? FileManager.default.removeItem(at: testRootURL)
         }

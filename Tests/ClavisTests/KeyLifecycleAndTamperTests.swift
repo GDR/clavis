@@ -128,6 +128,30 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
     }
 
 
+    func testImportedSeedHonorsGitSigningOnlyPurpose() throws {
+        let keyManager = makeKeyManager()
+        let label = "imported_git_only_\(UUID().uuidString)"
+        defer { try? keyManager.deleteKey(label: label) }
+        var seed = Data(repeating: 0x3c, count: 32)
+
+        let info = try keyManager.importKey(label: label, consuming: &seed, keyPurpose: .gitSigningOnly)
+
+        XCTAssertEqual(info.purpose, .gitSigningOnly)
+        XCTAssertEqual(try keyManager.fetchKeyInfo(label: label)?.purpose, .gitSigningOnly)
+
+        let server = SSHAgentServer(keyManager: keyManager)
+        XCTAssertNil(server.handleRequestIdentities().range(of: info.publicKeyBlob),
+                     "An imported git-only key must not be advertised for SSH login")
+
+        var signRequest = Data()
+        signRequest.appendWireData(info.publicKeyBlob)
+        signRequest.appendWireData(Data("ssh-userauth-challenge".utf8))
+        var flags: UInt32 = 0
+        Swift.withUnsafeBytes(of: &flags) { signRequest.append(contentsOf: $0) }
+        XCTAssertEqual(server.handleSignRequest(payload: signRequest, clientPid: getpid()), Data([5]))
+    }
+
+
     func testP256KeyGenerationAndSSHSigning() throws {
         let keyManager = makeKeyManager()
         let testLabel = "test_p256_\(UUID().uuidString)"
@@ -353,6 +377,109 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
         // Cache count must remain zero
         XCTAssertEqual(cache.cachedCount, 0)
+    }
+
+
+    func testDowngradedBiometricPolicyInKeysJsonRefusesSigning() throws {
+        let keyStore = InMemoryPrivateKeyStore()
+        let cache = makeSessionCache()
+        let keyManager = KeychainManager(
+            authenticator: AllowingAuthenticator(),
+            privateKeyStore: keyStore,
+            sessionCache: cache
+        )
+
+        let label = "tamper-policy-\(UUID().uuidString)"
+        let record = StoredPrivateKeyRecord(
+            version: 1,
+            label: label,
+            algorithm: .ecdsaP256,
+            storageType: .secureEnclave,
+            biometricPolicy: .biometryCurrentSet,
+            keyPurpose: .general,
+            keyData: Data(repeating: 0xEE, count: 64)
+        )
+        try keyStore.save(label: label, data: try record.encode())
+
+        // Attacker edits keys.json to claim the key only needs the weaker default policy,
+        // which would make Clavis prompt with a weaker LocalAuthentication policy.
+        let downgraded = Ed25519KeyInfo(
+            label: label,
+            publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA... \(label)",
+            publicKeyBlob: Data([1, 2, 3]),
+            fingerprint: "SHA256:fake",
+            createdAt: Date(),
+            algorithmName: "ECDSA P-256",
+            storage: .secureEnclave,
+            biometricPolicy: .userPresence
+        )
+
+        XCTAssertThrowsError(try keyManager.signSSH(key: downgraded, data: Data("payload".utf8), prompt: "Sign")) { error in
+            guard case PrivateKeyRecordError.metadataMismatch(let field, let expected, let actual) = error else {
+                return XCTFail("Expected metadataMismatch, got \(error)")
+            }
+            XCTAssertEqual(field, "biometricPolicy")
+            XCTAssertEqual(expected, BiometricPolicy.userPresence.rawValue)
+            XCTAssertEqual(actual, BiometricPolicy.biometryCurrentSet.rawValue)
+        }
+        XCTAssertEqual(cache.cachedCount, 0)
+    }
+
+    func testStrengthenedBiometricPolicyInKeysJsonAlsoFailsClosed() throws {
+        let keyManager = KeychainManager(
+            authenticator: AllowingAuthenticator(),
+            privateKeyStore: InMemoryPrivateKeyStore(),
+            sessionCache: makeSessionCache()
+        )
+        let original = try keyManager.generateKey(
+            label: "tamper-policy-up-\(UUID().uuidString)",
+            algorithm: "Ed25519",
+            storageType: .keychain
+        )
+        let tampered = Ed25519KeyInfo(
+            label: original.label,
+            publicKeyOpenSSH: original.publicKeyOpenSSH,
+            publicKeyBlob: original.publicKeyBlob,
+            fingerprint: original.fingerprint,
+            createdAt: original.createdAt,
+            algorithmName: original.algorithmName,
+            storage: original.storage,
+            biometricPolicy: .biometryCurrentSet
+        )
+
+        XCTAssertThrowsError(try keyManager.signSSH(key: tampered, data: Data("payload".utf8), prompt: "Sign")) { error in
+            guard case PrivateKeyRecordError.metadataMismatch(let field, _, _) = error else {
+                return XCTFail("Expected metadataMismatch, got \(error)")
+            }
+            XCTAssertEqual(field, "biometricPolicy")
+        }
+        // The untampered key still signs: legacy nil policy == userPresence.
+        XCTAssertNoThrow(try keyManager.signSSH(key: original, data: Data("payload".utf8), prompt: "Sign"))
+    }
+
+    func testKeysJsonIsWrittenOwnerOnly() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("clavis-perm-\(UUID().uuidString)")
+        let file = directory.appendingPathComponent("keys.json")
+        let previous = PublicKeyStore.customStorageURL
+        PublicKeyStore.customStorageURL = file
+        defer {
+            PublicKeyStore.customStorageURL = previous
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let key = Ed25519KeyInfo(
+            label: "perm-test",
+            publicKeyOpenSSH: "ssh-ed25519 AAAA perm-test",
+            publicKeyBlob: Data([1]),
+            fingerprint: "SHA256:perm",
+            createdAt: Date()
+        )
+        PublicKeyStore.save(key)
+
+        let fileMode = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int
+        let dirMode = try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? Int
+        XCTAssertEqual(fileMode, 0o600)
+        XCTAssertEqual(dirMode, 0o700)
     }
 
 

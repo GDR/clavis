@@ -379,4 +379,33 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         XCTAssertEqual(choice, .singleShot)
         XCTAssertLessThan(elapsed, 0.5)
     }
+
+    func testModalDefaultButtonIsTheLeastPrivilegedChoice() {
+        // Return / default button must never start an unattended signing session.
+        XCTAssertEqual(
+            GitSigningPrompt.choice(forResponseFlags: CFOptionFlags(kCFUserNotificationDefaultResponse)),
+            .singleShot
+        )
+        XCTAssertEqual(
+            GitSigningPrompt.choice(forResponseFlags: CFOptionFlags(kCFUserNotificationAlternateResponse)),
+            .cancel
+        )
+        XCTAssertEqual(
+            GitSigningPrompt.choice(forResponseFlags: CFOptionFlags(kCFUserNotificationOtherResponse)),
+            .grantFiveMinutes
+        )
+    }
+
+    func testModalTimeoutAndUnknownResponsesCancel() {
+        // CFUserNotification reports a timeout / dismissal as the cancel response (3).
+        XCTAssertEqual(
+            GitSigningPrompt.choice(forResponseFlags: CFOptionFlags(kCFUserNotificationCancelResponse)),
+            .cancel
+        )
+        // Only the low two bits carry the response; higher flag bits must not change the outcome.
+        XCTAssertEqual(
+            GitSigningPrompt.choice(forResponseFlags: CFOptionFlags(kCFUserNotificationDefaultResponse) | 0x100),
+            .singleShot
+        )
+    }
 }

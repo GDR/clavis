@@ -2823,74 +2823,6 @@
         }
       }
     },
-    "import_key.integrations_label": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enable Integrations"
-          }
-        },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Включить интеграции"
-          }
-        }
-      }
-    },
-    "import_key.integration_ssh": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "SSH Agent"
-          }
-        },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "SSH-агент"
-          }
-        }
-      }
-    },
-    "import_key.integration_git": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Git Signing"
-          }
-        },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Подпись Git"
-          }
-        }
-      }
-    },
-    "import_key.integration_age": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "age / agenix"
-          }
-        },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "age / agenix"
-          }
-        }
-      }
-    },
     "import_key.storage_title": {
       "extractionState": "manual",
       "localizations": {
@@ -3112,6 +3044,23 @@
         }
       }
     },
+    "prompt.ssh_auth_requester": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "use “%1$@” for SSH authentication (requested by %2$@)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "использовать «%1$@» для аутентификации SSH (запрос от %2$@)"
+          }
+        }
+      }
+    },
     "prompt.git_commit": {
       "extractionState": "manual",
       "localizations": {
@@ -3125,6 +3074,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "подписать Git-коммит с помощью «%@»"
+          }
+        }
+      }
+    },
+    "prompt.git_commit_requester": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sign a Git commit with “%1$@” (requested by %2$@)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "подписать Git-коммит с помощью «%1$@» (запрос от %2$@)"
           }
         }
       }

@@ -328,6 +328,19 @@ public class KeychainManager {
             )
         }
 
+        // The authentication policy used to prompt the user was chosen from keys.json, which is an
+        // unauthenticated display cache. Refuse to proceed if the authoritative record disagrees,
+        // so a tampered index can only cause a refusal, never a weaker effective policy.
+        let recordPolicy = record.biometricPolicy ?? .userPresence
+        guard recordPolicy == key.effectiveBiometricPolicy else {
+            ClavisLogger.log("SECURITY_ALERT", "Biometric policy mismatch for '\(key.label)': record='\(recordPolicy.rawValue)', metadata='\(key.effectiveBiometricPolicy.rawValue)'")
+            throw PrivateKeyRecordError.metadataMismatch(
+                field: "biometricPolicy",
+                expected: key.effectiveBiometricPolicy.rawValue,
+                actual: recordPolicy.rawValue
+            )
+        }
+
         let derivedPublicBlob = try Self.derivePublicKeyBlob(record: record, context: context)
         guard derivedPublicBlob == key.publicKeyBlob else {
             ClavisLogger.log("SECURITY_ALERT", "Public key mismatch for '\(key.label)'! Possible metadata tampering.")
