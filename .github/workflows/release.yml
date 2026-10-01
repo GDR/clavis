@@ -196,16 +196,31 @@ jobs:
         env:
           CLAVIS_VERSION: ${{ steps.semver.outputs.version }}
           CLAVIS_BUILD_VERSION: ${{ github.run_number }}
-          # Set the repository variable CLAVIS_SIGN_IDENTITY to "Developer ID Application" for
-          # distributable builds. Changing identity changes the Keychain designated requirement
-          # (see README, "Release signing").
-          CLAVIS_SIGN_IDENTITY: ${{ vars.CLAVIS_SIGN_IDENTITY || 'Apple Development' }}
+          # Releases must be signed with a Developer ID Application identity. There is no
+          # development-identity fallback: a missing or non-Developer-ID value fails this step.
+          # Changing identity changes the Keychain designated requirement (see README, "Release signing").
+          CLAVIS_SIGN_IDENTITY: ${{ vars.CLAVIS_SIGN_IDENTITY }}
           CLAVIS_EXPECTED_TEAM_ID: ${{ vars.CLAVIS_EXPECTED_TEAM_ID }}
           CLAVIS_NOTARIZE: ${{ vars.CLAVIS_NOTARIZE || '0' }}
           CLAVIS_NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           CLAVIS_NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER_ID }}
           CLAVIS_KEYCHAIN: ${{ env.KEYCHAIN_PATH }}
         run: |
+          case "${CLAVIS_SIGN_IDENTITY:-}" in
+            "Developer ID Application"*) ;;
+            "")
+              echo "❌ CLAVIS_SIGN_IDENTITY must be set and start with 'Developer ID Application' before a release can be published." >&2
+              exit 1
+              ;;
+            *)
+              echo "❌ CLAVIS_SIGN_IDENTITY must start with 'Developer ID Application'. Refusing to publish a release signed with another identity." >&2
+              exit 1
+              ;;
+          esac
+          if [ -z "${CLAVIS_EXPECTED_TEAM_ID:-}" ]; then
+            echo "❌ CLAVIS_EXPECTED_TEAM_ID must be set before packaging a release." >&2
+            exit 1
+          fi
           security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
           security default-keychain -s "$KEYCHAIN_PATH"
           security list-keychains -s "$KEYCHAIN_PATH" $(security list-keychains | tr -d '"') /Library/Keychains/System.keychain
