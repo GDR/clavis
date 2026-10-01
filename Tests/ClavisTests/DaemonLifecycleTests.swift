@@ -352,6 +352,56 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         XCTAssertNil(lifecycle.locateAgentExecutable())
     }
 
+    /// Copies a system binary and re-signs it ad-hoc with an attacker-chosen identifier.
+    private func makeAdHocSignedBinary(identifier: String) throws -> URL {
+        let url = testRootURL.appendingPathComponent("adhoc-\(UUID().uuidString)")
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/bin/true"), to: url)
+        let codesign = Process()
+        codesign.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        codesign.arguments = ["--force", "--sign", "-", "--identifier", identifier, url.path]
+        codesign.standardOutput = FileHandle.nullDevice
+        codesign.standardError = FileHandle.nullDevice
+        try codesign.run()
+        codesign.waitUntilExit()
+        try XCTSkipUnless(codesign.terminationStatus == 0, "codesign unavailable in this environment")
+        return url
+    }
+
+    func testCodeSignatureRejectsAdHocBinaryClaimingSharedIdentifierWhenRequirementExists() throws {
+        let impostor = try makeAdHocSignedBinary(identifier: ClavisCodeTrust.sharedIdentifier)
+        let requirement = try XCTUnwrap(ClavisCodeTrust.makeRequirement(teamIdentifier: "ABCDE12345"))
+
+        // The identifier matches, but a team-pinned requirement exists: no downgrade is allowed,
+        // even if the development fallback is enabled.
+        XCTAssertFalse(AgentLifecycleManager.verifyCodeSignature(
+            of: impostor,
+            requirement: requirement,
+            allowIdentifierOnlyDevelopmentFallback: true
+        ))
+    }
+
+    func testCodeSignatureIdentifierOnlyFallbackIsDevelopmentOnly() throws {
+        let impostor = try makeAdHocSignedBinary(identifier: ClavisCodeTrust.sharedIdentifier)
+        let unrelated = try makeAdHocSignedBinary(identifier: "com.clavis.not-really")
+
+        // Release semantics: unsigned/ad-hoc parent without a team identifier fails closed.
+        XCTAssertFalse(AgentLifecycleManager.verifyCodeSignature(
+            of: impostor, requirement: nil, allowIdentifierOnlyDevelopmentFallback: false))
+
+        // Development semantics: only the exact shared identifier is accepted (no prefix wildcards).
+        XCTAssertTrue(AgentLifecycleManager.verifyCodeSignature(
+            of: impostor, requirement: nil, allowIdentifierOnlyDevelopmentFallback: true))
+        XCTAssertFalse(AgentLifecycleManager.verifyCodeSignature(
+            of: unrelated, requirement: nil, allowIdentifierOnlyDevelopmentFallback: true))
+    }
+
+    func testCodeTrustRequirementRejectsMalformedTeamIdentifiers() {
+        XCTAssertNotNil(ClavisCodeTrust.makeRequirement(teamIdentifier: "ABCDE12345"))
+        for malformed in ["", "abcde12345", "ABCDE1234", "ABCDE123456", "ABCDE\" or true", "ABCDE1234\n"] {
+            XCTAssertNil(ClavisCodeTrust.makeRequirement(teamIdentifier: malformed), malformed)
+        }
+    }
+
     @MainActor
     func testAppStateIgnoresSpoofedGitGraceNotificationUserInfo() throws {
         let cache = makeSessionCache()
