@@ -60,7 +60,10 @@ service owned by the current signed client. The old record is retained as a
 recovery fallback and is no longer consulted after the copy succeeds.
 
 For an explicitly local, non-distributable build without a certificate, opt in
-to ad-hoc signing with `CLAVIS_ALLOW_ADHOC_SIGNING=1 just`. The Nix package
+to ad-hoc signing with `CLAVIS_ALLOW_ADHOC_SIGNING=1 just`. Helper launch is
+pinned to the signing team of the running app, so an ad-hoc **release**
+build has no team to pin and will not auto-launch the bundled agent; use a
+debug build (`just run debug`) or start `clavis-agent --daemon` yourself. The Nix package
 downloads the pinned GitHub release archive and preserves its existing code
 signatures; it does not rebuild or re-sign the binaries.
 

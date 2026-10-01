@@ -108,9 +108,33 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         return Self.verifyCodeSignature(of: resolved)
     }
 
-    /// Verifies that the target executable has a valid code signature matching
-    /// Clavis signing identity or designated requirements.
+    /// Verifies that the target executable carries a valid code signature and
+    /// satisfies the Clavis trust requirement (shared identifier **and** the same
+    /// signing team as the running process).
+    ///
+    /// There is deliberately no identifier-only fallback in release builds: the
+    /// identifier is attacker-chosen (`codesign -s - -i Clavis`). When the running
+    /// process has no team identifier (unsigned or ad-hoc builds) release builds
+    /// fail closed; debug builds may accept a validly signed binary that carries
+    /// the shared identifier so local development keeps working.
     public static func verifyCodeSignature(of url: URL) -> Bool {
+        #if DEBUG
+        let allowIdentifierOnlyDevelopmentFallback = true
+        #else
+        let allowIdentifierOnlyDevelopmentFallback = false
+        #endif
+        return verifyCodeSignature(
+            of: url,
+            requirement: ClavisCodeTrust.requirement,
+            allowIdentifierOnlyDevelopmentFallback: allowIdentifierOnlyDevelopmentFallback
+        )
+    }
+
+    static func verifyCodeSignature(
+        of url: URL,
+        requirement: SecRequirement?,
+        allowIdentifierOnlyDevelopmentFallback: Bool
+    ) -> Bool {
         var staticCode: SecStaticCode?
         guard SecStaticCodeCreateWithPath(url as CFURL, [], &staticCode) == errSecSuccess,
               let targetCode = staticCode else {
@@ -118,38 +142,25 @@ public final class AgentLifecycleManager: @unchecked Sendable {
             return false
         }
 
-        let flags = SecCSFlags()
+        let flags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures)
         guard SecStaticCodeCheckValidity(targetCode, flags, nil) == errSecSuccess else {
             ClavisLogger.log("AGENT_LIFECYCLE", "Code signature validity check failed for \(url.path)")
             return false
         }
 
-        // Validate against current process designated requirement if available
-        var myCode: SecCode?
-        if SecCodeCopySelf([], &myCode) == errSecSuccess, let currentProcess = myCode {
-            var myStaticCode: SecStaticCode?
-            if SecCodeCopyStaticCode(currentProcess, [], &myStaticCode) == errSecSuccess,
-               let currentStaticCode = myStaticCode {
-                var myRequirement: SecRequirement?
-                if SecCodeCopyDesignatedRequirement(currentStaticCode, [], &myRequirement) == errSecSuccess,
-                   let req = myRequirement {
-                    if SecStaticCodeCheckValidity(targetCode, flags, req) == errSecSuccess {
-                        return true
-                    }
-                }
+        if let requirement {
+            if SecStaticCodeCheckValidity(targetCode, flags, requirement) == errSecSuccess {
+                return true
             }
+            // A signing requirement exists and was not met. Never downgrade to a weaker check.
+            ClavisLogger.log("SECURITY_ALERT", "Rejected helper \(url.path): does not satisfy the Clavis signing requirement.")
+            return false
         }
 
-        // Fallback for ad-hoc / standalone builds: verify code signing identifier matches Clavis or expected bundle prefix
-        var infoCF: CFDictionary?
-        let infoFlags = SecCSFlags(rawValue: UInt32(kSecCSSigningInformation))
-        if SecCodeCopySigningInformation(targetCode, infoFlags, &infoCF) == errSecSuccess,
-           let info = infoCF as? [String: Any] {
-            if let identifier = info[kSecCodeInfoIdentifier as String] as? String {
-                if identifier == "Clavis" || identifier == "com.clavis.clavis-agent" || identifier.hasPrefix("com.clavis.") {
-                    return true
-                }
-            }
+        if allowIdentifierOnlyDevelopmentFallback,
+           ClavisCodeTrust.signingIdentifier(of: targetCode) == ClavisCodeTrust.sharedIdentifier {
+            ClavisLogger.log("AGENT_LIFECYCLE", "Development build: accepting \(url.path) on identifier only.")
+            return true
         }
 
         ClavisLogger.log("AGENT_LIFECYCLE", "Code signature identity/requirement mismatch for \(url.path)")
