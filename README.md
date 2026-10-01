@@ -66,6 +66,28 @@ signatures; it does not rebuild or re-sign the binaries.
 Open the disk image and drag `Clavis.app` to the Applications shortcut. The DMG
 and Nix archive are published together with SHA-256 checksum files.
 
+#### Release signing and notarization
+
+Releases are built by `.github/workflows/release.yml`. Local and CI builds default to an
+`Apple Development` certificate, which is not distributable: Gatekeeper cannot verify it and
+the signature has no secure timestamp. For distributable builds:
+
+- Set the repository variable `CLAVIS_SIGN_IDENTITY` to `Developer ID Application` (and
+  `CLAVIS_EXPECTED_TEAM_ID` to your 10-character team ID so a wrong certificate fails the build).
+  Developer ID builds automatically use secure timestamps (`CLAVIS_TIMESTAMP=auto`).
+- Set `CLAVIS_NOTARIZE=1` (repository variable) with the secrets `NOTARY_KEY_BASE64`,
+  `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID` to submit the DMG to Apple, staple the ticket and
+  validate it with `spctl` before the checksum is computed. Locally, use
+  `CLAVIS_NOTARIZE=1 CLAVIS_NOTARY_PROFILE=<notarytool keychain profile> just package`.
+- Each release publishes a GitHub build-provenance attestation for the DMG and archive
+  (`gh attestation verify clavis-macos-arm64.dmg --repo <owner>/clavis`). Set the repository
+  variable `CLAVIS_ATTEST=0` to opt out (for example on a plan without attestations).
+
+Changing the signing certificate changes the Keychain designated requirement of the app. Records
+written by an `Apple Development` build are migrated by the existing authenticated-copy flow, but
+test the upgrade with a throwaway key on a spare account before shipping the first Developer ID
+build, and keep the recovery vault until it has been verified.
+
 ### 2. Build using Nix
 ```bash
 nix build

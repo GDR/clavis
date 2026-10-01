@@ -7,6 +7,10 @@ keychain := env_var_or_default("CLAVIS_KEYCHAIN", "")
 sign_identity := env_var_or_default("CLAVIS_SIGN_IDENTITY", "")
 allow_adhoc := env_var_or_default("CLAVIS_ALLOW_ADHOC_SIGNING", "0")
 expected_team_id := env_var_or_default("CLAVIS_EXPECTED_TEAM_ID", "")
+# auto: secure (Apple-timestamped) signatures for Developer ID builds, none for local builds.
+timestamp_mode := env_var_or_default("CLAVIS_TIMESTAMP", "auto")
+# Set to 1 to notarize and staple the DMG (requires a Developer ID Application identity).
+notarize := env_var_or_default("CLAVIS_NOTARIZE", "0")
 
 build_dir := ".build/" + config
 app_bundle := build_dir + "/Clavis.app"
@@ -88,7 +92,14 @@ sign config=config: (bundle config)
     identity="{{ sign_identity }}"
     if [ -z "$identity" ]; then
         target_kc="${keychain:+-k $keychain}"
-        if /usr/bin/security find-identity -v -p codesigning ${keychain:+$keychain} 2>/dev/null | grep -q "Apple Development"; then
+        if [ "{{ notarize }}" = "1" ]; then
+            if /usr/bin/security find-identity -v -p codesigning ${keychain:+$keychain} 2>/dev/null | grep -q "Developer ID Application"; then
+                identity="Developer ID Application"
+            else
+                echo "❌ CLAVIS_NOTARIZE=1 requires a 'Developer ID Application' certificate." >&2
+                exit 1
+            fi
+        elif /usr/bin/security find-identity -v -p codesigning ${keychain:+$keychain} 2>/dev/null | grep -q "Apple Development"; then
             identity="Apple Development"
         elif /usr/bin/security find-identity -v -p codesigning ${keychain:+$keychain} 2>/dev/null | grep -q "Clavis Local Development"; then
             identity="Clavis Local Development"
@@ -101,7 +112,38 @@ sign config=config: (bundle config)
         fi
     fi
 
-    echo "🔐 Signing binaries with identity: '$identity'..."
+    if [ "{{ notarize }}" = "1" ]; then
+        case "$identity" in
+            "Developer ID Application"*) ;;
+            *)
+                echo "❌ Notarization requires a 'Developer ID Application' identity, got '$identity'." >&2
+                exit 1
+                ;;
+        esac
+    fi
+
+    # Secure timestamps keep a release signature valid after the signing certificate expires and
+    # are required for notarization. They need network access, so local builds skip them.
+    case "{{ timestamp_mode }}" in
+        secure) timestamp_flag="--timestamp" ;;
+        none)   timestamp_flag="--timestamp=none" ;;
+        auto)
+            case "$identity" in
+                "Developer ID Application"*) timestamp_flag="--timestamp" ;;
+                *)                           timestamp_flag="--timestamp=none" ;;
+            esac
+            ;;
+        *)
+            echo "❌ CLAVIS_TIMESTAMP must be auto, secure or none." >&2
+            exit 1
+            ;;
+    esac
+    if [ "{{ notarize }}" = "1" ] && [ "$timestamp_flag" != "--timestamp" ]; then
+        echo "❌ Notarization requires secure timestamps (CLAVIS_TIMESTAMP must be auto or secure)." >&2
+        exit 1
+    fi
+
+    echo "🔐 Signing binaries with identity: '$identity' ($timestamp_flag)..."
 
     sign_and_verify() {
         local target="$1"
@@ -120,7 +162,7 @@ sign config=config: (bundle config)
             --sign "$identity" \
             --identifier "Clavis" \
             --options runtime \
-            --timestamp=none \
+            "$timestamp_flag" \
             --entitlements "$entitlements" \
             "$target"
 
@@ -140,6 +182,11 @@ sign config=config: (bundle config)
         sign_details="$(/usr/bin/codesign --display --verbose=4 "$target" 2>&1)"
         if ! echo "$sign_details" | grep -Fq "Identifier=Clavis"; then
             echo "❌ Shared Code Signing Identifier is missing from $target." >&2
+            exit 1
+        fi
+
+        if [ "$timestamp_flag" = "--timestamp" ] && ! echo "$sign_details" | grep -q "^Timestamp="; then
+            echo "❌ Expected a secure timestamp on $target but none was recorded." >&2
             exit 1
         fi
 
@@ -194,8 +241,50 @@ dmg config=config: (sign config)
         "$dmg"
 
     /usr/bin/hdiutil verify "$dmg"
+    if [ "{{ notarize }}" = "1" ]; then
+        # Stapling rewrites the image, so notarize before computing the checksum.
+        just --justfile "{{ justfile() }}" notarize "$dmg"
+    fi
     shasum -a 256 "$dmg" > "$dmg.sha256"
     echo "✅ Created $dmg and checksum."
+
+# Notarize and staple a signed disk image. Credentials come from either
+# CLAVIS_NOTARY_PROFILE (a `notarytool store-credentials` keychain profile) or an App Store
+# Connect API key: CLAVIS_NOTARY_KEY_PATH, CLAVIS_NOTARY_KEY_ID, CLAVIS_NOTARY_ISSUER.
+notarize file:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    file="{{ file }}"
+
+    if [ -n "${CLAVIS_NOTARY_PROFILE:-}" ]; then
+        auth=(--keychain-profile "$CLAVIS_NOTARY_PROFILE")
+    elif [ -n "${CLAVIS_NOTARY_KEY_PATH:-}" ] && [ -n "${CLAVIS_NOTARY_KEY_ID:-}" ] && [ -n "${CLAVIS_NOTARY_ISSUER:-}" ]; then
+        auth=(--key "$CLAVIS_NOTARY_KEY_PATH" --key-id "$CLAVIS_NOTARY_KEY_ID" --issuer "$CLAVIS_NOTARY_ISSUER")
+    else
+        echo "❌ Set CLAVIS_NOTARY_PROFILE, or CLAVIS_NOTARY_KEY_PATH + CLAVIS_NOTARY_KEY_ID + CLAVIS_NOTARY_ISSUER." >&2
+        exit 1
+    fi
+
+    result="$(mktemp)"
+    trap 'rm -f "$result"' EXIT
+
+    echo "📮 Submitting $file for notarization..."
+    /usr/bin/xcrun notarytool submit "$file" "${auth[@]}" --wait --output-format json > "$result" || true
+    status="$(/usr/bin/plutil -extract status raw -o - "$result" 2>/dev/null || true)"
+    submission_id="$(/usr/bin/plutil -extract id raw -o - "$result" 2>/dev/null || true)"
+
+    if [ "$status" != "Accepted" ]; then
+        echo "❌ Notarization finished with status '${status:-unknown}'." >&2
+        if [ -n "$submission_id" ]; then
+            /usr/bin/xcrun notarytool log "$submission_id" "${auth[@]}" >&2 || true
+        fi
+        exit 1
+    fi
+
+    /usr/bin/xcrun stapler staple "$file"
+    /usr/bin/xcrun stapler validate "$file"
+    /usr/sbin/spctl --assess --type open --context context:primary-signature -vv "$file"
+    echo "✅ Notarized and stapled $file."
 
 # Package DMG, Nix archive, and checksums for release
 package config=config: (dmg config)
