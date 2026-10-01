@@ -121,10 +121,26 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         }
     }
 
+    /// Envelope formats. `CLVENV01` has no associated data; `CLVENV02` authenticates the format
+    /// and the record label, so a ciphertext file cannot be moved to another label's slot.
+    private static let legacyMagic = Data("CLVENV01".utf8)
+    private static let currentMagic = Data("CLVENV02".utf8)
+
+    private static func associatedData(label: String) -> Data {
+        var aad = Data("clavis-vault-record-v2".utf8)
+        aad.append(0)
+        aad.append(Data(label.utf8))
+        return aad
+    }
+
     public func saveRecord(_ record: StoredPrivateKeyRecord) throws {
         lock.lock()
         defer { lock.unlock() }
+        try writeRecordLocked(record)
+    }
 
+    /// Caller must hold `lock`.
+    private func writeRecordLocked(_ record: StoredPrivateKeyRecord) throws {
         let masterPubKey = try ensureMasterKey()
         let recordBytes = try record.encode()
 
@@ -137,13 +153,17 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             outputByteCount: 32
         )
 
-        let sealed = try ChaChaPoly.seal(recordBytes, using: symmetricKey)
+        let sealed = try ChaChaPoly.seal(
+            recordBytes,
+            using: symmetricKey,
+            authenticating: Self.associatedData(label: record.label)
+        )
         let epkRaw = ephemeral.publicKey.rawRepresentation
         guard epkRaw.count <= 255 else {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Ephemeral public key too large"])
         }
 
-        var envelope = Data("CLVENV01".utf8)
+        var envelope = Self.currentMagic
         envelope.append(UInt8(epkRaw.count))
         envelope.append(epkRaw)
         envelope.append(sealed.combined)
@@ -173,11 +193,28 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         let fileURL = vaultDirectoryURL.appendingPathComponent("\(hash).enc")
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         let data = try Data(contentsOf: fileURL)
-        return try decryptEnvelope(data, context: context)
+        let (record, isLegacy) = try decryptEnvelope(data, label: label, context: context)
+
+        // Upgrade legacy envelopes in place once they have been authenticated, but only when the
+        // record really belongs to this label. Failure is harmless: the old file stays valid.
+        if isLegacy, record.label == label {
+            do {
+                try writeRecordLocked(record)
+                ClavisLogger.log("SECURITY", "Upgraded vault envelope to CLVENV02 for '\(label)'")
+            } catch {
+                ClavisLogger.log("SECURITY", "Vault envelope upgrade skipped for '\(label)': \(error.localizedDescription)")
+            }
+        }
+        return record
     }
 
-    private func decryptEnvelope(_ data: Data, context: LAContext?) throws -> StoredPrivateKeyRecord {
-        let magic = Data("CLVENV01".utf8)
+    private func decryptEnvelope(
+        _ data: Data,
+        label: String,
+        context: LAContext?
+    ) throws -> (record: StoredPrivateKeyRecord, isLegacy: Bool) {
+        let isLegacy = data.starts(with: Self.legacyMagic)
+        let magic = isLegacy ? Self.legacyMagic : Self.currentMagic
         guard data.starts(with: magic), data.count > magic.count + 1 else {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid vault envelope format"])
         }
@@ -229,7 +266,9 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         )
 
         let sealed = try ChaChaPoly.SealedBox(combined: ciphertext)
-        let decrypted = try ChaChaPoly.open(sealed, using: symmetricKey)
-        return try StoredPrivateKeyRecord.decode(from: decrypted)
+        let decrypted = isLegacy
+            ? try ChaChaPoly.open(sealed, using: symmetricKey)
+            : try ChaChaPoly.open(sealed, using: symmetricKey, authenticating: Self.associatedData(label: label))
+        return (try StoredPrivateKeyRecord.decode(from: decrypted), isLegacy)
     }
 }
