@@ -44,7 +44,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Just
-        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.0.0
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
 
       - name: Run Tests
         run: just test
@@ -65,7 +65,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Just
-        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.0.0
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
 
       - name: Resolve & Bump Version
         id: semver
