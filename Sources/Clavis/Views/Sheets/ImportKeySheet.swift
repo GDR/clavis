@@ -7,9 +7,7 @@ public struct ImportKeySheet: View {
 
     @State private var keyLabel: String = ""
     @State private var seedHex: String = ""
-    @State private var useSSH: Bool = true
-    @State private var useGitSigning: Bool = true
-    @State private var useAge: Bool = true
+    @State private var selectedPurpose: KeyPurpose = .general
     @State private var isImporting: Bool = false
     @State private var errorMessage: String? = nil
 
@@ -93,25 +91,8 @@ public struct ImportKeySheet: View {
             .padding(10)
             .glassCard(cornerRadius: 8)
 
-            // Integration Checkboxes
-            VStack(alignment: .leading, spacing: 8) {
-                Text(ClavisUIStrings.ImportKey.integrationsLabel)
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(DesignTokens.textSecondary)
-
-                HStack(spacing: 12) {
-                    Toggle(ClavisUIStrings.ImportKey.integrationSSH, isOn: $useSSH)
-                        .toggleStyle(.checkbox)
-                        .font(.subheadline)
-                    Toggle(ClavisUIStrings.ImportKey.integrationGit, isOn: $useGitSigning)
-                        .toggleStyle(.checkbox)
-                        .font(.subheadline)
-                    Toggle(ClavisUIStrings.ImportKey.integrationAge, isOn: $useAge)
-                        .toggleStyle(.checkbox)
-                        .font(.subheadline)
-                }
-            }
+            // Key Purpose (Domain Isolation)
+            KeyPurposePicker(selection: $selectedPurpose, accent: DesignTokens.accentBlue)
 
             // Storage Target Note
             HStack {
@@ -168,7 +149,7 @@ public struct ImportKeySheet: View {
         errorMessage = nil
 
         do {
-            _ = try appState.importKey(label: label, consuming: &seedData)
+            _ = try appState.importKey(label: label, consuming: &seedData, keyPurpose: selectedPurpose)
             dismiss()
         } catch {
             errorMessage = error.localizedDescription
