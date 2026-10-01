@@ -48,6 +48,7 @@ public class SSHAgentServer {
     private let clientIdleTimeout: TimeInterval
     private let handshakeTimeout: TimeInterval
     private let keyManager: KeychainManager
+    private let controlPeerValidator: (Int32) -> Bool
     private let promptGate: SigningPromptGate
     private let stateLock = NSLock()
     private var _serverSocket: Int32 = -1
@@ -63,9 +64,11 @@ public class SSHAgentServer {
         clientIdleTimeout: TimeInterval = 30,
         handshakeTimeout: TimeInterval = 2.0,
         keyManager: KeychainManager = .shared,
-        promptGate: SigningPromptGate = SigningPromptGate()
+        promptGate: SigningPromptGate = SigningPromptGate(),
+        controlPeerValidator: ((Int32) -> Bool)? = nil
     ) {
         self.promptGate = promptGate
+        self.controlPeerValidator = controlPeerValidator ?? { ClavisCodeTrust.isTrustedPeer(socket: $0) }
         self.socketPath = socketPath
         self.maxConcurrentClients = max(1, maxConcurrentClients)
         self.maxConcurrentClientsPerPID = max(1, maxConcurrentClientsPerPID)
@@ -429,7 +432,8 @@ public class SSHAgentServer {
             let response = processAgentRequest(
                 payload: payload,
                 clientPid: clientPid,
-                clientExecutablePath: clientExecutablePath
+                clientExecutablePath: clientExecutablePath,
+                isTrustedControlPeer: { self.controlPeerValidator(clientSocket) }
             )
             var responseLen = UInt32(response.count).bigEndian
             let writeHeaderSuccess = Swift.withUnsafeBytes(of: &responseLen) { ptr -> Bool in
@@ -474,14 +478,32 @@ public class SSHAgentServer {
         return true
     }
 
+    /// Clavis-private control opcodes (240-242). They share the socket with the
+    /// standard agent protocol, which can be relayed to remote hosts by
+    /// `ssh -A`, so they are honored only for Clavis-signed local peers.
+    private func isControlOpcode(_ msgType: UInt8) -> Bool {
+        msgType == Self.invalidateKeyRequest
+            || msgType == Self.queryGitGraceRequest
+            || msgType == Self.lockAllRequest
+    }
+
+    /// - Parameter isTrustedControlPeer: lazily evaluated, only for control opcodes.
+    ///   Defaults to "untrusted" so a caller must opt in explicitly.
     internal func processAgentRequest(
         payload: Data,
         clientPid: pid_t? = nil,
-        clientExecutablePath: String? = nil
+        clientExecutablePath: String? = nil,
+        isTrustedControlPeer: () -> Bool = { false }
     ) -> Data {
         guard !payload.isEmpty else { return Data([5]) } // SSH_AGENT_FAILURE (5)
         let msgType = payload[0]
         ClavisLogger.log("SSH_AGENT_REQ", "Received SSH Agent request type \(msgType)")
+
+        if isControlOpcode(msgType), !isTrustedControlPeer() {
+            let clientDesc = clientPid.map { "PID \($0)" } ?? "unknown peer"
+            ClavisLogger.log("SECURITY_ALERT", "Refused control request type \(msgType) from untrusted peer (\(clientDesc)).")
+            return Data([5]) // SSH_AGENT_FAILURE
+        }
 
         switch msgType {
         case 11: // SSH2_AGENTC_REQUEST_IDENTITIES
