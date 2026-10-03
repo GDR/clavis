@@ -376,5 +376,54 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
         XCTAssertEqual(otherGroup.wait(timeout: .now() + 3), .success)
         XCTAssertTrue(otherRan, "Other requester request must succeed after turn")
     }
+
+    func testRunExclusiveSerializesConcurrentlyWithRun() {
+        let gate = SigningPromptGate()
+        let lock = NSLock()
+        var concurrent = 0
+        var maxConcurrent = 0
+        let group = DispatchGroup()
+
+        for i in 0..<8 {
+            group.enter()
+            DispatchQueue.global().async {
+                if i % 2 == 0 {
+                    _ = try? gate.run {
+                        lock.lock(); concurrent += 1; maxConcurrent = max(maxConcurrent, concurrent); lock.unlock()
+                        Thread.sleep(forTimeInterval: 0.02)
+                        lock.lock(); concurrent -= 1; lock.unlock()
+                    }
+                } else {
+                    gate.runExclusive {
+                        lock.lock(); concurrent += 1; maxConcurrent = max(maxConcurrent, concurrent); lock.unlock()
+                        Thread.sleep(forTimeInterval: 0.02)
+                        lock.lock(); concurrent -= 1; lock.unlock()
+                    }
+                }
+                group.leave()
+            }
+        }
+
+        XCTAssertEqual(group.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(maxConcurrent, 1, "run and runExclusive must never overlap")
+    }
+
+    func testRunExclusiveDoesNotCountDenials() {
+        let gate = SigningPromptGate(maxConsecutiveDenials: 2, cooldown: 60)
+
+        struct CustomTestError: Error, Equatable {}
+
+        // Multiple failures in runExclusive
+        for _ in 0..<5 {
+            XCTAssertThrowsError(try gate.runExclusive { throw denial() })
+            XCTAssertThrowsError(try gate.runExclusive { throw CustomTestError() })
+        }
+
+        // gate.run should still execute normally without cooldown lockout
+        var ran = false
+        XCTAssertNoThrow(try gate.run { ran = true })
+        XCTAssertTrue(ran, "Failures in runExclusive must not trigger denial tracking or cooldown")
+    }
 }
+
 

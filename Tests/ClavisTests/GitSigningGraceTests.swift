@@ -822,6 +822,201 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             keyPurpose: .general
         )
     }
+
+    func testGitSigningPromptDescSanitizesRLOAndZeroWidthCharacters() throws {
+        let store = InMemoryPrivateKeyStore()
+        let authenticator = CountingAuthenticator()
+        let manager = KeychainManager(authenticator: authenticator, privateKeyStore: store)
+        let server = SSHAgentServer(keyManager: manager, peerProcessValidator: { _, _, _ in true })
+
+        let label = "git-sanitize-rlo-\(UUID().uuidString)"
+        let keyInfo = try manager.generateKey(label: label, keyPurpose: .general)
+
+        var capturedPromptDesc = ""
+        GitSigningGraceManager.promptProvider = { _, desc in
+            capturedPromptDesc = desc
+            return .cancel
+        }
+        defer {
+            GitSigningGraceManager.promptProvider = { l, c in
+                GitSigningPrompt.displayModal(keyLabel: l, clientDesc: c)
+            }
+            GitSigningGraceManager.shared.invalidateAll(broadcast: false)
+        }
+
+        let makeGitSignRequest: () -> Data = {
+            let gitPayload = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: Data(repeating: 0x77, count: 32)).serialize()
+            var req = Data()
+            req.appendWireData(keyInfo.publicKeyBlob)
+            req.appendWireData(gitPayload)
+            var flags: UInt32 = 0
+            Swift.withUnsafeBytes(of: &flags) { req.append(contentsOf: $0) }
+            return req
+        }
+
+        let hostilePath = "/tmp/evil\u{202E}\u{200B}\u{200E}\u{FEFF}/git"
+
+        // Commit #1
+        _ = server.handleSignRequest(
+            payload: makeGitSignRequest(),
+            clientPid: getpid(),
+            clientExecutablePath: hostilePath
+        )
+
+        // Commit #2 triggers git modal dialog
+        _ = server.handleSignRequest(
+            payload: makeGitSignRequest(),
+            clientPid: getpid(),
+            clientExecutablePath: hostilePath
+        )
+
+        XCTAssertFalse(capturedPromptDesc.isEmpty, "Modal prompt must have been presented")
+        XCTAssertEqual(
+            capturedPromptDesc,
+            "/tmp/evil/git (PID \(getpid()))",
+            "promptDesc must strip RLO and zero-width characters without them in the description"
+        )
+        XCTAssertFalse(capturedPromptDesc.unicodeScalars.contains("\u{202E}"), "promptDesc must not contain RLO character")
+        XCTAssertFalse(capturedPromptDesc.unicodeScalars.contains("\u{200B}"), "promptDesc must not contain zero-width space")
+        XCTAssertFalse(capturedPromptDesc.unicodeScalars.contains("\u{200E}"), "promptDesc must not contain LTR mark")
+        XCTAssertFalse(capturedPromptDesc.unicodeScalars.contains("\u{FEFF}"), "promptDesc must not contain zero-width no-break space")
+    }
+
+    func testGitSigningPromptDescTruncatesLongPathPreservingTailWithEllipsis() throws {
+        let store = InMemoryPrivateKeyStore()
+        let authenticator = CountingAuthenticator()
+        let manager = KeychainManager(authenticator: authenticator, privateKeyStore: store)
+        let server = SSHAgentServer(keyManager: manager, peerProcessValidator: { _, _, _ in true })
+
+        let label = "git-long-path-\(UUID().uuidString)"
+        let keyInfo = try manager.generateKey(label: label, keyPurpose: .general)
+
+        var capturedPromptDesc = ""
+        GitSigningGraceManager.promptProvider = { _, desc in
+            capturedPromptDesc = desc
+            return .cancel
+        }
+        defer {
+            GitSigningGraceManager.promptProvider = { l, c in
+                GitSigningPrompt.displayModal(keyLabel: l, clientDesc: c)
+            }
+            GitSigningGraceManager.shared.invalidateAll(broadcast: false)
+        }
+
+        let makeGitSignRequest: () -> Data = {
+            let gitPayload = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: Data(repeating: 0x77, count: 32)).serialize()
+            var req = Data()
+            req.appendWireData(keyInfo.publicKeyBlob)
+            req.appendWireData(gitPayload)
+            var flags: UInt32 = 0
+            Swift.withUnsafeBytes(of: &flags) { req.append(contentsOf: $0) }
+            return req
+        }
+
+        let longPath = "/usr/local/" + String(repeating: "a", count: 600) + "/git"
+        XCTAssertGreaterThanOrEqual(longPath.count, 600)
+
+        // Commit #1
+        _ = server.handleSignRequest(
+            payload: makeGitSignRequest(),
+            clientPid: getpid(),
+            clientExecutablePath: longPath
+        )
+
+        // Commit #2 triggers git modal dialog
+        _ = server.handleSignRequest(
+            payload: makeGitSignRequest(),
+            clientPid: getpid(),
+            clientExecutablePath: longPath
+        )
+
+        XCTAssertFalse(capturedPromptDesc.isEmpty, "Modal prompt must have been presented")
+        XCTAssertTrue(capturedPromptDesc.hasPrefix("…"), "Long path must be prefixed with ellipsis")
+        XCTAssertTrue(capturedPromptDesc.contains("/git (PID \(getpid()))"), "Long path must preserve the tail")
+        let pidSuffix = " (PID \(getpid()))"
+        XCTAssertLessThanOrEqual(capturedPromptDesc.count, 80 + pidSuffix.count, "promptDesc must be bounded to ~80 chars plus PID")
+    }
+
+    func testGitSigningConcurrentSignRequestsSerializePromptProvider() throws {
+        let store = InMemoryPrivateKeyStore()
+        let authenticator = CountingAuthenticator()
+        let manager = KeychainManager(authenticator: authenticator, privateKeyStore: store)
+        let server = SSHAgentServer(keyManager: manager)
+
+        let label = "git-concurrent-\(UUID().uuidString)"
+        let keyInfo = try manager.generateKey(label: label, keyPurpose: .general)
+
+        struct CallInterval {
+            let entry: Date
+            let exit: Date
+        }
+        let lock = NSLock()
+        var intervals: [CallInterval] = []
+
+        GitSigningGraceManager.promptProvider = { _, _ in
+            let entry = Date()
+            Thread.sleep(forTimeInterval: 0.05)
+            let exit = Date()
+            lock.lock()
+            intervals.append(CallInterval(entry: entry, exit: exit))
+            lock.unlock()
+            return .cancel
+        }
+        defer {
+            GitSigningGraceManager.promptProvider = { l, c in
+                GitSigningPrompt.displayModal(keyLabel: l, clientDesc: c)
+            }
+            GitSigningGraceManager.shared.invalidateAll(broadcast: false)
+        }
+
+        let makeGitSignRequest: () -> Data = {
+            let gitPayload = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: Data(repeating: 0x77, count: 32)).serialize()
+            var req = Data()
+            req.appendWireData(keyInfo.publicKeyBlob)
+            req.appendWireData(gitPayload)
+            var flags: UInt32 = 0
+            Swift.withUnsafeBytes(of: &flags) { req.append(contentsOf: $0) }
+            return req
+        }
+
+        // Commit #1: Establishes recent Git signature for this PID
+        let resp1 = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
+        XCTAssertEqual(resp1.first, 14)
+
+        // Two concurrent sign requests (Commit #2 candidates)
+        let readySem = DispatchSemaphore(value: 0)
+        let startSem = DispatchSemaphore(value: 0)
+        let group = DispatchGroup()
+
+        for _ in 0..<2 {
+            group.enter()
+            DispatchQueue.global().async {
+                readySem.signal()
+                startSem.wait()
+                _ = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
+                group.leave()
+            }
+        }
+
+        XCTAssertEqual(readySem.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(readySem.wait(timeout: .now() + 2), .success)
+        startSem.signal()
+        startSem.signal()
+
+        XCTAssertEqual(group.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(intervals.count, 2, "Both requests should have invoked promptProvider")
+
+        if intervals.count == 2 {
+            let sorted = intervals.sorted(by: { $0.entry < $1.entry })
+            let first = sorted[0]
+            let second = sorted[1]
+            XCTAssertGreaterThanOrEqual(
+                second.entry.timeIntervalSince1970,
+                first.exit.timeIntervalSince1970,
+                "Injected promptProvider must be called sequentially without overlap (first exit: \(first.exit), second entry: \(second.entry))"
+            )
+        }
+    }
 }
 
 private final class PolicyCapturingAuthenticator: UserAuthenticating {

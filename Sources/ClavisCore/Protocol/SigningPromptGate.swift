@@ -137,6 +137,34 @@ public final class SigningPromptGate: @unchecked Sendable {
         return true
     }
 
+    /// Runs `body` (e.g. an interactive modal dialog) exclusively through the gate without counting denials.
+    ///
+    /// Takes the gate's turn/lock so only one prompt of any kind is on screen at a time.
+    public func runExclusive<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+
+        let myTicket = nextTicket
+        nextTicket += 1
+
+        while hasActivePrompt || myTicket != currentTicket {
+            lock.wait()
+        }
+
+        hasActivePrompt = true
+        lock.unlock()
+
+        defer {
+            lock.lock()
+            hasActivePrompt = false
+            activeRequester = nil
+            currentTicket += 1
+            lock.broadcast()
+            lock.unlock()
+        }
+
+        return try body()
+    }
+
     /// Runs `body` (which is expected to present an authentication prompt) exclusively.
     /// Only `UserAuthenticationError`s count as denials; other failures are neutral.
     public func run<T>(
