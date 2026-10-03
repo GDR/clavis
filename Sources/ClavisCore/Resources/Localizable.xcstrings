@@ -3078,6 +3078,23 @@
         }
       }
     },
+    "prompt.ssh_auth_forwarded_agent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "use “%1$@” for SSH authentication (requested by %2$@). This request may come from a forwarded agent; the remote host is not visible"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "использовать «%1$@» для аутентификации SSH (запрос от %2$@). Этот запрос может исходить от перенаправленного агента; удалённый хост не виден"
+          }
+        }
+      }
+    },
     "prompt.git_commit": {
       "extractionState": "manual",
       "localizations": {

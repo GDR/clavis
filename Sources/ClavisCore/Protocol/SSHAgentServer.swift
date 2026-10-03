@@ -700,7 +700,12 @@ public class SSHAgentServer {
                 }
             } else {
                 // Non-Git payload is not validated as SSH authentication. Grace period NEVER applies.
-                let prompt = Self.dataSigningReason(keyLabel: matchingKey.label, requester: requester)
+                // Agent forwarding (`ssh -A`) is relayed by local /usr/bin/ssh, which hides the remote host.
+                let prompt = Self.signatureReason(
+                    keyLabel: matchingKey.label,
+                    requester: requester,
+                    processPath: processPath
+                )
                 ClavisLogger.log("SSH_AGENT_SIGN", "Initiating signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
                 sigBlob = try promptedSign(key: matchingKey, data: dataToSign, prompt: prompt)
             }
@@ -732,6 +737,15 @@ public class SSHAgentServer {
     }
 
     /// Prompt for a payload that is neither a Git SSHSIG nor otherwise validated.
+    /// Only Apple's `/usr/bin/ssh` is treated as a possible forwarded-agent relay.
+    static func signatureReason(keyLabel: String, requester: String, processPath: String) -> String {
+        let standardized = URL(fileURLWithPath: processPath).standardizedFileURL.path
+        if standardized == "/usr/bin/ssh" {
+            return ClavisUIStrings.Prompt.sshAuthenticationFromForwardedAgent(keyLabel: keyLabel, requester: requester)
+        }
+        return dataSigningReason(keyLabel: keyLabel, requester: requester)
+    }
+
     static func dataSigningReason(keyLabel: String, requester: String) -> String {
         ClavisUIStrings.Prompt.dataSigning(keyLabel: keyLabel, requester: requester)
     }
