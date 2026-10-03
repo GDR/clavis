@@ -73,12 +73,14 @@ and Nix archive are published together with SHA-256 checksum files.
 
 #### Release signing and notarization
 
-Releases are built by `.github/workflows/release.yml`. Local and CI builds default to an
-`Apple Development` certificate, which is not distributable: Gatekeeper cannot verify it and
-the signature has no secure timestamp. For distributable builds:
+Releases are built by `.github/workflows/release.yml`. While local builds default to an
+`Apple Development` certificate (which is not distributable: Gatekeeper cannot verify it and
+the signature has no secure timestamp), release CI builds strictly require a `Developer ID Application`
+certificate and fail if one is not configured. For release builds:
 
 - Set the repository variable `CLAVIS_SIGN_IDENTITY` to `Developer ID Application` (and
-  `CLAVIS_EXPECTED_TEAM_ID` to your 10-character team ID so a wrong certificate fails the build).
+  `CLAVIS_EXPECTED_TEAM_ID` to your 10-character team ID; the release workflow requires both and fails
+  if the identity does not start with `Developer ID Application` or if the team ID is missing).
   Developer ID builds automatically use secure timestamps (`CLAVIS_TIMESTAMP=auto`).
 - Set `CLAVIS_NOTARIZE=1` (repository variable) with the secrets `NOTARY_KEY_BASE64`,
   `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID` to submit the DMG to Apple, staple the ticket and

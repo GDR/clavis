@@ -53,6 +53,7 @@ jobs:
     name: Build, Sign & Publish Release
     needs: test
     runs-on: macos-26
+    environment: release
     # Manual runs bump the version and push to main, so they are only valid from main.
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     permissions:
@@ -66,6 +67,32 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      - name: Verify release configuration
+        env:
+          CLAVIS_SIGN_IDENTITY: ${{ vars.CLAVIS_SIGN_IDENTITY }}
+          CLAVIS_EXPECTED_TEAM_ID: ${{ vars.CLAVIS_EXPECTED_TEAM_ID }}
+        run: |
+          case "${CLAVIS_SIGN_IDENTITY:-}" in
+            "Developer ID Application"*) ;;
+            "")
+              echo "❌ CLAVIS_SIGN_IDENTITY must be set and start with 'Developer ID Application' before a release can be published." >&2
+              exit 1
+              ;;
+            *)
+              echo "❌ CLAVIS_SIGN_IDENTITY must start with 'Developer ID Application'. Refusing to publish a release signed with another identity." >&2
+              exit 1
+              ;;
+          esac
+          if [ -z "${CLAVIS_EXPECTED_TEAM_ID:-}" ]; then
+            echo "❌ CLAVIS_EXPECTED_TEAM_ID must be set before packaging a release." >&2
+            exit 1
+          fi
+
+      - name: Assert commit provenance
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
       - name: Set up Just
         uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
@@ -100,6 +127,7 @@ jobs:
           m = re.search(r'version := env_var_or_default\("CLAVIS_VERSION",\s*"([^"]+)"\)', justfile_content)
           current_ver = m.group(1) if m else "0.1.1"
 
+          bumped = "false"
           if ref.startswith("refs/tags/v"):
               tag = ref.replace("refs/tags/", "")
               new_ver = require_version(tag[1:], "tag name")
@@ -134,13 +162,12 @@ jobs:
               with open("justfile", "w") as f:
                   f.write(updated_justfile)
 
-              # Commit & tag
+              # Commit & tag locally; pushed only after packaging succeeds
               subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
               subprocess.run(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"], check=True)
               subprocess.run(["git", "commit", "-am", f"chore(release): {tag}"], check=True)
               subprocess.run(["git", "tag", "-a", tag, "-m", f"Release {tag}"], check=True)
-              subprocess.run(["git", "push", "origin", "main"], check=True)
-              subprocess.run(["git", "push", "origin", tag], check=True)
+              bumped = "true"
 
           # Export outputs for subsequent steps
           github_output = os.environ.get("GITHUB_OUTPUT")
@@ -148,17 +175,22 @@ jobs:
               with open(github_output, "a") as f:
                   f.write(f"version={new_ver}\n")
                   f.write(f"tag={tag}\n")
+                  f.write(f"bumped={bumped}\n")
           EOF
 
       - name: Install Apple Certificate
         env:
           CERT_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
           CERT_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
-          KEYCHAIN_PWD: ${{ secrets.MACOS_KEYCHAIN_PWD }}
         run: |
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PWD_FILE="$RUNNER_TEMP/keychain-pwd.txt"
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-          echo "KEYCHAIN_PWD=$KEYCHAIN_PWD" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PWD_FILE=$KEYCHAIN_PWD_FILE" >> "$GITHUB_ENV"
+
+          (umask 077 && openssl rand -hex 32 > "$KEYCHAIN_PWD_FILE")
+          chmod 0600 "$KEYCHAIN_PWD_FILE"
+          KEYCHAIN_PWD=$(cat "$KEYCHAIN_PWD_FILE")
 
           security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -166,13 +198,15 @@ jobs:
           security default-keychain -s "$KEYCHAIN_PATH"
 
           curl -fSsL https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer -o "$RUNNER_TEMP/AppleWWDRCAG3.cer"
+          echo "dcf21878c77f4198e4b4614f03d696d89c66c66008d4244e1b99161aac91601f  $RUNNER_TEMP/AppleWWDRCAG3.cer" | shasum -a 256 -c
           security import "$RUNNER_TEMP/AppleWWDRCAG3.cer" -k "$KEYCHAIN_PATH" -T /usr/bin/codesign
 
           curl -fSsL https://www.apple.com/certificateauthority/AppleWWDRCAG6.cer -o "$RUNNER_TEMP/AppleWWDRCAG6.cer"
+          echo "bdd4ed6e74691f0c2bfd01be0296197af1379e0418e2d300efa9c3bef642ca30  $RUNNER_TEMP/AppleWWDRCAG6.cer" | shasum -a 256 -c
           security import "$RUNNER_TEMP/AppleWWDRCAG6.cer" -k "$KEYCHAIN_PATH" -T /usr/bin/codesign
 
-          echo "$CERT_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" -P "$CERT_PWD" -T /usr/bin/codesign -T /usr/bin/security
+          (umask 077 && echo "$CERT_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12")
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" -P "$CERT_PWD" -T /usr/bin/codesign
           rm -f "$RUNNER_TEMP/cert.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
           security list-keychains -s "$KEYCHAIN_PATH" $(security list-keychains | tr -d '"') /Library/Keychains/System.keychain
@@ -196,9 +230,7 @@ jobs:
         env:
           CLAVIS_VERSION: ${{ steps.semver.outputs.version }}
           CLAVIS_BUILD_VERSION: ${{ github.run_number }}
-          # Releases must be signed with a Developer ID Application identity. There is no
-          # development-identity fallback: a missing or non-Developer-ID value fails this step.
-          # Changing identity changes the Keychain designated requirement (see README, "Release signing").
+          # Releases must be signed with a Developer ID Application identity.
           CLAVIS_SIGN_IDENTITY: ${{ vars.CLAVIS_SIGN_IDENTITY }}
           CLAVIS_EXPECTED_TEAM_ID: ${{ vars.CLAVIS_EXPECTED_TEAM_ID }}
           CLAVIS_NOTARIZE: ${{ vars.CLAVIS_NOTARIZE || '0' }}
@@ -206,25 +238,17 @@ jobs:
           CLAVIS_NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER_ID }}
           CLAVIS_KEYCHAIN: ${{ env.KEYCHAIN_PATH }}
         run: |
-          case "${CLAVIS_SIGN_IDENTITY:-}" in
-            "Developer ID Application"*) ;;
-            "")
-              echo "❌ CLAVIS_SIGN_IDENTITY must be set and start with 'Developer ID Application' before a release can be published." >&2
-              exit 1
-              ;;
-            *)
-              echo "❌ CLAVIS_SIGN_IDENTITY must start with 'Developer ID Application'. Refusing to publish a release signed with another identity." >&2
-              exit 1
-              ;;
-          esac
-          if [ -z "${CLAVIS_EXPECTED_TEAM_ID:-}" ]; then
-            echo "❌ CLAVIS_EXPECTED_TEAM_ID must be set before packaging a release." >&2
-            exit 1
-          fi
+          KEYCHAIN_PWD=$(cat "$KEYCHAIN_PWD_FILE")
           security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
           security default-keychain -s "$KEYCHAIN_PATH"
           security list-keychains -s "$KEYCHAIN_PATH" $(security list-keychains | tr -d '"') /Library/Keychains/System.keychain
           just package
+
+      - name: Push release commit and tag
+        if: steps.semver.outputs.bumped == 'true'
+        run: |
+          git push origin main
+          git push origin "${{ steps.semver.outputs.tag }}"
 
       - name: Attest build provenance
         if: ${{ vars.CLAVIS_ATTEST != '0' }}
@@ -256,4 +280,7 @@ jobs:
           if [ -n "${KEYCHAIN_PATH:-}" ]; then
             security delete-keychain "$KEYCHAIN_PATH" || true
           fi
-          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary.p8"
+          if [ -n "${KEYCHAIN_PWD_FILE:-}" ]; then
+            rm -f "$KEYCHAIN_PWD_FILE"
+          fi
+          rm -f "$RUNNER_TEMP/keychain-pwd.txt" "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/AppleWWDRCAG3.cer" "$RUNNER_TEMP/AppleWWDRCAG6.cer"
