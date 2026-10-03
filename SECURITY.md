@@ -22,6 +22,12 @@ Only the latest release receives security fixes.
   requesting process identity. They are not an isolation boundary against code running under the
   same `git` process, such as repository hooks.
 
+## Known Limitations
+
+- `com.clavis.openKeyManager`: The Clavis CLI posts an unauthenticated Darwin distributed notification (`com.clavis.openKeyManager`) to request that the running GUI application display the key management window.
+- Because macOS distributed notifications cannot authenticate the sender, any local process running under the same user account can post this notification to trigger the window.
+- Impact: This is a UI nuisance only. The notification carries no payload, cannot request signatures, and cannot extract or modify private keys or settings.
+
 ## Out of scope
 
 - A fully compromised user account or an attacker who can already run code as you, change your
