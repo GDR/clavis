@@ -364,6 +364,70 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         }
     }
 
+    func testSameParentDoesNotInheritGitSigningGrant() {
+        let shell: pid_t = 10
+        let approvedGit: pid_t = 20
+        let siblingGit: pid_t = 21
+        let hook: pid_t = 30
+        let shellStart: UInt64 = 1_000
+        let approvedStart: UInt64 = 2_000
+        let siblingStart: UInt64 = 2_100
+        let hookStart: UInt64 = 3_000
+
+        let processes: [pid_t: ProcessParentSnapshot] = [
+            1: ProcessParentSnapshot(startTime: 1, parentPid: 0),
+            shell: ProcessParentSnapshot(startTime: shellStart, parentPid: 1),
+            approvedGit: ProcessParentSnapshot(startTime: approvedStart, parentPid: shell),
+            siblingGit: ProcessParentSnapshot(startTime: siblingStart, parentPid: shell),
+            hook: ProcessParentSnapshot(startTime: hookStart, parentPid: approvedGit),
+        ]
+        let lookup: (pid_t) -> ProcessParentSnapshot? = { processes[$0] }
+
+        XCTAssertTrue(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: approvedGit,
+                peerStartTime: approvedStart,
+                approvedPid: approvedGit,
+                approvedStartTime: approvedStart,
+                processInfo: lookup
+            ),
+            "The approved git process keeps its own grant"
+        )
+        XCTAssertTrue(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: hook,
+                peerStartTime: hookStart,
+                approvedPid: approvedGit,
+                approvedStartTime: approvedStart,
+                processInfo: lookup
+            ),
+            "A child of the approved git, such as a rebase helper or hook, keeps the grant"
+        )
+        XCTAssertFalse(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: siblingGit,
+                peerStartTime: siblingStart,
+                approvedPid: approvedGit,
+                approvedStartTime: approvedStart,
+                processInfo: lookup
+            ),
+            "A new git started by the same shell must not inherit the grant"
+        )
+
+        var reused = processes
+        reused[approvedGit] = ProcessParentSnapshot(startTime: approvedStart &+ 1, parentPid: shell)
+        XCTAssertFalse(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: approvedGit,
+                peerStartTime: approvedStart &+ 1,
+                approvedPid: approvedGit,
+                approvedStartTime: approvedStart,
+                processInfo: { reused[$0] }
+            ),
+            "A recycled PID must not inherit the grant approved for the previous instance"
+        )
+    }
+
     func testGitSigningPromptBypassesModalInHeadlessSession() {
         let previousProvider = GitSigningPrompt.sessionCheckProvider
         defer { GitSigningPrompt.sessionCheckProvider = previousProvider }

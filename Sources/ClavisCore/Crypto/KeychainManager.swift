@@ -839,7 +839,8 @@ public class KeychainManager {
         prompt: String,
         clientIdentity: String,
         duration: TimeInterval = 300.0,
-        maxOperations: Int = 200
+        maxOperations: Int = 200,
+        approvedProcess: GitApprovedProcess? = nil
     ) throws -> GitSigningGrant {
         // Match signSSH: strict biometric keys must not accept a password fallback.
         // The returned context is reused for later signatures, so a weaker policy here
@@ -889,7 +890,8 @@ public class KeychainManager {
             clientIdentity: clientIdentity,
             duration: duration,
             maxOperations: maxOperations,
-            context: context
+            context: context,
+            approvedProcess: approvedProcess
         )
     }
 
