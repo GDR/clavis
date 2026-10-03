@@ -270,6 +270,12 @@ public class KeychainManager {
             try PublicKeyStore.removeChecked(label: label)
             ClavisLogger.log("KEY_DELETE", "Key '\(label)' deleted successfully.")
         } else {
+            if let revocationError {
+                ClavisLogger.log(
+                    "SECURITY_ALERT",
+                    "Failed to revoke SSH agent grant during partial deletion of key '\(label)': \(revocationError.localizedDescription)"
+                )
+            }
             ClavisLogger.log(
                 "KEY_DELETE",
                 "Removed the Keychain item for '\(label)' but left the encrypted vault record in place because it did not match the authenticated key."

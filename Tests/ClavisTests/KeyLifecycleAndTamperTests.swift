@@ -1008,6 +1008,44 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         XCTAssertFalse(keyStore.contains(label: label))
     }
 
+    func testDeleteKeyLogsSecurityAlertWhenRevocationFailsOnPartialDeletion() throws {
+        let backing = ScriptedKeychainItems()
+        let keyStore = backing.makeStore(serviceName: "com.clavis.tests.partial-del-alert.\(UUID().uuidString)")
+        let revocationFailure = NSError(domain: "test", code: 99, userInfo: [NSLocalizedDescriptionKey: "injected revocation error"])
+        let manager = KeychainManager(
+            authenticator: AllowingAuthenticator(),
+            privateKeyStore: keyStore,
+            sessionCache: makeSessionCache(),
+            secureBufferFactory: { SecureBuffer(consuming: &$0) },
+            agentGrantRevoker: { _ in throw revocationFailure }
+        )
+
+        let label = "partial-del-alert-\(UUID().uuidString)"
+        _ = try manager.generateKey(label: label)
+
+        let foreignKey = Curve25519.Signing.PrivateKey()
+        var foreignRecord = StoredPrivateKeyRecord(
+            label: label,
+            algorithm: .ed25519,
+            storageType: .keychain,
+            biometricPolicy: nil,
+            keyPurpose: .general,
+            keyData: foreignKey.rawRepresentation
+        )
+        try keyStore.save(label: label, data: try foreignRecord.encode())
+        foreignRecord.wipe()
+
+        XCTAssertThrowsError(try manager.deleteKey(label: label)) { error in
+            XCTAssertEqual(error as? KeyDeletionError, .partial(label: label))
+        }
+
+        let securityURL = ClavisLogger.securityLogFileURL
+        let securityContent = try String(contentsOf: securityURL, encoding: .utf8)
+        XCTAssertTrue(securityContent.contains("SECURITY_ALERT"))
+        XCTAssertTrue(securityContent.contains(label))
+        XCTAssertTrue(securityContent.contains("injected revocation error"))
+    }
+
     func testValidationFailureInLoadAuthenticatedRecordLogsSecurityAlertBeforeVaultFallback() throws {
         let backing = ScriptedKeychainItems()
         let keyStore = backing.makeStore(serviceName: "com.clavis.tests.restore-alert.\(UUID().uuidString)")
