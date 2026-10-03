@@ -522,5 +522,208 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: testSockPath),
                       "serverA.stop() must not remove a socket replaced with a different inode")
     }
+
+    // MARK: - Server loop hardening tests
+
+    func testAcceptErrorBackoffBehavior() throws {
+        let socketPath = testRootURL.appendingPathComponent("accept-backoff.sock").path
+        var sleepCalls: [useconds_t] = []
+        let lock = NSLock()
+        var acceptInvocations = 0
+
+        let errorsToSimulate: [(Int32, Int32)] = [
+            (-1, EINTR),
+            (-1, ECONNABORTED),
+            (-1, EMFILE),
+            (-1, ENFILE),
+            (-1, ENOBUFS),
+        ]
+
+        let expectation = expectation(description: "Accept error sequence completed")
+
+        var server: SSHAgentServer!
+        server = SSHAgentServer(
+            socketPath: socketPath,
+            backoffHandler: { duration in
+                lock.lock()
+                sleepCalls.append(duration)
+                lock.unlock()
+            },
+            acceptCall: { _ in
+                lock.lock()
+                defer { lock.unlock() }
+                if acceptInvocations < errorsToSimulate.count {
+                    let result = errorsToSimulate[acceptInvocations]
+                    acceptInvocations += 1
+                    return result
+                }
+                server.stop()
+                expectation.fulfill()
+                return (-1, EBADF)
+            }
+        )
+
+        try server.start()
+        wait(for: [expectation], timeout: 2.0)
+
+        lock.lock()
+        defer { lock.unlock() }
+        XCTAssertEqual(acceptInvocations, 5)
+        // EINTR and ECONNABORTED must NOT back off.
+        // EMFILE, ENFILE, ENOBUFS must each back off 100_000 us (100ms).
+        XCTAssertEqual(sleepCalls, [100_000, 100_000, 100_000])
+        XCTAssertFalse(server.isSocketActive)
+    }
+
+    func testConnectionLifetimeAndRequestCapLimit() throws {
+        // 1. Verify default values
+        XCTAssertEqual(SSHAgentServer.defaultMaxConnectionLifetime, 120.0)
+        XCTAssertEqual(SSHAgentServer.defaultMaxRequestsPerConnection, 200)
+
+        // 2. Request cap limit (200 requests)
+        let capSocketPath = testRootURL.appendingPathComponent("req-cap.sock").path
+        let capServer = SSHAgentServer(
+            socketPath: capSocketPath,
+            maxRequestsPerConnection: 200
+        )
+        try capServer.start()
+        defer { capServer.stop() }
+
+        let capClient = try connectUnixSocket(path: capSocketPath)
+        defer { close(capClient) }
+
+        let requestPacket = Data([0x00, 0x00, 0x00, 0x01, 11])
+        for _ in 1...200 {
+            let written = requestPacket.withUnsafeBytes { write(capClient, $0.baseAddress!, requestPacket.count) }
+            XCTAssertEqual(written, requestPacket.count)
+
+            guard let lenData = socketReadFullBytes(from: capClient, count: 4) else {
+                XCTFail("Expected response header")
+                return
+            }
+            let respLen = Int(lenData.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
+            guard let respPayload = socketReadFullBytes(from: capClient, count: respLen) else {
+                XCTFail("Expected response payload")
+                return
+            }
+            XCTAssertEqual(respPayload.first, 12)
+        }
+
+        // The 201st request must trigger connection drop (EOF)
+        _ = requestPacket.withUnsafeBytes { write(capClient, $0.baseAddress!, requestPacket.count) }
+        let eofResult = socketReadFullBytes(from: capClient, count: 4)
+        XCTAssertNil(eofResult, "Server must drop connection after reaching 200 requests")
+
+        let capDeadline = Date().addingTimeInterval(1.0)
+        while capServer.activeClientCount > 0 && Date() < capDeadline {
+            usleep(10_000)
+        }
+        XCTAssertEqual(capServer.activeClientCount, 0)
+
+        // 3. Connection lifetime limit
+        let lifeSocketPath = testRootURL.appendingPathComponent("lifetime.sock").path
+        let lifeServer = SSHAgentServer(
+            socketPath: lifeSocketPath,
+            maxConnectionLifetime: 0.15
+        )
+        try lifeServer.start()
+        defer { lifeServer.stop() }
+
+        let lifeClient = try connectUnixSocket(path: lifeSocketPath)
+        defer { close(lifeClient) }
+
+        let deadline = Date().addingTimeInterval(1)
+        while lifeServer.activeClientCount != 1 && Date() < deadline {
+            usleep(10_000)
+        }
+        XCTAssertEqual(lifeServer.activeClientCount, 1)
+
+        // Wait for lifetime limit (0.15s) to elapse
+        usleep(250_000)
+        XCTAssertNil(socketReadFullBytes(from: lifeClient, count: 1), "Server must drop connection after lifetime limit")
+
+        let lifeDeadline = Date().addingTimeInterval(1.0)
+        while lifeServer.activeClientCount > 0 && Date() < lifeDeadline {
+            usleep(10_000)
+        }
+        XCTAssertEqual(lifeServer.activeClientCount, 0)
+    }
+
+    func testTOCTOUPeerProcessMismatchAfterPromptWithholdsSignatureAndDropsConnection() throws {
+        let socketPath = testRootURL.appendingPathComponent("toctou.sock").path
+
+        var promptInvoked = false
+        var peerProcessChanged = false
+
+        let authenticator = HookAuthenticator(onAuthenticate: {
+            promptInvoked = true
+            // Injected mismatching peer process after prompt has started/returned
+            peerProcessChanged = true
+        })
+
+        let cache = makeSessionCache()
+        let keyManager = makeKeyManager(sessionCache: cache, authenticator: authenticator)
+        let label = "toctou-key-\(UUID().uuidString)"
+        defer { try? keyManager.deleteKey(label: label) }
+        let keyInfo = try keyManager.generateKey(label: label)
+
+        let server = SSHAgentServer(
+            socketPath: socketPath,
+            keyManager: keyManager,
+            peerProcessValidator: { pid, path, startTime in
+                if peerProcessChanged {
+                    return false
+                }
+                return true
+            }
+        )
+        try server.start()
+        defer { server.stop() }
+
+        let client = try connectUnixSocket(path: socketPath)
+        defer { close(client) }
+
+        var payloadData = Data([13])
+        payloadData.appendWireData(keyInfo.publicKeyBlob)
+        payloadData.appendWireData(Data("challenge-to-sign".utf8))
+        var flags: UInt32 = 0
+        Swift.withUnsafeBytes(of: &flags) { payloadData.append(contentsOf: $0) }
+
+        var packet = Data()
+        var len = UInt32(payloadData.count).bigEndian
+        Swift.withUnsafeBytes(of: &len) { packet.append(contentsOf: $0) }
+        packet.append(payloadData)
+
+        let written = packet.withUnsafeBytes { write(client, $0.baseAddress!, packet.count) }
+        XCTAssertEqual(written, packet.count)
+
+        // Reading from client socket: signature must be withheld and connection dropped (EOF)
+        let responseHeader = socketReadFullBytes(from: client, count: 4)
+        XCTAssertNil(responseHeader, "Signature must be withheld and connection dropped on TOCTOU mismatch")
+        XCTAssertTrue(promptInvoked, "Signing prompt must have been executed")
+
+        let deadline = Date().addingTimeInterval(1.0)
+        while server.activeClientCount > 0 && Date() < deadline {
+            usleep(10_000)
+        }
+        XCTAssertEqual(server.activeClientCount, 0, "Client slot must be released")
+    }
 }
 
+private final class HookAuthenticator: UserAuthenticating {
+    private let onAuthenticate: () -> Void
+
+    init(onAuthenticate: @escaping () -> Void) {
+        self.onAuthenticate = onAuthenticate
+    }
+
+    func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) throws -> LAContext {
+        onAuthenticate()
+        return LAContext()
+    }
+
+    func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) async throws -> LAContext {
+        onAuthenticate()
+        return LAContext()
+    }
+}

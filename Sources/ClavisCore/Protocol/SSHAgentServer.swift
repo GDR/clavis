@@ -54,13 +54,21 @@ public class SSHAgentServer {
     public static let sharedInstance = shared
     public static let defaultSocketPath = NSString(string: "~/.ssh/clavis.sock").expandingTildeInPath
 
+    public static let defaultMaxConnectionLifetime: TimeInterval = 120.0
+    public static let defaultMaxRequestsPerConnection: Int = 200
+
     public let socketPath: String
     private let maxConcurrentClients: Int
     private let maxConcurrentClientsPerPID: Int
     private let clientIdleTimeout: TimeInterval
     private let handshakeTimeout: TimeInterval
+    internal let maxConnectionLifetime: TimeInterval
+    internal let maxRequestsPerConnection: Int
     private let keyManager: KeychainManager
     private let controlPeerValidator: (Int32) -> Bool
+    private let peerProcessValidator: (pid_t, String, UInt64) -> Bool
+    private let backoffHandler: (useconds_t) -> Void
+    private let acceptCall: (Int32) -> (fd: Int32, err: Int32)
     private let promptGate: SigningPromptGate
     private let stateLock = NSLock()
     private var _serverSocket: Int32 = -1
@@ -89,17 +97,30 @@ public class SSHAgentServer {
         maxConcurrentClientsPerPID: Int = 8,
         clientIdleTimeout: TimeInterval = 30,
         handshakeTimeout: TimeInterval = 2.0,
+        maxConnectionLifetime: TimeInterval = SSHAgentServer.defaultMaxConnectionLifetime,
+        maxRequestsPerConnection: Int = SSHAgentServer.defaultMaxRequestsPerConnection,
         keyManager: KeychainManager = .shared,
         promptGate: SigningPromptGate = SigningPromptGate(),
-        controlPeerValidator: ((Int32) -> Bool)? = nil
+        controlPeerValidator: ((Int32) -> Bool)? = nil,
+        peerProcessValidator: ((pid_t, String, UInt64) -> Bool)? = nil,
+        backoffHandler: ((useconds_t) -> Void)? = nil,
+        acceptCall: ((Int32) -> (fd: Int32, err: Int32))? = nil
     ) {
         self.promptGate = promptGate
         self.controlPeerValidator = controlPeerValidator ?? { ClavisCodeTrust.isTrustedPeer(socket: $0) }
+        self.peerProcessValidator = peerProcessValidator ?? { SSHAgentServer.peerProcessUnchanged(pid: $0, path: $1, startTime: $2) }
+        self.backoffHandler = backoffHandler ?? { usleep($0) }
+        self.acceptCall = acceptCall ?? { sock in
+            let fd = accept(sock, nil, nil)
+            return (fd, errno)
+        }
         self.socketPath = socketPath
         self.maxConcurrentClients = max(1, maxConcurrentClients)
         self.maxConcurrentClientsPerPID = max(1, maxConcurrentClientsPerPID)
         self.clientIdleTimeout = max(0.1, clientIdleTimeout)
         self.handshakeTimeout = max(0.05, min(clientIdleTimeout, handshakeTimeout))
+        self.maxConnectionLifetime = max(0.01, maxConnectionLifetime)
+        self.maxRequestsPerConnection = max(1, maxRequestsPerConnection)
         self.keyManager = keyManager
     }
 
@@ -433,11 +454,11 @@ public class SSHAgentServer {
         return "\(stdPath)|self:\(pid):\(startTime)|pgid:\(pgid)"
     }
 
-    private func acceptLoop() {
+    internal func acceptLoop() {
         while isRunning {
             let listeningSock = serverSocket
             guard listeningSock >= 0 else { break }
-            let clientSocket = accept(listeningSock, nil, nil)
+            let (clientSocket, errorCode) = acceptCall(listeningSock)
             if clientSocket >= 0 {
                 // Verify peer UID matches our own UID
                 var peerUid: uid_t = 0
@@ -477,6 +498,13 @@ public class SSHAgentServer {
                         clientStartTime: clientStartTime
                     )
                 }
+            } else {
+                guard isRunning else { break }
+                if errorCode == EINTR || errorCode == ECONNABORTED {
+                    continue
+                }
+                backoffHandler(100_000)
+                continue
             }
         }
     }
@@ -518,7 +546,7 @@ public class SSHAgentServer {
             setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, timeoutSize) == 0
     }
 
-    private func handleClient(
+    internal func handleClient(
         socket clientSocket: Int32,
         clientPid: pid_t? = nil,
         clientExecutablePath: String? = nil,
@@ -527,19 +555,34 @@ public class SSHAgentServer {
         defer { close(clientSocket) }
 
         var isFirstPacket = true
+        var requestCount = 0
+        let connectionStart = Date()
+
         while isRunning {
-            if !isFirstPacket {
-                _ = configureTimeouts(for: clientSocket, timeoutInterval: clientIdleTimeout)
+            let elapsed = Date().timeIntervalSince(connectionStart)
+            if elapsed >= maxConnectionLifetime {
+                ClavisLogger.log("SSH_AGENT_LIMIT", "Dropping connection: reached max lifetime (\(maxConnectionLifetime)s).")
+                break
             }
+            if requestCount >= maxRequestsPerConnection {
+                ClavisLogger.log("SSH_AGENT_LIMIT", "Dropping connection: reached max request cap (\(maxRequestsPerConnection)).")
+                break
+            }
+
+            let remainingLifetime = max(0.01, maxConnectionLifetime - elapsed)
+            let baseTimeout = isFirstPacket ? handshakeTimeout : clientIdleTimeout
+            let effectiveTimeout = min(baseTimeout, remainingLifetime)
+            _ = configureTimeouts(for: clientSocket, timeoutInterval: effectiveTimeout)
 
             var lengthHeader = UInt32(0)
             if !readFullBytes(from: clientSocket, buffer: &lengthHeader, count: 4) {
                 break
             }
             isFirstPacket = false
+            requestCount += 1
 
             if let pid = clientPid, let path = clientExecutablePath, let start = clientStartTime,
-               !Self.peerProcessUnchanged(pid: pid, path: path, startTime: start) {
+               !self.peerProcessValidator(pid, path, start) {
                 ClavisLogger.log("SECURITY_ALERT", "Dropping connection: peer PID \(pid) is no longer the process attributed at accept (exec or PID reuse).")
                 break
             }
@@ -558,8 +601,14 @@ public class SSHAgentServer {
                 payload: payload,
                 clientPid: clientPid,
                 clientExecutablePath: clientExecutablePath,
+                clientStartTime: clientStartTime,
                 isTrustedControlPeer: { self.controlPeerValidator(clientSocket) }
             )
+            guard !response.isEmpty else {
+                // Signature withheld and connection dropped
+                break
+            }
+
             var responseLen = UInt32(response.count).bigEndian
             let writeHeaderSuccess = Swift.withUnsafeBytes(of: &responseLen) { ptr -> Bool in
                 guard let base = ptr.baseAddress else { return false }
@@ -618,6 +667,7 @@ public class SSHAgentServer {
         payload: Data,
         clientPid: pid_t? = nil,
         clientExecutablePath: String? = nil,
+        clientStartTime: UInt64? = nil,
         isTrustedControlPeer: () -> Bool = { false }
     ) -> Data {
         guard !payload.isEmpty else { return Data([5]) } // SSH_AGENT_FAILURE (5)
@@ -638,7 +688,8 @@ public class SSHAgentServer {
             return handleSignRequest(
                 payload: Data(payload.dropFirst()),
                 clientPid: clientPid,
-                clientExecutablePath: clientExecutablePath
+                clientExecutablePath: clientExecutablePath,
+                clientStartTime: clientStartTime
             )
         case Self.invalidateKeyRequest:
             var reader = DataReader(data: Data(payload.dropFirst()))
@@ -701,7 +752,8 @@ public class SSHAgentServer {
     internal func handleSignRequest(
         payload: Data,
         clientPid: pid_t? = nil,
-        clientExecutablePath: String? = nil
+        clientExecutablePath: String? = nil,
+        clientStartTime: UInt64? = nil
     ) -> Data {
         var reader = DataReader(data: payload)
         guard let keyBlob = reader.readWireData(),
@@ -727,7 +779,8 @@ public class SSHAgentServer {
         let clientDesc = "\(Self.safeProcessPath(processPath)) (PID \(pid))"
         let requester = Self.requesterDescription(processPath: processPath, pid: pid)
         let clientIdentity = SSHAgentServer.resolveClientIdentity(pid: pid, processPath: processPath)
-        let peerProcess = SSHAgentServer.processStartTime(pid: pid).map {
+        let attributedStartTime = clientStartTime ?? SSHAgentServer.processStartTime(pid: pid)
+        let peerProcess = attributedStartTime.map {
             GitApprovedProcess(pid: pid, startTime: $0)
         }
 
@@ -843,6 +896,13 @@ public class SSHAgentServer {
                 )
                 ClavisLogger.log("SSH_AGENT_SIGN", "Initiating signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
                 sigBlob = try promptedSign(key: matchingKey, data: dataToSign, prompt: prompt)
+            }
+
+            // TOCTOU check: re-run peerProcessUnchanged after signing prompt returns and before sending signature
+            guard let start = attributedStartTime, self.peerProcessValidator(pid, processPath, start) else {
+                ClavisLogger.log("SECURITY_ALERT", "Dropping connection: peer process changed during signing prompt (TOCTOU violation for PID \(pid)).")
+                GitSigningGraceManager.shared.invalidateAll(broadcast: false)
+                return Data()
             }
 
             var response = Data()
