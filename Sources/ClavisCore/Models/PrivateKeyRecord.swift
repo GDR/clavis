@@ -5,8 +5,8 @@ import Security
 /// Versioned, authenticated private-key record stored inside Keychain under `com.clavis.ed25519`.
 ///
 /// This record is the single authoritative source of truth for key type, backing storage,
-/// biometric policy, and private key payload. The public index (`~/.config/clavis/keys.json`)
-/// is treated strictly as an unauthenticated display cache.
+/// biometric policy, and private key payload. The public index (`PublicKeyStore`, an in-memory
+/// copy of unauthenticated Keychain metadata items) is treated strictly as a display cache.
 public struct StoredPrivateKeyRecord: Codable, Equatable {
     public static let currentVersion: Int = 2
     private static let binaryMagic = Data("CLVPKR02".utf8)
@@ -221,7 +221,7 @@ private struct PrivateRecordBinaryReader {
     }
 }
 
-/// Errors raised when validating Keychain records or detecting tampering against `keys.json`.
+/// Errors raised when validating Keychain records or detecting tampering against the public index.
 public enum PrivateKeyRecordError: LocalizedError, Equatable {
     case unsupportedVersion(Int)
     case corruptedRecord(String)

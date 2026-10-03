@@ -457,31 +457,6 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         XCTAssertNoThrow(try keyManager.signSSH(key: original, data: Data("payload".utf8), prompt: "Sign"))
     }
 
-    func testKeysJsonIsWrittenOwnerOnly() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("clavis-perm-\(UUID().uuidString)")
-        let file = directory.appendingPathComponent("keys.json")
-        let previous = PublicKeyStore.customStorageURL
-        PublicKeyStore.customStorageURL = file
-        defer {
-            PublicKeyStore.customStorageURL = previous
-            try? FileManager.default.removeItem(at: directory)
-        }
-
-        let key = Ed25519KeyInfo(
-            label: "perm-test",
-            publicKeyOpenSSH: "ssh-ed25519 AAAA perm-test",
-            publicKeyBlob: Data([1]),
-            fingerprint: "SHA256:perm",
-            createdAt: Date()
-        )
-        PublicKeyStore.save(key)
-
-        let fileMode = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int
-        let dirMode = try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? Int
-        XCTAssertEqual(fileMode, 0o600)
-        XCTAssertEqual(dirMode, 0o700)
-    }
-
 
     func testTamperedPublicKeyBlobInKeysJsonRefusesSigning() throws {
         let keyStore = InMemoryPrivateKeyStore()
@@ -577,7 +552,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
 
 
-    func testRebuildPublicIndexFromKeychain() throws {
+    func testPublicIndexRoundTripsThroughKeychainWithoutAFile() throws {
         guard ProcessInfo.processInfo.environment["CLAVIS_RUN_KEYCHAIN_INTEGRATION_TESTS"] == "1" else {
             throw XCTSkip("Set CLAVIS_RUN_KEYCHAIN_INTEGRATION_TESTS=1 to run tests against the real user Keychain.")
         }
@@ -592,22 +567,17 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             algorithmName: "Ed25519",
             storage: .keychain
         )
+        defer { PublicKeyStore.remove(label: keyInfo.label) }
 
         PublicKeyStore.save(keyInfo)
         XCTAssertTrue(PublicKeyStore.loadAll().contains(where: { $0.label == keyInfo.label }))
 
-        // Delete keys.json file
-        if let url = PublicKeyStore.customStorageURL {
-            try? FileManager.default.removeItem(at: url)
-        }
+        // A fresh process has an empty in-memory copy; it must find the key in the Keychain.
+        PublicKeyStore.invalidateCache()
+        XCTAssertTrue(PublicKeyStore.loadAll().contains(where: { $0.label == keyInfo.label }))
 
-        // loadAll should reconstruct from Keychain if keys.json is gone
-        let reloaded = PublicKeyStore.loadAll()
-        let rebuilt = PublicKeyStore.rebuildIndexFromKeychain()
-        XCTAssertTrue(rebuilt.contains(where: { $0.label == keyInfo.label }) || reloaded.contains(where: { $0.label == keyInfo.label }))
-
-        // Cleanup
         PublicKeyStore.remove(label: keyInfo.label)
+        XCTAssertFalse(PublicKeyStore.loadAll().contains(where: { $0.label == keyInfo.label }))
     }
 
 

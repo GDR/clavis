@@ -81,8 +81,8 @@ class ClavisBaseTestCase: XCTestCase {
             .appendingPathComponent("clavis-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: testRootURL, withIntermediateDirectories: true)
 
-        PublicKeyStore.customStorageURL = testRootURL.appendingPathComponent("keys.json")
         PublicKeyStore.disableKeychainMirrorForTesting = true
+        PublicKeyStore.resetForTesting()
         EncryptedVaultStore.customVaultDirectoryURL = testRootURL.appendingPathComponent("vault", isDirectory: true)
         EncryptedVaultStore.forceSoftwareMasterKeyForTesting = true
         ClavisLogger.customLogFileURL = testRootURL.appendingPathComponent("clavis.log")
@@ -91,7 +91,7 @@ class ClavisBaseTestCase: XCTestCase {
     }
 
     override func tearDownWithError() throws {
-        PublicKeyStore.customStorageURL = nil
+        PublicKeyStore.resetForTesting()
         PublicKeyStore.disableKeychainMirrorForTesting = false
         EncryptedVaultStore.customVaultDirectoryURL = nil
         EncryptedVaultStore.forceSoftwareMasterKeyForTesting = false

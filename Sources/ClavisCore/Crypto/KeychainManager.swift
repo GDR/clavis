@@ -338,7 +338,7 @@ public class KeychainManager {
             )
         }
 
-        // The authentication policy used to prompt the user was chosen from keys.json, which is an
+        // The authentication policy used to prompt the user was chosen from the public index, which is an
         // unauthenticated display cache. Refuse to proceed if the authoritative record disagrees,
         // so a tampered index can only cause a refusal, never a weaker effective policy.
         let recordPolicy = record.biometricPolicy ?? .userPresence
@@ -858,7 +858,7 @@ public class KeychainManager {
                 expectedKeyInfo: key
             )
         } catch {
-            // loadAuthenticatedRecord rejects a keys.json policy that is weaker than the
+            // loadAuthenticatedRecord rejects a public-index policy that is weaker than the
             // record. Invalidate that context here so it cannot be reused for a grant.
             if laPolicy != .deviceOwnerAuthenticationWithBiometrics,
                case PrivateKeyRecordError.metadataMismatch(let field, _, _) = error,
@@ -869,7 +869,7 @@ public class KeychainManager {
         }
         defer { record.wipe() }
 
-        // keys.json chose the LocalAuthentication policy above and is not authenticated.
+        // the public index chose the LocalAuthentication policy above and is not authenticated.
         // If the Keychain record requires the current biometric set, refuse a context
         // that was evaluated with a weaker policy and do not record the grant.
         let recordPolicy = record.biometricPolicy ?? .userPresence
@@ -938,7 +938,7 @@ public class KeychainManager {
         defer { record.wipe() }
 
         // Hard invariant: never unlock hardware keys into session cache,
-        // regardless of what keys.json claimed!
+        // regardless of what the public index claimed!
         guard record.storageType != .secureEnclave else {
             throw SessionCacheError.hardwareNotCacheable
         }
