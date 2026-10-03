@@ -80,14 +80,21 @@ public class AppState: ObservableObject {
             )
             return
         }
-        if let remote = agentLifecycle.queryAgentGitGrace() {
-            self.activeGitGrace = ActiveGitGraceInfo(
-                keyLabel: remote.keyLabel,
-                remainingSeconds: remote.remainingSeconds,
-                remainingOperations: remote.remainingOperations
-            )
-        } else {
-            self.activeGitGrace = nil
+        let lifecycle = self.agentLifecycle
+        Task.detached { [weak self] in
+            let remote = lifecycle.queryAgentGitGrace()
+            await MainActor.run { [weak self] in
+                guard let self = self else { return }
+                if let remote = remote {
+                    self.activeGitGrace = ActiveGitGraceInfo(
+                        keyLabel: remote.keyLabel,
+                        remainingSeconds: remote.remainingSeconds,
+                        remainingOperations: remote.remainingOperations
+                    )
+                } else {
+                    self.activeGitGrace = nil
+                }
+            }
         }
     }
 
@@ -107,10 +114,14 @@ public class AppState: ObservableObject {
     }
 
     public func endGitSigningSession() {
-        GitSigningGraceManager.shared.invalidateAll()
-        try? agentLifecycle.sendLockAllToAgent()
-        activeGitGrace = nil
-        refresh()
+        do {
+            try agentLifecycle.sendLockAllToAgent()
+            GitSigningGraceManager.shared.invalidateAll()
+            activeGitGrace = nil
+            refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     public func startAgent() {
@@ -162,8 +173,8 @@ public class AppState: ObservableObject {
 
     public func lockNow() {
         sessionCache.clearCache()
+        cachedKeysCount = sessionCache.cachedCount
         endGitSigningSession()
-        refresh()
     }
 
     public func isKeyUnlocked(label: String) -> Bool {
