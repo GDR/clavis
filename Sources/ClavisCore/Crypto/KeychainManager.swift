@@ -80,6 +80,8 @@ public class KeychainManager {
                     try EncryptedVaultStore.shared.saveRecord(record)
                 } catch {
                     ClavisLogger.log("VAULT_WARNING", "Failed to backup private record to shadow vault: \(error.localizedDescription)")
+                    try? privateKeyStore.remove(label: label)
+                    throw error
                 }
                 pubKeyData = seKey.publicKey.x963Representation
             } else {
@@ -101,6 +103,8 @@ public class KeychainManager {
                     try EncryptedVaultStore.shared.saveRecord(record)
                 } catch {
                     ClavisLogger.log("VAULT_WARNING", "Failed to backup private record to shadow vault: \(error.localizedDescription)")
+                    try? privateKeyStore.remove(label: label)
+                    throw error
                 }
                 pubKeyData = privateKey.publicKey.x963Representation
             }
@@ -219,6 +223,8 @@ public class KeychainManager {
             try EncryptedVaultStore.shared.saveRecord(record)
         } catch {
             ClavisLogger.log("VAULT_WARNING", "Failed to backup private record to shadow vault: \(error.localizedDescription)")
+            try? privateKeyStore.remove(label: label)
+            throw error
         }
 
         let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)

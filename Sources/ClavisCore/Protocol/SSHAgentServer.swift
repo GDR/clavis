@@ -1065,10 +1065,10 @@ public class SSHAgentServer {
     }
 
     /// Prompt for a payload that is neither a Git SSHSIG nor otherwise validated.
-    /// Only Apple's `/usr/bin/ssh` is treated as a possible forwarded-agent relay.
+    /// Any executable whose basename is `ssh` is treated as a possible forwarded-agent relay.
     static func signatureReason(keyLabel: String, requester: String, processPath: String) -> String {
-        let standardized = URL(fileURLWithPath: processPath).standardizedFileURL.path
-        if standardized == "/usr/bin/ssh" {
+        let url = URL(fileURLWithPath: processPath).standardizedFileURL
+        if url.lastPathComponent == "ssh" {
             return ClavisUIStrings.Prompt.sshAuthenticationFromForwardedAgent(keyLabel: keyLabel, requester: requester)
         }
         return dataSigningReason(keyLabel: keyLabel, requester: requester)
@@ -1083,16 +1083,26 @@ public class SSHAgentServer {
     }
 
     /// Display-safe description of the requesting process for system auth prompts:
-    /// sanitized executable path and PID. Control, newline, and bidi characters are
-    /// stripped. Long paths keep their tail (about 80 characters) so two executables
-    /// that share a basename still look different.
+    /// sanitized executable path and PID. Control, newline, format, and bidi characters are
+    /// stripped. Long paths keep their tail (about 80 characters) with a visible ellipsis
+    /// so two executables that share a basename still look different.
     static func requesterDescription(processPath: String, pid: pid_t) -> String {
         let cleaned = String(String.UnicodeScalarView(processPath.unicodeScalars.filter {
             !CharacterSet.controlCharacters.contains($0)
                 && !CharacterSet.newlines.contains($0)
                 && !Self.isBidiScalar($0)
+                && $0.properties.generalCategory != .format
+                && $0.properties.generalCategory != .control
+                && $0.properties.generalCategory != .lineSeparator
+                && $0.properties.generalCategory != .paragraphSeparator
         }))
-        let bounded = cleaned.count > 80 ? String(cleaned.suffix(80)) : cleaned
+        let maxLength = 80
+        let bounded: String
+        if cleaned.count > maxLength {
+            bounded = "…" + String(cleaned.suffix(maxLength - 1))
+        } else {
+            bounded = cleaned
+        }
         return "\(bounded.isEmpty ? "unknown" : bounded) (PID \(pid))"
     }
 

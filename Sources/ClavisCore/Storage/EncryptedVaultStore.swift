@@ -80,7 +80,7 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         if let custom = Self.customVaultDirectoryURL { return custom }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(".config/clavis/vault", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? SecureFS.createDirectory(at: dir)
         return dir
     }
 
@@ -183,7 +183,10 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         guard PlatformSupport.hasSecureEnclave || Self.allowSoftwareMasterKeyForTesting else {
             throw VaultError.secureEnclaveRequired
         }
-        try FileManager.default.createDirectory(at: vaultDirectoryURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try SecureFS.createDirectory(at: vaultDirectoryURL)
+        guard SecureFS.isDirectorySecure(at: vaultDirectoryURL) else {
+            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Insecure vault directory permissions"])
+        }
 
         let pubURL = vaultDirectoryURL.appendingPathComponent("master.pub")
         let keyURL = vaultDirectoryURL.appendingPathComponent("master.key")
@@ -206,42 +209,44 @@ public final class EncryptedVaultStore: @unchecked Sendable {
                 compactRepresentable: false,
                 accessControl: accessControl
             )
-            var keyFileBytes = Data([0x01])
-            keyFileBytes.append(seKey.dataRepresentation)
-            try keyFileBytes.write(to: keyURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
+            try SecureFS.withUmask(0o077) {
+                var keyFileBytes = Data([0x01])
+                keyFileBytes.append(seKey.dataRepresentation)
+                try keyFileBytes.write(to: keyURL, options: .atomic)
+                let pubData = seKey.publicKey.rawRepresentation
+                try pubData.write(to: pubURL, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
 
-            let pubData = seKey.publicKey.rawRepresentation
-            try pubData.write(to: pubURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
-
-            let pin = Data(SHA256.hash(data: pubData))
-            do {
-                try activePinStore.savePin(pin)
-            } catch {
-                try? FileManager.default.removeItem(at: keyURL)
-                try? FileManager.default.removeItem(at: pubURL)
-                throw error
+                let pin = Data(SHA256.hash(data: pubData))
+                do {
+                    try activePinStore.savePin(pin)
+                } catch {
+                    try? FileManager.default.removeItem(at: keyURL)
+                    try? FileManager.default.removeItem(at: pubURL)
+                    throw error
+                }
             }
             return seKey.publicKey
         } else {
             let swKey = P256.KeyAgreement.PrivateKey()
-            var keyFileBytes = Data([0x02])
-            keyFileBytes.append(swKey.rawRepresentation)
-            try keyFileBytes.write(to: keyURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
+            try SecureFS.withUmask(0o077) {
+                var keyFileBytes = Data([0x02])
+                keyFileBytes.append(swKey.rawRepresentation)
+                try keyFileBytes.write(to: keyURL, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
 
-            let pubData = swKey.publicKey.rawRepresentation
-            try pubData.write(to: pubURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
+                let pubData = swKey.publicKey.rawRepresentation
+                try pubData.write(to: pubURL, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
 
-            let pin = Data(SHA256.hash(data: pubData))
-            do {
-                try activePinStore.savePin(pin)
-            } catch {
-                try? FileManager.default.removeItem(at: keyURL)
-                try? FileManager.default.removeItem(at: pubURL)
-                throw error
+                let pin = Data(SHA256.hash(data: pubData))
+                do {
+                    try activePinStore.savePin(pin)
+                } catch {
+                    try? FileManager.default.removeItem(at: keyURL)
+                    try? FileManager.default.removeItem(at: pubURL)
+                    throw error
+                }
             }
             return swKey.publicKey
         }
@@ -296,8 +301,10 @@ public final class EncryptedVaultStore: @unchecked Sendable {
 
         let hash = labelHash(record.label)
         let fileURL = vaultDirectoryURL.appendingPathComponent("\(hash).enc")
-        try envelope.write(to: fileURL, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        try SecureFS.withUmask(0o077) {
+            try envelope.write(to: fileURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        }
     }
 
     public func removeRecord(label: String) {

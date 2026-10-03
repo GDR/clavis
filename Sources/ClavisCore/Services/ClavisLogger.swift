@@ -195,22 +195,59 @@ public struct ClavisLogger {
         return files
     }
 
-    private static func singleLine(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\n", with: "\\n")
+    public static func singleLine(_ value: String) -> String {
+        var result = ""
+        result.reserveCapacity(value.utf8.count)
+        for scalar in value.unicodeScalars {
+            switch scalar.value {
+            case 0x0A: // newline
+                result.append("\\n")
+            case 0x0D: // carriage return
+                result.append("\\r")
+            case 0x09: // horizontal tab
+                result.append("\\t")
+            default:
+                if isControlOrFormat(scalar) {
+                    result.append(String(format: "\\u{%04X}", scalar.value))
+                } else {
+                    result.append(Character(scalar))
+                }
+            }
+        }
+        return result
+    }
+
+    /// Returns true if `scalar` is a control character, Unicode format character (Cf),
+    /// or Unicode bidi/line/paragraph separator.
+    public static func isControlOrFormat(_ scalar: Unicode.Scalar) -> Bool {
+        let cat = scalar.properties.generalCategory
+        if cat == .control || cat == .format || cat == .lineSeparator || cat == .paragraphSeparator {
+            return true
+        }
+        switch scalar.value {
+        case 0x0000...0x001F, 0x007F...0x009F:
+            return true
+        case 0x061C, 0x200E, 0x200F, 0x202A...0x202E, 0x2066...0x2069:
+            return true
+        case 0x2028, 0x2029:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Sanitizes multi-line log output for terminal or CLI display, preserving normal newlines
+    /// while escaping embedded control characters, bidi overrides, and format separators.
+    public static func sanitizeLogContent(_ content: String) -> String {
+        let lines = content.components(separatedBy: "\n")
+        return lines.map { singleLine($0) }.joined(separator: "\n")
     }
 
     private static func prepareLogDirectory(for url: URL) -> Bool {
         let directory = url.deletingLastPathComponent()
         do {
-            try FileManager.default.createDirectory(
-                at: directory,
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-            return true
+            try SecureFS.createDirectory(at: directory)
+            return SecureFS.isDirectorySecure(at: directory)
         } catch {
             return false
         }
@@ -225,7 +262,7 @@ public struct ClavisLogger {
         guard fileSize > 0, fileSize + incomingByteCount > maximumFileSize else { return }
 
         let lockPath = url.path + ".lock"
-        let lockFd = open(lockPath, O_WRONLY | O_CREAT | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        let lockFd = SecureFS.openLockFile(path: lockPath, flags: O_WRONLY | O_CREAT, mode: S_IRUSR | S_IWUSR)
         if lockFd >= 0 {
             flock(lockFd, LOCK_EX)
             defer {

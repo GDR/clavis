@@ -374,13 +374,25 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
     }
 
 
-    func testLaunchAtLoginManager() {
+    func testLaunchAtLoginManager() throws {
         let tempPlistURL = FileManager.default.temporaryDirectory.appendingPathComponent("clavis_launch_\(UUID().uuidString).plist")
         LaunchAtLoginManager.customLaunchAgentURL = tempPlistURL
         defer {
             LaunchAtLoginManager.customLaunchAgentURL = nil
             try? FileManager.default.removeItem(at: tempPlistURL)
         }
+
+        let testAgent = (testRootURL ?? FileManager.default.temporaryDirectory).appendingPathComponent("clavis-agent")
+        try "#!/bin/sh\nexit 0\n".write(to: testAgent, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: testAgent.path)
+        setenv("CLAVIS_AGENT_EXECUTABLE", testAgent.path, 1)
+        #if DEBUG
+        AgentLifecycleManager.disableCodeSignatureCheckForTesting = true
+        defer {
+            AgentLifecycleManager.disableCodeSignatureCheckForTesting = false
+            unsetenv("CLAVIS_AGENT_EXECUTABLE")
+        }
+        #endif
 
         let mgr = LaunchAtLoginManager.shared
         XCTAssertFalse(mgr.isEnabled)

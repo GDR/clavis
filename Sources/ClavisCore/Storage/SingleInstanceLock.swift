@@ -26,7 +26,7 @@ public final class SingleInstanceLock: @unchecked Sendable {
         if let staticCustom = Self.customLockFileURL { return staticCustom }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(".config/clavis", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? SecureFS.createDirectory(at: dir)
         return dir.appendingPathComponent("\(name).lock")
     }
 
@@ -45,7 +45,7 @@ public final class SingleInstanceLock: @unchecked Sendable {
         }
 
         let path = lockFileURL.path
-        let fd = open(path, O_RDONLY)
+        let fd = SecureFS.openLockFile(path: path, flags: O_RDONLY)
         guard fd >= 0 else { return nil }
         defer { close(fd) }
 
@@ -79,7 +79,7 @@ public final class SingleInstanceLock: @unchecked Sendable {
         }
 
         let path = lockFileURL.path
-        let fd = open(path, O_CREAT | O_RDWR, 0o600)
+        let fd = SecureFS.openLockFile(path: path, flags: O_CREAT | O_RDWR, mode: 0o600)
         guard fd >= 0 else {
             ClavisLogger.log("LOCK", "Failed to open lock file at \(path): errno \(errno)")
             return false

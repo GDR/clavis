@@ -126,12 +126,21 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
             requester: requester,
             processPath: "/opt/homebrew/bin/ssh"
         )
+        XCTAssertEqual(homebrew, forwarded)
+        XCTAssertTrue(homebrew.contains("forwarded agent"))
+        XCTAssertTrue(homebrew.contains("remote host is not visible"))
+
+        let otherCaller = SSHAgentServer.signatureReason(
+            keyLabel: "Main Key",
+            requester: requester,
+            processPath: "/usr/bin/security"
+        )
         XCTAssertEqual(
-            homebrew,
+            otherCaller,
             SSHAgentServer.dataSigningReason(keyLabel: "Main Key", requester: requester)
         )
-        XCTAssertFalse(homebrew.contains("forwarded agent"))
-        XCTAssertFalse(homebrew.contains("remote host is not visible"))
+        XCTAssertFalse(otherCaller.contains("forwarded agent"))
+        XCTAssertFalse(otherCaller.contains("remote host is not visible"))
     }
 
     func testPromptsNameTheRequester() {
@@ -157,11 +166,16 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
         XCTAssertFalse(described.contains("\n"))
         XCTAssertFalse(described.unicodeScalars.contains("\u{202E}"))
         XCTAssertFalse(described.unicodeScalars.contains("\u{0007}"))
-        // Bounded length, keeping the end of a long path, and a non-empty fallback.
+        // Format characters (such as zero-width space / direction marks) are removed.
+        let formatHostile = "/tmp/bin\u{200B}\u{200E}\u{FEFF}"
+        let describedFormat = SSHAgentServer.requesterDescription(processPath: formatHostile, pid: 1)
+        XCTAssertEqual(describedFormat, "/tmp/bin (PID 1)")
+        // Bounded length with visible ellipsis on path truncation, keeping the tail.
         let long = "/tmp/" + String(repeating: "a", count: 500)
         let describedLong = SSHAgentServer.requesterDescription(processPath: long, pid: 1)
         XCTAssertLessThanOrEqual(describedLong.count, 80 + " (PID 1)".count)
-        XCTAssertTrue(describedLong.hasSuffix(String(repeating: "a", count: 80) + " (PID 1)"))
+        XCTAssertTrue(describedLong.hasPrefix("…"))
+        XCTAssertTrue(describedLong.hasSuffix(String(repeating: "a", count: 79) + " (PID 1)"))
         XCTAssertEqual(SSHAgentServer.requesterDescription(processPath: "/", pid: 3), "/ (PID 3)")
     }
 }
