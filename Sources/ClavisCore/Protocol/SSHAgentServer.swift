@@ -67,7 +67,21 @@ public class SSHAgentServer {
     private var _isRunning = false
     private var _activeClientCount = 0
     private var _clientPIDCounts: [pid_t: Int] = [:]
+    private var _boundInode: ino_t?
+    private var _boundDevice: dev_t?
     private let queue = DispatchQueue(label: "com.clavis.ssh-agent", attributes: .concurrent)
+
+    internal var boundInode: ino_t? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return _boundInode
+    }
+
+    internal var boundDevice: dev_t? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return _boundDevice
+    }
 
     public init(
         socketPath: String = SSHAgentServer.defaultSocketPath,
@@ -180,7 +194,22 @@ public class SSHAgentServer {
             if !didStart {
                 close(sock)
                 serverSocket = -1
-                _ = unlink(socketPath)
+                stateLock.lock()
+                let expectedInode = _boundInode
+                let expectedDevice = _boundDevice
+                _boundInode = nil
+                _boundDevice = nil
+                stateLock.unlock()
+                if let expectedInode = expectedInode, let expectedDevice = expectedDevice {
+                    var currentStat = stat()
+                    if lstat(socketPath, &currentStat) == 0,
+                       (currentStat.st_mode & S_IFMT) == S_IFSOCK,
+                       currentStat.st_ino == expectedInode,
+                       currentStat.st_dev == expectedDevice,
+                       currentStat.st_uid == geteuid() {
+                        _ = unlink(socketPath)
+                    }
+                }
             }
         }
 
@@ -215,6 +244,16 @@ public class SSHAgentServer {
             throw SSHAgentServerError.socketBindFailed(socketPath, errno)
         }
 
+        var boundStat = stat()
+        guard lstat(socketPath, &boundStat) == 0 else {
+            throw SSHAgentServerError.socketPermissionFailed(socketPath, errno)
+        }
+
+        stateLock.lock()
+        _boundInode = boundStat.st_ino
+        _boundDevice = boundStat.st_dev
+        stateLock.unlock()
+
         // Enforce strict 0600 permissions on the created socket file (read/write only by owner)
         guard chmod(socketPath, S_IRUSR | S_IWUSR) == 0, isSecureSocketPath(socketPath) else {
             throw SSHAgentServerError.socketPermissionFailed(socketPath, errno)
@@ -236,13 +275,30 @@ public class SSHAgentServer {
         _isRunning = false
         let sock = _serverSocket
         _serverSocket = -1
+        let expectedInode = _boundInode
+        let expectedDevice = _boundDevice
+        _boundInode = nil
+        _boundDevice = nil
         stateLock.unlock()
 
         if sock >= 0 {
             shutdown(sock, SHUT_RDWR)
             close(sock)
         }
-        try? FileManager.default.removeItem(atPath: socketPath)
+
+        guard let expectedInode = expectedInode, let expectedDevice = expectedDevice else {
+            return
+        }
+
+        var currentStat = stat()
+        if lstat(socketPath, &currentStat) == 0 {
+            if (currentStat.st_mode & S_IFMT) == S_IFSOCK,
+               currentStat.st_ino == expectedInode,
+               currentStat.st_dev == expectedDevice,
+               currentStat.st_uid == geteuid() {
+                _ = unlink(socketPath)
+            }
+        }
     }
 
     public var isSocketActive: Bool {

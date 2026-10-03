@@ -486,5 +486,41 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: testSockPath),
                        "serverA.stop() should remove its own socket")
     }
+
+    func testStopDoesNotUnlinkReplacedSocket() throws {
+        let testSockPath = testRootURL.appendingPathComponent("clavis-replaced-stop.sock").path
+        let serverA = SSHAgentServer(socketPath: testSockPath)
+        try serverA.start()
+
+        // Replace socket file with a newly created socket (different inode)
+        _ = unlink(testSockPath)
+
+        let newSock = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(newSock, 0)
+        defer {
+            close(newSock)
+            _ = unlink(testSockPath)
+        }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = testSockPath.utf8CString
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            let raw = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: CChar.self)
+            for (i, byte) in pathBytes.enumerated() { raw[i] = byte }
+        }
+        let addrLen = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
+        let bindResult = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(newSock, $0, addrLen)
+            }
+        }
+        XCTAssertEqual(bindResult, 0)
+
+        // Calling serverA.stop() must not remove the replaced socket file
+        serverA.stop()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: testSockPath),
+                      "serverA.stop() must not remove a socket replaced with a different inode")
+    }
 }
 

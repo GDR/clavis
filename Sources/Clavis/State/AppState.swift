@@ -45,7 +45,7 @@ public class AppState: ObservableObject {
     init(
         keyManager: KeychainManager = .shared,
         sessionCache: SessionCacheManager = .shared,
-        sshAgentServer: SSHAgentServer = .sharedInstance,
+        sshAgentServer: SSHAgentServer = .shared,
         agentLifecycle: AgentLifecycleManager = .shared,
         terminationAgentStop: (() -> Bool)? = nil
     ) {
@@ -236,8 +236,4 @@ public class AppState: ObservableObject {
     public func clearError() {
         errorMessage = nil
     }
-}
-
-public extension SSHAgentServer {
-    static let sharedInstance = SSHAgentServer()
 }
