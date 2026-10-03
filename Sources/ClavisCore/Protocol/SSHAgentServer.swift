@@ -658,22 +658,31 @@ public class SSHAgentServer {
                                 maxOperations: 200
                             )
                         }
-                        // Perform the commit #2 signature under the newly created grant
-                        guard let grantedSignature = try GitSigningGraceManager.shared.withGrant(
-                            for: matchingKey.label,
-                            clientIdentity: clientIdentity,
-                            operation: { context in
-                                try keyManager.signSSH(
-                                    key: matchingKey,
-                                    data: dataToSign,
-                                    prompt: "",
-                                    useCache: false,
-                                    existingContext: context
-                                )
+                        // Perform the commit #2 signature under the newly created grant.
+                        // A failure here must drop the grant; otherwise the reused context
+                        // stays authorized for the rest of the session.
+                        let grantedSignature: Data
+                        do {
+                            guard let signature = try GitSigningGraceManager.shared.withGrant(
+                                for: matchingKey.label,
+                                clientIdentity: clientIdentity,
+                                operation: { context in
+                                    try keyManager.signSSH(
+                                        key: matchingKey,
+                                        data: dataToSign,
+                                        prompt: "",
+                                        useCache: false,
+                                        existingContext: context
+                                    )
+                                }
+                            ) else {
+                                grant.invalidate()
+                                return Data([5])
                             }
-                        ) else {
+                            grantedSignature = signature
+                        } catch {
                             grant.invalidate()
-                            return Data([5])
+                            throw error
                         }
                         sigBlob = grantedSignature
 
