@@ -3044,6 +3044,23 @@
         }
       }
     },
+    "prompt.sign_data_requester": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sign data requested by %2$@ with “%1$@”"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "подписать данные по запросу %2$@ с помощью «%1$@»"
+          }
+        }
+      }
+    },
     "prompt.ssh_auth_requester": {
       "extractionState": "manual",
       "localizations": {
