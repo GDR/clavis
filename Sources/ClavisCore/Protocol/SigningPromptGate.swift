@@ -126,17 +126,15 @@ public final class SigningPromptGate: @unchecked Sendable {
         let ret = poll(&pfd, 1, 0)
         if ret < 0 { return false }
         if ret == 0 { return true }
-        if (pfd.revents & Int16(POLLHUP | POLLERR | POLLNVAL)) != 0 {
-            return false
-        }
         if (pfd.revents & Int16(POLLIN)) != 0 {
             var byte: UInt8 = 0
             let peek = recv(fd, &byte, 1, MSG_PEEK)
-            if peek <= 0 {
-                return false
-            }
+            return peek > 0 // data pending means peer is alive
         }
-        return false
+        if (pfd.revents & Int16(POLLHUP | POLLERR | POLLNVAL)) != 0 {
+            return false
+        }
+        return true
     }
 
     /// Runs `body` (which is expected to present an authentication prompt) exclusively.

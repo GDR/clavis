@@ -234,6 +234,86 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
         XCTAssertFalse(bodyRan, "Dead socket request must never trigger prompt body")
     }
 
+    func testIsSocketAliveStates() {
+        var fds: [Int32] = [-1, -1]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
+        let clientFd = fds[0]
+        let serverFd = fds[1]
+        defer {
+            close(clientFd)
+            close(serverFd)
+        }
+
+        // Idle socket returns true
+        XCTAssertTrue(SigningPromptGate.isSocketAlive(serverFd), "Idle socket should be alive")
+
+        // Pending byte (write 1 byte to peer) returns true
+        var byte: UInt8 = 0x42
+        XCTAssertEqual(write(clientFd, &byte, 1), 1)
+        XCTAssertTrue(SigningPromptGate.isSocketAlive(serverFd), "Socket with pending byte should be alive")
+    }
+
+    func testIsSocketAlivePeerClosed() {
+        var fds: [Int32] = [-1, -1]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
+        let clientFd = fds[0]
+        let serverFd = fds[1]
+        defer {
+            close(clientFd)
+            close(serverFd)
+        }
+
+        // Peer closed returns false
+        close(clientFd)
+        XCTAssertFalse(SigningPromptGate.isSocketAlive(serverFd), "Closed peer without pending bytes should return false")
+    }
+
+    func testIsSocketAlivePeerClosedWithQueuedByteReturnsTrueUntilRead() {
+        var fds: [Int32] = [-1, -1]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
+        let clientFd = fds[0]
+        let serverFd = fds[1]
+        defer {
+            close(clientFd)
+            close(serverFd)
+        }
+
+        // Peer closed with queued byte returns true until read
+        var byte: UInt8 = 0xAA
+        XCTAssertEqual(write(clientFd, &byte, 1), 1)
+        close(clientFd)
+
+        XCTAssertTrue(SigningPromptGate.isSocketAlive(serverFd), "Socket with queued byte from closed peer should return true")
+
+        var readBuf: UInt8 = 0
+        XCTAssertEqual(read(serverFd, &readBuf, 1), 1)
+        XCTAssertEqual(readBuf, 0xAA)
+
+        XCTAssertFalse(SigningPromptGate.isSocketAlive(serverFd), "Socket should return false once queued byte is read")
+    }
+
+    func testGateRunWithPendingBytesDoesNotThrowClientDisconnected() {
+        var fds: [Int32] = [-1, -1]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
+        let clientFd = fds[0]
+        let serverFd = fds[1]
+        defer {
+            close(clientFd)
+            close(serverFd)
+        }
+
+        var byte: UInt8 = 0x55
+        XCTAssertEqual(write(clientFd, &byte, 1), 1)
+
+        let gate = SigningPromptGate()
+        var bodyRan = false
+        XCTAssertNoThrow(try gate.run(clientSocket: serverFd) {
+            bodyRan = true
+        })
+        XCTAssertTrue(bodyRan, "gate.run should not throw clientDisconnected for socket with pending byte")
+    }
+
+
     func testQueueCapPerRequesterEnforcesMaxOneWaitingAndOneActive() {
         let gate = SigningPromptGate()
         let requester = SigningPromptGate.Requester(executablePath: "/usr/bin/git", pid: 42)
