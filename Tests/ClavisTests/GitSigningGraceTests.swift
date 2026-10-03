@@ -368,20 +368,28 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let shell: pid_t = 10
         let approvedGit: pid_t = 20
         let siblingGit: pid_t = 21
-        let hook: pid_t = 30
+        let signer: pid_t = 30
         let shellStart: UInt64 = 1_000
         let approvedStart: UInt64 = 2_000
         let siblingStart: UInt64 = 2_100
-        let hookStart: UInt64 = 3_000
+        let signerStart: UInt64 = 3_000
 
         let processes: [pid_t: ProcessParentSnapshot] = [
             1: ProcessParentSnapshot(startTime: 1, parentPid: 0),
             shell: ProcessParentSnapshot(startTime: shellStart, parentPid: 1),
             approvedGit: ProcessParentSnapshot(startTime: approvedStart, parentPid: shell),
             siblingGit: ProcessParentSnapshot(startTime: siblingStart, parentPid: shell),
-            hook: ProcessParentSnapshot(startTime: hookStart, parentPid: approvedGit),
+            signer: ProcessParentSnapshot(startTime: signerStart, parentPid: approvedGit),
+        ]
+        let processPaths: [pid_t: String] = [
+            1: "/sbin/launchd",
+            shell: "/bin/zsh",
+            approvedGit: "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+            siblingGit: "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+            signer: "/usr/bin/ssh-keygen",
         ]
         let lookup: (pid_t) -> ProcessParentSnapshot? = { processes[$0] }
+        let pathLookup: (pid_t) -> String? = { processPaths[$0] }
 
         XCTAssertTrue(
             SSHAgentServer.gitGrantCoversPeer(
@@ -389,19 +397,21 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
                 peerStartTime: approvedStart,
                 approvedPid: approvedGit,
                 approvedStartTime: approvedStart,
-                processInfo: lookup
+                processInfo: lookup,
+                processPathLookup: pathLookup
             ),
             "The approved git process keeps its own grant"
         )
         XCTAssertTrue(
             SSHAgentServer.gitGrantCoversPeer(
-                peerPid: hook,
-                peerStartTime: hookStart,
+                peerPid: signer,
+                peerStartTime: signerStart,
                 approvedPid: approvedGit,
                 approvedStartTime: approvedStart,
-                processInfo: lookup
+                processInfo: lookup,
+                processPathLookup: pathLookup
             ),
-            "A child of the approved git, such as a rebase helper or hook, keeps the grant"
+            "A signer helper child of the approved git, such as ssh-keygen, keeps the grant"
         )
         XCTAssertFalse(
             SSHAgentServer.gitGrantCoversPeer(
@@ -409,7 +419,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
                 peerStartTime: siblingStart,
                 approvedPid: approvedGit,
                 approvedStartTime: approvedStart,
-                processInfo: lookup
+                processInfo: lookup,
+                processPathLookup: pathLookup
             ),
             "A new git started by the same shell must not inherit the grant"
         )
@@ -422,7 +433,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
                 peerStartTime: approvedStart &+ 1,
                 approvedPid: approvedGit,
                 approvedStartTime: approvedStart,
-                processInfo: { reused[$0] }
+                processInfo: { reused[$0] },
+                processPathLookup: pathLookup
             ),
             "A recycled PID must not inherit the grant approved for the previous instance"
         )
@@ -492,7 +504,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
                 peerStartTime: signer3.startTime,
                 approvedPid: anchor.pid,
                 approvedStartTime: anchor.startTime,
-                processInfo: processInfo
+                processInfo: processInfo,
+                processPathLookup: pathLookup
             ),
             "Peer signer #3 under the same git G must be covered by the anchor grant"
         )
@@ -508,7 +521,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
                 peerStartTime: signerDifferentGit.startTime,
                 approvedPid: anchor.pid,
                 approvedStartTime: anchor.startTime,
-                processInfo: processInfo
+                processInfo: processInfo,
+                processPathLookup: pathLookup
             ),
             "Signer under a different git G2 must NOT be covered by the anchor grant"
         )
@@ -522,7 +536,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
                 peerStartTime: signer3.startTime,
                 approvedPid: anchor.pid,
                 approvedStartTime: anchor.startTime,
-                processInfo: { recycledProcesses[$0] }
+                processInfo: { recycledProcesses[$0] },
+                processPathLookup: pathLookup
             ),
             "Recycled git pid must NOT be covered"
         )
@@ -1069,6 +1084,237 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
                 "Injected promptProvider must be called sequentially without overlap (first exit: \(first.exit), second entry: \(second.entry))"
             )
         }
+    }
+
+    func testGitSigningGrantChainRestriction() {
+        let launchdPid: pid_t = 1
+        let shellPid: pid_t = 10
+        let approvedGitPid: pid_t = 20
+        let childGitPid: pid_t = 30
+        let shHookPid: pid_t = 40
+        let shScriptPid: pid_t = 50
+        let gitUnderScriptPid: pid_t = 55
+        let pythonPid: pid_t = 60
+        let makePid: pid_t = 65
+
+        let signerUnderApprovedGitPid: pid_t = 70
+        let signerUnderChildGitPid: pid_t = 71
+        let signerUnderShHookPid: pid_t = 72
+        let signerUnderGitUnderScriptPid: pid_t = 73
+        let signerUnderPythonPid: pid_t = 74
+        let signerUnderMakePid: pid_t = 75
+        let nonSignerHelperPid: pid_t = 76
+        let customSignerUnderChildGitPid: pid_t = 77
+        let customSignerUnderShPid: pid_t = 78
+
+        let approvedStartTime: UInt64 = 2000
+        let childGitStartTime: UInt64 = 3000
+        let defaultStartTime: UInt64 = 5000
+
+        let processes: [pid_t: ProcessParentSnapshot] = [
+            launchdPid: ProcessParentSnapshot(startTime: 1, parentPid: 0),
+            shellPid: ProcessParentSnapshot(startTime: 100, parentPid: launchdPid),
+            approvedGitPid: ProcessParentSnapshot(startTime: approvedStartTime, parentPid: shellPid),
+            childGitPid: ProcessParentSnapshot(startTime: childGitStartTime, parentPid: approvedGitPid),
+            shHookPid: ProcessParentSnapshot(startTime: defaultStartTime, parentPid: approvedGitPid),
+            shScriptPid: ProcessParentSnapshot(startTime: defaultStartTime, parentPid: approvedGitPid),
+            gitUnderScriptPid: ProcessParentSnapshot(startTime: defaultStartTime, parentPid: shScriptPid),
+            pythonPid: ProcessParentSnapshot(startTime: defaultStartTime, parentPid: approvedGitPid),
+            makePid: ProcessParentSnapshot(startTime: defaultStartTime, parentPid: approvedGitPid),
+
+            signerUnderApprovedGitPid: ProcessParentSnapshot(startTime: defaultStartTime, parentPid: approvedGitPid),
+            signerUnderChildGitPid: ProcessParentSnapshot(startTime: defaultStartTime, parentPid: childGitPid),
+            signerUnderShHookPid: ProcessParentSnapshot(startTime: defaultStartTime, parentPid: shHookPid),
+            signerUnderGitUnderScriptPid: ProcessParentSnapshot(startTime: defaultStartTime, parentPid: gitUnderScriptPid),
+            signerUnderPythonPid: ProcessParentSnapshot(startTime: defaultStartTime, parentPid: pythonPid),
+            signerUnderMakePid: ProcessParentSnapshot(startTime: defaultStartTime, parentPid: makePid),
+            nonSignerHelperPid: ProcessParentSnapshot(startTime: defaultStartTime, parentPid: childGitPid),
+            customSignerUnderChildGitPid: ProcessParentSnapshot(startTime: defaultStartTime, parentPid: childGitPid),
+            customSignerUnderShPid: ProcessParentSnapshot(startTime: defaultStartTime, parentPid: shHookPid),
+        ]
+
+        let processPaths: [pid_t: String] = [
+            launchdPid: "/sbin/launchd",
+            shellPid: "/bin/zsh",
+            approvedGitPid: "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+            childGitPid: "/nix/store/s0m3h4sh-git-2.42.0/bin/git",
+            shHookPid: "/bin/sh",
+            shScriptPid: "/bin/bash",
+            gitUnderScriptPid: "/usr/bin/git",
+            pythonPid: "/usr/bin/python3",
+            makePid: "/usr/bin/make",
+
+            signerUnderApprovedGitPid: "/usr/bin/ssh-keygen",
+            signerUnderChildGitPid: "/usr/bin/ssh-keygen",
+            signerUnderShHookPid: "/usr/bin/ssh-keygen",
+            signerUnderGitUnderScriptPid: "/usr/bin/ssh-keygen",
+            signerUnderPythonPid: "/usr/bin/ssh-keygen",
+            signerUnderMakePid: "/usr/bin/ssh-keygen",
+            nonSignerHelperPid: "/bin/sh",
+            customSignerUnderChildGitPid: "/opt/homebrew/bin/custom-signer",
+            customSignerUnderShPid: "/opt/homebrew/bin/custom-signer",
+        ]
+
+        let processInfo: (pid_t) -> ProcessParentSnapshot? = { processes[$0] }
+        let pathLookup: (pid_t) -> String? = { processPaths[$0] }
+        let customResolver: () -> String? = { "/opt/homebrew/bin/custom-signer" }
+
+        // 1. git -> ssh-keygen: covered
+        XCTAssertTrue(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: signerUnderApprovedGitPid,
+                peerStartTime: defaultStartTime,
+                approvedPid: approvedGitPid,
+                approvedStartTime: approvedStartTime,
+                processInfo: processInfo,
+                processPathLookup: pathLookup
+            ),
+            "git -> ssh-keygen must be covered"
+        )
+
+        // 2. git -> git -> ssh-keygen: covered (rebase spawning child git commit)
+        XCTAssertTrue(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: signerUnderChildGitPid,
+                peerStartTime: defaultStartTime,
+                approvedPid: approvedGitPid,
+                approvedStartTime: approvedStartTime,
+                processInfo: processInfo,
+                processPathLookup: pathLookup
+            ),
+            "git -> git -> ssh-keygen must be covered"
+        )
+
+        // 3. git -> sh -> ssh-keygen: refused (e.g. git hook)
+        XCTAssertFalse(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: signerUnderShHookPid,
+                peerStartTime: defaultStartTime,
+                approvedPid: approvedGitPid,
+                approvedStartTime: approvedStartTime,
+                processInfo: processInfo,
+                processPathLookup: pathLookup
+            ),
+            "git -> sh -> ssh-keygen must be refused"
+        )
+
+        // 4. git -> sh -> git -> ssh-keygen: refused (e.g. rebase -x running a script that commits)
+        XCTAssertFalse(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: signerUnderGitUnderScriptPid,
+                peerStartTime: defaultStartTime,
+                approvedPid: approvedGitPid,
+                approvedStartTime: approvedStartTime,
+                processInfo: processInfo,
+                processPathLookup: pathLookup
+            ),
+            "git -> sh -> git -> ssh-keygen must be refused"
+        )
+
+        // Other non-git intermediate ancestors: refused
+        XCTAssertFalse(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: signerUnderPythonPid,
+                peerStartTime: defaultStartTime,
+                approvedPid: approvedGitPid,
+                approvedStartTime: approvedStartTime,
+                processInfo: processInfo,
+                processPathLookup: pathLookup
+            ),
+            "git -> python -> ssh-keygen must be refused"
+        )
+        XCTAssertFalse(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: signerUnderMakePid,
+                peerStartTime: defaultStartTime,
+                approvedPid: approvedGitPid,
+                approvedStartTime: approvedStartTime,
+                processInfo: processInfo,
+                processPathLookup: pathLookup
+            ),
+            "git -> make -> ssh-keygen must be refused"
+        )
+
+        // Non-signer helper peer: refused
+        XCTAssertFalse(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: nonSignerHelperPid,
+                peerStartTime: defaultStartTime,
+                approvedPid: approvedGitPid,
+                approvedStartTime: approvedStartTime,
+                processInfo: processInfo,
+                processPathLookup: pathLookup
+            ),
+            "Non-signer helper peer must be refused"
+        )
+
+        // Custom gpg.ssh.program: covered for git-only chain, refused for non-git chain
+        XCTAssertTrue(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: customSignerUnderChildGitPid,
+                peerStartTime: defaultStartTime,
+                approvedPid: approvedGitPid,
+                approvedStartTime: approvedStartTime,
+                processInfo: processInfo,
+                processPathLookup: pathLookup,
+                resolvedGpgSSHProgram: customResolver
+            ),
+            "Custom gpg.ssh.program on git-only chain must be covered"
+        )
+        XCTAssertFalse(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: customSignerUnderShPid,
+                peerStartTime: defaultStartTime,
+                approvedPid: approvedGitPid,
+                approvedStartTime: approvedStartTime,
+                processInfo: processInfo,
+                processPathLookup: pathLookup,
+                resolvedGpgSSHProgram: customResolver
+            ),
+            "Custom gpg.ssh.program on non-git chain must be refused"
+        )
+
+        // 5. PID reuse / changed start time: refused
+        // a) Approved process PID reused with different start time
+        XCTAssertFalse(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: signerUnderChildGitPid,
+                peerStartTime: defaultStartTime,
+                approvedPid: approvedGitPid,
+                approvedStartTime: approvedStartTime &+ 1,
+                processInfo: processInfo,
+                processPathLookup: pathLookup
+            ),
+            "Approved process with changed start time must be refused"
+        )
+
+        // b) Peer process PID reused with different start time
+        XCTAssertFalse(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: signerUnderChildGitPid,
+                peerStartTime: defaultStartTime &+ 1,
+                approvedPid: approvedGitPid,
+                approvedStartTime: approvedStartTime,
+                processInfo: processInfo,
+                processPathLookup: pathLookup
+            ),
+            "Peer process with changed start time must be refused"
+        )
+
+        // c) Intermediate git process PID reused / missing snapshot
+        var brokenProcesses = processes
+        brokenProcesses[childGitPid] = nil
+        XCTAssertFalse(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: signerUnderChildGitPid,
+                peerStartTime: defaultStartTime,
+                approvedPid: approvedGitPid,
+                approvedStartTime: approvedStartTime,
+                processInfo: { brokenProcesses[$0] },
+                processPathLookup: pathLookup
+            ),
+            "Missing intermediate process snapshot must be refused"
+        )
     }
 }
 

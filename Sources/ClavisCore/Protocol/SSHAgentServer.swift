@@ -384,41 +384,64 @@ public class SSHAgentServer {
         )
     }
 
-    /// `true` when `peer` is the approved process instance or a live descendant of it.
+    /// `true` when `peer` is the approved process instance or a live descendant of it
+    /// via a git-only process chain ending in a recognized signer helper.
     /// The walk stops at pid 1, a cycle, or a missing snapshot. A sibling that merely
     /// shares the approved process's parent does not match.
     static func gitGrantCoversPeer(
         peerPid: pid_t,
         peerStartTime: UInt64,
+        peerPath: String? = nil,
         approvedPid: pid_t,
         approvedStartTime: UInt64,
-        processInfo: (pid_t) -> ProcessParentSnapshot?
+        processInfo: (pid_t) -> ProcessParentSnapshot? = { processParentSnapshot(pid: $0) },
+        processPathLookup: (pid_t) -> String? = { getProcessPath(pid: $0) },
+        resolvedGpgSSHProgram: () -> String? = { gpgSSHProgramResolver() }
     ) -> Bool {
         guard peerPid > 0, approvedPid > 1 else { return false }
 
-        var current = peerPid
-        var assertedStartTime: UInt64? = peerStartTime
-        var seen = Set<pid_t>()
+        // Direct match: approved process instance itself (e.g. test runner or direct anchor)
+        if peerPid == approvedPid {
+            guard let peerSnap = processInfo(peerPid) else { return false }
+            return peerSnap.startTime == peerStartTime && peerStartTime == approvedStartTime
+        }
+
+        // Descendant match:
+        // Peer must be a known signer helper (ssh-keygen or resolved gpg.ssh.program)
+        guard let resolvedPeerPath = peerPath ?? processPathLookup(peerPid) else {
+            return false
+        }
+        guard isSignerHelper(path: resolvedPeerPath, resolvedGpgSSHProgram: resolvedGpgSSHProgram) else {
+            return false
+        }
+
+        guard let peerSnap = processInfo(peerPid), peerSnap.startTime == peerStartTime else {
+            return false
+        }
+
+        // Ancestor path walk: from peer's parent up to approvedPid.
+        // Every process on the ancestor path from peer up to approved git (exclusive) must have basename "git".
+        var current = peerSnap.parentPid
+        var seen = Set<pid_t>([peerPid])
         seen.reserveCapacity(8)
 
         for _ in 0..<64 {
-            guard seen.insert(current).inserted else { return false }
+            guard current > 1, seen.insert(current).inserted else { return false }
             guard let info = processInfo(current) else { return false }
-            if let assertedStartTime, info.startTime != assertedStartTime {
-                return false
+
+            if current == approvedPid {
+                return info.startTime == approvedStartTime
             }
-            if current == approvedPid && info.startTime == approvedStartTime {
-                return true
-            }
-            if current <= 1 {
-                return false
-            }
+
+            guard let path = processPathLookup(current) else { return false }
+            let base = (path as NSString).lastPathComponent
+            guard base == "git" else { return false }
+
             let parent = info.parentPid
             if parent <= 0 || parent == current {
                 return false
             }
             current = parent
-            assertedStartTime = nil
         }
         return false
     }
@@ -427,9 +450,12 @@ public class SSHAgentServer {
         gitGrantCoversPeer(
             peerPid: peer.pid,
             peerStartTime: peer.startTime,
+            peerPath: peer.path,
             approvedPid: approved.pid,
             approvedStartTime: approved.startTime,
-            processInfo: processParentSnapshot(pid:)
+            processInfo: { processParentSnapshot(pid: $0) },
+            processPathLookup: { getProcessPath(pid: $0) },
+            resolvedGpgSSHProgram: { gpgSSHProgramResolver() }
         )
     }
 
@@ -607,7 +633,26 @@ public class SSHAgentServer {
             let parentBase = (parentPath as NSString).lastPathComponent
             if parentBase == "git" {
                 guard !isRefusedAnchor(pid: parentPid, path: parentPath) else { return nil }
-                return GitApprovedProcess(pid: parentPid, startTime: parentSnap.startTime, path: parentPath)
+                // Walk up contiguous git ancestors to anchor on the root git process (e.g. git rebase)
+                var topGitPid = parentPid
+                var topGitSnap = parentSnap
+                var topGitPath = parentPath
+                var current = parentPid
+                var seen = Set<pid_t>([peerPid, current])
+                for _ in 0..<64 {
+                    guard let currSnap = processInfo(current) else { break }
+                    let ppid = currSnap.parentPid
+                    guard ppid > 1, seen.insert(ppid).inserted else { break }
+                    guard let pSnap = processInfo(ppid), pSnap.startTime > 0 else { break }
+                    guard let pPath = processPathLookup(ppid) else { break }
+                    let pBase = (pPath as NSString).lastPathComponent
+                    guard pBase == "git", !isRefusedAnchor(pid: ppid, path: pPath) else { break }
+                    topGitPid = ppid
+                    topGitSnap = pSnap
+                    topGitPath = pPath
+                    current = ppid
+                }
+                return GitApprovedProcess(pid: topGitPid, startTime: topGitSnap.startTime, path: topGitPath)
             }
             // Signer helper whose parent is not git (e.g. shell, terminal, or launchd): refused.
             return nil
@@ -623,7 +668,25 @@ public class SSHAgentServer {
         if isDirectAnchor {
             guard !isRefusedAnchor(pid: peerPid, path: peerPath) else { return nil }
             guard let peerSnap = processInfo(peerPid), peerSnap.startTime > 0 else { return nil }
-            return GitApprovedProcess(pid: peerPid, startTime: peerSnap.startTime, path: peerPath)
+            var topGitPid = peerPid
+            var topGitSnap = peerSnap
+            var topGitPath = peerPath
+            var current = peerPid
+            var seen = Set<pid_t>([current])
+            for _ in 0..<64 {
+                guard let currSnap = processInfo(current) else { break }
+                let ppid = currSnap.parentPid
+                guard ppid > 1, seen.insert(ppid).inserted else { break }
+                guard let pSnap = processInfo(ppid), pSnap.startTime > 0 else { break }
+                guard let pPath = processPathLookup(ppid) else { break }
+                let pBase = (pPath as NSString).lastPathComponent
+                guard pBase == "git", !isRefusedAnchor(pid: ppid, path: pPath) else { break }
+                topGitPid = ppid
+                topGitSnap = pSnap
+                topGitPath = pPath
+                current = ppid
+            }
+            return GitApprovedProcess(pid: topGitPid, startTime: topGitSnap.startTime, path: topGitPath)
         }
 
         // All other executables are refused
@@ -1026,7 +1089,7 @@ public class SSHAgentServer {
         let clientIdentity = SSHAgentServer.resolveClientIdentity(pid: pid, processPath: processPath)
         let attributedStartTime = clientStartTime ?? SSHAgentServer.processStartTime(pid: pid)
         let peerProcess = attributedStartTime.map {
-            GitApprovedProcess(pid: pid, startTime: $0)
+            GitApprovedProcess(pid: pid, startTime: $0, path: processPath)
         }
 
         // Domain verification: Parse signed payload as OpenSSH SSHSIG (strict Git format)
