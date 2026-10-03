@@ -28,11 +28,15 @@ public final class AgentLifecycleManager: @unchecked Sendable {
     private let lock = NSLock()
     private let agentPIDProvider: () -> pid_t?
     private let processNameProvider: (pid_t) -> String?
+    private let isAlive: (pid_t) -> Bool
+    private let sigtermTimeout: TimeInterval
 
     public init(
         socketPath: String = SSHAgentServer.defaultSocketPath,
         agentPIDProvider: (() -> pid_t?)? = nil,
-        processNameProvider: ((pid_t) -> String?)? = nil
+        processNameProvider: ((pid_t) -> String?)? = nil,
+        isAlive: ((pid_t) -> Bool)? = nil,
+        sigtermTimeout: TimeInterval = 2.0
     ) {
         self.socketPath = socketPath
         self.agentPIDProvider = agentPIDProvider ?? {
@@ -42,6 +46,10 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         self.processNameProvider = processNameProvider ?? { pid in
             SSHAgentServer.getProcessName(pid: pid)
         }
+        self.isAlive = isAlive ?? { pid in
+            kill(pid, 0) == 0
+        }
+        self.sigtermTimeout = sigtermTimeout
     }
 
     public var isAgentRunning: Bool {
@@ -319,7 +327,7 @@ public final class AgentLifecycleManager: @unchecked Sendable {
             }
         } catch {
             ClavisLogger.log("SECURITY_ALERT", "Lock-all not acknowledged: \(error). Stopping agent.")
-            if socketPath == SSHAgentServer.defaultSocketPath && agentPID != nil {
+            if agentPID != nil {
                 if !stopAgent() {
                     throw AgentLifecycleError.agentStopFailed("Failed to stop unresponsive agent after lock-all failure: \(error.localizedDescription)")
                 }
@@ -411,7 +419,7 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        guard socketPath == SSHAgentServer.defaultSocketPath,
+        guard socketPath == SSHAgentServer.defaultSocketPath || agentPID != nil,
               let pid = agentPID ?? SingleInstanceLock.agent.lockOwnerPID else {
             if FileManager.default.fileExists(atPath: socketPath) {
                 try? FileManager.default.removeItem(atPath: socketPath)
@@ -420,7 +428,7 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         }
 
         // Verify that the target PID is actually a clavis-agent process before sending any signals
-        guard SSHAgentServer.getProcessName(pid: pid) == "clavis-agent" else {
+        guard processNameProvider(pid) == "clavis-agent" else {
             ClavisLogger.log("AGENT_LIFECYCLE", "PID \(pid) is not a clavis-agent process; refusing to signal")
             if FileManager.default.fileExists(atPath: socketPath) {
                 try? FileManager.default.removeItem(atPath: socketPath)
@@ -432,19 +440,35 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         kill(pid, SIGTERM)
 
         // Wait for process to exit and release socket
-        let deadline = Date().addingTimeInterval(2.0)
+        let deadline = Date().addingTimeInterval(sigtermTimeout)
         while Date() < deadline {
-            if kill(pid, 0) != 0 {
+            if !isAlive(pid) {
                 break
             }
             usleep(50_000)
         }
 
         // Force kill if still alive and verified as clavis-agent
-        if kill(pid, 0) == 0, SSHAgentServer.getProcessName(pid: pid) == "clavis-agent" {
+        if isAlive(pid), processNameProvider(pid) == "clavis-agent" {
             ClavisLogger.log("AGENT_LIFECYCLE", "Forcefully killing agent daemon PID \(pid)")
             kill(pid, SIGKILL)
             usleep(50_000)
+
+            // Poll for up to ~500 ms for process to exit after SIGKILL
+            let killDeadline = Date().addingTimeInterval(0.5)
+            while Date() < killDeadline {
+                if !isAlive(pid) {
+                    break
+                }
+                usleep(50_000)
+            }
+        }
+
+        // If the pid is still alive (or same pid with process name == "clavis-agent"):
+        // do not remove the socket file, log a security alert, and return false.
+        if isAlive(pid) && (processNameProvider(pid) == "clavis-agent" || processNameProvider(pid) == nil) {
+            ClavisLogger.log("SECURITY_ALERT", "Failed to terminate agent daemon PID \(pid); process survived SIGKILL")
+            return false
         }
 
         if FileManager.default.fileExists(atPath: socketPath) {
