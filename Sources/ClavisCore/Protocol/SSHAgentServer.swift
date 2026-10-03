@@ -84,6 +84,19 @@ public class SSHAgentServer {
     private var _clientPIDCounts: [pid_t: Int] = [:]
     private var _boundInode: ino_t?
     private var _boundDevice: dev_t?
+    private var _onPermanentListenerFailure: (() -> Void)?
+    public var onPermanentListenerFailure: (() -> Void)? {
+        get {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return _onPermanentListenerFailure
+        }
+        set {
+            stateLock.lock()
+            _onPermanentListenerFailure = newValue
+            stateLock.unlock()
+        }
+    }
     private let queue = DispatchQueue(label: "com.clavis.ssh-agent", attributes: .concurrent)
 
     internal var boundInode: ino_t? {
@@ -111,7 +124,8 @@ public class SSHAgentServer {
         controlPeerValidator: ((Int32) -> Bool)? = nil,
         peerProcessValidator: ((pid_t, String, UInt64) -> Bool)? = nil,
         backoffHandler: ((useconds_t) -> Void)? = nil,
-        acceptCall: ((Int32) -> (fd: Int32, err: Int32))? = nil
+        acceptCall: ((Int32) -> (fd: Int32, err: Int32))? = nil,
+        onPermanentListenerFailure: (() -> Void)? = nil
     ) {
         self.promptGate = promptGate
         self.controlPeerValidator = controlPeerValidator ?? { ClavisCodeTrust.isTrustedPeer(socket: $0) }
@@ -129,6 +143,7 @@ public class SSHAgentServer {
         self.maxConnectionLifetime = max(0.01, maxConnectionLifetime)
         self.maxRequestsPerConnection = max(1, maxRequestsPerConnection)
         self.keyManager = keyManager
+        self._onPermanentListenerFailure = onPermanentListenerFailure
     }
 
     /// Tests whether an active SSH agent server is listening on the given AF_UNIX socket.
@@ -578,6 +593,11 @@ public class SSHAgentServer {
         return "\(stdPath)|self:\(pid):\(startTime)|pgid:\(pgid)"
     }
 
+    /// Returns true if an errno indicates a permanent failure of the listening socket.
+    public static func isPermanentSocketError(_ errorCode: Int32) -> Bool {
+        errorCode == EBADF || errorCode == EINVAL || errorCode == ENOTSOCK
+    }
+
     internal func acceptLoop() {
         while isRunning {
             let listeningSock = serverSocket
@@ -626,6 +646,12 @@ public class SSHAgentServer {
                 guard isRunning else { break }
                 if errorCode == EINTR || errorCode == ECONNABORTED {
                     continue
+                }
+                if Self.isPermanentSocketError(errorCode) {
+                    ClavisLogger.log("SECURITY_ALERT", "SSH agent listener failed permanently with errno \(errorCode) (\(String(cString: strerror(errorCode)))); shutting down.")
+                    stop()
+                    onPermanentListenerFailure?()
+                    break
                 }
                 backoffHandler(100_000)
                 continue
