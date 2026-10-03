@@ -36,8 +36,22 @@ public struct PublicKeyStore {
     private static let stateLock = NSLock()
     private static var cachedKeys: [Ed25519KeyInfo]?
     private static var cachedAt = Date.distantPast
+    private static var generation: UInt64 = 0
     /// Backing store when `disableKeychainMirrorForTesting` is set.
     private static var memoryOnlyKeys: [String: Ed25519KeyInfo] = [:]
+
+    #if DEBUG
+    /// Test seam for loading keys without touching host Keychain.
+    static var keychainLoader: () -> [Ed25519KeyInfo] = { loadAllFromKeychain() }
+    static var cachedKeysForTesting: [Ed25519KeyInfo]? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return cachedKeys
+    }
+    static var generationForTesting: UInt64 {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return generation
+    }
+    #endif
 
     public static func loadAll() -> [Ed25519KeyInfo] {
         stateLock.lock()
@@ -49,14 +63,21 @@ public struct PublicKeyStore {
             defer { stateLock.unlock() }
             return cachedKeys
         }
+        let capturedGeneration = generation
         stateLock.unlock()
 
+        #if DEBUG
+        let keys = keychainLoader()
+        #else
         let keys = loadAllFromKeychain()
+        #endif
 
         stateLock.lock()
         defer { stateLock.unlock() }
-        cachedKeys = keys
-        cachedAt = Date()
+        if generation == capturedGeneration {
+            cachedKeys = keys
+            cachedAt = Date()
+        }
         return keys
     }
 
@@ -84,6 +105,7 @@ public struct PublicKeyStore {
     /// Drops the in-memory copy so the next `loadAll()` re-reads the Keychain.
     static func invalidateCache() {
         stateLock.lock(); defer { stateLock.unlock() }
+        generation &+= 1
         cachedKeys = nil
         cachedAt = .distantPast
     }
@@ -91,11 +113,13 @@ public struct PublicKeyStore {
     /// Test-only: forget everything held in memory (both the cache and the memory-only store).
     static func resetForTesting() {
         stateLock.lock(); defer { stateLock.unlock() }
+        generation &+= 1
         cachedKeys = nil
         cachedAt = .distantPast
         memoryOnlyKeys = [:]
         #if DEBUG
         forcedSaveErrorForTesting = nil
+        keychainLoader = { loadAllFromKeychain() }
         #endif
     }
 

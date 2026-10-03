@@ -71,4 +71,68 @@ final class PublicKeyStoreHardeningTests: ClavisBaseTestCase {
             }
         }
     }
+
+    func testStaleCacheWritePreventedByGenerationCounterOnConcurrentInvalidate() throws {
+        PublicKeyStore.disableKeychainMirrorForTesting = false
+        defer { PublicKeyStore.disableKeychainMirrorForTesting = true }
+
+        let staleKey = makeKey(label: "stale-key")
+        let inFlight = DispatchSemaphore(value: 0)
+        let invalidated = DispatchSemaphore(value: 0)
+
+        PublicKeyStore.keychainLoader = {
+            inFlight.signal()
+            invalidated.wait()
+            return [staleKey]
+        }
+
+        let loadExpectation = expectation(description: "loadAll completes")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let loaded = PublicKeyStore.loadAll()
+            XCTAssertEqual(loaded.map(\.label), ["stale-key"])
+            loadExpectation.fulfill()
+        }
+
+        // Wait until loadAll is inside the keychain loader
+        inFlight.wait()
+
+        let genBefore = PublicKeyStore.generationForTesting
+        // Invalidate cache concurrently while loadAll is reading
+        PublicKeyStore.invalidateCache()
+        let genAfter = PublicKeyStore.generationForTesting
+        XCTAssertEqual(genAfter, genBefore + 1, "invalidateCache must increment generation counter")
+
+        // Allow loadAll to finish its stale read
+        invalidated.signal()
+
+        wait(for: [loadExpectation], timeout: 5.0)
+
+        // Since generation changed during the read, cachedKeys must NOT be populated with stale keys
+        XCTAssertNil(PublicKeyStore.cachedKeysForTesting, "cachedKeys must not be overwritten with stale data after invalidateCache()")
+    }
+
+    func testConcurrentLoadAllAndInvalidateWithBarrier() async throws {
+        PublicKeyStore.disableKeychainMirrorForTesting = false
+        defer { PublicKeyStore.disableKeychainMirrorForTesting = true }
+
+        let testKey = makeKey(label: "concurrent-key")
+        PublicKeyStore.keychainLoader = {
+            usleep(useconds_t.random(in: 100...1000))
+            return [testKey]
+        }
+
+        await withTaskGroup(of: Void.self) { group in
+            for i in 0..<24 {
+                if i % 4 == 0 {
+                    group.addTask {
+                        PublicKeyStore.invalidateCache()
+                    }
+                } else {
+                    group.addTask {
+                        _ = PublicKeyStore.loadAll()
+                    }
+                }
+            }
+        }
+    }
 }
