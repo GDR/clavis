@@ -11,8 +11,23 @@ import Security
 /// to decrypt and recover keys.
 public final class EncryptedVaultStore: @unchecked Sendable {
     public static let shared = EncryptedVaultStore()
-    public static var customVaultDirectoryURL: URL? = nil
+    public static var customVaultDirectoryURL: URL? = nil {
+        didSet {
+            #if DEBUG
+            inMemoryPinStoreForTesting = InMemoryMasterKeyPinStore()
+            #endif
+        }
+    }
+    public static var customPinStore: MasterKeyPinStoring? = nil
+    private static var inMemoryPinStoreForTesting: MasterKeyPinStoring = InMemoryMasterKeyPinStore()
     static var forceSoftwareMasterKeyForTesting: Bool = false
+
+    public static func resetForTesting() {
+        customPinStore = nil
+        #if DEBUG
+        inMemoryPinStoreForTesting = InMemoryMasterKeyPinStore()
+        #endif
+    }
 
     private static var allowSoftwareMasterKeyForTesting: Bool {
         #if DEBUG
@@ -23,11 +38,29 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     }
 
     private let lock = NSLock()
+    private let defaultPinStore: MasterKeyPinStoring
 
-    public enum VaultError: LocalizedError {
+    public init(pinStore: MasterKeyPinStoring = KeychainMasterKeyPinStore()) {
+        self.defaultPinStore = pinStore
+    }
+
+    private var activePinStore: MasterKeyPinStoring {
+        if let custom = Self.customPinStore {
+            return custom
+        }
+        #if DEBUG
+        if Self.allowSoftwareMasterKeyForTesting {
+            return Self.inMemoryPinStoreForTesting
+        }
+        #endif
+        return defaultPinStore
+    }
+
+    public enum VaultError: LocalizedError, Equatable {
         case secureEnclaveRequired
         case softwareMasterKeyUnsupported
         case incompleteMasterKey
+        case masterKeyTampered
 
         public var errorDescription: String? {
             switch self {
@@ -37,6 +70,8 @@ public final class EncryptedVaultStore: @unchecked Sendable {
                 return "This vault uses an old software master key. Its files were preserved; migrate the vault before creating more keys."
             case .incompleteMasterKey:
                 return "The recovery vault master key is incomplete or invalid. Its files were preserved."
+            case .masterKeyTampered:
+                return "The recovery vault master key has been tampered with or its Keychain pin is invalid."
             }
         }
     }
@@ -61,6 +96,89 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         return FileManager.default.fileExists(atPath: fileURL.path)
     }
 
+    private enum MasterPrivateKey {
+        case secureEnclave(SecureEnclave.P256.KeyAgreement.PrivateKey)
+        case software(P256.KeyAgreement.PrivateKey)
+    }
+
+    /// Authenticates the master key on disk against the Keychain pin and validates that
+    /// the public key derived from `master.key` matches `master.pub`.
+    private func authenticateExistingMasterKey(
+        context: LAContext? = nil
+    ) throws -> (publicKey: P256.KeyAgreement.PublicKey, privateKey: MasterPrivateKey) {
+        let pubURL = vaultDirectoryURL.appendingPathComponent("master.pub")
+        let keyURL = vaultDirectoryURL.appendingPathComponent("master.key")
+
+        let hasPublicKey = FileManager.default.fileExists(atPath: pubURL.path)
+        let hasPrivateKey = FileManager.default.fileExists(atPath: keyURL.path)
+
+        guard hasPublicKey && hasPrivateKey else {
+            throw VaultError.incompleteMasterKey
+        }
+
+        let pubData = try Data(contentsOf: pubURL)
+        guard (try? P256.KeyAgreement.PublicKey(rawRepresentation: pubData)) != nil else {
+            throw VaultError.masterKeyTampered
+        }
+
+        let privateData = try Data(contentsOf: keyURL)
+        guard let keyType = privateData.first else {
+            throw VaultError.incompleteMasterKey
+        }
+        guard keyType == 0x01 || (keyType == 0x02 && Self.allowSoftwareMasterKeyForTesting) else {
+            throw keyType == 0x02 ? VaultError.softwareMasterKeyUnsupported : VaultError.incompleteMasterKey
+        }
+
+        let keyBytes = Data(privateData.dropFirst())
+        let derivedPubKey: P256.KeyAgreement.PublicKey
+        let masterPrivate: MasterPrivateKey
+
+        if keyType == 0x01 {
+            let seKey: SecureEnclave.P256.KeyAgreement.PrivateKey
+            do {
+                if let context {
+                    seKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(
+                        dataRepresentation: keyBytes,
+                        authenticationContext: context
+                    )
+                } else {
+                    seKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(
+                        dataRepresentation: keyBytes
+                    )
+                }
+            } catch {
+                throw VaultError.masterKeyTampered
+            }
+            derivedPubKey = seKey.publicKey
+            masterPrivate = .secureEnclave(seKey)
+        } else {
+            let swKey: P256.KeyAgreement.PrivateKey
+            do {
+                swKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: keyBytes)
+            } catch {
+                throw VaultError.masterKeyTampered
+            }
+            derivedPubKey = swKey.publicKey
+            masterPrivate = .software(swKey)
+        }
+
+        guard derivedPubKey.rawRepresentation == pubData else {
+            throw VaultError.masterKeyTampered
+        }
+
+        // Verify pin in Keychain / pinStore
+        guard let storedPin = try activePinStore.loadPin() else {
+            // Missing pin with existing master files fails closed; never silently re-pin.
+            throw VaultError.masterKeyTampered
+        }
+        let expectedPin = Data(SHA256.hash(data: pubData))
+        guard storedPin == expectedPin else {
+            throw VaultError.masterKeyTampered
+        }
+
+        return (derivedPubKey, masterPrivate)
+    }
+
     public func ensureMasterKey() throws -> P256.KeyAgreement.PublicKey {
         guard PlatformSupport.hasSecureEnclave || Self.allowSoftwareMasterKeyForTesting else {
             throw VaultError.secureEnclaveRequired
@@ -76,17 +194,7 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             throw VaultError.incompleteMasterKey
         }
         if hasPublicKey {
-            let privateData = try Data(contentsOf: keyURL)
-            guard let keyType = privateData.first else {
-                throw VaultError.incompleteMasterKey
-            }
-            guard keyType == 0x01 || (keyType == 0x02 && Self.allowSoftwareMasterKeyForTesting) else {
-                throw keyType == 0x02 ? VaultError.softwareMasterKeyUnsupported : VaultError.incompleteMasterKey
-            }
-            let pubData = try Data(contentsOf: pubURL)
-            guard let pubKey = try? P256.KeyAgreement.PublicKey(rawRepresentation: pubData) else {
-                throw VaultError.incompleteMasterKey
-            }
+            let (pubKey, _) = try authenticateExistingMasterKey()
             return pubKey
         }
 
@@ -106,6 +214,15 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             let pubData = seKey.publicKey.rawRepresentation
             try pubData.write(to: pubURL, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
+
+            let pin = Data(SHA256.hash(data: pubData))
+            do {
+                try activePinStore.savePin(pin)
+            } catch {
+                try? FileManager.default.removeItem(at: keyURL)
+                try? FileManager.default.removeItem(at: pubURL)
+                throw error
+            }
             return seKey.publicKey
         } else {
             let swKey = P256.KeyAgreement.PrivateKey()
@@ -117,11 +234,20 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             let pubData = swKey.publicKey.rawRepresentation
             try pubData.write(to: pubURL, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
+
+            let pin = Data(SHA256.hash(data: pubData))
+            do {
+                try activePinStore.savePin(pin)
+            } catch {
+                try? FileManager.default.removeItem(at: keyURL)
+                try? FileManager.default.removeItem(at: pubURL)
+                throw error
+            }
             return swKey.publicKey
         }
     }
 
-    /// Envelope formats. `CLVENV01` has no associated data; `CLVENV02` authenticates the format
+    /// Envelope formats. `CLVENV01` is rejected; `CLVENV02` authenticates the format
     /// and the record label, so a ciphertext file cannot be moved to another label's slot.
     private static let legacyMagic = Data("CLVENV01".utf8)
     private static let currentMagic = Data("CLVENV02".utf8)
@@ -193,33 +319,22 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         let fileURL = vaultDirectoryURL.appendingPathComponent("\(hash).enc")
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         let data = try Data(contentsOf: fileURL)
-        let (record, isLegacy) = try decryptEnvelope(data, label: label, context: context)
-
-        // Upgrade legacy envelopes in place once they have been authenticated, but only when the
-        // record really belongs to this label. Failure is harmless: the old file stays valid.
-        if isLegacy, record.label == label {
-            do {
-                try writeRecordLocked(record)
-                ClavisLogger.log("SECURITY", "Upgraded vault envelope to CLVENV02 for '\(label)'")
-            } catch {
-                ClavisLogger.log("SECURITY", "Vault envelope upgrade skipped for '\(label)': \(error.localizedDescription)")
-            }
-        }
-        return record
+        return try decryptEnvelope(data, label: label, context: context)
     }
 
     private func decryptEnvelope(
         _ data: Data,
         label: String,
         context: LAContext?
-    ) throws -> (record: StoredPrivateKeyRecord, isLegacy: Bool) {
-        let isLegacy = data.starts(with: Self.legacyMagic)
-        let magic = isLegacy ? Self.legacyMagic : Self.currentMagic
-        guard data.starts(with: magic), data.count > magic.count + 1 else {
+    ) throws -> StoredPrivateKeyRecord {
+        guard !data.starts(with: Self.legacyMagic) else {
+            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Legacy vault envelope format CLVENV01 is rejected"])
+        }
+        guard data.starts(with: Self.currentMagic), data.count > Self.currentMagic.count + 1 else {
             throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid vault envelope format"])
         }
 
-        var offset = magic.count
+        var offset = Self.currentMagic.count
         let epkLen = Int(data[offset])
         offset += 1
 
@@ -232,30 +347,15 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         let ciphertext = data.subdata(in: offset..<data.count)
 
         let ephemeralPubKey = try P256.KeyAgreement.PublicKey(rawRepresentation: epkData)
-        let keyURL = vaultDirectoryURL.appendingPathComponent("master.key")
-        let fileData = try Data(contentsOf: keyURL)
-        guard !fileData.isEmpty else {
-            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Empty master key in vault"])
-        }
 
-        let keyType = fileData[0]
-        let keyData = fileData.dropFirst()
+        let (_, masterPrivateKey) = try authenticateExistingMasterKey(context: context)
 
         let sharedSecret: SharedSecret
-        if keyType == 0x01 {
-            let seKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(
-                dataRepresentation: Data(keyData),
-                authenticationContext: context ?? LAContext()
-            )
+        switch masterPrivateKey {
+        case .secureEnclave(let seKey):
             sharedSecret = try seKey.sharedSecretFromKeyAgreement(with: ephemeralPubKey)
-        } else if keyType == 0x02 {
-            guard Self.allowSoftwareMasterKeyForTesting else {
-                throw VaultError.softwareMasterKeyUnsupported
-            }
-            let swKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: Data(keyData))
+        case .software(let swKey):
             sharedSecret = try swKey.sharedSecretFromKeyAgreement(with: ephemeralPubKey)
-        } else {
-            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unsupported master key format"])
         }
 
         let symmetricKey = sharedSecret.hkdfDerivedSymmetricKey(
@@ -266,9 +366,159 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         )
 
         let sealed = try ChaChaPoly.SealedBox(combined: ciphertext)
-        let decrypted = isLegacy
-            ? try ChaChaPoly.open(sealed, using: symmetricKey)
-            : try ChaChaPoly.open(sealed, using: symmetricKey, authenticating: Self.associatedData(label: label))
-        return (try StoredPrivateKeyRecord.decode(from: decrypted), isLegacy)
+        let decrypted = try ChaChaPoly.open(
+            sealed,
+            using: symmetricKey,
+            authenticating: Self.associatedData(label: label)
+        )
+        return try StoredPrivateKeyRecord.decode(from: decrypted)
     }
 }
+
+public protocol MasterKeyPinStoring: Sendable {
+    func loadPin() throws -> Data?
+    func savePin(_ pin: Data) throws
+    func removePin() throws
+}
+
+public final class InMemoryMasterKeyPinStore: MasterKeyPinStoring, @unchecked Sendable {
+    private let lock = NSLock()
+    private var pin: Data?
+
+    public init(pin: Data? = nil) {
+        self.pin = pin
+    }
+
+    public func loadPin() throws -> Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return pin
+    }
+
+    public func savePin(_ pin: Data) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        self.pin = pin
+    }
+
+    public func removePin() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        self.pin = nil
+    }
+}
+
+public enum MasterKeyPinStoreError: LocalizedError, Equatable {
+    case keychain(OSStatus)
+
+    public var errorDescription: String? {
+        switch self {
+        case .keychain(let status):
+            let message = SecCopyErrorMessageString(status, nil) as String? ?? "Unknown Keychain error"
+            return "Master key pin Keychain operation failed (\(status)): \(message)"
+        }
+    }
+}
+
+public final class KeychainMasterKeyPinStore: MasterKeyPinStoring, @unchecked Sendable {
+    public static let serviceName = "com.clavis.vault-master-pin.v1"
+    public static let accountName = "master-key-pin"
+
+    private let service: String
+    private let account: String
+    private let addItem: @Sendable (CFDictionary) -> OSStatus
+    private let deleteItem: @Sendable (CFDictionary) -> OSStatus
+    private let updateItem: @Sendable (CFDictionary, CFDictionary) -> OSStatus
+    private let copyItem: @Sendable (CFDictionary) -> (OSStatus, AnyObject?)
+
+    public convenience init(
+        service: String = KeychainMasterKeyPinStore.serviceName,
+        account: String = KeychainMasterKeyPinStore.accountName
+    ) {
+        self.init(
+            service: service,
+            account: account,
+            addItem: { SecItemAdd($0, nil) },
+            deleteItem: { SecItemDelete($0) },
+            updateItem: { SecItemUpdate($0, $1) },
+            copyItem: { query in
+                var result: CFTypeRef?
+                let status = SecItemCopyMatching(query, &result)
+                return (status, result)
+            }
+        )
+    }
+
+    init(
+        service: String,
+        account: String,
+        addItem: @escaping @Sendable (CFDictionary) -> OSStatus,
+        deleteItem: @escaping @Sendable (CFDictionary) -> OSStatus,
+        updateItem: @escaping @Sendable (CFDictionary, CFDictionary) -> OSStatus,
+        copyItem: @escaping @Sendable (CFDictionary) -> (OSStatus, AnyObject?)
+    ) {
+        self.service = service
+        self.account = account
+        self.addItem = addItem
+        self.deleteItem = deleteItem
+        self.updateItem = updateItem
+        self.copyItem = copyItem
+    }
+
+    public func loadPin() throws -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        let (status, result) = copyItem(query as CFDictionary)
+        if status == errSecSuccess, let data = result as? Data {
+            return data
+        }
+        if status == errSecItemNotFound {
+            return nil
+        }
+        throw MasterKeyPinStoreError.keychain(status)
+    }
+
+    public func savePin(_ pin: Data) throws {
+        let lookup: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        let attributes: [String: Any] = [
+            kSecValueData as String: pin,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            kSecAttrSynchronizable as String: false,
+            kSecAttrDescription as String: "Clavis vault master key pin"
+        ]
+        var status = updateItem(lookup as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            var item = lookup
+            for (key, value) in attributes { item[key] = value }
+            status = addItem(item as CFDictionary)
+            if status == errSecDuplicateItem {
+                status = updateItem(lookup as CFDictionary, attributes as CFDictionary)
+            }
+        }
+        guard status == errSecSuccess else {
+            throw MasterKeyPinStoreError.keychain(status)
+        }
+    }
+
+    public func removePin() throws {
+        let lookup: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        let status = deleteItem(lookup as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw MasterKeyPinStoreError.keychain(status)
+        }
+    }
+}
+
