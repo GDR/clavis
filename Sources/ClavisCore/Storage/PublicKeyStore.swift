@@ -13,26 +13,41 @@ public enum PublicKeyStoreError: LocalizedError {
     }
 }
 
+/// Index of public key metadata.
+///
+/// There is no on-disk index: the Keychain items (`KeychainManager.publicServiceName`) are the only
+/// persistent copy, and every process (GUI, CLI, agent) keeps a short-lived in-memory copy.
+/// The index is not a trust root — private records are authoritative and are cross-checked on
+/// every use — so it needs neither a file nor its own integrity protection.
 public struct PublicKeyStore {
-    public static var customStorageURL: URL? = nil
+    /// Test-only: keep the index purely in memory and never touch the real Keychain.
     static var disableKeychainMirrorForTesting = false
 
-    private static var storageURL: URL {
-        if let customStorageURL { return customStorageURL }
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let dir = home.appendingPathComponent(".config/clavis", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        return dir.appendingPathComponent("keys.json")
-    }
+    /// How long a process trusts its in-memory copy. Other processes (e.g. the GUI creating a
+    /// key while the agent runs) write straight to the Keychain, so the copy must expire.
+    /// Local writes invalidate it immediately.
+    private static let cacheTTL: TimeInterval = 2
+
+    private static let stateLock = NSLock()
+    private static var cachedKeys: [Ed25519KeyInfo]?
+    private static var cachedAt = Date.distantPast
+    /// Backing store when `disableKeychainMirrorForTesting` is set.
+    private static var memoryOnlyKeys: [String: Ed25519KeyInfo] = [:]
 
     public static func loadAll() -> [Ed25519KeyInfo] {
-        if let data = try? Data(contentsOf: storageURL),
-           let keys = try? JSONDecoder().decode([Ed25519KeyInfo].self, from: data) {
-            return keys.sorted(by: { $0.label < $1.label })
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
+        if disableKeychainMirrorForTesting {
+            return memoryOnlyKeys.values.sorted(by: { $0.label < $1.label })
         }
-        if disableKeychainMirrorForTesting { return [] }
-        // Rebuild from Keychain public store if keys.json is missing or corrupted
-        return rebuildIndexFromKeychain()
+        if let cachedKeys, Date().timeIntervalSince(cachedAt) < cacheTTL {
+            return cachedKeys
+        }
+        let keys = loadAllFromKeychain()
+        cachedKeys = keys
+        cachedAt = Date()
+        return keys
     }
 
     public static func save(_ info: Ed25519KeyInfo) {
@@ -40,29 +55,13 @@ public struct PublicKeyStore {
     }
 
     public static func saveChecked(_ info: Ed25519KeyInfo) throws {
-        var current = loadAll().filter { $0.label != info.label }
-        current.append(info)
-        if !disableKeychainMirrorForTesting {
-            try saveToKeychainChecked(info)
+        if disableKeychainMirrorForTesting {
+            stateLock.lock(); defer { stateLock.unlock() }
+            memoryOnlyKeys[info.label] = info
+            return
         }
-        let data = try JSONEncoder().encode(current)
-        try writeIndex(data)
-    }
-
-    /// Writes the index with owner-only permissions. The index is not a trust root (private
-    /// records are authoritative), but there is no reason for it to be readable or writable
-    /// by anyone else, and the parent directory also holds the log and vault.
-    private static func writeIndex(_ data: Data) throws {
-        let directory = storageURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        // Best effort: a caller-supplied directory may not be ours to chmod.
-        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-        try data.write(to: storageURL, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: storageURL.path)
+        try saveToKeychainChecked(info)
+        invalidateCache()
     }
 
     public static func remove(label: String) {
@@ -70,19 +69,28 @@ public struct PublicKeyStore {
     }
 
     public static func removeChecked(label: String) throws {
-        let current = loadAll().filter { $0.label != label }
-        if !disableKeychainMirrorForTesting {
-            try removeFromKeychainChecked(label: label)
+        if disableKeychainMirrorForTesting {
+            stateLock.lock(); defer { stateLock.unlock() }
+            memoryOnlyKeys[label] = nil
+            return
         }
-        let data = try JSONEncoder().encode(current)
-        do {
-            try writeIndex(data)
-        } catch {
-            // Avoid leaving a stale authoritative-looking file after the mirror
-            // was successfully removed; a later load can rebuild an empty index.
-            try? FileManager.default.removeItem(at: storageURL)
-            throw error
-        }
+        try removeFromKeychainChecked(label: label)
+        invalidateCache()
+    }
+
+    /// Drops the in-memory copy so the next `loadAll()` re-reads the Keychain.
+    static func invalidateCache() {
+        stateLock.lock(); defer { stateLock.unlock() }
+        cachedKeys = nil
+        cachedAt = .distantPast
+    }
+
+    /// Test-only: forget everything held in memory (both the cache and the memory-only store).
+    static func resetForTesting() {
+        stateLock.lock(); defer { stateLock.unlock() }
+        cachedKeys = nil
+        cachedAt = .distantPast
+        memoryOnlyKeys = [:]
     }
 
     // MARK: - Keychain Public Record Mirroring & Recovery
@@ -161,15 +169,4 @@ public struct PublicKeyStore {
         return keys.sorted(by: { $0.label < $1.label })
     }
 
-    @discardableResult
-    public static func rebuildIndexFromKeychain() -> [Ed25519KeyInfo] {
-        if disableKeychainMirrorForTesting { return [] }
-        let keychainKeys = loadAllFromKeychain()
-        if !keychainKeys.isEmpty {
-            if let data = try? JSONEncoder().encode(keychainKeys) {
-                try? writeIndex(data)
-            }
-        }
-        return keychainKeys
-    }
 }
