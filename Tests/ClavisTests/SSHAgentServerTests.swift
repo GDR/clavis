@@ -446,4 +446,45 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         }
         XCTAssertTrue(detected, "exec() of a different image must invalidate the attributed identity")
     }
+
+    func testStopDoesNotUnlinkForeignSocket() throws {
+        let testSockPath = testRootURL.appendingPathComponent("clavis-foreign-stop.sock").path
+        let serverA = SSHAgentServer(socketPath: testSockPath)
+        try serverA.start()
+        defer { serverA.stop() }
+
+        // Instance B points to the same path but never started (never bound)
+        let serverB = SSHAgentServer(socketPath: testSockPath)
+        serverB.stop()
+
+        // Socket file must still exist because serverB does not own it
+        XCTAssertTrue(FileManager.default.fileExists(atPath: testSockPath),
+                      "serverB.stop() must not unlink a socket file created by serverA")
+
+        // serverA should still be active and accept connections
+        let clientSock = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(clientSock, 0)
+        defer { close(clientSock) }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = testSockPath.utf8CString
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            let raw = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: CChar.self)
+            for (i, byte) in pathBytes.enumerated() { raw[i] = byte }
+        }
+        let addrLen = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
+        let connectResult = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(clientSock, $0, addrLen)
+            }
+        }
+        XCTAssertEqual(connectResult, 0, "serverA must still accept connections after serverB.stop()")
+
+        // Calling serverA.stop() removes the socket it created
+        serverA.stop()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: testSockPath),
+                       "serverA.stop() should remove its own socket")
+    }
 }
+
