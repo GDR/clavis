@@ -37,7 +37,7 @@ public final class LaunchAtLoginManager: @unchecked Sendable {
         }
     }
 
-    private func enableLaunchAtLogin() {
+    internal func enableLaunchAtLogin() {
         if Bundle.main.bundlePath.hasSuffix(".app") {
             do {
                 if SMAppService.mainApp.status != .enabled {
@@ -51,7 +51,30 @@ public final class LaunchAtLoginManager: @unchecked Sendable {
         }
 
         // Fallback: Create LaunchAgent plist in ~/Library/LaunchAgents/
-        let agentExec = AgentLifecycleManager.shared.locateAgentExecutable()?.path ?? (Bundle.main.executablePath ?? ProcessInfo.processInfo.arguments[0])
+        guard let agentExecURL = AgentLifecycleManager.shared.locateAgentExecutable() else {
+            ClavisLogger.log("AUTO_START", "Refusing to write LaunchAgent: could not locate trusted agent executable.")
+            return
+        }
+
+        let agentExec = agentExecURL.path
+        guard agentExec.hasPrefix("/") else {
+            ClavisLogger.log("AUTO_START", "Refusing to write LaunchAgent: executable path is not absolute (\(agentExec)).")
+            return
+        }
+
+        var info = stat()
+        guard lstat(agentExec, &info) == 0 else {
+            ClavisLogger.log("AUTO_START", "Refusing to write LaunchAgent: failed to stat executable at \(agentExec): errno \(errno)")
+            return
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
+            ClavisLogger.log("AUTO_START", "Refusing to write LaunchAgent: executable is not a regular file (\(agentExec)).")
+            return
+        }
+        guard (info.st_uid == geteuid() || info.st_uid == 0) && (info.st_mode & 0o022) == 0 else {
+            ClavisLogger.log("AUTO_START", "Refusing to write LaunchAgent: executable must be owner-only and not group/other-writable (\(agentExec)).")
+            return
+        }
 
         do {
             let plistData = try Self.launchAgentPlistData(executable: agentExec)

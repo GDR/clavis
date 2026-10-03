@@ -160,7 +160,7 @@ public struct GitSigningPromptStrings {
             messageTemplate: { keyLabel, clientDesc in
                 String(
                     localized: "prompt.git_session_message",
-                    defaultValue: "Обнаружена серия коммитов Git (rebase / cherry-pick) для ключа '\(keyLabel)' от \(clientDesc).\n\nРазрешить автоматическую подпись Git на 5 минут без повторных запросов Touch ID?",
+                    defaultValue: "Detected a series of Git commits (rebase / cherry-pick) for key '\(keyLabel)' from \(clientDesc).\n\nGrant automatic Git signing for 5 minutes without repeated Touch ID prompts?",
                     bundle: .module
                 )
             },

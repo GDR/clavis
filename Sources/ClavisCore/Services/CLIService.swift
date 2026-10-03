@@ -154,7 +154,7 @@ public struct CLIService {
         case .logs:
             let logURL = ClavisLogger.logFileURL
             if let content = try? String(contentsOf: logURL, encoding: .utf8) {
-                return CLICommandResult(exitCode: 0, output: content)
+                return CLICommandResult(exitCode: 0, output: ClavisLogger.sanitizeLogContent(content))
             } else {
                 return CLICommandResult(exitCode: 0, output: CLIMessages.noLogFileFound(path: logURL.path))
             }

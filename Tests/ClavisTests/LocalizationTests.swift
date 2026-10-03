@@ -162,4 +162,37 @@ final class LocalizationTests: XCTestCase {
             }
         }
     }
+
+    func testGitSigningPromptStringsEnglishDefaults() {
+        let strings = GitSigningPromptStrings.localized
+        XCTAssertEqual(strings.header, "Clavis — Git Signing Session")
+        XCTAssertEqual(strings.allowFiveMinutesButton, "Grant 5 Minutes")
+        XCTAssertEqual(strings.cancelButton, "Cancel")
+        XCTAssertEqual(strings.singleShotButton, "Sign Once")
+
+        let msg = strings.messageTemplate("test-key", "git (PID 100)")
+        XCTAssertTrue(msg.contains("Detected a series of Git commits"))
+        XCTAssertTrue(msg.contains("Grant automatic Git signing for 5 minutes"))
+        // Must contain no Cyrillic characters
+        XCTAssertFalse(msg.unicodeScalars.contains(where: { ("\u{0400}"..."\u{04FF}").contains($0) }))
+    }
+
+    func testEveryKeyHasEnglishDefaultInXCStrings() throws {
+        let thisFile = URL(fileURLWithPath: #file)
+        let repoRoot = thisFile.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let xcstringsURL = repoRoot.appendingPathComponent("Sources/ClavisCore/Resources/Localizable.xcstrings")
+
+        let data = try Data(contentsOf: xcstringsURL)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let strings = json?["strings"] as? [String: [String: Any]] ?? [:]
+
+        XCTAssertFalse(strings.isEmpty)
+        for (key, entry) in strings {
+            let localizations = entry["localizations"] as? [String: [String: Any]]
+            let enUnit = localizations?["en"]?["stringUnit"] as? [String: Any]
+            let enVal = enUnit?["value"] as? String
+            XCTAssertNotNil(enVal, "Key '\(key)' is missing English default translation")
+            XCTAssertFalse(enVal?.isEmpty ?? true, "Key '\(key)' has empty English default translation")
+        }
+    }
 }

@@ -36,15 +36,20 @@ public struct PublicKeyStore {
 
     public static func loadAll() -> [Ed25519KeyInfo] {
         stateLock.lock()
-        defer { stateLock.unlock() }
-
         if disableKeychainMirrorForTesting {
+            defer { stateLock.unlock() }
             return memoryOnlyKeys.values.sorted(by: { $0.label < $1.label })
         }
         if let cachedKeys, Date().timeIntervalSince(cachedAt) < cacheTTL {
+            defer { stateLock.unlock() }
             return cachedKeys
         }
+        stateLock.unlock()
+
         let keys = loadAllFromKeychain()
+
+        stateLock.lock()
+        defer { stateLock.unlock() }
         cachedKeys = keys
         cachedAt = Date()
         return keys
@@ -55,13 +60,7 @@ public struct PublicKeyStore {
     }
 
     public static func saveChecked(_ info: Ed25519KeyInfo) throws {
-        if disableKeychainMirrorForTesting {
-            stateLock.lock(); defer { stateLock.unlock() }
-            memoryOnlyKeys[info.label] = info
-            return
-        }
         try saveToKeychainChecked(info)
-        invalidateCache()
     }
 
     public static func remove(label: String) {
@@ -69,13 +68,7 @@ public struct PublicKeyStore {
     }
 
     public static func removeChecked(label: String) throws {
-        if disableKeychainMirrorForTesting {
-            stateLock.lock(); defer { stateLock.unlock() }
-            memoryOnlyKeys[label] = nil
-            return
-        }
         try removeFromKeychainChecked(label: label)
-        invalidateCache()
     }
 
     /// Drops the in-memory copy so the next `loadAll()` re-reads the Keychain.
@@ -100,6 +93,13 @@ public struct PublicKeyStore {
     }
 
     public static func saveToKeychainChecked(_ info: Ed25519KeyInfo) throws {
+        if disableKeychainMirrorForTesting {
+            stateLock.lock()
+            memoryOnlyKeys[info.label] = info
+            stateLock.unlock()
+            invalidateCache()
+            return
+        }
         let data = try JSONEncoder().encode(info)
         let lookup: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -119,13 +119,21 @@ public struct PublicKeyStore {
             status = SecItemAdd(item as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw PublicKeyStoreError.keychain(status) }
+        invalidateCache()
     }
 
-    public static func removeFromKeychain(label: String) {
+    public static func removeFromKeychain(_ label: String) {
         try? removeFromKeychainChecked(label: label)
     }
 
     public static func removeFromKeychainChecked(label: String) throws {
+        if disableKeychainMirrorForTesting {
+            stateLock.lock()
+            memoryOnlyKeys[label] = nil
+            stateLock.unlock()
+            invalidateCache()
+            return
+        }
         let lookup: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: KeychainManager.publicServiceName,
@@ -135,6 +143,7 @@ public struct PublicKeyStore {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw PublicKeyStoreError.keychain(status)
         }
+        invalidateCache()
     }
 
     public static func loadAllFromKeychain() -> [Ed25519KeyInfo] {
