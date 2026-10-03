@@ -639,6 +639,34 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         }
     }
 
+    func testGrantAnchorAcceptsGitAndXCTestInDebug() {
+        let gitPid: pid_t = 100
+        let gitPath = "/nix/store/abc-git-2.40.0/bin/git"
+        let gitAnchor = SSHAgentServer.grantAnchor(
+            peerPid: gitPid,
+            peerPath: gitPath,
+            processInfo: { _ in ProcessParentSnapshot(startTime: 1000, parentPid: 1) },
+            processPathLookup: { _ in gitPath }
+        )
+        XCTAssertNotNil(gitAnchor, "grantAnchor must accept git with arbitrary Nix store path")
+        XCTAssertEqual(gitAnchor?.pid, gitPid)
+
+        let xctestPid: pid_t = 200
+        let xctestPath = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Xcode/Agents/xctest"
+        let xctestAnchor = SSHAgentServer.grantAnchor(
+            peerPid: xctestPid,
+            peerPath: xctestPath,
+            processInfo: { _ in ProcessParentSnapshot(startTime: 2000, parentPid: 1) },
+            processPathLookup: { _ in xctestPath }
+        )
+        #if DEBUG
+        XCTAssertNotNil(xctestAnchor, "xctest must be accepted as an anchor in DEBUG builds")
+        XCTAssertEqual(xctestAnchor?.pid, xctestPid)
+        #else
+        XCTAssertNil(xctestAnchor, "xctest must NOT be accepted as an anchor in release builds")
+        #endif
+    }
+
     func testGitSigningPromptBypassesModalInHeadlessSession() {
         let previousProvider = GitSigningPrompt.sessionCheckProvider
         defer { GitSigningPrompt.sessionCheckProvider = previousProvider }

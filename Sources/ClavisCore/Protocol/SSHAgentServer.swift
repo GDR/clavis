@@ -513,9 +513,14 @@ public class SSHAgentServer {
             return nil
         }
 
-        // If peer executable basename is git (or test runner xctest), anchor on itself
+        // If peer executable basename is git (or test runner xctest in DEBUG), anchor on itself
         let peerBase = (peerPath as NSString).lastPathComponent
-        if peerBase == "git" || peerBase == "xctest" {
+        #if DEBUG
+        let isDirectAnchor = (peerBase == "git" || peerBase == "xctest")
+        #else
+        let isDirectAnchor = (peerBase == "git")
+        #endif
+        if isDirectAnchor {
             guard !isRefusedAnchor(pid: peerPid, path: peerPath) else { return nil }
             guard let peerSnap = processInfo(peerPid), peerSnap.startTime > 0 else { return nil }
             return GitApprovedProcess(pid: peerPid, startTime: peerSnap.startTime, path: peerPath)
