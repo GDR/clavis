@@ -115,4 +115,60 @@ final class AgentLifecycleManagerTests: ClavisBaseTestCase {
         // Stale socket is cleaned up when process is not clavis-agent
         XCTAssertFalse(FileManager.default.fileExists(atPath: sockPath))
     }
+
+    private func spawnExitingProcess() throws -> pid_t {
+        var pid: pid_t = 0
+        let path = "/bin/sh"
+        let cPath = path.withCString { strdup($0) }
+        let cArg1 = "-c".withCString { strdup($0) }
+        let cArg2 = "exit 0".withCString { strdup($0) }
+        defer {
+            free(cPath)
+            free(cArg1)
+            free(cArg2)
+        }
+        var argv: [UnsafeMutablePointer<CChar>?] = [cPath, cArg1, cArg2, nil]
+        let ret = posix_spawn(&pid, path, nil, nil, &argv, nil)
+        guard ret == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(ret))
+        }
+        return pid
+    }
+
+    func testIsProcessAliveForLiveProcess() {
+        XCTAssertTrue(AgentLifecycleManager.isProcessAlive(pid: getpid()))
+    }
+
+    func testIsProcessAliveForDeadProcess() throws {
+        let pid = try spawnExitingProcess()
+        var status: Int32 = 0
+        let waited = waitpid(pid, &status, 0)
+        XCTAssertEqual(waited, pid)
+        XCTAssertFalse(AgentLifecycleManager.isProcessAlive(pid: pid))
+    }
+
+    func testIsProcessAliveForZombieProcess() throws {
+        let pid = try spawnExitingProcess()
+        defer {
+            var status: Int32 = 0
+            waitpid(pid, &status, 0)
+        }
+
+        let deadline = Date().addingTimeInterval(2.0)
+        var reachedZombie = false
+        while Date() < deadline {
+            var info = proc_bsdinfo()
+            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+            let ret = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size)
+            if (ret == size && info.pbi_status == 5) || (ret == 0 && errno == ESRCH) {
+                reachedZombie = true
+                break
+            }
+            usleep(10_000)
+        }
+
+        XCTAssertTrue(reachedZombie, "Process should have entered zombie state")
+        XCTAssertEqual(kill(pid, 0), 0, "kill(pid, 0) returns 0 for zombies (proves old check was wrong)")
+        XCTAssertFalse(AgentLifecycleManager.isProcessAlive(pid: pid), "isProcessAlive must filter zombie processes and return false")
+    }
 }
