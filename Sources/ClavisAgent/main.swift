@@ -43,8 +43,11 @@ guard SingleInstanceLock.agent.acquire() else {
 
 let terminationSignalSources = setupSignalHandlers()
 
+let server = SSHAgentServer.sharedInstance
+server.onPermanentListenerFailure = { exit(1) }
+
 do {
-    try SSHAgentServer.sharedInstance.start()
+    try server.start()
     ClavisLogger.log(.agentDaemon, "🔑 Clavis SSH Agent daemon active at \(SSHAgentServer.defaultSocketPath) (PID: \(getpid()))")
     _ = SystemEventMonitor.shared
     withExtendedLifetime(terminationSignalSources) {

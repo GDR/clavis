@@ -708,6 +708,114 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         }
         XCTAssertEqual(server.activeClientCount, 0, "Client slot must be released")
     }
+
+    func testPermanentSocketErrorClassification() {
+        XCTAssertTrue(SSHAgentServer.isPermanentSocketError(EBADF))
+        XCTAssertTrue(SSHAgentServer.isPermanentSocketError(EINVAL))
+        XCTAssertTrue(SSHAgentServer.isPermanentSocketError(ENOTSOCK))
+
+        XCTAssertFalse(SSHAgentServer.isPermanentSocketError(EMFILE))
+        XCTAssertFalse(SSHAgentServer.isPermanentSocketError(ENFILE))
+        XCTAssertFalse(SSHAgentServer.isPermanentSocketError(ENOBUFS))
+        XCTAssertFalse(SSHAgentServer.isPermanentSocketError(ENOMEM))
+        XCTAssertFalse(SSHAgentServer.isPermanentSocketError(EINTR))
+        XCTAssertFalse(SSHAgentServer.isPermanentSocketError(ECONNABORTED))
+    }
+
+    func testAcceptPermanentErrorEBADFExitsLoopAndFiresFailureCallback() throws {
+        let socketPath = testRootURL.appendingPathComponent("accept-ebadf.sock").path
+        let failureExpectation = expectation(description: "Permanent failure callback invoked")
+        let lock = NSLock()
+        var failureCallCount = 0
+        var acceptCount = 0
+        var backoffCallCount = 0
+
+        var server: SSHAgentServer!
+        server = SSHAgentServer(
+            socketPath: socketPath,
+            backoffHandler: { _ in
+                lock.lock()
+                backoffCallCount += 1
+                lock.unlock()
+            },
+            acceptCall: { _ in
+                lock.lock()
+                acceptCount += 1
+                lock.unlock()
+                return (-1, EBADF)
+            }
+        )
+        defer { server.stop() }
+
+        server.onPermanentListenerFailure = {
+            lock.lock()
+            failureCallCount += 1
+            lock.unlock()
+            failureExpectation.fulfill()
+        }
+
+        try server.start()
+        wait(for: [failureExpectation], timeout: 1.0)
+
+        usleep(50_000)
+
+        lock.lock()
+        defer { lock.unlock() }
+        XCTAssertEqual(failureCallCount, 1, "Failure callback must fire exactly once")
+        XCTAssertFalse(server.isSocketActive, "Server socket must not be active")
+        XCTAssertEqual(acceptCount, 1, "Accept loop must exit immediately on permanent error")
+        XCTAssertEqual(backoffCallCount, 0, "Permanent error must not invoke backoffHandler")
+    }
+
+    func testAcceptTransientErrorEMFILECallsBackoffAndKeepsLooping() throws {
+        let socketPath = testRootURL.appendingPathComponent("accept-emfile.sock").path
+        let targetBackoffCalls = 3
+        let backoffExpectation = expectation(description: "Backoff called \(targetBackoffCalls) times")
+        let lock = NSLock()
+        var backoffCount = 0
+        var acceptCount = 0
+        var failureCallbackCalled = false
+
+        var server: SSHAgentServer!
+        server = SSHAgentServer(
+            socketPath: socketPath,
+            backoffHandler: { duration in
+                lock.lock()
+                backoffCount += 1
+                let currentCount = backoffCount
+                lock.unlock()
+
+                XCTAssertEqual(duration, 100_000)
+                if currentCount == targetBackoffCalls {
+                    backoffExpectation.fulfill()
+                    server.stop()
+                }
+            },
+            acceptCall: { _ in
+                lock.lock()
+                acceptCount += 1
+                lock.unlock()
+                return (-1, EMFILE)
+            }
+        )
+        defer { server.stop() }
+
+        server.onPermanentListenerFailure = {
+            lock.lock()
+            failureCallbackCalled = true
+            lock.unlock()
+        }
+
+        try server.start()
+        wait(for: [backoffExpectation], timeout: 2.0)
+
+        lock.lock()
+        defer { lock.unlock() }
+        XCTAssertEqual(backoffCount, targetBackoffCalls, "backoffHandler should be called for each transient error")
+        XCTAssertGreaterThanOrEqual(acceptCount, targetBackoffCalls, "Accept loop should keep looping across transient errors")
+        XCTAssertFalse(failureCallbackCalled, "Failure callback must not fire for transient errors")
+        XCTAssertFalse(server.isSocketActive)
+    }
 }
 
 private final class HookAuthenticator: UserAuthenticating {
