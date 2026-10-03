@@ -848,12 +848,24 @@ public class KeychainManager {
             ? .deviceOwnerAuthenticationWithBiometrics
             : .deviceOwnerAuthentication
         let context = try authenticator.authenticate(reason: prompt, policy: laPolicy)
-        var record = try loadAuthenticatedRecord(
-            label: key.label,
-            context: context,
-            prompt: prompt,
-            expectedKeyInfo: key
-        )
+        var record: StoredPrivateKeyRecord
+        do {
+            record = try loadAuthenticatedRecord(
+                label: key.label,
+                context: context,
+                prompt: prompt,
+                expectedKeyInfo: key
+            )
+        } catch {
+            // loadAuthenticatedRecord rejects a keys.json policy that is weaker than the
+            // record. Invalidate that context here so it cannot be reused for a grant.
+            if laPolicy != .deviceOwnerAuthenticationWithBiometrics,
+               case PrivateKeyRecordError.metadataMismatch(let field, _, _) = error,
+               field == "biometricPolicy" {
+                context.invalidate()
+            }
+            throw error
+        }
         defer { record.wipe() }
 
         // keys.json chose the LocalAuthentication policy above and is not authenticated.
