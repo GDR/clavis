@@ -726,6 +726,7 @@ public class SSHAgentServer {
                 clientPid: clientPid,
                 clientExecutablePath: clientExecutablePath,
                 clientStartTime: clientStartTime,
+                clientSocket: clientSocket,
                 isTrustedControlPeer: { self.controlPeerValidator(clientSocket) }
             )
             guard !response.isEmpty else {
@@ -792,6 +793,7 @@ public class SSHAgentServer {
         clientPid: pid_t? = nil,
         clientExecutablePath: String? = nil,
         clientStartTime: UInt64? = nil,
+        clientSocket: Int32? = nil,
         isTrustedControlPeer: () -> Bool = { false }
     ) -> Data {
         guard !payload.isEmpty else { return Data([5]) } // SSH_AGENT_FAILURE (5)
@@ -813,7 +815,8 @@ public class SSHAgentServer {
                 payload: Data(payload.dropFirst()),
                 clientPid: clientPid,
                 clientExecutablePath: clientExecutablePath,
-                clientStartTime: clientStartTime
+                clientStartTime: clientStartTime,
+                clientSocket: clientSocket
             )
         case Self.invalidateKeyRequest:
             var reader = DataReader(data: Data(payload.dropFirst()))
@@ -877,7 +880,8 @@ public class SSHAgentServer {
         payload: Data,
         clientPid: pid_t? = nil,
         clientExecutablePath: String? = nil,
-        clientStartTime: UInt64? = nil
+        clientStartTime: UInt64? = nil,
+        clientSocket: Int32? = nil
     ) -> Data {
         var reader = DataReader(data: payload)
         guard let keyBlob = reader.readWireData(),
@@ -902,6 +906,7 @@ public class SSHAgentServer {
         }
         let clientDesc = "\(Self.safeProcessPath(processPath)) (PID \(pid))"
         let requester = Self.requesterDescription(processPath: processPath, pid: pid)
+        let requesterIdentity = SigningPromptGate.Requester(executablePath: processPath, pid: pid)
         let clientIdentity = SSHAgentServer.resolveClientIdentity(pid: pid, processPath: processPath)
         let attributedStartTime = clientStartTime ?? SSHAgentServer.processStartTime(pid: pid)
         let peerProcess = attributedStartTime.map {
@@ -968,7 +973,7 @@ public class SSHAgentServer {
                         }
                         ClavisLogger.log("GIT_GRACE", "User approved 5-minute Git signing session for \(promptDesc). Authorizing via Touch ID...")
                         let authPrompt = Self.gitSigningSessionReason(keyLabel: matchingKey.label)
-                        let grant = try promptGate.run {
+                        let grant = try promptGate.run(requester: requesterIdentity, clientSocket: clientSocket) {
                             try keyManager.authorizeGitSigningGrant(
                                 key: matchingKey,
                                 prompt: authPrompt,
@@ -1010,13 +1015,25 @@ public class SSHAgentServer {
                     case .singleShot:
                         ClavisLogger.log("GIT_GRACE", "User chose single-shot signing.")
                         let prompt = Self.gitCommitSigningReason(keyLabel: matchingKey.label, requester: requester)
-                        sigBlob = try promptedSign(key: matchingKey, data: dataToSign, prompt: prompt)
+                        sigBlob = try promptedSign(
+                            key: matchingKey,
+                            data: dataToSign,
+                            prompt: prompt,
+                            requester: requesterIdentity,
+                            clientSocket: clientSocket
+                        )
                         GitSigningGraceManager.shared.recordGitSignature(for: matchingKey.label, clientIdentity: clientIdentity)
                     }
                 } else {
                     // Commit #1 (single commit / first in a potential sequence) -> standard Touch ID, no dialog
                     let prompt = Self.gitCommitSigningReason(keyLabel: matchingKey.label, requester: requester)
-                    sigBlob = try promptedSign(key: matchingKey, data: dataToSign, prompt: prompt)
+                    sigBlob = try promptedSign(
+                        key: matchingKey,
+                        data: dataToSign,
+                        prompt: prompt,
+                        requester: requesterIdentity,
+                        clientSocket: clientSocket
+                    )
                     GitSigningGraceManager.shared.recordGitSignature(for: matchingKey.label, clientIdentity: clientIdentity)
                 }
             } else {
@@ -1028,7 +1045,13 @@ public class SSHAgentServer {
                     processPath: processPath
                 )
                 ClavisLogger.log("SSH_AGENT_SIGN", "Initiating signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
-                sigBlob = try promptedSign(key: matchingKey, data: dataToSign, prompt: prompt)
+                sigBlob = try promptedSign(
+                    key: matchingKey,
+                    data: dataToSign,
+                    prompt: prompt,
+                    requester: requesterIdentity,
+                    clientSocket: clientSocket
+                )
             }
 
             // TOCTOU check: re-run peerProcessUnchanged after signing prompt returns and before sending signature
@@ -1118,8 +1141,14 @@ public class SSHAgentServer {
 
     /// Runs a signature that presents its own authentication prompt through the prompt gate
     /// (one prompt at a time, cooldown after repeated denials).
-    private func promptedSign(key: Ed25519KeyInfo, data: Data, prompt: String) throws -> Data {
-        try promptGate.run {
+    private func promptedSign(
+        key: Ed25519KeyInfo,
+        data: Data,
+        prompt: String,
+        requester: SigningPromptGate.Requester? = nil,
+        clientSocket: Int32? = nil
+    ) throws -> Data {
+        try promptGate.run(requester: requester, clientSocket: clientSocket) {
             try keyManager.signSSH(key: key, data: data, prompt: prompt, useCache: false)
         }
     }
