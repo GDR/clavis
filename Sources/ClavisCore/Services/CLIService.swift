@@ -17,7 +17,8 @@ public struct CLIService {
     public static func handle(
         args: [String],
         seedDataProvider: (() -> Data?)? = nil,
-        keyManager: KeychainManager = .shared
+        keyManager: KeychainManager = .shared,
+        agentLifecycle: AgentLifecycleManager = .shared
     ) -> CLICommandResult? {
         guard args.count > 1 else { return nil }
 
@@ -116,8 +117,12 @@ public struct CLIService {
         case .lock:
             SessionCacheManager.shared.clearCache()
             GitSigningGraceManager.shared.invalidateAll()
-            try? AgentLifecycleManager.shared.sendLockAllToAgent()
-            return CLICommandResult(exitCode: 0, output: CLIMessages.lockedAll)
+            do {
+                try agentLifecycle.sendLockAllToAgent()
+                return CLICommandResult(exitCode: 0, output: CLIMessages.lockedAll)
+            } catch {
+                return CLICommandResult(exitCode: 1, output: "", error: "Lock failed: \(error.localizedDescription)")
+            }
 
         case .delete:
             guard args.count >= 3, args.contains(CLIFlag.yes.rawValue) else {
