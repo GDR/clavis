@@ -132,7 +132,13 @@ public class KeychainManager {
                 biometricPolicy: effectivePolicy,
                 keyPurpose: keyPurpose
             )
-            try PublicKeyStore.saveChecked(keyInfo)
+            do {
+                try PublicKeyStore.saveChecked(keyInfo)
+            } catch {
+                try? privateKeyStore.remove(label: label)
+                EncryptedVaultStore.shared.removeRecord(label: label)
+                throw error
+            }
             return keyInfo
         }
 
@@ -228,7 +234,13 @@ public class KeychainManager {
         }
 
         let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)
-        try PublicKeyStore.saveChecked(keyInfo)
+        do {
+            try PublicKeyStore.saveChecked(keyInfo)
+        } catch {
+            try? privateKeyStore.remove(label: label)
+            EncryptedVaultStore.shared.removeRecord(label: label)
+            throw error
+        }
         return keyInfo
     }
 

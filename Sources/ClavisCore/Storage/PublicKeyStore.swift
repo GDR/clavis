@@ -23,6 +23,11 @@ public struct PublicKeyStore {
     /// Test-only: keep the index purely in memory and never touch the real Keychain.
     static var disableKeychainMirrorForTesting = false
 
+    #if DEBUG
+    /// Test-only: force saveChecked to throw this error instead of completing.
+    static var forcedSaveErrorForTesting: Error?
+    #endif
+
     /// How long a process trusts its in-memory copy. Other processes (e.g. the GUI creating a
     /// key while the agent runs) write straight to the Keychain, so the copy must expire.
     /// Local writes invalidate it immediately.
@@ -60,6 +65,11 @@ public struct PublicKeyStore {
     }
 
     public static func saveChecked(_ info: Ed25519KeyInfo) throws {
+        #if DEBUG
+        if let forcedError = forcedSaveErrorForTesting {
+            throw forcedError
+        }
+        #endif
         try saveToKeychainChecked(info)
     }
 
@@ -84,6 +94,9 @@ public struct PublicKeyStore {
         cachedKeys = nil
         cachedAt = .distantPast
         memoryOnlyKeys = [:]
+        #if DEBUG
+        forcedSaveErrorForTesting = nil
+        #endif
     }
 
     // MARK: - Keychain Public Record Mirroring & Recovery

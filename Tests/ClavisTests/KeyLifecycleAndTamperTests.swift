@@ -1046,6 +1046,39 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         XCTAssertTrue(securityContent.contains("injected revocation error"))
     }
 
+    func testGenerateKeyRollsBackPrivateAndVaultRecordsWhenPublicStoreSaveFails() throws {
+        let backing = ScriptedKeychainItems()
+        let keyStore = backing.makeStore(serviceName: "com.clavis.tests.save-rollback.\(UUID().uuidString)")
+        let manager = KeychainManager(
+            authenticator: AllowingAuthenticator(),
+            privateKeyStore: keyStore,
+            sessionCache: makeSessionCache(),
+            secureBufferFactory: { SecureBuffer(consuming: &$0) },
+            agentGrantRevoker: { _ in }
+        )
+
+        struct InjectedSaveError: Error, Equatable {}
+
+        PublicKeyStore.forcedSaveErrorForTesting = InjectedSaveError()
+        defer { PublicKeyStore.forcedSaveErrorForTesting = nil }
+
+        // Test Ed25519 (via storeKey)
+        let edLabel = "ed25519-save-fail-\(UUID().uuidString)"
+        XCTAssertThrowsError(try manager.generateKey(label: edLabel, algorithm: "Ed25519")) { error in
+            XCTAssertTrue(error is InjectedSaveError)
+        }
+        XCTAssertFalse(keyStore.contains(label: edLabel), "Keychain record must be removed on saveChecked failure")
+        XCTAssertFalse(EncryptedVaultStore.shared.containsRecord(label: edLabel), "Vault record must be removed on saveChecked failure")
+
+        // Test ECDSA P-256 (in generateKey)
+        let p256Label = "p256-save-fail-\(UUID().uuidString)"
+        XCTAssertThrowsError(try manager.generateKey(label: p256Label, algorithm: "ECDSA P-256", storageType: .keychain)) { error in
+            XCTAssertTrue(error is InjectedSaveError)
+        }
+        XCTAssertFalse(keyStore.contains(label: p256Label), "Keychain record must be removed on saveChecked failure")
+        XCTAssertFalse(EncryptedVaultStore.shared.containsRecord(label: p256Label), "Vault record must be removed on saveChecked failure")
+    }
+
     func testValidationFailureInLoadAuthenticatedRecordLogsSecurityAlertBeforeVaultFallback() throws {
         let backing = ScriptedKeychainItems()
         let keyStore = backing.makeStore(serviceName: "com.clavis.tests.restore-alert.\(UUID().uuidString)")
