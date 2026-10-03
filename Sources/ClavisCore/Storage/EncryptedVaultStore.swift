@@ -335,8 +335,13 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             throw VaultError.masterKeyTampered
         }
 
-        let fingerprint = "SHA256:" + Data(SHA256.hash(data: pubData)).base64EncodedString().replacingOccurrences(of: "=", with: "")
+        let fingerprint = Self.fingerprint(forPin: Data(SHA256.hash(data: pubData)))
         return (parsedPubKey, fingerprint)
+    }
+
+    /// Renders a master key pin (SHA-256 of `master.pub`) as `SHA256:<base64 without padding>`.
+    public static func fingerprint(forPin pin: Data) -> String {
+        "SHA256:" + pin.base64EncodedString().replacingOccurrences(of: "=", with: "")
     }
 
     /// Repairs the Keychain pin for an existing vault master key on disk.

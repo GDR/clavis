@@ -170,6 +170,17 @@ public struct CLIService {
             let replacePin = args.contains(CLIFlag.replacePin.rawValue)
             ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt initiated (replacePin: \(replacePin)).")
 
+            // Refuse before verifyMasterKey(): it triggers a Touch ID prompt, which a script without a
+            // terminal must not be able to cause.
+            guard isTTY else {
+                ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt failed: non-TTY stdin refuses repair confirmation.")
+                return CLICommandResult(
+                    exitCode: 1,
+                    output: "",
+                    error: "Vault repair requires an interactive terminal (TTY) for confirmation."
+                )
+            }
+
             let pubKey: P256.KeyAgreement.PublicKey
             let fingerprint: String
             do {
@@ -181,14 +192,11 @@ public struct CLIService {
 
             var outputLines: [String] = []
             outputLines.append("Master key fingerprint: \(fingerprint)")
-
-            guard isTTY else {
-                ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt failed: non-TTY stdin refuses repair confirmation.")
-                return CLICommandResult(
-                    exitCode: 1,
-                    output: outputLines.joined(separator: "\n"),
-                    error: "Vault repair requires an interactive terminal (TTY) for confirmation."
-                )
+            // The Secure Enclave check in verifyMasterKey proves the key is usable, not that it is the
+            // original one. The creation date is a second signal the owner can compare with memory.
+            let masterKeyURL = vaultStore.vaultDirectoryURL.appendingPathComponent("master.key")
+            if let created = (try? FileManager.default.attributesOfItem(atPath: masterKeyURL.path))?[.creationDate] as? Date {
+                outputLines.append("master.key created: \(ISO8601DateFormatter().string(from: created))")
             }
 
             let expectedPin = Data(SHA256.hash(data: pubKey.rawRepresentation))
@@ -201,6 +209,10 @@ public struct CLIService {
             }
 
             if let existingPin, existingPin != expectedPin {
+                // The pin is SHA-256(master.pub), so it renders in the same format as `fingerprint`
+                // and can be compared with it directly.
+                let pinnedFingerprint = EncryptedVaultStore.fingerprint(forPin: existingPin)
+                outputLines.append("Keychain pinned fingerprint: \(pinnedFingerprint)")
                 if !replacePin {
                     ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt failed: existing pin mismatch requires --replace-pin flag.")
                     return CLICommandResult(
@@ -210,6 +222,8 @@ public struct CLIService {
                     )
                 }
                 outputLines.append("WARNING: Replacing existing mismatched vault master key pin in Keychain!")
+                outputLines.append("If you do not recognize the master key fingerprint above, do not confirm: master.key may have been replaced.")
+                ClavisLogger.log("SECURITY_ALERT", "Vault repair replacing pin \(pinnedFingerprint) with \(fingerprint).")
             }
 
             let confirmed: Bool
