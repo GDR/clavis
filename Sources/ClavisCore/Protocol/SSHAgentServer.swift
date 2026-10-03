@@ -38,6 +38,13 @@ public enum SSHAgentServerError: LocalizedError, Equatable {
 struct GitApprovedProcess: Equatable, Sendable {
     let pid: pid_t
     let startTime: UInt64
+    let path: String?
+
+    init(pid: pid_t, startTime: UInt64, path: String? = nil) {
+        self.pid = pid
+        self.startTime = startTime
+        self.path = path
+    }
 }
 
 /// Parent and start time from a single `proc_pidinfo` read.
@@ -408,6 +415,123 @@ public class SSHAgentServer {
             approvedPid: approved.pid,
             approvedStartTime: approved.startTime,
             processInfo: processParentSnapshot(pid:)
+        )
+    }
+
+    public static var gpgSSHProgramResolver: () -> String? = {
+        resolveGpgSSHProgram()
+    }
+
+    static func resolveGpgSSHProgram() -> String? {
+        let gitPath: String
+        if FileManager.default.isExecutableFile(atPath: "/usr/bin/git") {
+            gitPath = "/usr/bin/git"
+        } else if FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/git") {
+            gitPath = "/opt/homebrew/bin/git"
+        } else if FileManager.default.isExecutableFile(atPath: "/usr/local/bin/git") {
+            gitPath = "/usr/local/bin/git"
+        } else {
+            return nil
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: gitPath)
+        process.arguments = ["config", "--get", "gpg.ssh.program"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return nil }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let raw = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty else {
+                return nil
+            }
+            return raw
+        } catch {
+            return nil
+        }
+    }
+
+    static func isSignerHelper(
+        path: String,
+        resolvedGpgSSHProgram: () -> String? = { gpgSSHProgramResolver() }
+    ) -> Bool {
+        let stdPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        if stdPath == "/usr/bin/ssh-keygen" || (path as NSString).lastPathComponent == "ssh-keygen" {
+            return true
+        }
+        if let custom = resolvedGpgSSHProgram(), !custom.isEmpty {
+            let expandedCustom = NSString(string: custom).expandingTildeInPath
+            let stdCustom = URL(fileURLWithPath: expandedCustom).standardizedFileURL.path
+            if stdPath == stdCustom || (path as NSString).lastPathComponent == (expandedCustom as NSString).lastPathComponent {
+                return true
+            }
+        }
+        return false
+    }
+
+    static func isRefusedAnchor(pid: pid_t, path: String) -> Bool {
+        if pid <= 1 { return true }
+        let base = (path as NSString).lastPathComponent.lowercased()
+        let refusedBases: Set<String> = [
+            "launchd",
+            "sh", "bash", "zsh", "csh", "tcsh", "fish", "dash", "ksh",
+            "terminal", "iterm", "iterm2", "alacritty", "kitty", "wezterm", "wezterm-gui",
+            "tmux", "screen", "login"
+        ]
+        return refusedBases.contains(base)
+    }
+
+    /// Resolves the process anchor for a Git signing grant.
+    /// If peer executable matches known signer helper (/usr/bin/ssh-keygen, resolved gpg.ssh.program)
+    /// and parent executable basename is git, anchors the grant on parent git (pid + start time).
+    /// Never anchors on shell, terminal, or launchd.
+    static func grantAnchor(
+        peerPid: pid_t,
+        peerPath: String,
+        processInfo: (pid_t) -> ProcessParentSnapshot? = { processParentSnapshot(pid: $0) },
+        processPathLookup: (pid_t) -> String? = { getProcessPath(pid: $0) },
+        resolvedGpgSSHProgram: () -> String? = { gpgSSHProgramResolver() }
+    ) -> GitApprovedProcess? {
+        guard peerPid > 1 else { return nil }
+
+        // If peer executable matches known signer helper, verify parent process is git
+        if isSignerHelper(path: peerPath, resolvedGpgSSHProgram: resolvedGpgSSHProgram) {
+            guard let peerSnap = processInfo(peerPid) else { return nil }
+            let parentPid = peerSnap.parentPid
+            guard parentPid > 1 else { return nil }
+            guard let parentSnap = processInfo(parentPid), parentSnap.startTime > 0 else { return nil }
+            guard let parentPath = processPathLookup(parentPid) else { return nil }
+            let parentBase = (parentPath as NSString).lastPathComponent
+            if parentBase == "git" {
+                guard !isRefusedAnchor(pid: parentPid, path: parentPath) else { return nil }
+                return GitApprovedProcess(pid: parentPid, startTime: parentSnap.startTime, path: parentPath)
+            }
+            // Signer helper whose parent is not git (e.g. shell, terminal, or launchd): refused.
+            return nil
+        }
+
+        // If peer executable basename is git (or test runner xctest), anchor on itself
+        let peerBase = (peerPath as NSString).lastPathComponent
+        if peerBase == "git" || peerBase == "xctest" {
+            guard !isRefusedAnchor(pid: peerPid, path: peerPath) else { return nil }
+            guard let peerSnap = processInfo(peerPid), peerSnap.startTime > 0 else { return nil }
+            return GitApprovedProcess(pid: peerPid, startTime: peerSnap.startTime, path: peerPath)
+        }
+
+        // All other executables are refused
+        return nil
+    }
+
+    static func grantAnchor(peerPid: pid_t, peerPath: String) -> GitApprovedProcess? {
+        grantAnchor(
+            peerPid: peerPid,
+            peerPath: peerPath,
+            processInfo: { processParentSnapshot(pid: $0) },
+            processPathLookup: { getProcessPath(pid: $0) },
+            resolvedGpgSSHProgram: { gpgSSHProgramResolver() }
         )
     }
 
@@ -822,18 +946,27 @@ public class SSHAgentServer {
                 ) {
                     // Rebase / repeated commit pattern detected (Commit #2+ within 30s)
                     ClavisLogger.log("GIT_GRACE", "Detected rapid Git signing pattern (<30s) for '\(matchingKey.label)'. Prompting user for session...")
-                    let choice = GitSigningGraceManager.promptProvider(matchingKey.label, clientDesc)
+                    let gitAnchor = SSHAgentServer.grantAnchor(peerPid: pid, peerPath: processPath)
+                    let promptDesc: String
+                    if let anchor = gitAnchor, let anchorPath = anchor.path {
+                        promptDesc = "\(Self.safeProcessPath(anchorPath)) (PID \(anchor.pid))"
+                    } else if let anchor = gitAnchor {
+                        promptDesc = "PID \(anchor.pid)"
+                    } else {
+                        promptDesc = clientDesc
+                    }
+                    let choice = GitSigningGraceManager.promptProvider(matchingKey.label, promptDesc)
                     switch choice {
                     case .cancel:
                         ClavisLogger.log("GIT_GRACE", "User cancelled Git signing session.")
                         return Data([5]) // SSH_AGENT_FAILURE
 
                     case .grantFiveMinutes:
-                        guard let peerProcess else {
-                            ClavisLogger.log("SECURITY_ALERT", "Refusing Git signing grant: peer PID \(pid) has no process start time.")
+                        guard let anchor = gitAnchor else {
+                            ClavisLogger.log("SECURITY_ALERT", "Refusing Git signing grant: peer PID \(pid) (\(processPath)) cannot be anchored on a valid Git process.")
                             return Data([5])
                         }
-                        ClavisLogger.log("GIT_GRACE", "User approved 5-minute Git signing session. Authorizing via Touch ID...")
+                        ClavisLogger.log("GIT_GRACE", "User approved 5-minute Git signing session for \(promptDesc). Authorizing via Touch ID...")
                         let authPrompt = Self.gitSigningSessionReason(keyLabel: matchingKey.label)
                         let grant = try promptGate.run {
                             try keyManager.authorizeGitSigningGrant(
@@ -842,7 +975,7 @@ public class SSHAgentServer {
                                 clientIdentity: clientIdentity,
                                 duration: 300.0,
                                 maxOperations: 200,
-                                approvedProcess: peerProcess
+                                approvedProcess: anchor
                             )
                         }
                         // Perform the commit #2 signature under the newly created grant.

@@ -428,6 +428,217 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
     }
 
+    func testGitGrantAnchorModelsRealProcessShape() {
+        let shellPid: pid_t = 10
+        let gitGPid: pid_t = 20
+        let signer2Pid: pid_t = 30
+        let signer3Pid: pid_t = 31
+        let gitG2Pid: pid_t = 40
+        let signerUnderDifferentGitPid: pid_t = 41
+        let shellSignerPid: pid_t = 50
+
+        let shellStart: UInt64 = 1_000
+        let gitGStart: UInt64 = 2_000
+        let signer2Start: UInt64 = 3_000
+        let signer3Start: UInt64 = 3_100
+        let gitG2Start: UInt64 = 4_000
+        let signerDifferentGitStart: UInt64 = 4_100
+        let shellSignerStart: UInt64 = 5_000
+
+        let processes: [pid_t: ProcessParentSnapshot] = [
+            1: ProcessParentSnapshot(startTime: 1, parentPid: 0),
+            shellPid: ProcessParentSnapshot(startTime: shellStart, parentPid: 1),
+            gitGPid: ProcessParentSnapshot(startTime: gitGStart, parentPid: shellPid),
+            signer2Pid: ProcessParentSnapshot(startTime: signer2Start, parentPid: gitGPid),
+            signer3Pid: ProcessParentSnapshot(startTime: signer3Start, parentPid: gitGPid),
+            gitG2Pid: ProcessParentSnapshot(startTime: gitG2Start, parentPid: shellPid),
+            signerUnderDifferentGitPid: ProcessParentSnapshot(startTime: signerDifferentGitStart, parentPid: gitG2Pid),
+            shellSignerPid: ProcessParentSnapshot(startTime: shellSignerStart, parentPid: shellPid),
+        ]
+        let processPaths: [pid_t: String] = [
+            1: "/sbin/launchd",
+            shellPid: "/bin/zsh",
+            gitGPid: "/usr/bin/git",
+            signer2Pid: "/usr/bin/ssh-keygen",
+            signer3Pid: "/usr/bin/ssh-keygen",
+            gitG2Pid: "/usr/bin/git",
+            signerUnderDifferentGitPid: "/usr/bin/ssh-keygen",
+            shellSignerPid: "/usr/bin/ssh-keygen",
+        ]
+
+        let processInfo: (pid_t) -> ProcessParentSnapshot? = { processes[$0] }
+        let pathLookup: (pid_t) -> String? = { processPaths[$0] }
+
+        // Approved signer #2 (parent git G) anchors on parent git G
+        guard let anchor = SSHAgentServer.grantAnchor(
+            peerPid: signer2Pid,
+            peerPath: processPaths[signer2Pid]!,
+            processInfo: processInfo,
+            processPathLookup: pathLookup
+        ) else {
+            XCTFail("grantAnchor must succeed for signer #2 under git G")
+            return
+        }
+
+        XCTAssertEqual(anchor.pid, gitGPid, "Anchor PID must be parent git G")
+        XCTAssertEqual(anchor.startTime, gitGStart, "Anchor start time must match git G")
+        XCTAssertEqual(anchor.path, "/usr/bin/git", "Anchor path must match parent git")
+
+        // Peer signer #3 (same parent G) is covered
+        let signer3 = GitApprovedProcess(pid: signer3Pid, startTime: signer3Start)
+        XCTAssertTrue(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: signer3.pid,
+                peerStartTime: signer3.startTime,
+                approvedPid: anchor.pid,
+                approvedStartTime: anchor.startTime,
+                processInfo: processInfo
+            ),
+            "Peer signer #3 under the same git G must be covered by the anchor grant"
+        )
+
+        // Signer under different git is NOT covered
+        let signerDifferentGit = GitApprovedProcess(
+            pid: signerUnderDifferentGitPid,
+            startTime: signerDifferentGitStart
+        )
+        XCTAssertFalse(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: signerDifferentGit.pid,
+                peerStartTime: signerDifferentGit.startTime,
+                approvedPid: anchor.pid,
+                approvedStartTime: anchor.startTime,
+                processInfo: processInfo
+            ),
+            "Signer under a different git G2 must NOT be covered by the anchor grant"
+        )
+
+        // Recycled git pid is NOT covered
+        var recycledProcesses = processes
+        recycledProcesses[gitGPid] = ProcessParentSnapshot(startTime: gitGStart &+ 1, parentPid: shellPid)
+        XCTAssertFalse(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: signer3.pid,
+                peerStartTime: signer3.startTime,
+                approvedPid: anchor.pid,
+                approvedStartTime: anchor.startTime,
+                processInfo: { recycledProcesses[$0] }
+            ),
+            "Recycled git pid must NOT be covered"
+        )
+
+        // Anchor on shell is refused
+        let shellSignerAnchor = SSHAgentServer.grantAnchor(
+            peerPid: shellSignerPid,
+            peerPath: processPaths[shellSignerPid]!,
+            processInfo: processInfo,
+            processPathLookup: pathLookup
+        )
+        XCTAssertNil(shellSignerAnchor, "Anchor on shell must be refused when signer parent is a shell")
+
+        let directShellAnchor = SSHAgentServer.grantAnchor(
+            peerPid: shellPid,
+            peerPath: processPaths[shellPid]!,
+            processInfo: processInfo,
+            processPathLookup: pathLookup
+        )
+        XCTAssertNil(directShellAnchor, "Anchor directly on shell must be refused")
+
+        let launchdAnchor = SSHAgentServer.grantAnchor(
+            peerPid: 1,
+            peerPath: processPaths[1]!,
+            processInfo: processInfo,
+            processPathLookup: pathLookup
+        )
+        XCTAssertNil(launchdAnchor, "Anchor on launchd must be refused")
+    }
+
+    func testCustomGpgSSHProgramResolvedAsKnownHelper() {
+        let shellPid: pid_t = 10
+        let gitPid: pid_t = 20
+        let customSignerPid: pid_t = 30
+        let unknownProgPid: pid_t = 35
+
+        let processes: [pid_t: ProcessParentSnapshot] = [
+            1: ProcessParentSnapshot(startTime: 1, parentPid: 0),
+            shellPid: ProcessParentSnapshot(startTime: 100, parentPid: 1),
+            gitPid: ProcessParentSnapshot(startTime: 200, parentPid: shellPid),
+            customSignerPid: ProcessParentSnapshot(startTime: 300, parentPid: gitPid),
+            unknownProgPid: ProcessParentSnapshot(startTime: 350, parentPid: gitPid),
+        ]
+        let paths: [pid_t: String] = [
+            shellPid: "/bin/bash",
+            gitPid: "/usr/local/bin/git",
+            customSignerPid: "/opt/homebrew/bin/my-signer",
+            unknownProgPid: "/usr/bin/curl",
+        ]
+
+        let processInfo: (pid_t) -> ProcessParentSnapshot? = { processes[$0] }
+        let pathLookup: (pid_t) -> String? = { paths[$0] }
+
+        // When gpg.ssh.program resolves to /opt/homebrew/bin/my-signer
+        let customResolver: () -> String? = { "/opt/homebrew/bin/my-signer" }
+
+        let customAnchor = SSHAgentServer.grantAnchor(
+            peerPid: customSignerPid,
+            peerPath: paths[customSignerPid]!,
+            processInfo: processInfo,
+            processPathLookup: pathLookup,
+            resolvedGpgSSHProgram: customResolver
+        )
+        XCTAssertNotNil(customAnchor)
+        XCTAssertEqual(customAnchor?.pid, gitPid)
+        XCTAssertEqual(customAnchor?.startTime, 200)
+        XCTAssertEqual(customAnchor?.path, "/usr/local/bin/git")
+
+        // Unknown program (e.g. curl) under git is NOT a known signer helper
+        let unknownAnchor = SSHAgentServer.grantAnchor(
+            peerPid: unknownProgPid,
+            peerPath: paths[unknownProgPid]!,
+            processInfo: processInfo,
+            processPathLookup: pathLookup,
+            resolvedGpgSSHProgram: customResolver
+        )
+        XCTAssertNil(unknownAnchor, "Unknown program that is not a signer helper must be refused as an anchor helper")
+    }
+
+    func testCycleSafeAncestorWalk() {
+        // Model an adversarial or corrupted cycle: PID 100 -> 101 -> 100
+        let processes: [pid_t: ProcessParentSnapshot] = [
+            100: ProcessParentSnapshot(startTime: 1000, parentPid: 101),
+            101: ProcessParentSnapshot(startTime: 1001, parentPid: 100),
+        ]
+        let covered = SSHAgentServer.gitGrantCoversPeer(
+            peerPid: 100,
+            peerStartTime: 1000,
+            approvedPid: 200,
+            approvedStartTime: 2000,
+            processInfo: { processes[$0] }
+        )
+        XCTAssertFalse(covered, "Cycle in process tree must terminate safely and return false")
+    }
+
+    func testRefusedAnchorsOnAllShellsAndTerminals() {
+        let refusedNames = [
+            "sh", "bash", "zsh", "fish", "dash", "ksh", "csh", "tcsh",
+            "Terminal", "iTerm", "iTerm2", "kitty", "alacritty", "wezterm", "tmux", "screen", "login",
+            "launchd"
+        ]
+        for name in refusedNames {
+            let path = "/usr/bin/\(name)"
+            let refused = SSHAgentServer.isRefusedAnchor(pid: 42, path: path)
+            XCTAssertTrue(refused, "Executable named \(name) must be recognized as refused anchor")
+
+            let anchor = SSHAgentServer.grantAnchor(
+                peerPid: 42,
+                peerPath: path,
+                processInfo: { _ in ProcessParentSnapshot(startTime: 100, parentPid: 1) },
+                processPathLookup: { _ in "/bin/bash" }
+            )
+            XCTAssertNil(anchor, "grantAnchor must refuse \(name)")
+        }
+    }
+
     func testGitSigningPromptBypassesModalInHeadlessSession() {
         let previousProvider = GitSigningPrompt.sessionCheckProvider
         defer { GitSigningPrompt.sessionCheckProvider = previousProvider }
