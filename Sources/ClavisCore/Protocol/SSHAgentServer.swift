@@ -464,36 +464,85 @@ public class SSHAgentServer {
         }
 
         let readHandle = stdoutPipe.fileHandleForReading
+        let readFd = readHandle.fileDescriptor
+        let maxOutputBytes = 64 * 1024
         var outputData = Data()
-        let readGroup = DispatchGroup()
-        readGroup.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            outputData = readHandle.readDataToEndOfFile()
-            readGroup.leave()
+        var timedOut = false
+
+        let startUptime = DispatchTime.now().uptimeNanoseconds
+        let timeoutNanos = UInt64(max(0, timeout) * 1_000_000_000)
+        let deadlineUptime = startUptime + timeoutNanos
+
+        var chunk = [UInt8](repeating: 0, count: 4096)
+
+        // Read stdout on the calling thread with poll(2) to avoid close races with
+        // readDataToEndOfFile() which can throw an uncatchable Obj-C exception if closed
+        // while blocked on Darwin.
+        while true {
+            let nowUptime = DispatchTime.now().uptimeNanoseconds
+            if nowUptime >= deadlineUptime {
+                timedOut = true
+                break
+            }
+            let remainingNanos = deadlineUptime - nowUptime
+            let remainingMs = Int32(min(max(1, (remainingNanos + 999_999) / 1_000_000), UInt64(Int32.max)))
+
+            var pfd = pollfd(fd: readFd, events: Int16(POLLIN), revents: 0)
+            let pollRet = poll(&pfd, 1, remainingMs)
+
+            if pollRet < 0 {
+                if errno == EINTR {
+                    continue
+                }
+                break
+            } else if pollRet == 0 {
+                timedOut = true
+                break
+            }
+
+            let bytesRead = read(readFd, &chunk, chunk.count)
+            if bytesRead > 0 {
+                if outputData.count < maxOutputBytes {
+                    let toAppend = min(bytesRead, maxOutputBytes - outputData.count)
+                    outputData.append(contentsOf: chunk[0..<toAppend])
+                }
+            } else if bytesRead == 0 {
+                break
+            } else {
+                if errno == EINTR {
+                    continue
+                }
+                break
+            }
         }
 
-        let waitGroup = DispatchGroup()
-        waitGroup.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            process.waitUntilExit()
-            waitGroup.leave()
-        }
+        try? readHandle.close()
 
-        let timeoutDispatch = DispatchTime.now() + timeout
-        if waitGroup.wait(timeout: timeoutDispatch) == .timedOut {
+        if timedOut {
             process.terminate()
-            usleep(20_000)
+            usleep(50_000)
             if process.isRunning {
                 kill(process.processIdentifier, SIGKILL)
             }
-            try? readHandle.close()
+            process.waitUntilExit()
             return nil
         }
 
-        if readGroup.wait(timeout: .now() + 0.5) == .timedOut {
-            try? readHandle.close()
-            return nil
+        while process.isRunning {
+            let nowUptime = DispatchTime.now().uptimeNanoseconds
+            if nowUptime >= deadlineUptime {
+                process.terminate()
+                usleep(50_000)
+                if process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
+                process.waitUntilExit()
+                return nil
+            }
+            usleep(5_000)
         }
+
+        process.waitUntilExit()
 
         guard process.terminationStatus == 0 else { return nil }
         guard let raw = String(data: outputData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
