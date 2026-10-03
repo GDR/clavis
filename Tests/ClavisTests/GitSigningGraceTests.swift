@@ -384,8 +384,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let processPaths: [pid_t: String] = [
             1: "/sbin/launchd",
             shell: "/bin/zsh",
-            approvedGit: "/usr/bin/git",
-            siblingGit: "/usr/bin/git",
+            approvedGit: "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+            siblingGit: "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
             signer: "/usr/bin/ssh-keygen",
         ]
         let lookup: (pid_t) -> ProcessParentSnapshot? = { processes[$0] }
@@ -1136,8 +1136,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let processPaths: [pid_t: String] = [
             launchdPid: "/sbin/launchd",
             shellPid: "/bin/zsh",
-            approvedGitPid: "/usr/bin/git",
-            childGitPid: "/usr/local/bin/git",
+            approvedGitPid: "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+            childGitPid: "/nix/store/s0m3h4sh-git-2.42.0/bin/git",
             shHookPid: "/bin/sh",
             shScriptPid: "/bin/bash",
             gitUnderScriptPid: "/usr/bin/git",
