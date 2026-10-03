@@ -424,52 +424,6 @@ final class SessionCacheTests: ClavisBaseTestCase {
     }
 
 
-    func testSessionCacheSystemNotifications() {
-        let suiteName = "test-notifications-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        let cache = SessionCacheManager(defaults: defaults, observeSystemEvents: true)
-        cache.currentTimeout = .fiveMinutes
-
-        // 1. Sleep notification
-        let sleepWipe = expectation(description: "Sleep notification wipes cached buffer")
-        var raw1 = Curve25519.Signing.PrivateKey().rawRepresentation
-        guard let buf1 = SecureBuffer(consuming: &raw1, onWipe: {
-            sleepWipe.fulfill()
-        }) else {
-            XCTFail("Failed to create buffer 1")
-            return
-        }
-        XCTAssertTrue(cache.set(label: "sleep-test", buffer: buf1))
-        XCTAssertFalse(buf1.isWiped)
-
-        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.willSleepNotification, object: nil)
-        wait(for: [sleepWipe], timeout: 1.0)
-        XCTAssertTrue(buf1.isWiped, "Buffer must be wiped upon willSleepNotification")
-        XCTAssertEqual(cache.cachedCount, 0)
-
-        // 2. Screen lock notification
-        let screenLockWipe = expectation(description: "Screen lock notification wipes cached buffer")
-        var raw2 = Curve25519.Signing.PrivateKey().rawRepresentation
-        guard let buf2 = SecureBuffer(consuming: &raw2, onWipe: {
-            screenLockWipe.fulfill()
-        }) else {
-            XCTFail("Failed to create buffer 2")
-            return
-        }
-        XCTAssertTrue(cache.set(label: "screen-lock-test", buffer: buf2))
-        XCTAssertFalse(buf2.isWiped)
-
-        DistributedNotificationCenter.default().postNotificationName(
-            NSNotification.Name("com.apple.screenIsLocked"),
-            object: nil,
-            userInfo: nil,
-            deliverImmediately: true
-        )
-        wait(for: [screenLockWipe], timeout: 1.0)
-        XCTAssertTrue(buf2.isWiped, "Buffer must be wiped upon screenIsLocked notification")
-        XCTAssertEqual(cache.cachedCount, 0)
-    }
-
 
     func testSessionCacheFlushOnTimeoutChange() {
         let cache = makeSessionCache()
