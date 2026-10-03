@@ -44,7 +44,7 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         self.defaultPinStore = pinStore
     }
 
-    private var activePinStore: MasterKeyPinStoring {
+    var activePinStore: MasterKeyPinStoring {
         if let custom = Self.customPinStore {
             return custom
         }
@@ -61,6 +61,7 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         case softwareMasterKeyUnsupported
         case incompleteMasterKey
         case masterKeyTampered
+        case masterKeyPinMissing
 
         public var errorDescription: String? {
             switch self {
@@ -69,9 +70,11 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             case .softwareMasterKeyUnsupported:
                 return "This vault uses an old software master key. Its files were preserved; migrate the vault before creating more keys."
             case .incompleteMasterKey:
-                return "The recovery vault master key is incomplete or invalid. Its files were preserved."
+                return "The recovery vault master key is incomplete or invalid. Its files were preserved. Run 'clavis vault repair' if files are intact."
             case .masterKeyTampered:
-                return "The recovery vault master key has been tampered with or its Keychain pin is invalid."
+                return "The recovery vault master key has been tampered with or its Keychain pin is invalid. If this was intentional or the pin was modified, run 'clavis vault repair --replace-pin'."
+            case .masterKeyPinMissing:
+                return "The recovery vault master key pin is missing from Keychain. Run 'clavis vault repair' to restore it."
             }
         }
     }
@@ -169,7 +172,7 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         // Verify pin in Keychain / pinStore
         guard let storedPin = try activePinStore.loadPin() else {
             // Missing pin with existing master files fails closed; never silently re-pin.
-            throw VaultError.masterKeyTampered
+            throw VaultError.masterKeyPinMissing
         }
         let expectedPin = Data(SHA256.hash(data: pubData))
         guard storedPin == expectedPin else {
@@ -209,47 +212,153 @@ public final class EncryptedVaultStore: @unchecked Sendable {
                 compactRepresentable: false,
                 accessControl: accessControl
             )
-            try SecureFS.withUmask(0o077) {
-                var keyFileBytes = Data([0x01])
-                keyFileBytes.append(seKey.dataRepresentation)
-                try keyFileBytes.write(to: keyURL, options: .atomic)
-                let pubData = seKey.publicKey.rawRepresentation
-                try pubData.write(to: pubURL, options: .atomic)
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
+            let pubData = seKey.publicKey.rawRepresentation
+            let pin = Data(SHA256.hash(data: pubData))
+            try activePinStore.savePin(pin)
 
-                let pin = Data(SHA256.hash(data: pubData))
-                do {
-                    try activePinStore.savePin(pin)
-                } catch {
-                    try? FileManager.default.removeItem(at: keyURL)
-                    try? FileManager.default.removeItem(at: pubURL)
-                    throw error
+            do {
+                try SecureFS.withUmask(0o077) {
+                    var keyFileBytes = Data([0x01])
+                    keyFileBytes.append(seKey.dataRepresentation)
+                    try keyFileBytes.write(to: keyURL, options: .atomic)
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
+
+                    try pubData.write(to: pubURL, options: .atomic)
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
                 }
+            } catch {
+                try? activePinStore.removePin()
+                try? FileManager.default.removeItem(at: keyURL)
+                try? FileManager.default.removeItem(at: pubURL)
+                throw error
             }
             return seKey.publicKey
         } else {
             let swKey = P256.KeyAgreement.PrivateKey()
-            try SecureFS.withUmask(0o077) {
-                var keyFileBytes = Data([0x02])
-                keyFileBytes.append(swKey.rawRepresentation)
-                try keyFileBytes.write(to: keyURL, options: .atomic)
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
+            let pubData = swKey.publicKey.rawRepresentation
+            let pin = Data(SHA256.hash(data: pubData))
+            try activePinStore.savePin(pin)
 
-                let pubData = swKey.publicKey.rawRepresentation
-                try pubData.write(to: pubURL, options: .atomic)
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
+            do {
+                try SecureFS.withUmask(0o077) {
+                    var keyFileBytes = Data([0x02])
+                    keyFileBytes.append(swKey.rawRepresentation)
+                    try keyFileBytes.write(to: keyURL, options: .atomic)
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
 
-                let pin = Data(SHA256.hash(data: pubData))
-                do {
-                    try activePinStore.savePin(pin)
-                } catch {
-                    try? FileManager.default.removeItem(at: keyURL)
-                    try? FileManager.default.removeItem(at: pubURL)
-                    throw error
+                    try pubData.write(to: pubURL, options: .atomic)
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
                 }
+            } catch {
+                try? activePinStore.removePin()
+                try? FileManager.default.removeItem(at: keyURL)
+                try? FileManager.default.removeItem(at: pubURL)
+                throw error
             }
             return swKey.publicKey
         }
+    }
+
+    /// Verifies that `master.key` and `master.pub` exist on disk, public key parses,
+    /// and that the private key derives a public key matching `master.pub`.
+    /// For SE keys (0x01), performs an ECDH key agreement with a fresh ephemeral key under `userPresence`.
+    /// For software keys (0x02), verifies the raw representation matches.
+    public func verifyMasterKey(
+        context: LAContext? = nil
+    ) throws -> (publicKey: P256.KeyAgreement.PublicKey, fingerprint: String) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let pubURL = vaultDirectoryURL.appendingPathComponent("master.pub")
+        let keyURL = vaultDirectoryURL.appendingPathComponent("master.key")
+
+        let hasPublicKey = FileManager.default.fileExists(atPath: pubURL.path)
+        let hasPrivateKey = FileManager.default.fileExists(atPath: keyURL.path)
+
+        guard hasPublicKey && hasPrivateKey else {
+            throw VaultError.incompleteMasterKey
+        }
+
+        let pubData = try Data(contentsOf: pubURL)
+        guard let parsedPubKey = try? P256.KeyAgreement.PublicKey(rawRepresentation: pubData) else {
+            throw VaultError.masterKeyTampered
+        }
+
+        let privateData = try Data(contentsOf: keyURL)
+        guard let keyType = privateData.first else {
+            throw VaultError.incompleteMasterKey
+        }
+        guard keyType == 0x01 || (keyType == 0x02 && Self.allowSoftwareMasterKeyForTesting) else {
+            throw keyType == 0x02 ? VaultError.softwareMasterKeyUnsupported : VaultError.incompleteMasterKey
+        }
+
+        let keyBytes = Data(privateData.dropFirst())
+        let derivedPubKey: P256.KeyAgreement.PublicKey
+
+        if keyType == 0x01 {
+            let seKey: SecureEnclave.P256.KeyAgreement.PrivateKey
+            do {
+                if let context {
+                    seKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(
+                        dataRepresentation: keyBytes,
+                        authenticationContext: context
+                    )
+                } else {
+                    seKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(
+                        dataRepresentation: keyBytes
+                    )
+                }
+            } catch {
+                throw VaultError.masterKeyTampered
+            }
+
+            // Perform Secure Enclave ECDH with a fresh ephemeral key under userPresence
+            do {
+                let ephemeral = P256.KeyAgreement.PrivateKey()
+                _ = try seKey.sharedSecretFromKeyAgreement(with: ephemeral.publicKey)
+            } catch {
+                throw VaultError.masterKeyTampered
+            }
+
+            derivedPubKey = seKey.publicKey
+        } else {
+            let swKey: P256.KeyAgreement.PrivateKey
+            do {
+                swKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: keyBytes)
+            } catch {
+                throw VaultError.masterKeyTampered
+            }
+            derivedPubKey = swKey.publicKey
+        }
+
+        guard derivedPubKey.rawRepresentation == pubData else {
+            throw VaultError.masterKeyTampered
+        }
+
+        let fingerprint = "SHA256:" + Data(SHA256.hash(data: pubData)).base64EncodedString().replacingOccurrences(of: "=", with: "")
+        return (parsedPubKey, fingerprint)
+    }
+
+    /// Repairs the Keychain pin for an existing vault master key on disk.
+    /// If an existing pin is found that does not match `master.pub`, `replacePin` must be true.
+    /// Saves the pin to `activePinStore`. Never creates keys or deletes vault files.
+    @discardableResult
+    public func repairMasterKeyPin(
+        replacePin: Bool = false,
+        context: LAContext? = nil
+    ) throws -> (publicKey: P256.KeyAgreement.PublicKey, fingerprint: String) {
+        let (pubKey, fingerprint) = try verifyMasterKey(context: context)
+        let pubData = pubKey.rawRepresentation
+        let expectedPin = Data(SHA256.hash(data: pubData))
+
+        if let existingPin = try activePinStore.loadPin() {
+            if existingPin != expectedPin && !replacePin {
+                throw VaultError.masterKeyTampered
+            }
+        }
+
+        try activePinStore.savePin(expectedPin)
+        return (pubKey, fingerprint)
     }
 
     /// Envelope formats. `CLVENV01` is rejected; `CLVENV02` authenticates the format

@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CryptoKit
 
 public struct CLICommandResult: Equatable {
     public let exitCode: Int32
@@ -18,7 +19,10 @@ public struct CLIService {
         args: [String],
         seedDataProvider: (() -> Data?)? = nil,
         keyManager: KeychainManager = .shared,
-        agentLifecycle: AgentLifecycleManager = .shared
+        agentLifecycle: AgentLifecycleManager = .shared,
+        vaultStore: EncryptedVaultStore = .shared,
+        isTTY: Bool = (isatty(STDIN_FILENO) != 0),
+        confirmationPrompt: (() -> String?)? = nil
     ) -> CLICommandResult? {
         guard args.count > 1 else { return nil }
 
@@ -157,6 +161,80 @@ public struct CLIService {
                 return CLICommandResult(exitCode: 0, output: ClavisLogger.sanitizeLogContent(content))
             } else {
                 return CLICommandResult(exitCode: 0, output: CLIMessages.noLogFileFound(path: logURL.path))
+            }
+
+        case .vault:
+            guard args.count >= 3, args[2] == "repair" else {
+                return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.usage(for: .vault))
+            }
+            let replacePin = args.contains(CLIFlag.replacePin.rawValue)
+            ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt initiated (replacePin: \(replacePin)).")
+
+            let pubKey: P256.KeyAgreement.PublicKey
+            let fingerprint: String
+            do {
+                (pubKey, fingerprint) = try vaultStore.verifyMasterKey()
+            } catch {
+                ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt failed during verification: \(error.localizedDescription)")
+                return CLICommandResult(exitCode: 1, output: "", error: "Failed to verify vault master key: \(error.localizedDescription)")
+            }
+
+            var outputLines: [String] = []
+            outputLines.append("Master key fingerprint: \(fingerprint)")
+
+            guard isTTY else {
+                ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt failed: non-TTY stdin refuses repair confirmation.")
+                return CLICommandResult(
+                    exitCode: 1,
+                    output: outputLines.joined(separator: "\n"),
+                    error: "Vault repair requires an interactive terminal (TTY) for confirmation."
+                )
+            }
+
+            let expectedPin = Data(SHA256.hash(data: pubKey.rawRepresentation))
+            let existingPin: Data?
+            do {
+                existingPin = try vaultStore.activePinStore.loadPin()
+            } catch {
+                ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt failed reading Keychain pin: \(error.localizedDescription)")
+                return CLICommandResult(exitCode: 1, output: outputLines.joined(separator: "\n"), error: "Failed to read Keychain pin: \(error.localizedDescription)")
+            }
+
+            if let existingPin, existingPin != expectedPin {
+                if !replacePin {
+                    ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt failed: existing pin mismatch requires --replace-pin flag.")
+                    return CLICommandResult(
+                        exitCode: 1,
+                        output: outputLines.joined(separator: "\n"),
+                        error: "WARNING: Vault master key pin mismatch detected! Existing Keychain pin does not match vault master key. Use --replace-pin to overwrite."
+                    )
+                }
+                outputLines.append("WARNING: Replacing existing mismatched vault master key pin in Keychain!")
+            }
+
+            let confirmed: Bool
+            if let confirmationPrompt {
+                confirmed = confirmationPrompt()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "yes"
+            } else {
+                print("Repair vault master key pin for fingerprint \(fingerprint)? Type 'yes' to confirm: ", terminator: "")
+                fflush(stdout)
+                let input = readLine(strippingNewline: true)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                confirmed = (input == "yes")
+            }
+
+            guard confirmed else {
+                ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt failed: cancelled by user.")
+                return CLICommandResult(exitCode: 1, output: outputLines.joined(separator: "\n"), error: "Vault repair cancelled by user.")
+            }
+
+            do {
+                try vaultStore.activePinStore.savePin(expectedPin)
+                ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt succeeded: master key pin restored (fingerprint: \(fingerprint)).")
+                outputLines.append("Vault master key pin successfully repaired.")
+                return CLICommandResult(exitCode: 0, output: outputLines.joined(separator: "\n"))
+            } catch {
+                ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt failed saving pin: \(error.localizedDescription)")
+                return CLICommandResult(exitCode: 1, output: outputLines.joined(separator: "\n"), error: "Failed to save pin to Keychain: \(error.localizedDescription)")
             }
 
         case .dashDashHelp, .dashH, .help:

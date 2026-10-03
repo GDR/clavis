@@ -121,13 +121,13 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
         EncryptedVaultStore.customPinStore = pinStore
 
         XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKey()) { error in
-            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyTampered)
+            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyPinMissing)
         }
 
         let newLabel = "cannot-write-unpinned"
         let newFileURL = vaultFileURL(for: newLabel)
         XCTAssertThrowsError(try EncryptedVaultStore.shared.saveRecord(makeRecord(label: newLabel))) { error in
-            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyTampered)
+            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyPinMissing)
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: newFileURL.path))
 
@@ -264,5 +264,182 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
         // Remove pin
         try store.removePin()
         XCTAssertNil(try store.loadPin())
+    }
+
+    func testPinAbsentWithMasterFilesThrowsMasterKeyPinMissingWithRepairInstructions() throws {
+        let label = "vault-initial-pin-test"
+        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: label))
+
+        EncryptedVaultStore.customPinStore = InMemoryMasterKeyPinStore(pin: nil)
+
+        XCTAssertThrowsError(try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "cannot-save-unpinned"))) { error in
+            guard let vaultError = error as? EncryptedVaultStore.VaultError else {
+                XCTFail("Expected VaultError, got \(error)")
+                return
+            }
+            XCTAssertEqual(vaultError, .masterKeyPinMissing)
+            XCTAssertTrue(
+                vaultError.localizedDescription.contains("clavis vault repair"),
+                "Error description must provide actionable recovery instruction 'clavis vault repair'"
+            )
+        }
+    }
+
+    func testAfterRepairSaveAndLoadRecordWork() throws {
+        let initialLabel = "vault-pre-repair"
+        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: initialLabel))
+
+        // Lost Keychain pin
+        let pinStore = InMemoryMasterKeyPinStore(pin: nil)
+        EncryptedVaultStore.customPinStore = pinStore
+
+        // Operations fail closed with masterKeyPinMissing
+        XCTAssertThrowsError(try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "blocked"))) { error in
+            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyPinMissing)
+        }
+
+        // Run repair
+        let result = try EncryptedVaultStore.shared.repairMasterKeyPin(replacePin: false)
+        XCTAssertFalse(result.fingerprint.isEmpty)
+        XCTAssertNotNil(try pinStore.loadPin())
+
+        // saveRecord and loadRecord work after repair
+        let newLabel = "vault-post-repair"
+        XCTAssertNoThrow(try EncryptedVaultStore.shared.saveRecord(makeRecord(label: newLabel)))
+        let loadedNew = try EncryptedVaultStore.shared.loadRecord(label: newLabel)
+        XCTAssertEqual(loadedNew?.label, newLabel)
+        let loadedInitial = try EncryptedVaultStore.shared.loadRecord(label: initialLabel)
+        XCTAssertEqual(loadedInitial?.label, initialLabel)
+    }
+
+    func testPinMismatchIsNotRepairedWithoutReplacePinFlag() throws {
+        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "vault-replace-test"))
+        let wrongPin = Data(repeating: 0xee, count: 32)
+        let pinStore = InMemoryMasterKeyPinStore(pin: wrongPin)
+        EncryptedVaultStore.customPinStore = pinStore
+
+        // Without replacePin: true, repair must fail and not overwrite pin
+        XCTAssertThrowsError(try EncryptedVaultStore.shared.repairMasterKeyPin(replacePin: false))
+        XCTAssertEqual(try pinStore.loadPin(), wrongPin, "Mismatched pin must not be overwritten without replacePin: true")
+
+        // With replacePin: true, repair succeeds and updates pin
+        XCTAssertNoThrow(try EncryptedVaultStore.shared.repairMasterKeyPin(replacePin: true))
+        let pubData = try Data(contentsOf: EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.pub"))
+        let expectedPin = Data(SHA256.hash(data: pubData))
+        XCTAssertEqual(try pinStore.loadPin(), expectedPin)
+    }
+
+    func testSimulatedCrashLeavesNoPartialFilesAndSecondEnsureMasterKeySucceeds() throws {
+        final class CrashSimulatingPinStore: MasterKeyPinStoring, @unchecked Sendable {
+            let inner = InMemoryMasterKeyPinStore()
+            var onSavePin: (() -> Void)?
+
+            func loadPin() throws -> Data? {
+                try inner.loadPin()
+            }
+            func savePin(_ pin: Data) throws {
+                try inner.savePin(pin)
+                onSavePin?()
+            }
+            func removePin() throws {
+                try inner.removePin()
+            }
+        }
+
+        let pinStore = CrashSimulatingPinStore()
+        EncryptedVaultStore.customPinStore = pinStore
+
+        let pubURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.pub")
+        let keyURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.key")
+
+        pinStore.onSavePin = {
+            // When pin is saved, simulate crash/failure during file write by creating master.pub as a directory
+            try? FileManager.default.createDirectory(at: pubURL, withIntermediateDirectories: false)
+        }
+
+        // First attempt must fail because writing files fails
+        XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKey())
+
+        // Verify no stale partial files remain and pin was rolled back
+        XCTAssertFalse(FileManager.default.fileExists(atPath: keyURL.path), "master.key must not remain after failed write")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pubURL.path), "master.pub must not remain after failed write")
+        XCTAssertNil(try pinStore.loadPin(), "Pin must be rolled back on file write failure")
+
+        // Second ensureMasterKey succeeds
+        pinStore.onSavePin = nil
+        XCTAssertNoThrow(try EncryptedVaultStore.shared.ensureMasterKey())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pubURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keyURL.path))
+        XCTAssertNotNil(try pinStore.loadPin())
+    }
+
+    func testNonTTYStdinRefusesRepairConfirmation() throws {
+        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "vault-tty-test"))
+        EncryptedVaultStore.customPinStore = InMemoryMasterKeyPinStore(pin: nil)
+
+        let result = CLIService.handle(
+            args: ["clavis", "vault", "repair"],
+            isTTY: false
+        )
+        XCTAssertNotNil(result)
+        XCTAssertEqual(result?.exitCode, 1)
+        XCTAssertTrue(
+            result?.error?.contains("TTY") == true ||
+            result?.error?.contains("terminal") == true ||
+            result?.error?.contains("interactive") == true
+        )
+    }
+
+    func testCLIVaultRepairInteractiveConfirmation() throws {
+        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "cli-repair-test"))
+        let pinStore = InMemoryMasterKeyPinStore(pin: nil)
+        EncryptedVaultStore.customPinStore = pinStore
+
+        // User enters "no" -> cancelled
+        let cancelled = CLIService.handle(
+            args: ["clavis", "vault", "repair"],
+            isTTY: true,
+            confirmationPrompt: { "no" }
+        )
+        XCTAssertEqual(cancelled?.exitCode, 1)
+        XCTAssertTrue(cancelled?.error?.contains("cancelled") == true)
+        XCTAssertNil(try pinStore.loadPin())
+
+        // User enters "yes" -> succeeded
+        let succeeded = CLIService.handle(
+            args: ["clavis", "vault", "repair"],
+            isTTY: true,
+            confirmationPrompt: { "yes" }
+        )
+        XCTAssertEqual(succeeded?.exitCode, 0)
+        XCTAssertTrue(succeeded?.output.contains("successfully repaired") == true)
+        XCTAssertNotNil(try pinStore.loadPin())
+    }
+
+    func testCLIVaultRepairPinMismatchRequiresReplacePinFlag() throws {
+        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "cli-mismatch-test"))
+        let wrongPin = Data(repeating: 0xee, count: 32)
+        let pinStore = InMemoryMasterKeyPinStore(pin: wrongPin)
+        EncryptedVaultStore.customPinStore = pinStore
+
+        // Mismatched pin without --replace-pin -> fails with warning
+        let failed = CLIService.handle(
+            args: ["clavis", "vault", "repair"],
+            isTTY: true,
+            confirmationPrompt: { "yes" }
+        )
+        XCTAssertEqual(failed?.exitCode, 1)
+        XCTAssertTrue(failed?.error?.contains("--replace-pin") == true)
+        XCTAssertEqual(try pinStore.loadPin(), wrongPin)
+
+        // Mismatched pin with --replace-pin -> succeeds
+        let succeeded = CLIService.handle(
+            args: ["clavis", "vault", "repair", "--replace-pin"],
+            isTTY: true,
+            confirmationPrompt: { "yes" }
+        )
+        XCTAssertEqual(succeeded?.exitCode, 0)
+        XCTAssertTrue(succeeded?.output.contains("WARNING: Replacing existing mismatched") == true)
+        XCTAssertNotEqual(try pinStore.loadPin(), wrongPin)
     }
 }
