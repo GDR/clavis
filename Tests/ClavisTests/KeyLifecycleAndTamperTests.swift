@@ -554,12 +554,19 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         )
         PublicKeyStore.save(tamperedKey)
 
-        // Unlock must fail with .hardwareNotCacheable once Keychain record is loaded
+        // The Keychain record disagrees with the tampered index, and there is no matching vault
+        // copy, so unlock must fail closed before the hardware key can enter the session cache.
         do {
             try await keyManager.unlock(label: label)
             XCTFail("Unlock must fail for hardware keys even when keys.json claims software")
+        } catch let error as PrivateKeyRecordError {
+            guard case .storageMismatch(let expected, let actual) = error else {
+                return XCTFail("Expected storageMismatch, got \(error)")
+            }
+            XCTAssertEqual(expected, KeyStorageType.keychain.rawValue)
+            XCTAssertEqual(actual, KeyStorageType.secureEnclave.rawValue)
         } catch {
-            XCTAssertEqual(error as? SessionCacheError, .hardwareNotCacheable)
+            XCTFail("Expected storageMismatch, got \(error)")
         }
 
         XCTAssertFalse(cache.isKeyUnlocked(label: label))
@@ -759,15 +766,12 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             updateItem: { _, _ in errSecItemNotFound }
         )
 
-        try store.save(label: "hardware-key", data: Data([0xCA, 0xFE]), accessControlFlags: [])
+        try store.save(label: "hardware-key", data: Data([0xCA, 0xFE]), accessControlFlags: [.userPresence])
 
         XCTAssertEqual(addedItems.count, 1)
         let added = addedItems[0] as NSDictionary
-        XCTAssertEqual(
-            added[kSecAttrAccessible as String] as? String,
-            kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
-        )
-        XCTAssertNil(added[kSecAttrAccessControl as String])
+        XCTAssertNotNil(added[kSecAttrAccessControl as String])
+        XCTAssertNil(added[kSecAttrAccessible as String])
         XCTAssertNil(added[kSecUseDataProtectionKeychain as String])
         XCTAssertNil(added[kSecAttrAccessGroup as String])
     }
@@ -907,6 +911,66 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         try manager.deleteKey(label: label)
     }
 
+    func testPlantedKeychainRecordUsesMatchingVaultCopy() throws {
+        let backing = ScriptedKeychainItems()
+        let keyStore = backing.makeStore(serviceName: "com.clavis.tests.planted.\(UUID().uuidString)")
+        let manager = KeychainManager(
+            authenticator: AllowingAuthenticator(),
+            privateKeyStore: keyStore,
+            sessionCache: makeSessionCache(),
+            secureBufferFactory: { SecureBuffer(consuming: &$0) },
+            agentGrantRevoker: { _ in }
+        )
+
+        let label = "planted-keychain-\(UUID().uuidString)"
+        let keyInfo = try manager.generateKey(label: label)
+        let originalPublic = try Curve25519.Signing.PublicKey(
+            rawRepresentation: keyInfo.publicKeyBlob.subdata(in: 19..<51)
+        )
+
+        let foreignKey = Curve25519.Signing.PrivateKey()
+        var foreignRecord = StoredPrivateKeyRecord(
+            label: label,
+            algorithm: .ed25519,
+            storageType: .keychain,
+            biometricPolicy: nil,
+            keyPurpose: .general,
+            keyData: foreignKey.rawRepresentation
+        )
+        try keyStore.save(label: label, data: try foreignRecord.encode())
+        foreignRecord.wipe()
+        let foreignPublic = foreignKey.publicKey
+
+        let payload = Data("planted-keychain-record".utf8)
+        let signature = try manager.sign(label: label, data: payload, prompt: "Sign with vault copy")
+        XCTAssertTrue(originalPublic.isValidSignature(signature, for: payload))
+        XCTAssertFalse(foreignPublic.isValidSignature(signature, for: payload))
+
+        let restoredData = try XCTUnwrap(try keyStore.load(label: label, context: LAContext(), prompt: ""))
+        let restoredRecord = try StoredPrivateKeyRecord.decode(from: restoredData)
+        XCTAssertEqual(try KeychainManager.derivePublicKeyBlob(record: restoredRecord), keyInfo.publicKeyBlob)
+
+        var replanted = StoredPrivateKeyRecord(
+            label: label,
+            algorithm: .ed25519,
+            storageType: .keychain,
+            biometricPolicy: nil,
+            keyPurpose: .general,
+            keyData: foreignKey.rawRepresentation
+        )
+        try keyStore.save(label: label, data: try replanted.encode())
+        replanted.wipe()
+
+        try manager.deleteKey(label: label)
+        XCTAssertFalse(keyStore.contains(label: label))
+        XCTAssertTrue(EncryptedVaultStore.shared.containsRecord(label: label))
+        XCTAssertEqual(try manager.fetchKeyInfo(label: label)?.publicKeyBlob, keyInfo.publicKeyBlob)
+
+        let restoredSignature = try manager.sign(label: label, data: payload, prompt: "Sign after planted item was removed")
+        XCTAssertTrue(originalPublic.isValidSignature(restoredSignature, for: payload))
+        XCTAssertFalse(foreignPublic.isValidSignature(restoredSignature, for: payload))
+    }
+
     func testLegacySoftwareVaultIsPreservedAndRejectedOutsideTestMode() throws {
         guard PlatformSupport.hasSecureEnclave else {
             throw XCTSkip("Secure Enclave is unavailable")
@@ -931,5 +995,66 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let label = "blocked-legacy-\(UUID().uuidString)"
         XCTAssertThrowsError(try manager.generateKey(label: label))
         XCTAssertNil(try manager.fetchKeyInfo(label: label))
+    }
+}
+
+private final class ScriptedKeychainItems: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [String: Data] = [:]
+
+    func makeStore(serviceName: String) -> KeychainPrivateKeyStore {
+        KeychainPrivateKeyStore(
+            serviceName: serviceName,
+            addItem: { self.add($0) },
+            deleteItem: { self.delete($0) },
+            updateItem: { self.update($0, attributes: $1) },
+            copyItem: { self.copy($0) }
+        )
+    }
+
+    private func add(_ item: CFDictionary) -> OSStatus {
+        guard let account = account(in: item), let data = valueData(in: item) else {
+            return errSecParam
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard items[account] == nil else { return errSecDuplicateItem }
+        items[account] = data
+        return errSecSuccess
+    }
+
+    private func delete(_ query: CFDictionary) -> OSStatus {
+        guard let account = account(in: query) else { return errSecParam }
+        lock.lock()
+        defer { lock.unlock() }
+        guard items.removeValue(forKey: account) != nil else { return errSecItemNotFound }
+        return errSecSuccess
+    }
+
+    private func update(_ query: CFDictionary, attributes: CFDictionary) -> OSStatus {
+        guard let account = account(in: query), let data = valueData(in: attributes) else {
+            return errSecParam
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard items[account] != nil else { return errSecItemNotFound }
+        items[account] = data
+        return errSecSuccess
+    }
+
+    private func copy(_ query: CFDictionary) -> (OSStatus, AnyObject?) {
+        guard let account = account(in: query) else { return (errSecParam, nil) }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let data = items[account] else { return (errSecItemNotFound, nil) }
+        return (errSecSuccess, data as AnyObject)
+    }
+
+    private func account(in query: CFDictionary) -> String? {
+        (query as NSDictionary)[kSecAttrAccount as String] as? String
+    }
+
+    private func valueData(in query: CFDictionary) -> Data? {
+        (query as NSDictionary)[kSecValueData as String] as? Data
     }
 }

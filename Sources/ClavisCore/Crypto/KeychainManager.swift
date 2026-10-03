@@ -72,11 +72,10 @@ public class KeychainManager {
                 defer { record.wipe() }
                 var recordData = try record.encode()
                 defer { Self.wipeData(&recordData) }
-                // The serialized value is only an opaque, device-bound Secure
-                // Enclave reference. Authentication is enforced by the hardware
-                // key's access control above, so the containing generic-password
-                // record must not request a second entitlement-gated policy.
-                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [])
+                // The serialized value is an opaque Secure Enclave reference.
+                // The hardware key keeps its own biometric policy above; user
+                // presence here only protects the handle from other processes.
+                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
                 do {
                     try EncryptedVaultStore.shared.saveRecord(record)
                 } catch {
@@ -251,14 +250,25 @@ public class KeychainManager {
             ClavisLogger.log("KEY_DELETE", "Revocation notice: \(error.localizedDescription). Proceeding with local key removal.")
         }
 
+        // A same-user process can replace the Keychain item with a well-formed record for a
+        // different key. Only drop the vault copy when that item is absent or is the same key
+        // the user just authenticated to delete. Always try to remove the Keychain item itself.
+        let removeVault = shouldRemoveVaultRecord(label: label, context: context, prompt: prompt)
         do {
             try privateKeyStore.remove(label: label, context: context, prompt: prompt)
         } catch {
             ClavisLogger.log("KEY_DELETE", "Warning: Keychain private key removal encountered error (\(error.localizedDescription)). Proceeding with metadata cleanup.")
         }
-        EncryptedVaultStore.shared.removeRecord(label: label)
-        try PublicKeyStore.removeChecked(label: label)
-        ClavisLogger.log("KEY_DELETE", "Key '\(label)' deleted successfully.")
+        if removeVault {
+            EncryptedVaultStore.shared.removeRecord(label: label)
+            try PublicKeyStore.removeChecked(label: label)
+            ClavisLogger.log("KEY_DELETE", "Key '\(label)' deleted successfully.")
+        } else {
+            ClavisLogger.log(
+                "KEY_DELETE",
+                "Removed the Keychain item for '\(label)' but left the encrypted vault record in place because it did not match the authenticated key."
+            )
+        }
 
         if let revocationError {
             throw revocationError
@@ -348,6 +358,62 @@ public class KeychainManager {
         }
     }
 
+    /// True only when deleting the vault record removes the same key the user authenticated.
+    /// A decoded Keychain item whose public key does not match the index is left in the vault.
+    private func shouldRemoveVaultRecord(label: String, context: LAContext, prompt: String) -> Bool {
+        let loaded: Data?
+        do {
+            loaded = try privateKeyStore.load(label: label, context: context, prompt: prompt)
+        } catch {
+            ClavisLogger.log("KEY_DELETE", "Could not read the Keychain record for '\(label)' (\(error.localizedDescription)). Preserving the vault copy.")
+            return false
+        }
+
+        guard var rawData = loaded else {
+            return true
+        }
+        defer { Self.wipeData(&rawData) }
+
+        guard var record = try? StoredPrivateKeyRecord.decode(from: rawData) else {
+            ClavisLogger.log("KEY_DELETE", "Keychain record for '\(label)' did not decode. Preserving the vault copy.")
+            return false
+        }
+        defer { record.wipe() }
+
+        guard record.label == label else {
+            return false
+        }
+
+        if let index = try? fetchKeyInfo(label: label) {
+            guard let derived = try? Self.derivePublicKeyBlob(record: record, context: context) else {
+                return false
+            }
+            if derived != index.publicKeyBlob {
+                ClavisLogger.log("SECURITY_ALERT", "Refusing to delete the vault record for '\(label)' because the Keychain public key does not match the index.")
+                return false
+            }
+            return true
+        }
+
+        let vaultRecord: StoredPrivateKeyRecord?
+        do {
+            vaultRecord = try EncryptedVaultStore.shared.loadRecord(label: label, context: context)
+        } catch {
+            ClavisLogger.log("KEY_DELETE", "Could not read the vault record for '\(label)' (\(error.localizedDescription)). Preserving it.")
+            return false
+        }
+        guard var vaultRecord else {
+            return true
+        }
+        defer { vaultRecord.wipe() }
+        guard vaultRecord.label == label,
+              let keychainBlob = try? Self.derivePublicKeyBlob(record: record, context: context),
+              let vaultBlob = try? Self.derivePublicKeyBlob(record: vaultRecord, context: context) else {
+            return false
+        }
+        return keychainBlob == vaultBlob
+    }
+
     // Loads an authenticated record from Keychain.
     // If a legacy record is encountered, migrates it transparently using expected metadata,
     // saves the versioned StoredPrivateKeyRecord back to Keychain, and returns it.
@@ -358,53 +424,88 @@ public class KeychainManager {
         expectedKeyInfo: Ed25519KeyInfo?
     ) throws -> StoredPrivateKeyRecord {
         guard var rawData = try privateKeyStore.load(label: label, context: context, prompt: prompt) else {
-            if let restoredRecord = try? EncryptedVaultStore.shared.loadRecord(label: label, context: context) {
-                ClavisLogger.log("KEYCHAIN_RESTORE", "Restored missing Keychain record for '\(label)' from encrypted shadow vault.")
-                let restoreBytes = try? restoredRecord.encode()
-                if var bytes = restoreBytes {
-                    defer { Self.wipeData(&bytes) }
-                    let accessFlags: SecAccessControlCreateFlags = (restoredRecord.storageType == .secureEnclave) ? [] : [.userPresence]
-                    try? privateKeyStore.save(label: label, data: bytes, accessControlFlags: accessFlags)
-                }
-                guard restoredRecord.label == label else {
-                    throw PrivateKeyRecordError.labelMismatch(expected: label, actual: restoredRecord.label)
-                }
-                return restoredRecord
-            }
-            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Private key not found for '\(label)'"])
+            return try restoreRecordFromVault(
+                label: label,
+                context: context,
+                expectedKeyInfo: expectedKeyInfo,
+                logMessage: "Restored missing Keychain record for '\(label)' from encrypted shadow vault."
+            )
         }
-        defer {
-            rawData.withUnsafeMutableBytes { ptr in
-                if let base = ptr.baseAddress {
-                    SecureMemory.zero(base, byteCount: ptr.count)
-                }
-            }
-        }
+        defer { Self.wipeData(&rawData) }
 
         do {
-            let record = try StoredPrivateKeyRecord.decode(from: rawData)
+            var record = try StoredPrivateKeyRecord.decode(from: rawData)
+            if let expectedKeyInfo {
+                do {
+                    try validateAuthenticatedRecord(record, against: expectedKeyInfo, context: context)
+                    return record
+                } catch let validationError {
+                    record.wipe()
+                    do {
+                        return try restoreRecordFromVault(
+                            label: label,
+                            context: context,
+                            expectedKeyInfo: expectedKeyInfo,
+                            logMessage: "Restored mismatched Keychain record for '\(label)' from encrypted shadow vault."
+                        )
+                    } catch {
+                        throw validationError
+                    }
+                }
+            }
             guard record.label == label else {
-                throw PrivateKeyRecordError.labelMismatch(expected: label, actual: record.label)
+                let actual = record.label
+                record.wipe()
+                throw PrivateKeyRecordError.labelMismatch(expected: label, actual: actual)
             }
             return record
         } catch let error as PrivateKeyRecordError {
             throw error
         } catch {
-            if let restoredRecord = try? EncryptedVaultStore.shared.loadRecord(label: label, context: context) {
-                ClavisLogger.log("KEYCHAIN_RESTORE", "Restored corrupted Keychain record for '\(label)' from encrypted shadow vault.")
-                let restoreBytes = try? restoredRecord.encode()
-                if var bytes = restoreBytes {
-                    defer { Self.wipeData(&bytes) }
-                    let accessFlags: SecAccessControlCreateFlags = (restoredRecord.storageType == .secureEnclave) ? [] : [.userPresence]
-                    try? privateKeyStore.save(label: label, data: bytes, accessControlFlags: accessFlags)
-                }
+            do {
+                return try restoreRecordFromVault(
+                    label: label,
+                    context: context,
+                    expectedKeyInfo: expectedKeyInfo,
+                    logMessage: "Restored corrupted Keychain record for '\(label)' from encrypted shadow vault."
+                )
+            } catch let error as PrivateKeyRecordError {
+                throw error
+            } catch {
+                throw PrivateKeyRecordError.corruptedRecord("Malformed private-key record: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func restoreRecordFromVault(
+        label: String,
+        context: LAContext,
+        expectedKeyInfo: Ed25519KeyInfo?,
+        logMessage: String
+    ) throws -> StoredPrivateKeyRecord {
+        guard var restoredRecord = try EncryptedVaultStore.shared.loadRecord(label: label, context: context) else {
+            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Private key not found for '\(label)'"])
+        }
+
+        do {
+            if let expectedKeyInfo {
+                try validateAuthenticatedRecord(restoredRecord, against: expectedKeyInfo, context: context)
+            } else {
                 guard restoredRecord.label == label else {
                     throw PrivateKeyRecordError.labelMismatch(expected: label, actual: restoredRecord.label)
                 }
-                return restoredRecord
             }
-            throw PrivateKeyRecordError.corruptedRecord("Malformed private-key record: \(error.localizedDescription)")
+        } catch {
+            restoredRecord.wipe()
+            throw error
         }
+
+        ClavisLogger.log("KEYCHAIN_RESTORE", logMessage)
+        if var bytes = try? restoredRecord.encode() {
+            defer { Self.wipeData(&bytes) }
+            try? privateKeyStore.save(label: label, data: bytes, accessControlFlags: [.userPresence])
+        }
+        return restoredRecord
     }
 
     private static func wipeData(_ data: inout Data) {
@@ -741,14 +842,46 @@ public class KeychainManager {
         maxOperations: Int = 200,
         approvedProcess: GitApprovedProcess? = nil
     ) throws -> GitSigningGrant {
-        let context = try authenticator.authenticate(reason: prompt)
-        var record = try loadAuthenticatedRecord(
-            label: key.label,
-            context: context,
-            prompt: prompt,
-            expectedKeyInfo: key
-        )
+        // Match signSSH: strict biometric keys must not accept a password fallback.
+        // The returned context is reused for later signatures, so a weaker policy here
+        // would quietly downgrade every signature under the grant.
+        let laPolicy: LAPolicy = (key.biometricPolicy == .biometryCurrentSet)
+            ? .deviceOwnerAuthenticationWithBiometrics
+            : .deviceOwnerAuthentication
+        let context = try authenticator.authenticate(reason: prompt, policy: laPolicy)
+        var record: StoredPrivateKeyRecord
+        do {
+            record = try loadAuthenticatedRecord(
+                label: key.label,
+                context: context,
+                prompt: prompt,
+                expectedKeyInfo: key
+            )
+        } catch {
+            // loadAuthenticatedRecord rejects a keys.json policy that is weaker than the
+            // record. Invalidate that context here so it cannot be reused for a grant.
+            if laPolicy != .deviceOwnerAuthenticationWithBiometrics,
+               case PrivateKeyRecordError.metadataMismatch(let field, _, _) = error,
+               field == "biometricPolicy" {
+                context.invalidate()
+            }
+            throw error
+        }
         defer { record.wipe() }
+
+        // keys.json chose the LocalAuthentication policy above and is not authenticated.
+        // If the Keychain record requires the current biometric set, refuse a context
+        // that was evaluated with a weaker policy and do not record the grant.
+        let recordPolicy = record.biometricPolicy ?? .userPresence
+        if recordPolicy == .biometryCurrentSet && laPolicy != .deviceOwnerAuthenticationWithBiometrics {
+            context.invalidate()
+            ClavisLogger.log("SECURITY_ALERT", "Refusing Git signing grant for '\(key.label)': record requires biometryCurrentSet but the authentication context was not evaluated with biometrics.")
+            throw PrivateKeyRecordError.metadataMismatch(
+                field: "biometricPolicy",
+                expected: BiometricPolicy.userPresence.rawValue,
+                actual: recordPolicy.rawValue
+            )
+        }
 
         try validateAuthenticatedRecord(record, against: key, context: context)
 

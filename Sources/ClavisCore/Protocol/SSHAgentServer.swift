@@ -736,23 +736,32 @@ public class SSHAgentServer {
                                 approvedProcess: peerProcess
                             )
                         }
-                        // Perform the commit #2 signature under the newly created grant
-                        guard let grantedSignature = try GitSigningGraceManager.shared.withGrant(
-                            for: matchingKey.label,
-                            clientIdentity: clientIdentity,
-                            peerProcess: peerProcess,
-                            operation: { context in
-                                try keyManager.signSSH(
-                                    key: matchingKey,
-                                    data: dataToSign,
-                                    prompt: "",
-                                    useCache: false,
-                                    existingContext: context
-                                )
+                        // Perform the commit #2 signature under the newly created grant.
+                        // A failure here must drop the grant; otherwise the reused context
+                        // stays authorized for the rest of the session.
+                        let grantedSignature: Data
+                        do {
+                            guard let signature = try GitSigningGraceManager.shared.withGrant(
+                                for: matchingKey.label,
+                                clientIdentity: clientIdentity,
+                                peerProcess: peerProcess,
+                                operation: { context in
+                                    try keyManager.signSSH(
+                                        key: matchingKey,
+                                        data: dataToSign,
+                                        prompt: "",
+                                        useCache: false,
+                                        existingContext: context
+                                    )
+                                }
+                            ) else {
+                                grant.invalidate()
+                                return Data([5])
                             }
-                        ) else {
+                            grantedSignature = signature
+                        } catch {
                             grant.invalidate()
-                            return Data([5])
+                            throw error
                         }
                         sigBlob = grantedSignature
 
@@ -769,9 +778,14 @@ public class SSHAgentServer {
                     GitSigningGraceManager.shared.recordGitSignature(for: matchingKey.label, clientIdentity: clientIdentity)
                 }
             } else {
-                // Non-Git signing request (e.g. SSH login): Grace period NEVER applies
-                let prompt = Self.sshAuthenticationReason(keyLabel: matchingKey.label, requester: requester)
-                ClavisLogger.log("SSH_AGENT_SIGN", "Initiating SSH login signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
+                // Non-Git payload is not validated as SSH authentication. Grace period NEVER applies.
+                // Agent forwarding (`ssh -A`) is relayed by local /usr/bin/ssh, which hides the remote host.
+                let prompt = Self.signatureReason(
+                    keyLabel: matchingKey.label,
+                    requester: requester,
+                    processPath: processPath
+                )
+                ClavisLogger.log("SSH_AGENT_SIGN", "Initiating signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
                 sigBlob = try promptedSign(key: matchingKey, data: dataToSign, prompt: prompt)
             }
 
@@ -801,20 +815,46 @@ public class SSHAgentServer {
         ClavisUIStrings.Prompt.sshAuthentication(keyLabel: keyLabel, requester: requester)
     }
 
+    /// Prompt for a payload that is neither a Git SSHSIG nor otherwise validated.
+    /// Only Apple's `/usr/bin/ssh` is treated as a possible forwarded-agent relay.
+    static func signatureReason(keyLabel: String, requester: String, processPath: String) -> String {
+        let standardized = URL(fileURLWithPath: processPath).standardizedFileURL.path
+        if standardized == "/usr/bin/ssh" {
+            return ClavisUIStrings.Prompt.sshAuthenticationFromForwardedAgent(keyLabel: keyLabel, requester: requester)
+        }
+        return dataSigningReason(keyLabel: keyLabel, requester: requester)
+    }
+
+    static func dataSigningReason(keyLabel: String, requester: String) -> String {
+        ClavisUIStrings.Prompt.dataSigning(keyLabel: keyLabel, requester: requester)
+    }
+
     static func gitCommitSigningReason(keyLabel: String, requester: String) -> String {
         ClavisUIStrings.Prompt.gitCommitSigning(keyLabel: keyLabel, requester: requester)
     }
 
-    /// Short, display-safe description of the requesting process for system auth prompts:
-    /// executable name (not the full path) and PID. Control and format characters are
-    /// stripped and the length is bounded so a hostile executable name cannot reshape the prompt.
+    /// Display-safe description of the requesting process for system auth prompts:
+    /// sanitized executable path and PID. Control, newline, and bidi characters are
+    /// stripped. Long paths keep their tail (about 80 characters) so two executables
+    /// that share a basename still look different.
     static func requesterDescription(processPath: String, pid: pid_t) -> String {
-        let name = (processPath as NSString).lastPathComponent
-        let cleaned = String(String.UnicodeScalarView(name.unicodeScalars.filter {
-            !CharacterSet.controlCharacters.contains($0) && !CharacterSet.newlines.contains($0)
+        let cleaned = String(String.UnicodeScalarView(processPath.unicodeScalars.filter {
+            !CharacterSet.controlCharacters.contains($0)
+                && !CharacterSet.newlines.contains($0)
+                && !Self.isBidiScalar($0)
         }))
-        let bounded = String(cleaned.prefix(48))
+        let bounded = cleaned.count > 80 ? String(cleaned.suffix(80)) : cleaned
         return "\(bounded.isEmpty ? "unknown" : bounded) (PID \(pid))"
+    }
+
+    /// Directional formatting characters that can spoof the displayed path.
+    private static func isBidiScalar(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x061C, 0x200E, 0x200F, 0x202A...0x202E, 0x2066...0x2069:
+            return true
+        default:
+            return false
+        }
     }
 
     /// Runs a signature that presents its own authentication prompt through the prompt gate

@@ -687,13 +687,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Locked · Touch ID required"
+            "value": "Touch ID required to sign"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Заблокирован · Требуется Touch ID"
+            "value": "Для подписи требуется Touch ID"
           }
         }
       }
@@ -3044,6 +3044,23 @@
         }
       }
     },
+    "prompt.sign_data_requester": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sign data requested by %2$@ with “%1$@”"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "подписать данные по запросу %2$@ с помощью «%1$@»"
+          }
+        }
+      }
+    },
     "prompt.ssh_auth_requester": {
       "extractionState": "manual",
       "localizations": {
@@ -3057,6 +3074,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "использовать «%1$@» для аутентификации SSH (запрос от %2$@)"
+          }
+        }
+      }
+    },
+    "prompt.ssh_auth_forwarded_agent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "use “%1$@” for SSH authentication (requested by %2$@). This request may come from a forwarded agent; the remote host is not visible"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "использовать «%1$@» для аутентификации SSH (запрос от %2$@). Этот запрос может исходить от перенаправленного агента; удалённый хост не виден"
           }
         }
       }

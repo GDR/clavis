@@ -222,11 +222,6 @@ public class AppState: ObservableObject {
         refresh()
     }
 
-    public func unlockKey(label: String) async throws {
-        try await keyManager.unlock(label: label)
-        refresh()
-    }
-
     public func clearError() {
         errorMessage = nil
     }

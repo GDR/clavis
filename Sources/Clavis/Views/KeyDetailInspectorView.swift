@@ -15,8 +15,6 @@ public struct KeyDetailInspectorView: View {
         self.onDelete = onDelete
     }
 
-    @State private var isUnlocking: Bool = false
-
     private var isUnlocked: Bool {
         appState.isKeyUnlocked(label: key.label)
     }
@@ -80,19 +78,12 @@ public struct KeyDetailInspectorView: View {
 
                     Spacer()
 
-                    // Lock / Unlock Button (Only available for software keys that can be cached)
+                    // Lock revokes agent grants and clears any local cache. There is no unlock action.
                     if !key.isHardware {
-                        Button(action: {
-                            toggleLock()
-                        }) {
+                        Button(action: lockSelectedKey) {
                             HStack(spacing: 4) {
-                                if isUnlocking {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                } else {
-                                    Image(systemName: isUnlocked ? "lock.fill" : "lock.open.fill")
-                                    Text(isUnlocked ? ClavisUIStrings.Inspector.lock : ClavisUIStrings.Inspector.unlock)
-                                }
+                                Image(systemName: "lock.fill")
+                                Text(ClavisUIStrings.Inspector.lock)
                             }
                             .font(.caption)
                             .padding(.horizontal, 10)
@@ -100,7 +91,6 @@ public struct KeyDetailInspectorView: View {
                         }
                         .buttonStyle(.bordered)
                         .focusable(false)
-                        .disabled(isUnlocking)
                     } else {
                         HStack(spacing: 4) {
                             Image(systemName: "hand.raised.fill")
@@ -428,31 +418,13 @@ public struct KeyDetailInspectorView: View {
         showFeedback(ClavisUIStrings.Inspector.feedbackCopiedOpenSSH)
     }
 
-    private func toggleLock() {
+    private func lockSelectedKey() {
         guard !key.isHardware else { return }
-        if isUnlocked {
-            do {
-                try appState.lockKey(label: key.label)
-                showFeedback(ClavisUIStrings.Inspector.feedbackLockedKey(key.label))
-            } catch {
-                appState.errorMessage = error.localizedDescription
-            }
-        } else {
-            isUnlocking = true
-            Task {
-                do {
-                    try await appState.unlockKey(label: key.label)
-                    await MainActor.run {
-                        isUnlocking = false
-                        showFeedback(ClavisUIStrings.Inspector.feedbackUnlockedKey(key.label))
-                    }
-                } catch {
-                    await MainActor.run {
-                        isUnlocking = false
-                        appState.errorMessage = error.localizedDescription
-                    }
-                }
-            }
+        do {
+            try appState.lockKey(label: key.label)
+            showFeedback(ClavisUIStrings.Inspector.feedbackLockedKey(key.label))
+        } catch {
+            appState.errorMessage = error.localizedDescription
         }
     }
 

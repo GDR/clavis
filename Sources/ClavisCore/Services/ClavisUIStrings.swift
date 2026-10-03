@@ -120,7 +120,7 @@ public enum ClavisUIStrings {
             localizedFormat("inspector.unlocked_with_time", "Unlocked · %@", remaining)
         }
         public static var unlockedActive: String { localized("inspector.unlocked_active", "Unlocked · Active in session") }
-        public static var lockedTouchIdRequired: String { localized("inspector.locked_touch_id_required", "Locked · Touch ID required") }
+        public static var lockedTouchIdRequired: String { localized("inspector.locked_touch_id_required", "Touch ID required to sign") }
 
         public static var deleteAlertTitle: String { localized("inspector.delete_alert_title", "Delete Key") }
         public static func deleteAlertMessage(label: String) -> String {
@@ -286,6 +286,18 @@ public enum ClavisUIStrings {
         }
         public static func sshAuthentication(keyLabel: String, requester: String) -> String {
             localizedFormat("prompt.ssh_auth_requester", "use \u{201c}%1$@\u{201d} for SSH authentication (requested by %2$@)", keyLabel, requester)
+        }
+        /// `ssh -A` presents the local `/usr/bin/ssh` as the peer, so the dialog cannot name the remote host.
+        public static func sshAuthenticationFromForwardedAgent(keyLabel: String, requester: String) -> String {
+            localizedFormat(
+                "prompt.ssh_auth_forwarded_agent",
+                "use \u{201c}%1$@\u{201d} for SSH authentication (requested by %2$@). This request may come from a forwarded agent; the remote host is not visible",
+                keyLabel,
+                requester
+            )
+        }
+        public static func dataSigning(keyLabel: String, requester: String) -> String {
+            localizedFormat("prompt.sign_data_requester", "sign data requested by %2$@ with \u{201c}%1$@\u{201d}", keyLabel, requester)
         }
         public static func gitCommitSigning(keyLabel: String, requester: String) -> String {
             localizedFormat("prompt.git_commit_requester", "sign a Git commit with \u{201c}%1$@\u{201d} (requested by %2$@)", keyLabel, requester)
