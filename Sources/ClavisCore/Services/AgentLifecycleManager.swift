@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import Darwin
 
 public enum AgentLifecycleError: LocalizedError, Equatable {
     case agentBinaryNotFound
@@ -46,10 +47,28 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         self.processNameProvider = processNameProvider ?? { pid in
             SSHAgentServer.getProcessName(pid: pid)
         }
-        self.isAlive = isAlive ?? { pid in
-            kill(pid, 0) == 0
-        }
+        self.isAlive = isAlive ?? { Self.isProcessAlive(pid: $0) }
         self.sigtermTimeout = sigtermTimeout
+    }
+
+    /// Checks whether a process is alive and not a zombie.
+    static func isProcessAlive(pid: pid_t) -> Bool {
+        guard kill(pid, 0) == 0 else {
+            return false
+        }
+
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        errno = 0
+        let ret = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size)
+        if ret == size {
+            // SZOMB (status 5 in <sys/proc.h>) indicates a zombie process that has exited but is not yet reaped.
+            return info.pbi_status != 5
+        }
+        if errno == ESRCH {
+            return false
+        }
+        return kill(pid, 0) == 0
     }
 
     public var isAgentRunning: Bool {
