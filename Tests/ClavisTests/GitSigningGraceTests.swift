@@ -602,6 +602,31 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         XCTAssertNil(unknownAnchor, "Unknown program that is not a signer helper must be refused as an anchor helper")
     }
 
+    func testResolveGpgSSHProgramTimesOutAndKillsHangingProcess() throws {
+        let scriptURL = testRootURL.appendingPathComponent("hanging-git.sh")
+        let scriptContent = "#!/bin/sh\nsleep 10\n"
+        try scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+        let start = Date()
+        let result = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptURL.path, timeout: 0.3)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertNil(result, "resolveGpgSSHProgram must return nil on timeout")
+        XCTAssertGreaterThanOrEqual(elapsed, 0.28, "Must wait for the timeout duration")
+        XCTAssertLessThan(elapsed, 2.0, "Must terminate child process without hanging until sleep completes")
+    }
+
+    func testResolveGpgSSHProgramParsesOutputSuccessfully() throws {
+        let scriptURL = testRootURL.appendingPathComponent("mock-git.sh")
+        let scriptContent = "#!/bin/sh\necho \"  /opt/bin/mock-signer  \"\n"
+        try scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+        let result = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptURL.path, timeout: 2.0)
+        XCTAssertEqual(result, "/opt/bin/mock-signer")
+    }
+
     func testCycleSafeAncestorWalk() {
         // Model an adversarial or corrupted cycle: PID 100 -> 101 -> 100
         let processes: [pid_t: ProcessParentSnapshot] = [

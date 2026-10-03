@@ -422,9 +422,12 @@ public class SSHAgentServer {
         resolveGpgSSHProgram()
     }
 
-    static func resolveGpgSSHProgram() -> String? {
+    static func resolveGpgSSHProgram(gitExecutablePath: String? = nil, timeout: TimeInterval = 2.0) -> String? {
         let gitPath: String
-        if FileManager.default.isExecutableFile(atPath: "/usr/bin/git") {
+        if let customPath = gitExecutablePath {
+            guard FileManager.default.isExecutableFile(atPath: customPath) else { return nil }
+            gitPath = customPath
+        } else if FileManager.default.isExecutableFile(atPath: "/usr/bin/git") {
             gitPath = "/usr/bin/git"
         } else if FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/git") {
             gitPath = "/opt/homebrew/bin/git"
@@ -436,22 +439,53 @@ public class SSHAgentServer {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gitPath)
         process.arguments = ["config", "--get", "gpg.ssh.program"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
+        let stdoutPipe = Pipe()
+        process.standardOutput = stdoutPipe
         process.standardError = Pipe()
         do {
             try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return nil }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let raw = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !raw.isEmpty else {
-                return nil
-            }
-            return raw
         } catch {
             return nil
         }
+
+        let readHandle = stdoutPipe.fileHandleForReading
+        var outputData = Data()
+        let readGroup = DispatchGroup()
+        readGroup.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            outputData = readHandle.readDataToEndOfFile()
+            readGroup.leave()
+        }
+
+        let waitGroup = DispatchGroup()
+        waitGroup.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            process.waitUntilExit()
+            waitGroup.leave()
+        }
+
+        let timeoutDispatch = DispatchTime.now() + timeout
+        if waitGroup.wait(timeout: timeoutDispatch) == .timedOut {
+            process.terminate()
+            usleep(20_000)
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+            try? readHandle.close()
+            return nil
+        }
+
+        if readGroup.wait(timeout: .now() + 0.5) == .timedOut {
+            try? readHandle.close()
+            return nil
+        }
+
+        guard process.terminationStatus == 0 else { return nil }
+        guard let raw = String(data: outputData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
+            return nil
+        }
+        return raw
     }
 
     static func isSignerHelper(
