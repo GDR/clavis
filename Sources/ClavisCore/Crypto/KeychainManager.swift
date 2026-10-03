@@ -132,7 +132,13 @@ public class KeychainManager {
                 biometricPolicy: effectivePolicy,
                 keyPurpose: keyPurpose
             )
-            try PublicKeyStore.saveChecked(keyInfo)
+            do {
+                try PublicKeyStore.saveChecked(keyInfo)
+            } catch {
+                try? privateKeyStore.remove(label: label)
+                EncryptedVaultStore.shared.removeRecord(label: label)
+                throw error
+            }
             return keyInfo
         }
 
@@ -228,7 +234,13 @@ public class KeychainManager {
         }
 
         let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)
-        try PublicKeyStore.saveChecked(keyInfo)
+        do {
+            try PublicKeyStore.saveChecked(keyInfo)
+        } catch {
+            try? privateKeyStore.remove(label: label)
+            EncryptedVaultStore.shared.removeRecord(label: label)
+            throw error
+        }
         return keyInfo
     }
 
@@ -270,6 +282,12 @@ public class KeychainManager {
             try PublicKeyStore.removeChecked(label: label)
             ClavisLogger.log("KEY_DELETE", "Key '\(label)' deleted successfully.")
         } else {
+            if let revocationError {
+                ClavisLogger.log(
+                    "SECURITY_ALERT",
+                    "Failed to revoke SSH agent grant during partial deletion of key '\(label)': \(revocationError.localizedDescription)"
+                )
+            }
             ClavisLogger.log(
                 "KEY_DELETE",
                 "Removed the Keychain item for '\(label)' but left the encrypted vault record in place because it did not match the authenticated key."

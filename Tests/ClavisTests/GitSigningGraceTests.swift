@@ -602,6 +602,31 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         XCTAssertNil(unknownAnchor, "Unknown program that is not a signer helper must be refused as an anchor helper")
     }
 
+    func testResolveGpgSSHProgramTimesOutAndKillsHangingProcess() throws {
+        let scriptURL = testRootURL.appendingPathComponent("hanging-git.sh")
+        let scriptContent = "#!/bin/sh\nsleep 10\n"
+        try scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+        let start = Date()
+        let result = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptURL.path, timeout: 0.3)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertNil(result, "resolveGpgSSHProgram must return nil on timeout")
+        XCTAssertGreaterThanOrEqual(elapsed, 0.28, "Must wait for the timeout duration")
+        XCTAssertLessThan(elapsed, 2.0, "Must terminate child process without hanging until sleep completes")
+    }
+
+    func testResolveGpgSSHProgramParsesOutputSuccessfully() throws {
+        let scriptURL = testRootURL.appendingPathComponent("mock-git.sh")
+        let scriptContent = "#!/bin/sh\necho \"  /opt/bin/mock-signer  \"\n"
+        try scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+        let result = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptURL.path, timeout: 2.0)
+        XCTAssertEqual(result, "/opt/bin/mock-signer")
+    }
+
     func testCycleSafeAncestorWalk() {
         // Model an adversarial or corrupted cycle: PID 100 -> 101 -> 100
         let processes: [pid_t: ProcessParentSnapshot] = [
@@ -637,6 +662,34 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             )
             XCTAssertNil(anchor, "grantAnchor must refuse \(name)")
         }
+    }
+
+    func testGrantAnchorAcceptsGitAndXCTestInDebug() {
+        let gitPid: pid_t = 100
+        let gitPath = "/nix/store/abc-git-2.40.0/bin/git"
+        let gitAnchor = SSHAgentServer.grantAnchor(
+            peerPid: gitPid,
+            peerPath: gitPath,
+            processInfo: { _ in ProcessParentSnapshot(startTime: 1000, parentPid: 1) },
+            processPathLookup: { _ in gitPath }
+        )
+        XCTAssertNotNil(gitAnchor, "grantAnchor must accept git with arbitrary Nix store path")
+        XCTAssertEqual(gitAnchor?.pid, gitPid)
+
+        let xctestPid: pid_t = 200
+        let xctestPath = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Xcode/Agents/xctest"
+        let xctestAnchor = SSHAgentServer.grantAnchor(
+            peerPid: xctestPid,
+            peerPath: xctestPath,
+            processInfo: { _ in ProcessParentSnapshot(startTime: 2000, parentPid: 1) },
+            processPathLookup: { _ in xctestPath }
+        )
+        #if DEBUG
+        XCTAssertNotNil(xctestAnchor, "xctest must be accepted as an anchor in DEBUG builds")
+        XCTAssertEqual(xctestAnchor?.pid, xctestPid)
+        #else
+        XCTAssertNil(xctestAnchor, "xctest must NOT be accepted as an anchor in release builds")
+        #endif
     }
 
     func testGitSigningPromptBypassesModalInHeadlessSession() {

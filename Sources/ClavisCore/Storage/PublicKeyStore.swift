@@ -23,6 +23,11 @@ public struct PublicKeyStore {
     /// Test-only: keep the index purely in memory and never touch the real Keychain.
     static var disableKeychainMirrorForTesting = false
 
+    #if DEBUG
+    /// Test-only: force saveChecked to throw this error instead of completing.
+    static var forcedSaveErrorForTesting: Error?
+    #endif
+
     /// How long a process trusts its in-memory copy. Other processes (e.g. the GUI creating a
     /// key while the agent runs) write straight to the Keychain, so the copy must expire.
     /// Local writes invalidate it immediately.
@@ -31,8 +36,22 @@ public struct PublicKeyStore {
     private static let stateLock = NSLock()
     private static var cachedKeys: [Ed25519KeyInfo]?
     private static var cachedAt = Date.distantPast
+    private static var generation: UInt64 = 0
     /// Backing store when `disableKeychainMirrorForTesting` is set.
     private static var memoryOnlyKeys: [String: Ed25519KeyInfo] = [:]
+
+    #if DEBUG
+    /// Test seam for loading keys without touching host Keychain.
+    static var keychainLoader: () -> [Ed25519KeyInfo] = { loadAllFromKeychain() }
+    static var cachedKeysForTesting: [Ed25519KeyInfo]? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return cachedKeys
+    }
+    static var generationForTesting: UInt64 {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return generation
+    }
+    #endif
 
     public static func loadAll() -> [Ed25519KeyInfo] {
         stateLock.lock()
@@ -44,14 +63,21 @@ public struct PublicKeyStore {
             defer { stateLock.unlock() }
             return cachedKeys
         }
+        let capturedGeneration = generation
         stateLock.unlock()
 
+        #if DEBUG
+        let keys = keychainLoader()
+        #else
         let keys = loadAllFromKeychain()
+        #endif
 
         stateLock.lock()
         defer { stateLock.unlock() }
-        cachedKeys = keys
-        cachedAt = Date()
+        if generation == capturedGeneration {
+            cachedKeys = keys
+            cachedAt = Date()
+        }
         return keys
     }
 
@@ -60,6 +86,11 @@ public struct PublicKeyStore {
     }
 
     public static func saveChecked(_ info: Ed25519KeyInfo) throws {
+        #if DEBUG
+        if let forcedError = forcedSaveErrorForTesting {
+            throw forcedError
+        }
+        #endif
         try saveToKeychainChecked(info)
     }
 
@@ -74,6 +105,7 @@ public struct PublicKeyStore {
     /// Drops the in-memory copy so the next `loadAll()` re-reads the Keychain.
     static func invalidateCache() {
         stateLock.lock(); defer { stateLock.unlock() }
+        generation &+= 1
         cachedKeys = nil
         cachedAt = .distantPast
     }
@@ -81,9 +113,14 @@ public struct PublicKeyStore {
     /// Test-only: forget everything held in memory (both the cache and the memory-only store).
     static func resetForTesting() {
         stateLock.lock(); defer { stateLock.unlock() }
+        generation &+= 1
         cachedKeys = nil
         cachedAt = .distantPast
         memoryOnlyKeys = [:]
+        #if DEBUG
+        forcedSaveErrorForTesting = nil
+        keychainLoader = { loadAllFromKeychain() }
+        #endif
     }
 
     // MARK: - Keychain Public Record Mirroring & Recovery

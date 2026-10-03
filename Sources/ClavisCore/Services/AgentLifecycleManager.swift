@@ -16,7 +16,7 @@ public enum AgentLifecycleError: LocalizedError, Equatable {
         case .agentStopFailed(let reason):
             return "Failed to stop SSH agent daemon: \(reason)"
         case .agentControlFailed(let reason):
-            return "Failed to revoke the SSH agent grant: \(reason)"
+            return "Failed to control SSH agent: \(reason)"
         }
     }
 }

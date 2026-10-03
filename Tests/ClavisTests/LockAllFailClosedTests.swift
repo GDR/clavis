@@ -170,6 +170,8 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         XCTAssertEqual(result?.exitCode, 1)
         XCTAssertNotNil(result?.error)
         XCTAssertTrue(result?.error?.contains("Lock failed:") == true)
+        XCTAssertFalse(result?.error?.contains("Failed to revoke the SSH agent grant") == true)
+        XCTAssertTrue(result?.error?.contains("Failed to control SSH agent: agent rejected lock-all") == true)
     }
 
     func testCLIServiceLockSucceedsWhenAgentConfirms() throws {
@@ -266,6 +268,12 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         appState.lockNow()
 
         XCTAssertNotNil(appState.errorMessage, "Error message must be preserved when lockNow fails")
+    }
+
+    func testAgentControlFailedErrorDescriptionDoesNotMentionRevoke() {
+        let err = AgentLifecycleError.agentControlFailed("agent rejected lock-all")
+        XCTAssertEqual(err.errorDescription, "Failed to control SSH agent: agent rejected lock-all")
+        XCTAssertFalse(err.errorDescription?.contains("revoke") == true)
     }
 }
 
