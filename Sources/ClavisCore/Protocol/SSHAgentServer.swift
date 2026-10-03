@@ -915,19 +915,19 @@ public class SSHAgentServer {
               let flags = reader.readUInt32(),
               flags == 0,
               reader.isEOF else {
-            ClavisLogger.log("SSH_AGENT_SIGN", "Failed to parse sign request wire payload.")
+            ClavisLogger.log("SSH_AGENT_REJECT", "Failed to parse sign request wire payload.")
             return Data([5]) // SSH_AGENT_FAILURE
         }
 
         let keys = (try? keyManager.listKeys()) ?? []
         guard let matchingKey = keys.first(where: { $0.publicKeyBlob == keyBlob }) else {
-            ClavisLogger.log("SSH_AGENT_SIGN", "No matching key found for requested public key blob.")
+            ClavisLogger.log("SSH_AGENT_REJECT", "No matching key found for requested public key blob.")
             return Data([5]) // SSH_AGENT_FAILURE
         }
 
         guard let pid = clientPid,
               let processPath = clientExecutablePath ?? SSHAgentServer.getProcessPath(pid: pid) else {
-            ClavisLogger.log("SSH_AGENT_AUTH", "Rejected signing request because peer process attribution was unavailable.")
+            ClavisLogger.log("SSH_AGENT_REJECT", "Rejected signing request because peer process attribution was unavailable.")
             return Data([5])
         }
         let clientDesc = "\(Self.safeProcessPath(processPath)) (PID \(pid))"

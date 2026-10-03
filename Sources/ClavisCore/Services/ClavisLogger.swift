@@ -4,12 +4,37 @@ public struct ClavisLogger {
     private static let lock = NSLock()
     private static let defaultMaximumLogFileSize: UInt64 = 1_048_576
     private static let retainedLogFileCount = 3
-    /// The security audit log is kept longer than the general log so that routine activity
-    /// can never rotate security evidence away.
+    /// The security audit log retains up to 10 rotated files (each bounded by `effectiveMaximumLogFileSize`).
+    /// It only mirrors high-value security events (alerts, locks, git grace sessions, key deletions,
+    /// authentication outcomes, and authorized signature initiations/completions). Unauthenticated requests
+    /// and routine operational traffic are excluded. Repeated identical mirrored events within a 60-second window
+    /// are collapsed to guarantee that high-frequency noise cannot rotate critical security audit evidence away.
     private static let retainedSecurityLogFileCount = 10
     private static let maximumMessageBytes = 8_192
     private static var _customLogFileURL: URL?
     private static var _customMaximumLogFileSize: UInt64?
+
+    private struct MirroredRepeatKey: Hashable {
+        let category: String
+        let message: String
+    }
+
+    private struct MirroredRepeatState {
+        var count: Int
+        var firstSeen: Date
+        var lastSeen: Date
+    }
+
+    private static let defaultRepeatWindowSeconds: TimeInterval = 60.0
+    internal static var customRepeatWindow: TimeInterval?
+    private static var effectiveRepeatWindow: TimeInterval {
+        customRepeatWindow ?? defaultRepeatWindowSeconds
+    }
+    private static let maxTrackedRepeatEntries = 64
+
+    private static var activeRepeats: [MirroredRepeatKey: MirroredRepeatState] = [:]
+    private static var lastMirroredKey: MirroredRepeatKey?
+    private static var repeatExpiryWorkItem: DispatchWorkItem?
 
     public static var customLogFileURL: URL? {
         get {
@@ -19,8 +44,11 @@ public struct ClavisLogger {
         }
         set {
             lock.lock()
+            defer { lock.unlock() }
             _customLogFileURL = newValue
-            lock.unlock()
+            if newValue == nil {
+                resetStateLocked()
+            }
         }
     }
 
@@ -53,8 +81,15 @@ public struct ClavisLogger {
     /// Categories mirrored into the separate, longer-retained security log.
     private static let securityCategories: Set<String> = [
         "SECURITY", "SECURITY_ALERT", "LOCK", "GIT_GRACE",
-        "SSH_AGENT_SIGN", "TOUCH_ID_RESULT", "KEY_DELETE"
+        "TOUCH_ID_RESULT", "KEY_DELETE"
     ]
+
+    private static func isMirroredSecurityEvent(category: String, message: String) -> Bool {
+        if category == "SSH_AGENT_SIGN" {
+            return message.hasPrefix("Signature completed successfully") || message.hasPrefix("Initiating signature")
+        }
+        return securityCategories.contains(category)
+    }
 
     /// High-frequency, low-value categories. These are dropped unless verbose logging is on, so
     /// they cannot flood the log or leak per-request metadata by default.
@@ -90,6 +125,7 @@ public struct ClavisLogger {
         case sshAgent = "SSH_AGENT"
         case sshAgentReq = "SSH_AGENT_REQ"
         case sshAgentSign = "SSH_AGENT_SIGN"
+        case sshAgentReject = "SSH_AGENT_REJECT"
         case sshAgentIdentities = "SSH_AGENT_IDENTITIES"
         case sshAgentLimit = "SSH_AGENT_LIMIT"
         case agentDaemon = "AGENT_DAEMON"
@@ -114,16 +150,17 @@ public struct ClavisLogger {
     public static func log(_ category: String, _ message: String) {
         if verboseOnlyCategories.contains(category) && !isVerboseLoggingEnabled { return }
 
+        let now = Date()
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
-        let timestamp = formatter.string(from: Date())
+        let timestamp = formatter.string(from: now)
         let safeCategory = singleLine(category)
         let safeMessage = String(decoding: singleLine(message).utf8.prefix(maximumMessageBytes), as: UTF8.self)
         let line = "[\(timestamp)] [\(safeCategory)] \(safeMessage)\n"
         print(line, terminator: "")
 
         let data = Data(line.utf8)
-        let isSecurityEvent = securityCategories.contains(safeCategory)
+        let isSecurityEvent = isMirroredSecurityEvent(category: safeCategory, message: safeMessage)
 
         lock.lock()
         defer { lock.unlock() }
@@ -131,7 +168,13 @@ public struct ClavisLogger {
         let url = resolvedLogFileURL()
         append(data, to: url, retainedFiles: retainedLogFileCount)
         if isSecurityEvent {
-            append(data, to: securityURL(for: url), retainedFiles: retainedSecurityLogFileCount)
+            handleMirroredSecurityEventLocked(
+                category: safeCategory,
+                message: safeMessage,
+                data: data,
+                timestamp: now,
+                secURL: securityURL(for: url)
+            )
         }
     }
 
@@ -194,6 +237,165 @@ public struct ClavisLogger {
         }
         return files
     }
+
+    public static func rotatedSecurityLogFiles() -> [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        flushAllPendingRepeatsLocked()
+
+        let url = securityURL(for: resolvedLogFileURL())
+        let fm = FileManager.default
+        var files: [URL] = []
+        if fm.fileExists(atPath: url.path) {
+            files.append(url)
+        }
+        for index in 1...retainedSecurityLogFileCount {
+            let rotURL = rotatedURL(for: url, index: index)
+            if fm.fileExists(atPath: rotURL.path) {
+                files.append(rotURL)
+            }
+        }
+        return files
+    }
+
+    public static func flush() {
+        lock.lock()
+        defer { lock.unlock() }
+        flushAllPendingRepeatsLocked()
+    }
+
+    /// Must be called with `lock` held.
+    private static func handleMirroredSecurityEventLocked(
+        category: String,
+        message: String,
+        data: Data,
+        timestamp: Date,
+        secURL: URL
+    ) {
+        flushExpiredRepeatsLocked(currentTime: timestamp, to: secURL)
+
+        let key = MirroredRepeatKey(category: category, message: message)
+        let window = effectiveRepeatWindow
+
+        // If the last mirrored message was different and had repetitions, flush its summary now.
+        if let last = lastMirroredKey, last != key {
+            if let lastState = activeRepeats[last], lastState.count > 0 {
+                writeRepeatSummaryLocked(key: last, count: lastState.count, timestamp: timestamp, to: secURL)
+            }
+            activeRepeats.removeValue(forKey: last)
+        }
+
+        if var existing = activeRepeats[key], timestamp.timeIntervalSince(existing.firstSeen) < window {
+            // Drop identical message within the window and increment count.
+            existing.count += 1
+            existing.lastSeen = timestamp
+            activeRepeats[key] = existing
+            lastMirroredKey = key
+            scheduleExpiryTimerLocked(after: window)
+            return
+        }
+
+        // If key existed but its window expired, write any pending repeat summary before writing new line
+        if let existing = activeRepeats[key], existing.count > 0 {
+            writeRepeatSummaryLocked(key: key, count: existing.count, timestamp: timestamp, to: secURL)
+            activeRepeats.removeValue(forKey: key)
+        }
+
+        // Write first occurrence to security log
+        append(data, to: secURL, retainedFiles: retainedSecurityLogFileCount)
+        activeRepeats[key] = MirroredRepeatState(count: 0, firstSeen: timestamp, lastSeen: timestamp)
+        lastMirroredKey = key
+
+        // Enforce bounded dictionary size
+        if activeRepeats.count > maxTrackedRepeatEntries {
+            if let (oldestKey, oldestState) = activeRepeats.min(by: { $0.value.firstSeen < $1.value.firstSeen }) {
+                if oldestState.count > 0 {
+                    writeRepeatSummaryLocked(key: oldestKey, count: oldestState.count, timestamp: timestamp, to: secURL)
+                }
+                activeRepeats.removeValue(forKey: oldestKey)
+                if lastMirroredKey == oldestKey {
+                    lastMirroredKey = nil
+                }
+            }
+        }
+
+        scheduleExpiryTimerLocked(after: window)
+    }
+
+    /// Must be called with `lock` held.
+    private static func flushExpiredRepeatsLocked(currentTime: Date, to secURL: URL) {
+        let window = effectiveRepeatWindow
+        var expiredKeys: [MirroredRepeatKey] = []
+        for (key, state) in activeRepeats {
+            if currentTime.timeIntervalSince(state.firstSeen) >= window {
+                if state.count > 0 {
+                    writeRepeatSummaryLocked(key: key, count: state.count, timestamp: currentTime, to: secURL)
+                }
+                expiredKeys.append(key)
+            }
+        }
+        for key in expiredKeys {
+            activeRepeats.removeValue(forKey: key)
+            if lastMirroredKey == key {
+                lastMirroredKey = nil
+            }
+        }
+    }
+
+    /// Must be called with `lock` held.
+    private static func writeRepeatSummaryLocked(key: MirroredRepeatKey, count: Int, timestamp: Date, to secURL: URL) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        let timestampStr = formatter.string(from: timestamp)
+        let summaryLine = "[\(timestampStr)] [\(key.category)] ... (repeated \(count) times)\n"
+        let data = Data(summaryLine.utf8)
+        append(data, to: secURL, retainedFiles: retainedSecurityLogFileCount)
+    }
+
+    /// Must be called with `lock` held.
+    private static func scheduleExpiryTimerLocked(after interval: TimeInterval) {
+        repeatExpiryWorkItem?.cancel()
+        let workItem = DispatchWorkItem {
+            lock.lock()
+            defer { lock.unlock() }
+            let now = Date()
+            let url = securityURL(for: resolvedLogFileURL())
+            flushExpiredRepeatsLocked(currentTime: now, to: url)
+        }
+        repeatExpiryWorkItem = workItem
+        DispatchQueue.global().asyncAfter(deadline: .now() + interval, execute: workItem)
+    }
+
+    /// Must be called with `lock` held.
+    private static func flushAllPendingRepeatsLocked() {
+        repeatExpiryWorkItem?.cancel()
+        repeatExpiryWorkItem = nil
+        let now = Date()
+        let url = securityURL(for: resolvedLogFileURL())
+        for (key, state) in activeRepeats {
+            if state.count > 0 {
+                writeRepeatSummaryLocked(key: key, count: state.count, timestamp: now, to: url)
+            }
+        }
+        activeRepeats.removeAll()
+        lastMirroredKey = nil
+    }
+
+    private static func resetStateLocked() {
+        repeatExpiryWorkItem?.cancel()
+        repeatExpiryWorkItem = nil
+        activeRepeats.removeAll()
+        lastMirroredKey = nil
+        customRepeatWindow = nil
+    }
+
+    internal static func resetForTesting() {
+        lock.lock()
+        defer { lock.unlock() }
+        resetStateLocked()
+    }
+
+
 
     public static func singleLine(_ value: String) -> String {
         var result = ""
