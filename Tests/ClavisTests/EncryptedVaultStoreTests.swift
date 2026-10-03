@@ -442,4 +442,45 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
         XCTAssertTrue(succeeded?.output.contains("WARNING: Replacing existing mismatched") == true)
         XCTAssertNotEqual(try pinStore.loadPin(), wrongPin)
     }
+
+    /// R17: without a TTY the command must fail before verifyMasterKey() (Touch ID). With no vault on
+    /// disk verification would fail with a different message, so the TTY error proves the order.
+    func testVaultRepairWithoutTTYFailsBeforeVerification() throws {
+        EncryptedVaultStore.customPinStore = InMemoryMasterKeyPinStore(pin: nil)
+        let result = CLIService.handle(args: ["clavis", "vault", "repair"], isTTY: false)
+        XCTAssertEqual(result?.exitCode, 1)
+        XCTAssertTrue(result?.error?.contains("TTY") == true)
+        XCTAssertFalse(result?.error?.contains("verify") == true)
+    }
+
+    /// R17: the owner needs the pinned fingerprint as a baseline to tell a legitimate repair from a
+    /// replaced master.key.
+    func testVaultRepairShowsPinnedFingerprintBaselineAndWarning() throws {
+        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "cli-baseline-test"))
+        let wrongPin = Data(repeating: 0xee, count: 32)
+        let oldFingerprint = EncryptedVaultStore.fingerprint(forPin: wrongPin)
+        EncryptedVaultStore.customPinStore = InMemoryMasterKeyPinStore(pin: wrongPin)
+
+        // Even the refusal (no --replace-pin) prints the baseline.
+        let refused = CLIService.handle(
+            args: ["clavis", "vault", "repair"],
+            isTTY: true,
+            confirmationPrompt: { "yes" }
+        )
+        XCTAssertEqual(refused?.exitCode, 1)
+        XCTAssertTrue(refused?.output.contains("Keychain pinned fingerprint: \(oldFingerprint)") == true)
+        XCTAssertTrue(refused?.output.contains("master.key created:") == true)
+
+        let replaced = CLIService.handle(
+            args: ["clavis", "vault", "repair", "--replace-pin"],
+            isTTY: true,
+            confirmationPrompt: { "no" }
+        )
+        let output = replaced?.output ?? ""
+        XCTAssertTrue(output.contains("Keychain pinned fingerprint: \(oldFingerprint)"))
+        XCTAssertTrue(output.contains("Master key fingerprint: SHA256:"))
+        XCTAssertTrue(output.contains("do not confirm"))
+        XCTAssertNotEqual(oldFingerprint, try EncryptedVaultStore.shared.verifyMasterKey().fingerprint)
+    }
 }
+
