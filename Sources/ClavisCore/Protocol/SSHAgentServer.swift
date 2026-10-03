@@ -952,15 +952,15 @@ public class SSHAgentServer {
                     // Rebase / repeated commit pattern detected (Commit #2+ within 30s)
                     ClavisLogger.log("GIT_GRACE", "Detected rapid Git signing pattern (<30s) for '\(matchingKey.label)'. Prompting user for session...")
                     let gitAnchor = SSHAgentServer.grantAnchor(peerPid: pid, peerPath: processPath)
-                    let promptDesc: String
-                    if let anchor = gitAnchor, let anchorPath = anchor.path {
-                        promptDesc = "\(Self.safeProcessPath(anchorPath)) (PID \(anchor.pid))"
-                    } else if let anchor = gitAnchor {
-                        promptDesc = "PID \(anchor.pid)"
-                    } else {
-                        promptDesc = clientDesc
+                    let anchorPath = gitAnchor?.path
+                    let anchorPid = gitAnchor?.pid
+                    let promptDesc = Self.requesterDescription(
+                        processPath: anchorPath ?? processPath,
+                        pid: anchorPid ?? pid
+                    )
+                    let choice = promptGate.runExclusive {
+                        GitSigningGraceManager.promptProvider(matchingKey.label, promptDesc)
                     }
-                    let choice = GitSigningGraceManager.promptProvider(matchingKey.label, promptDesc)
                     switch choice {
                     case .cancel:
                         ClavisLogger.log("GIT_GRACE", "User cancelled Git signing session.")
