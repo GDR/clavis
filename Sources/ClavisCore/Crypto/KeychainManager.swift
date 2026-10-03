@@ -519,6 +519,14 @@ public class KeychainManager {
         return restoredRecord
     }
 
+    @discardableResult
+    public func repairVault(
+        replacePin: Bool = false,
+        context: LAContext? = nil
+    ) throws -> (publicKey: P256.KeyAgreement.PublicKey, fingerprint: String) {
+        try EncryptedVaultStore.shared.repairMasterKeyPin(replacePin: replacePin, context: context)
+    }
+
     private static func wipeData(_ data: inout Data) {
         data.withUnsafeMutableBytes { raw in
             if let base = raw.baseAddress { SecureMemory.zero(base, byteCount: raw.count) }

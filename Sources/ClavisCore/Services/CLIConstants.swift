@@ -8,6 +8,7 @@ public enum CLICommand: String, CaseIterable {
     case exportPub = "export-pub"
     case lock
     case logs
+    case vault
     case help
     case dashH = "-h"
     case dashDashHelp = "--help"
@@ -26,6 +27,7 @@ public enum CLIFlag: String {
     case dash = "-"
     case daemon = "--daemon"
     case yes = "--yes"
+    case replacePin = "--replace-pin"
 }
 
 public enum CLIMessages {
@@ -39,6 +41,8 @@ public enum CLIMessages {
             return "Usage: clavis delete <label> --yes"
         case .exportPub:
             return "Usage: clavis export-pub <label>"
+        case .vault:
+            return "Usage: clavis vault repair [--replace-pin]"
         default:
             return help
         }
@@ -55,6 +59,7 @@ public enum CLIMessages {
       clavis delete <label> --yes          Authenticate and permanently delete a key pair
       clavis lock                          Lock all session caches and active Git sessions
       clavis logs                          Print live Touch ID and authentication logs
+      clavis vault repair [--replace-pin]  Repair vault master key pin in Keychain
       clavis daemon / --daemon            Run SSH Agent socket daemon in background
       clavis                               Launch SwiftUI Key Manager GUI
     """

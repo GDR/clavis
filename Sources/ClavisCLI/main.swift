@@ -106,6 +106,7 @@ if let cliResult = CLIService.handle(args: CommandLine.arguments) {
           clavis-cli list                     List all stored keys and OpenSSH public keys
           clavis-cli export-pub <label>       Print the OpenSSH public key for <label>
           clavis-cli delete <label>           Delete key pair from Keychain
+          clavis-cli vault repair [--replace-pin] Repair vault master key pin in Keychain
           clavis-cli daemon [status|stop|restart]   Run or manage SSH Agent socket daemon
         """
         printOut(helpMsg)
