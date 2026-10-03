@@ -268,6 +268,7 @@ public class KeychainManager {
                 "KEY_DELETE",
                 "Removed the Keychain item for '\(label)' but left the encrypted vault record in place because it did not match the authenticated key."
             )
+            throw KeyDeletionError.partial(label: label)
         }
 
         if let revocationError {
@@ -441,6 +442,10 @@ public class KeychainManager {
                     return record
                 } catch let validationError {
                     record.wipe()
+                    ClavisLogger.log(
+                        "SECURITY_ALERT",
+                        "Keychain record validation failed for '\(label)': \(validationError.localizedDescription). Attempting restore from encrypted shadow vault."
+                    )
                     do {
                         return try restoreRecordFromVault(
                             label: label,
@@ -1042,6 +1047,17 @@ public class KeychainManager {
                 code: -1,
                 userInfo: [NSLocalizedDescriptionKey: "Key label must be 1-128 bytes and contain no leading, trailing, or control characters."]
             )
+        }
+    }
+}
+
+public enum KeyDeletionError: LocalizedError, Equatable {
+    case partial(label: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .partial(let label):
+            return "Failed to safely remove vault record for key '\(label)': key mismatch detected. Public metadata and vault record preserved."
         }
     }
 }

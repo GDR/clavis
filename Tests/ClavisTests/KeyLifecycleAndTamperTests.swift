@@ -931,7 +931,9 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         try keyStore.save(label: label, data: try replanted.encode())
         replanted.wipe()
 
-        try manager.deleteKey(label: label)
+        XCTAssertThrowsError(try manager.deleteKey(label: label)) { error in
+            XCTAssertEqual(error as? KeyDeletionError, .partial(label: label))
+        }
         XCTAssertFalse(keyStore.contains(label: label))
         XCTAssertTrue(EncryptedVaultStore.shared.containsRecord(label: label))
         XCTAssertEqual(try manager.fetchKeyInfo(label: label)?.publicKeyBlob, keyInfo.publicKeyBlob)
@@ -965,6 +967,86 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let label = "blocked-legacy-\(UUID().uuidString)"
         XCTAssertThrowsError(try manager.generateKey(label: label))
         XCTAssertNil(try manager.fetchKeyInfo(label: label))
+    }
+
+    func testDeleteKeyThrowsPartialWhenVaultRecordMismatches() throws {
+        let backing = ScriptedKeychainItems()
+        let keyStore = backing.makeStore(serviceName: "com.clavis.tests.partial-delete.\(UUID().uuidString)")
+        let manager = KeychainManager(
+            authenticator: AllowingAuthenticator(),
+            privateKeyStore: keyStore,
+            sessionCache: makeSessionCache(),
+            secureBufferFactory: { SecureBuffer(consuming: &$0) },
+            agentGrantRevoker: { _ in }
+        )
+
+        let label = "partial-del-\(UUID().uuidString)"
+        _ = try manager.generateKey(label: label)
+
+        let foreignKey = Curve25519.Signing.PrivateKey()
+        var foreignRecord = StoredPrivateKeyRecord(
+            label: label,
+            algorithm: .ed25519,
+            storageType: .keychain,
+            biometricPolicy: nil,
+            keyPurpose: .general,
+            keyData: foreignKey.rawRepresentation
+        )
+        try keyStore.save(label: label, data: try foreignRecord.encode())
+        foreignRecord.wipe()
+
+        XCTAssertThrowsError(try manager.deleteKey(label: label)) { error in
+            XCTAssertEqual(error as? KeyDeletionError, .partial(label: label))
+        }
+
+        // Key remains listed in public index
+        XCTAssertNotNil(try manager.fetchKeyInfo(label: label))
+        XCTAssertTrue(try manager.listKeys().contains(where: { $0.label == label }))
+        // Vault record remains intact
+        XCTAssertTrue(EncryptedVaultStore.shared.containsRecord(label: label))
+        // Keychain record was removed
+        XCTAssertFalse(keyStore.contains(label: label))
+    }
+
+    func testValidationFailureInLoadAuthenticatedRecordLogsSecurityAlertBeforeVaultFallback() throws {
+        let backing = ScriptedKeychainItems()
+        let keyStore = backing.makeStore(serviceName: "com.clavis.tests.restore-alert.\(UUID().uuidString)")
+        let manager = KeychainManager(
+            authenticator: AllowingAuthenticator(),
+            privateKeyStore: keyStore,
+            sessionCache: makeSessionCache(),
+            secureBufferFactory: { SecureBuffer(consuming: &$0) },
+            agentGrantRevoker: { _ in }
+        )
+
+        let label = "validation-alert-\(UUID().uuidString)"
+        let keyInfo = try manager.generateKey(label: label)
+        let originalPublic = try Curve25519.Signing.PublicKey(
+            rawRepresentation: keyInfo.publicKeyBlob.subdata(in: 19..<51)
+        )
+
+        // Plant record with mismatched storage type to fail validateAuthenticatedRecord without
+        // triggering validateAuthenticatedRecord's own alert (testing loadAuthenticatedRecord alert).
+        var tamperedRecord = StoredPrivateKeyRecord(
+            label: label,
+            algorithm: .ed25519,
+            storageType: .secureEnclave,
+            biometricPolicy: nil,
+            keyPurpose: .general,
+            keyData: Data(repeating: 0x42, count: 32)
+        )
+        try keyStore.save(label: label, data: try tamperedRecord.encode())
+        tamperedRecord.wipe()
+
+        let payload = Data("restore-alert-payload".utf8)
+        let signature = try manager.sign(label: label, data: payload, prompt: "Sign with restored key")
+        XCTAssertTrue(originalPublic.isValidSignature(signature, for: payload))
+
+        let securityURL = ClavisLogger.securityLogFileURL
+        let securityContent = try String(contentsOf: securityURL, encoding: .utf8)
+        XCTAssertTrue(securityContent.contains("SECURITY_ALERT"))
+        XCTAssertTrue(securityContent.contains(label))
+        XCTAssertTrue(securityContent.contains("Keychain record validation failed"))
     }
 }
 
