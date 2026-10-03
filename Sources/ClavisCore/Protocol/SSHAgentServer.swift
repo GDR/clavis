@@ -448,6 +448,8 @@ public class SSHAgentServer {
             gitPath = "/opt/homebrew/bin/git"
         } else if FileManager.default.isExecutableFile(atPath: "/usr/local/bin/git") {
             gitPath = "/usr/local/bin/git"
+        } else if FileManager.default.isExecutableFile(atPath: "/Applications/Xcode.app/Contents/Developer/usr/bin/git") {
+            gitPath = "/Applications/Xcode.app/Contents/Developer/usr/bin/git"
         } else {
             return nil
         }
