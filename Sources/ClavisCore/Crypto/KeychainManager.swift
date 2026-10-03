@@ -72,11 +72,10 @@ public class KeychainManager {
                 defer { record.wipe() }
                 var recordData = try record.encode()
                 defer { Self.wipeData(&recordData) }
-                // The serialized value is only an opaque, device-bound Secure
-                // Enclave reference. Authentication is enforced by the hardware
-                // key's access control above, so the containing generic-password
-                // record must not request a second entitlement-gated policy.
-                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [])
+                // The serialized value is an opaque Secure Enclave reference.
+                // The hardware key keeps its own biometric policy above; user
+                // presence here only protects the handle from other processes.
+                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
                 do {
                     try EncryptedVaultStore.shared.saveRecord(record)
                 } catch {
@@ -504,8 +503,7 @@ public class KeychainManager {
         ClavisLogger.log("KEYCHAIN_RESTORE", logMessage)
         if var bytes = try? restoredRecord.encode() {
             defer { Self.wipeData(&bytes) }
-            let accessFlags: SecAccessControlCreateFlags = (restoredRecord.storageType == .secureEnclave) ? [] : [.userPresence]
-            try? privateKeyStore.save(label: label, data: bytes, accessControlFlags: accessFlags)
+            try? privateKeyStore.save(label: label, data: bytes, accessControlFlags: [.userPresence])
         }
         return restoredRecord
     }
@@ -843,7 +841,13 @@ public class KeychainManager {
         duration: TimeInterval = 300.0,
         maxOperations: Int = 200
     ) throws -> GitSigningGrant {
-        let context = try authenticator.authenticate(reason: prompt)
+        // Match signSSH: strict biometric keys must not accept a password fallback.
+        // The returned context is reused for later signatures, so a weaker policy here
+        // would quietly downgrade every signature under the grant.
+        let laPolicy: LAPolicy = (key.biometricPolicy == .biometryCurrentSet)
+            ? .deviceOwnerAuthenticationWithBiometrics
+            : .deviceOwnerAuthentication
+        let context = try authenticator.authenticate(reason: prompt, policy: laPolicy)
         var record = try loadAuthenticatedRecord(
             label: key.label,
             context: context,
@@ -851,6 +855,20 @@ public class KeychainManager {
             expectedKeyInfo: key
         )
         defer { record.wipe() }
+
+        // keys.json chose the LocalAuthentication policy above and is not authenticated.
+        // If the Keychain record requires the current biometric set, refuse a context
+        // that was evaluated with a weaker policy and do not record the grant.
+        let recordPolicy = record.biometricPolicy ?? .userPresence
+        if recordPolicy == .biometryCurrentSet && laPolicy != .deviceOwnerAuthenticationWithBiometrics {
+            context.invalidate()
+            ClavisLogger.log("SECURITY_ALERT", "Refusing Git signing grant for '\(key.label)': record requires biometryCurrentSet but the authentication context was not evaluated with biometrics.")
+            throw PrivateKeyRecordError.metadataMismatch(
+                field: "biometricPolicy",
+                expected: BiometricPolicy.userPresence.rawValue,
+                actual: recordPolicy.rawValue
+            )
+        }
 
         try validateAuthenticatedRecord(record, against: key, context: context)
 
