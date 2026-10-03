@@ -1,6 +1,7 @@
 import XCTest
 import CryptoKit
 import LocalAuthentication
+import Darwin
 @testable import ClavisCore
 @testable import AgePluginClavis
 @testable import Clavis
@@ -815,6 +816,94 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         XCTAssertGreaterThanOrEqual(acceptCount, targetBackoffCalls, "Accept loop should keep looping across transient errors")
         XCTAssertFalse(failureCallbackCalled, "Failure callback must not fire for transient errors")
         XCTAssertFalse(server.isSocketActive)
+    }
+
+    // MARK: - resolveGpgSSHProgram tests
+
+    private var grandchildPidFilesToClean: [URL] = []
+
+    override func tearDownWithError() throws {
+        for pidFileURL in grandchildPidFilesToClean {
+            if let pidString = try? String(contentsOf: pidFileURL, encoding: .utf8),
+               let pid = pid_t(pidString.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                kill(pid, SIGKILL)
+            }
+        }
+        grandchildPidFilesToClean.removeAll()
+        try super.tearDownWithError()
+    }
+
+    private func createStubGitScript(named name: String, content: String) throws -> String {
+        let scriptURL = testRootURL.appendingPathComponent(name)
+        try content.write(to: scriptURL, atomically: true, encoding: .utf8)
+        chmod(scriptURL.path, 0o755)
+        return scriptURL.path
+    }
+
+    func testResolveGpgSSHProgramSuccessReturnsPath() throws {
+        let scriptPath = try createStubGitScript(
+            named: "git-success.sh",
+            content: "#!/bin/sh\nprintf \"/path/to/signer\\n\"\nexit 0\n"
+        )
+        let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 2.0)
+        XCTAssertEqual(resolved, "/path/to/signer")
+    }
+
+    func testResolveGpgSSHProgramTimeoutReturnsNilPromptly() throws {
+        let scriptPath = try createStubGitScript(
+            named: "git-timeout.sh",
+            content: "#!/bin/sh\nexec sleep 30\n"
+        )
+        let start = Date()
+        let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 0.2)
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertNil(resolved)
+        XCTAssertLessThan(elapsed, 1.5)
+    }
+
+    func testResolveGpgSSHProgramGrandchildHoldingStdoutTimesOutCleanly() throws {
+        let pidFileURL = testRootURL.appendingPathComponent("grandchild.pid")
+        grandchildPidFilesToClean.append(pidFileURL)
+
+        let scriptPath = try createStubGitScript(
+            named: "git-grandchild.sh",
+            content: """
+            #!/bin/sh
+            sh -c 'sleep 30 & echo $! > "\(pidFileURL.path)"; wait'
+            """
+        )
+        let start = Date()
+        let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 0.2)
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertNil(resolved)
+        XCTAssertLessThan(elapsed, 1.5)
+    }
+
+    func testResolveGpgSSHProgramBoundedOutputWithoutHang() throws {
+        let scriptPath = try createStubGitScript(
+            named: "git-large-output.sh",
+            content: """
+            #!/bin/sh
+            head -c 1048576 /dev/zero | tr '\\0' 'A'
+            exit 0
+            """
+        )
+        let start = Date()
+        let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 2.0)
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 1.5)
+        if let resolved {
+            XCTAssertLessThanOrEqual(resolved.utf8.count, 64 * 1024)
+        }
+    }
+
+    func testResolveGpgSSHProgramNonZeroExitReturnsNil() throws {
+        let scriptPath = try createStubGitScript(
+            named: "git-failure.sh",
+            content: "#!/bin/sh\nprintf \"/path/to/signer\\n\"\nexit 1\n"
+        )
+        let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 2.0)
+        XCTAssertNil(resolved)
     }
 }
 
