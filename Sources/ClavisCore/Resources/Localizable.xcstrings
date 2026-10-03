@@ -687,13 +687,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Locked · Touch ID required"
+            "value": "Touch ID required to sign"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Заблокирован · Требуется Touch ID"
+            "value": "Для подписи требуется Touch ID"
           }
         }
       }

@@ -759,15 +759,12 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             updateItem: { _, _ in errSecItemNotFound }
         )
 
-        try store.save(label: "hardware-key", data: Data([0xCA, 0xFE]), accessControlFlags: [])
+        try store.save(label: "hardware-key", data: Data([0xCA, 0xFE]), accessControlFlags: [.userPresence])
 
         XCTAssertEqual(addedItems.count, 1)
         let added = addedItems[0] as NSDictionary
-        XCTAssertEqual(
-            added[kSecAttrAccessible as String] as? String,
-            kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
-        )
-        XCTAssertNil(added[kSecAttrAccessControl as String])
+        XCTAssertNotNil(added[kSecAttrAccessControl as String])
+        XCTAssertNil(added[kSecAttrAccessible as String])
         XCTAssertNil(added[kSecUseDataProtectionKeychain as String])
         XCTAssertNil(added[kSecAttrAccessGroup as String])
     }

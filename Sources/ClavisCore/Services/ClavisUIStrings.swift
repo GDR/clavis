@@ -120,7 +120,7 @@ public enum ClavisUIStrings {
             localizedFormat("inspector.unlocked_with_time", "Unlocked · %@", remaining)
         }
         public static var unlockedActive: String { localized("inspector.unlocked_active", "Unlocked · Active in session") }
-        public static var lockedTouchIdRequired: String { localized("inspector.locked_touch_id_required", "Locked · Touch ID required") }
+        public static var lockedTouchIdRequired: String { localized("inspector.locked_touch_id_required", "Touch ID required to sign") }
 
         public static var deleteAlertTitle: String { localized("inspector.delete_alert_title", "Delete Key") }
         public static func deleteAlertMessage(label: String) -> String {
