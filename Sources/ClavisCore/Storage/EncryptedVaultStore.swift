@@ -19,11 +19,13 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         }
     }
     public static var customPinStore: MasterKeyPinStoring? = nil
+    public static var masterKeyLockTimeout: TimeInterval = 10.0
     private static var inMemoryPinStoreForTesting: MasterKeyPinStoring = InMemoryMasterKeyPinStore()
     static var forceSoftwareMasterKeyForTesting: Bool = false
 
     public static func resetForTesting() {
         customPinStore = nil
+        masterKeyLockTimeout = 10.0
         #if DEBUG
         inMemoryPinStoreForTesting = InMemoryMasterKeyPinStore()
         #endif
@@ -37,7 +39,9 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         #endif
     }
 
-    private let lock = NSLock()
+    /// Re-entrant lock for in-process thread serialization (allows methods like `saveRecord`
+    /// that already hold `lock` to call `ensureMasterKey` without self-deadlock).
+    private let lock = NSRecursiveLock()
     private let defaultPinStore: MasterKeyPinStoring
 
     public init(pinStore: MasterKeyPinStoring = KeychainMasterKeyPinStore()) {
@@ -194,14 +198,80 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         let pubURL = vaultDirectoryURL.appendingPathComponent("master.pub")
         let keyURL = vaultDirectoryURL.appendingPathComponent("master.key")
 
-        let hasPublicKey = FileManager.default.fileExists(atPath: pubURL.path)
-        let hasPrivateKey = FileManager.default.fileExists(atPath: keyURL.path)
-        guard hasPublicKey == hasPrivateKey else {
-            throw VaultError.incompleteMasterKey
-        }
-        if hasPublicKey {
+        // Fast path: if both master.pub and master.key exist, authenticate and return
+        // WITHOUT taking the file lock (do not hold flock across Touch ID).
+        if FileManager.default.fileExists(atPath: pubURL.path) && FileManager.default.fileExists(atPath: keyURL.path) {
             let (pubKey, _) = try authenticateExistingMasterKey()
             return pubKey
+        }
+
+        // Lock order: in-process lock first, then advisory file lock.
+        lock.lock()
+        defer { lock.unlock() }
+
+        // Double-check after acquiring in-process lock.
+        if FileManager.default.fileExists(atPath: pubURL.path) && FileManager.default.fileExists(atPath: keyURL.path) {
+            let (pubKey, _) = try authenticateExistingMasterKey()
+            return pubKey
+        }
+
+        let lockFileURL = vaultDirectoryURL.appendingPathComponent(".master.lock")
+        let lockFd = SecureFS.openLockFile(path: lockFileURL.path, flags: O_CREAT | O_RDWR, mode: 0o600)
+        guard lockFd >= 0 else {
+            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to open master lock file: errno \(errno)"])
+        }
+
+        // Poll LOCK_EX | LOCK_NB every 50ms for at most masterKeyLockTimeout.
+        let start = Date()
+        var acquired = false
+        while true {
+            if flock(lockFd, LOCK_EX | LOCK_NB) == 0 {
+                acquired = true
+                break
+            }
+            if errno != EWOULDBLOCK && errno != EAGAIN {
+                close(lockFd)
+                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to lock master lock file: errno \(errno)"])
+            }
+            if Date().timeIntervalSince(start) >= Self.masterKeyLockTimeout {
+                break
+            }
+            usleep(50_000)
+            if Date().timeIntervalSince(start) >= Self.masterKeyLockTimeout {
+                if flock(lockFd, LOCK_EX | LOCK_NB) == 0 {
+                    acquired = true
+                }
+                break
+            }
+        }
+
+        guard acquired else {
+            close(lockFd)
+            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Another Clavis process is creating the vault master key."])
+        }
+
+        // Re-check hasPublicKey/hasPrivateKey after acquiring lock.
+        let hasPublicKey = FileManager.default.fileExists(atPath: pubURL.path)
+        let hasPrivateKey = FileManager.default.fileExists(atPath: keyURL.path)
+
+        // If another process created them in the meantime, release flock and take authenticate path.
+        if hasPublicKey && hasPrivateKey {
+            flock(lockFd, LOCK_UN)
+            close(lockFd)
+            let (pubKey, _) = try authenticateExistingMasterKey()
+            return pubKey
+        }
+
+        guard hasPublicKey == hasPrivateKey else {
+            flock(lockFd, LOCK_UN)
+            close(lockFd)
+            throw VaultError.incompleteMasterKey
+        }
+
+        // Otherwise create master key (pin-then-files with rollback), then unlock and close fd in defer.
+        defer {
+            flock(lockFd, LOCK_UN)
+            close(lockFd)
         }
 
         let useSE = !Self.allowSoftwareMasterKeyForTesting

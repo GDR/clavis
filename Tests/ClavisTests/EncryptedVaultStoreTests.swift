@@ -5,6 +5,7 @@ import CryptoKit
 final class EncryptedVaultStoreTests: ClavisBaseTestCase {
     override func tearDownWithError() throws {
         EncryptedVaultStore.customPinStore = nil
+        EncryptedVaultStore.masterKeyLockTimeout = 10.0
         try super.tearDownWithError()
     }
 
@@ -482,5 +483,162 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
         XCTAssertTrue(output.contains("do not confirm"))
         XCTAssertNotEqual(oldFingerprint, try EncryptedVaultStore.shared.verifyMasterKey().fingerprint)
     }
+
+    // MARK: - Finding N-4: Cross-Process Advisory File Lock Tests
+
+    func testExternalHolderBlocksMasterKeyCreation() throws {
+        let vaultDir = EncryptedVaultStore.shared.vaultDirectoryURL
+        try SecureFS.createDirectory(at: vaultDir)
+        let lockURL = vaultDir.appendingPathComponent(".master.lock")
+        let lockFd = SecureFS.openLockFile(path: lockURL.path, flags: O_CREAT | O_RDWR, mode: 0o600)
+        XCTAssertGreaterThanOrEqual(lockFd, 0)
+        XCTAssertEqual(flock(lockFd, LOCK_EX), 0)
+
+        let exp = expectation(description: "ensureMasterKey completes after lock released")
+        var returnedPubKey: P256.KeyAgreement.PublicKey?
+        var callError: Error?
+
+        let queue = DispatchQueue(label: "test.masterKey.block")
+        queue.async {
+            do {
+                let key = try EncryptedVaultStore.shared.ensureMasterKey()
+                returnedPubKey = key
+            } catch {
+                callError = error
+            }
+            exp.fulfill()
+        }
+
+        // Assert not finished after 0.3s
+        usleep(300_000)
+        XCTAssertNil(returnedPubKey)
+        XCTAssertNil(callError)
+
+        // Release lock
+        XCTAssertEqual(flock(lockFd, LOCK_UN), 0)
+        close(lockFd)
+
+        // Assert it finishes and files exist
+        wait(for: [exp], timeout: 2.0)
+        XCTAssertNotNil(returnedPubKey)
+        XCTAssertNil(callError)
+
+        let pubURL = vaultDir.appendingPathComponent("master.pub")
+        let keyURL = vaultDir.appendingPathComponent("master.key")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pubURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keyURL.path))
+    }
+
+    func testMasterKeyRecheckWorksWhenCreatedByAnotherProcess() throws {
+        let vaultDir = EncryptedVaultStore.shared.vaultDirectoryURL
+        try SecureFS.createDirectory(at: vaultDir)
+        let lockURL = vaultDir.appendingPathComponent(".master.lock")
+        let lockFd = SecureFS.openLockFile(path: lockURL.path, flags: O_CREAT | O_RDWR, mode: 0o600)
+        XCTAssertGreaterThanOrEqual(lockFd, 0)
+        XCTAssertEqual(flock(lockFd, LOCK_EX), 0)
+
+        final class CountingPinStore: MasterKeyPinStoring, @unchecked Sendable {
+            private let lock = NSLock()
+            var saveCount = 0
+            var pin: Data?
+            init(pin: Data? = nil) { self.pin = pin }
+            func loadPin() throws -> Data? {
+                lock.lock()
+                defer { lock.unlock() }
+                return pin
+            }
+            func savePin(_ p: Data) throws {
+                lock.lock()
+                defer { lock.unlock() }
+                saveCount += 1
+                pin = p
+            }
+            func removePin() throws {
+                lock.lock()
+                defer { lock.unlock() }
+                pin = nil
+            }
+        }
+        let pinStore = CountingPinStore()
+        EncryptedVaultStore.customPinStore = pinStore
+
+        let exp = expectation(description: "waiting call completes after lock released")
+        var returnedPubKey: P256.KeyAgreement.PublicKey?
+        var callError: Error?
+
+        let queue = DispatchQueue(label: "test.masterKey.recheck")
+        queue.async {
+            do {
+                let key = try EncryptedVaultStore.shared.ensureMasterKey()
+                returnedPubKey = key
+            } catch {
+                callError = error
+            }
+            exp.fulfill()
+        }
+
+        // Wait briefly to ensure background call has started and is polling lock
+        usleep(100_000)
+        XCTAssertNil(returnedPubKey)
+
+        // Create valid key pair via file writes while holding lock
+        let swKey = P256.KeyAgreement.PrivateKey()
+        let pubData = swKey.publicKey.rawRepresentation
+        let pin = Data(SHA256.hash(data: pubData))
+        try EncryptedVaultStore.shared.activePinStore.savePin(pin)
+        XCTAssertEqual(pinStore.saveCount, 1)
+
+        let pubURL = vaultDir.appendingPathComponent("master.pub")
+        let keyURL = vaultDir.appendingPathComponent("master.key")
+        try SecureFS.withUmask(0o077) {
+            var keyFileBytes = Data([0x02])
+            keyFileBytes.append(swKey.rawRepresentation)
+            try keyFileBytes.write(to: keyURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
+
+            try pubData.write(to: pubURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
+        }
+
+        // Release lock
+        XCTAssertEqual(flock(lockFd, LOCK_UN), 0)
+        close(lockFd)
+
+        wait(for: [exp], timeout: 2.0)
+        XCTAssertNil(callError)
+        XCTAssertEqual(returnedPubKey?.rawRepresentation, swKey.publicKey.rawRepresentation)
+
+        // Verify pin was not overwritten
+        let storedPin = try EncryptedVaultStore.shared.activePinStore.loadPin()
+        XCTAssertEqual(storedPin, pin)
+        XCTAssertEqual(pinStore.saveCount, 1)
+    }
+
+    func testMasterKeyLockTimeoutThrowsError() throws {
+        EncryptedVaultStore.masterKeyLockTimeout = 0.2
+        defer { EncryptedVaultStore.masterKeyLockTimeout = 10.0 }
+
+        let vaultDir = EncryptedVaultStore.shared.vaultDirectoryURL
+        try SecureFS.createDirectory(at: vaultDir)
+        let lockURL = vaultDir.appendingPathComponent(".master.lock")
+        let lockFd = SecureFS.openLockFile(path: lockURL.path, flags: O_CREAT | O_RDWR, mode: 0o600)
+        XCTAssertGreaterThanOrEqual(lockFd, 0)
+        XCTAssertEqual(flock(lockFd, LOCK_EX), 0)
+        defer {
+            flock(lockFd, LOCK_UN)
+            close(lockFd)
+        }
+
+        let start = Date()
+        XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKey()) { error in
+            let nsError = error as NSError
+            XCTAssertEqual(nsError.domain, "Clavis")
+            XCTAssertEqual(nsError.code, -1)
+            XCTAssertEqual(nsError.localizedDescription, "Another Clavis process is creating the vault master key.")
+        }
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertGreaterThanOrEqual(elapsed, 0.2)
+    }
 }
+
 
