@@ -32,7 +32,7 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
 
     func testRepeatedDenialsTriggerCooldownWithoutRunningBody() {
         let clock = Clock()
-        let gate = SigningPromptGate(maxConsecutiveDenials: 3, cooldown: 15, now: { clock.current })
+        let gate = SigningPromptGate(maxConsecutiveDenials: 3, now: { clock.current })
         for _ in 0..<3 {
             XCTAssertThrowsError(try gate.run { throw denial() })
         }
@@ -43,13 +43,44 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
         }
         XCTAssertFalse(bodyRan, "No prompt may be shown while cooling down")
 
-        clock.advance(14)
+        clock.advance(59)
         XCTAssertThrowsError(try gate.run { bodyRan = true })
         XCTAssertFalse(bodyRan)
 
         clock.advance(2)
         XCTAssertNoThrow(try gate.run { bodyRan = true })
         XCTAssertTrue(bodyRan, "Requests are admitted again after the cooldown")
+    }
+
+    func testCooldownDoublesUntilCapAndResetsAfterSuccess() {
+        let clock = Clock()
+        let gate = SigningPromptGate(maxConsecutiveDenials: 1, cooldown: 60, now: { clock.current })
+        let expected: [TimeInterval] = [60, 120, 240, 480, 900, 900]
+
+        for duration in expected {
+            XCTAssertThrowsError(try gate.run { throw denial() })
+            var bodyRan = false
+            XCTAssertThrowsError(try gate.run { bodyRan = true }) {
+                XCTAssertEqual($0 as? SigningPromptGateError, .coolingDown)
+            }
+            XCTAssertFalse(bodyRan)
+            clock.advance(duration - 1)
+            XCTAssertThrowsError(try gate.run { bodyRan = true })
+            XCTAssertFalse(bodyRan, "Still refused \(duration - 1)s into a \(duration)s lockout")
+            clock.advance(1)
+        }
+
+        XCTAssertNoThrow(try gate.run { })
+        XCTAssertThrowsError(try gate.run { throw denial() })
+        var bodyRan = false
+        clock.advance(59)
+        XCTAssertThrowsError(try gate.run { bodyRan = true }) {
+            XCTAssertEqual($0 as? SigningPromptGateError, .coolingDown)
+        }
+        XCTAssertFalse(bodyRan, "A success must restore the 60s base cooldown")
+        clock.advance(1)
+        XCTAssertNoThrow(try gate.run { bodyRan = true })
+        XCTAssertTrue(bodyRan)
     }
 
     func testSuccessResetsDenialCounter() {
