@@ -62,6 +62,7 @@ jobs:
       version: ${{ steps.semver.outputs.version }}
       tag: ${{ steps.semver.outputs.tag }}
       bumped: ${{ steps.semver.outputs.bumped }}
+      signing: ${{ steps.verify.outputs.signing }}
 
     steps:
       - name: Checkout repository
@@ -69,22 +70,52 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Releases require a Developer ID Application identity. Until one is available, the
+      # repository/environment variable CLAVIS_ALLOW_NON_DEVID_RELEASE=1 explicitly opts in to
+      # publishing with an Apple Development identity: such builds are not Gatekeeper-verifiable,
+      # carry no secure timestamp and cannot be notarized, so the release is flagged accordingly.
       - name: Verify release configuration
+        id: verify
         env:
           CLAVIS_SIGN_IDENTITY: ${{ vars.CLAVIS_SIGN_IDENTITY }}
           CLAVIS_EXPECTED_TEAM_ID: ${{ vars.CLAVIS_EXPECTED_TEAM_ID }}
+          CLAVIS_ALLOW_NON_DEVID_RELEASE: ${{ vars.CLAVIS_ALLOW_NON_DEVID_RELEASE }}
+          CLAVIS_NOTARIZE: ${{ vars.CLAVIS_NOTARIZE }}
         run: |
-          case "${CLAVIS_SIGN_IDENTITY:-}" in
-            "Developer ID Application"*) ;;
-            "")
-              echo "❌ CLAVIS_SIGN_IDENTITY must be set and start with 'Developer ID Application' before a release can be published." >&2
-              exit 1
+          identity="${CLAVIS_SIGN_IDENTITY:-}"
+          case "$identity" in
+            "Developer ID Application"*)
+              signing=developer-id
               ;;
             *)
-              echo "❌ CLAVIS_SIGN_IDENTITY must start with 'Developer ID Application'. Refusing to publish a release signed with another identity." >&2
-              exit 1
+              if [ "${CLAVIS_ALLOW_NON_DEVID_RELEASE:-}" != "1" ]; then
+                if [ -z "$identity" ]; then
+                  echo "❌ CLAVIS_SIGN_IDENTITY must be set and start with 'Developer ID Application' before a release can be published." >&2
+                else
+                  echo "❌ CLAVIS_SIGN_IDENTITY must start with 'Developer ID Application'. Refusing to publish a release signed with another identity." >&2
+                fi
+                echo "   Set CLAVIS_ALLOW_NON_DEVID_RELEASE=1 to explicitly publish an Apple Development-signed release." >&2
+                exit 1
+              fi
+              # Only the Apple Development fallback is allowed; never ad-hoc or arbitrary identities.
+              case "$identity" in
+                "") identity="Apple Development" ;;
+                "Apple Development"*) ;;
+                *)
+                  echo "❌ With CLAVIS_ALLOW_NON_DEVID_RELEASE=1, CLAVIS_SIGN_IDENTITY must be empty or start with 'Apple Development', got '$identity'." >&2
+                  exit 1
+                  ;;
+              esac
+              if [ "${CLAVIS_NOTARIZE:-0}" = "1" ]; then
+                echo "❌ CLAVIS_NOTARIZE=1 requires a Developer ID Application identity." >&2
+                exit 1
+              fi
+              signing=development
+              echo "::warning title=Non-Developer ID release::Signing with '$identity'. The release will not be notarized, has no secure timestamp and will be rejected by Gatekeeper."
               ;;
           esac
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "signing=$signing" >> "$GITHUB_OUTPUT"
           if [ -z "${CLAVIS_EXPECTED_TEAM_ID:-}" ]; then
             echo "❌ CLAVIS_EXPECTED_TEAM_ID must be set before packaging a release." >&2
             exit 1
@@ -231,8 +262,8 @@ jobs:
         env:
           CLAVIS_VERSION: ${{ steps.semver.outputs.version }}
           CLAVIS_BUILD_VERSION: ${{ github.run_number }}
-          # Releases must be signed with a Developer ID Application identity.
-          CLAVIS_SIGN_IDENTITY: ${{ vars.CLAVIS_SIGN_IDENTITY }}
+          # Validated identity: Developer ID Application, or Apple Development when explicitly allowed.
+          CLAVIS_SIGN_IDENTITY: ${{ steps.verify.outputs.identity }}
           CLAVIS_EXPECTED_TEAM_ID: ${{ vars.CLAVIS_EXPECTED_TEAM_ID }}
           CLAVIS_NOTARIZE: ${{ vars.CLAVIS_NOTARIZE || '0' }}
           CLAVIS_NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
@@ -336,10 +367,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          SIGNING: ${{ needs.build.outputs.signing }}
         run: |
+          notes=""
+          if [ "$SIGNING" != "developer-id" ]; then
+            echo "::warning title=Non-Developer ID release::$RELEASE_TAG is signed with an Apple Development identity."
+            notes='> [!WARNING]
+          > This release is signed with an **Apple Development** certificate, not Developer ID. It is not notarized and Gatekeeper will refuse to open it without manual approval (`xattr -d com.apple.quarantine`).'
+          fi
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            # --notes is prepended to the generated notes (see `gh release create --help`).
             gh release create "$RELEASE_TAG" \
               --title "$RELEASE_TAG" \
+              --notes "$notes" \
               --generate-notes
           fi
           gh release upload "$RELEASE_TAG" \

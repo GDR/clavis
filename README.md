@@ -82,6 +82,11 @@ certificate and fail if one is not configured. For release builds:
   `CLAVIS_EXPECTED_TEAM_ID` to your 10-character team ID; the release workflow requires both and fails
   if the identity does not start with `Developer ID Application` or if the team ID is missing).
   Developer ID builds automatically use secure timestamps (`CLAVIS_TIMESTAMP=auto`).
+- Until a Developer ID certificate is available, set the variable `CLAVIS_ALLOW_NON_DEVID_RELEASE=1`
+  to explicitly publish a release signed with `Apple Development` (`CLAVIS_SIGN_IDENTITY` empty or
+  starting with `Apple Development`; `CLAVIS_EXPECTED_TEAM_ID` is still required). Such releases are
+  not notarized, have no secure timestamp, are rejected by Gatekeeper, and are marked with a warning
+  in the workflow log and release notes. Notarization cannot be combined with this flag.
 - Set `CLAVIS_NOTARIZE=1` (repository variable) with the secrets `NOTARY_KEY_BASE64`,
   `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID` to submit the DMG to Apple, staple the ticket and
   validate it with `spctl` before the checksum is computed. Locally, use
