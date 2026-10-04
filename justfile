@@ -1,7 +1,7 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 config := env_var_or_default("CONFIG", "release")
-version := env_var_or_default("CLAVIS_VERSION", "0.2.0")
+version := env_var_or_default("CLAVIS_VERSION", "0.3.0")
 build_version := env_var_or_default("CLAVIS_BUILD_VERSION", "1")
 keychain := env_var_or_default("CLAVIS_KEYCHAIN", "")
 sign_identity := env_var_or_default("CLAVIS_SIGN_IDENTITY", "")
