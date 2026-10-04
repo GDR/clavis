@@ -52,7 +52,9 @@ jobs:
   build:
     name: Build & Sign Release
     needs: test
-    runs-on: macos-14
+    # Must match the test job: Liquid Glass APIs (glassEffect, GlassEffectContainer) require
+    # the macOS 26 SDK, which older runner images do not ship.
+    runs-on: macos-26
     environment: release
     # Manual runs bump the version and push to main, so they are only valid from main.
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
@@ -301,7 +303,7 @@ jobs:
   publish:
     name: Publish Release
     needs: build
-    runs-on: macos-14
+    runs-on: macos-26
     # Manual runs bump the version and push to main, so they are only valid from main.
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     permissions:
