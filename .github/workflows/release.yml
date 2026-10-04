@@ -329,27 +329,33 @@ jobs:
           RELEASE_VERSION: ${{ needs.build.outputs.version }}
           BUMPED: ${{ needs.build.outputs.bumped }}
         run: |
-          if [ "$BUMPED" = "true" ]; then
-            python3 - << 'EOF'
-            import os, re
-            version = os.environ["RELEASE_VERSION"]
-            with open("justfile", "r") as f:
-                content = f.read()
-            updated = re.sub(
-                r'(version := env_var_or_default\("CLAVIS_VERSION",\s*")[^"]+("\))',
-                rf'\g<1>{version}\g<2>',
-                content
-            )
-            with open("justfile", "w") as f:
-                f.write(updated)
-            EOF
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git commit -am "chore(release): $RELEASE_TAG"
-            git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
-            git push origin main
+          if [ "$BUMPED" != "true" ]; then
+            # Tag-triggered run: the tag already exists on the remote.
+            git push origin "$RELEASE_TAG" || true
+            exit 0
           fi
-          git push origin "$RELEASE_TAG" || true
+          # Kept at the block's base indentation on purpose: a quoted heredoc terminator must
+          # start at column 0 and the Python body must not be indented, so neither may be
+          # nested inside an if/fi block.
+          python3 - << 'EOF'
+          import os, re
+          version = os.environ["RELEASE_VERSION"]
+          with open("justfile", "r") as f:
+              content = f.read()
+          updated = re.sub(
+              r'(version := env_var_or_default\("CLAVIS_VERSION",\s*")[^"]+("\))',
+              rf'\g<1>{version}\g<2>',
+              content
+          )
+          with open("justfile", "w") as f:
+              f.write(updated)
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(release): $RELEASE_TAG"
+          git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
+          git push origin main
+          git push origin "$RELEASE_TAG"
 
       - name: Download release artifacts
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
