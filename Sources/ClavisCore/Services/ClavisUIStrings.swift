@@ -450,6 +450,12 @@ public enum ClavisUIStrings {
         }
         public static var historyShowSession: String { localized("agent_session.history_show_session", "Show session") }
         public static var historyEndSession: String { localized("agent_session.history_end_session", "End session") }
+        public static var extendPrompt: String { localized("agent_session.extend_prompt", "Extend agent session") }
+        public static var askPrompt: String { localized("agent_session.ask_prompt", "Approve agent signature") }
+    }
+
+    public enum AgentPolicy {
+        public static var changePrompt: String { localized("agent_policy.change_prompt", "Change agent session policy") }
     }
 
     public enum PinUnlock {

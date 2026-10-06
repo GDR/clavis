@@ -61,6 +61,9 @@ public class SSHAgentServer {
     internal static let endAgentSessionRequest: UInt8 = 244
     internal static let listAgentSessionsRequest: UInt8 = 245
     internal static let revokeAllAgentSessionsRequest: UInt8 = 246
+    internal static let extendAgentSessionRequest: UInt8 = 247
+    internal static let setAgentPolicyRequest: UInt8 = 248
+    internal static let getAgentPolicyRequest: UInt8 = 249
     public static let defaultSocketPath = NSString(string: "~/.ssh/clavis.sock").expandingTildeInPath
     public static let defaultAgentSocketPath = NSString(string: "~/.ssh/clavis-agent.sock").expandingTildeInPath
     public static let shared = SSHAgentServer()
@@ -81,6 +84,8 @@ public class SSHAgentServer {
     private let keyManager: KeychainManager
     private let auditRecorder: AuditRecording
     private let agentSessions: AgentSessionRegistry
+    private let agentPolicies: AgentPolicyStoring
+    private let authenticator: UserAuthenticating
     private let controlPeerValidator: (Int32) -> Bool
     private let peerProcessValidator: (pid_t, String, UInt64) -> Bool
     private let backoffHandler: (useconds_t) -> Void
@@ -137,7 +142,9 @@ public class SSHAgentServer {
         acceptCall: ((Int32) -> (fd: Int32, err: Int32))? = nil,
         onPermanentListenerFailure: (() -> Void)? = nil,
         auditRecorder: AuditRecording = AuditRecorder.shared,
-        agentSessions: AgentSessionRegistry = .shared
+        agentSessions: AgentSessionRegistry = .shared,
+        agentPolicies: AgentPolicyStoring = KeychainAgentPolicyStore(),
+        authenticator: UserAuthenticating = LocalUserAuthenticator()
     ) {
         self.role = role
         self.promptGate = promptGate
@@ -158,6 +165,8 @@ public class SSHAgentServer {
         self.keyManager = keyManager
         self.auditRecorder = auditRecorder
         self.agentSessions = agentSessions
+        self.agentPolicies = agentPolicies
+        self.authenticator = authenticator
         self._onPermanentListenerFailure = onPermanentListenerFailure
     }
 
@@ -982,6 +991,9 @@ public class SSHAgentServer {
             || msgType == Self.endAgentSessionRequest
             || msgType == Self.listAgentSessionsRequest
             || msgType == Self.revokeAllAgentSessionsRequest
+            || msgType == Self.extendAgentSessionRequest
+            || msgType == Self.setAgentPolicyRequest
+            || msgType == Self.getAgentPolicyRequest
     }
 
     /// - Parameter isTrustedControlPeer: lazily evaluated, only for control opcodes.
@@ -1094,6 +1106,18 @@ public class SSHAgentServer {
             var response = Data([6])
             response.appendWireUInt32(UInt32(ended))
             return response
+        case Self.setAgentPolicyRequest:
+            return handleSetAgentPolicy(
+                payload: Data(payload.dropFirst()),
+                clientPid: clientPid,
+                clientExecutablePath: clientExecutablePath,
+                clientStartTime: clientStartTime,
+                clientSocket: clientSocket
+            )
+        case Self.getAgentPolicyRequest:
+            return handleGetAgentPolicy(
+                payload: Data(payload.dropFirst())
+            )
         default:
             ClavisLogger.log("SSH_AGENT_REQ", "Unsupported SSH Agent request type \(msgType)")
             return Data([5]) // SSH_AGENT_FAILURE
@@ -1154,7 +1178,27 @@ public class SSHAgentServer {
             return Data([5])
         }
 
-        let leaseMinutesActual = min(leaseMinutes == 0 ? 480 : leaseMinutes, 1440)
+        let policy: AgentKeyPolicy
+        let global: AgentGlobalPolicy
+        do {
+            policy = try agentPolicies.policy(forFingerprint: key.fingerprint)
+            global = try agentPolicies.global()
+        } catch {
+            auditRecorder.record(
+                AuditEvent(
+                    type: .sessionStart,
+                    result: .denied,
+                    reason: .policyUnavailable,
+                    keyFingerprint: key.fingerprint,
+                    keyKind: .agent,
+                    sensitive: AuditSensitive(keyLabel: keyLabel, processChain: chain)
+                )
+            )
+            return Data([5])
+        }
+
+        let requested = Int(leaseMinutes)
+        let leaseMinutesActual = min(requested == 0 ? policy.leaseMinutes : requested, global.maxLeaseMinutes)
         let leaseSeconds = UInt32(leaseMinutesActual * 60)
 
         let requester = SigningPromptGate.Requester(executablePath: processPath, pid: pid)
@@ -1227,6 +1271,116 @@ public class SSHAgentServer {
         response.appendWireString(session.id)
         response.appendWireUInt32(leaseSeconds)
         return response
+    }
+
+    private func handleSetAgentPolicy(
+        payload: Data,
+        clientPid: pid_t?,
+        clientExecutablePath: String?,
+        clientStartTime: UInt64?,
+        clientSocket: Int32?
+    ) -> Data {
+        var reader = DataReader(data: payload)
+        guard let fingerprint = reader.readWireString(),
+              let jsonString = reader.readWireString(),
+              reader.isEOF else {
+            return Data([5])
+        }
+
+        guard let jsonData = jsonString.data(using: .utf8),
+              let policy = try? JSONDecoder().decode(AgentKeyPolicy.self, from: jsonData) else {
+            return Data([5])
+        }
+
+        do {
+            try policy.validate()
+        } catch {
+            return Data([5])
+        }
+
+        let keys = (try? keyManager.listKeys()) ?? []
+        guard let key = keys.first(where: { $0.fingerprint == fingerprint }) else {
+            return Data([5])
+        }
+
+        guard key.purpose == .agent else {
+            return Data([5])
+        }
+
+        let pid = clientPid ?? 0
+        let processPath = clientExecutablePath ?? (clientPid.flatMap { SSHAgentServer.getProcessPath(pid: $0) }) ?? ""
+        let chain = clientPid != nil ? AuditProcessChain.build(pid: pid, executablePath: processPath) : []
+
+        do {
+            _ = try authenticator.authenticate(reason: ClavisUIStrings.AgentPolicy.changePrompt)
+        } catch {
+            let isCancelled = AuditEvent.isUserCancellation(error)
+            auditRecorder.record(
+                AuditEvent(
+                    type: .policyChange,
+                    result: isCancelled ? .cancelled : .denied,
+                    reason: isCancelled ? .userCancelled : .authenticationFailed,
+                    keyFingerprint: fingerprint,
+                    keyKind: .agent,
+                    sensitive: AuditSensitive(keyLabel: key.label, processChain: chain)
+                )
+            )
+            return Data([5])
+        }
+
+        do {
+            try agentPolicies.save(policy, forFingerprint: fingerprint)
+            auditRecorder.record(
+                AuditEvent(
+                    type: .policyChange,
+                    result: .allowed,
+                    keyFingerprint: fingerprint,
+                    keyKind: .agent,
+                    sensitive: AuditSensitive(keyLabel: key.label, processChain: chain)
+                )
+            )
+            return Data([6])
+        } catch {
+            auditRecorder.record(
+                AuditEvent(
+                    type: .policyChange,
+                    result: .failed,
+                    keyFingerprint: fingerprint,
+                    keyKind: .agent,
+                    sensitive: AuditSensitive(keyLabel: key.label, processChain: chain)
+                )
+            )
+            return Data([5])
+        }
+    }
+
+    private func handleGetAgentPolicy(payload: Data) -> Data {
+        var reader = DataReader(data: payload)
+        guard let fingerprint = reader.readWireString(), reader.isEOF else {
+            return Data([5])
+        }
+
+        let keys = (try? keyManager.listKeys()) ?? []
+        guard let key = keys.first(where: { $0.fingerprint == fingerprint }) else {
+            return Data([5])
+        }
+
+        guard key.purpose == .agent else {
+            return Data([5])
+        }
+
+        do {
+            let policy = try agentPolicies.policy(forFingerprint: fingerprint)
+            let data = try JSONEncoder().encode(policy)
+            guard let jsonString = String(data: data, encoding: .utf8) else {
+                return Data([5])
+            }
+            var response = Data([6])
+            response.appendWireString(jsonString)
+            return response
+        } catch {
+            return Data([5])
+        }
     }
 
     internal func handleRequestIdentities(

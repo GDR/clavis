@@ -7,6 +7,7 @@ public enum AuditEventType: String, Codable, CaseIterable, Sendable {
     case sessionExtend = "session_extend"   // story 006
     case sessionRevoke = "session_revoke"   // story 001/006
     case sessionEnd = "session_end"         // story 001
+    case policyChange = "policy_change"     // story 006
     case keyCreate = "key_create"
     case keyImport = "key_import"
     case keyDelete = "key_delete"
@@ -58,6 +59,10 @@ public enum AuditReason: String, Codable, CaseIterable, Sendable {
     case keyChanged = "key_changed"
     case daemonStopping = "daemon_stopping"
     case sessionApproved = "session_approved"
+    case policyUnavailable = "policy_unavailable"
+    case rateLimited = "rate_limited"
+    case forwardingRefused = "forwarding_refused"
+    case hostNotAllowed = "host_not_allowed"
 }
 
 public struct AuditProcess: Codable, Equatable, Sendable {
