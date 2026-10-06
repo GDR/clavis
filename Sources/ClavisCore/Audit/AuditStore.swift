@@ -762,6 +762,34 @@ public final class AuditStore {
         }
     }
 
+    public func records(fromSeq: Int64) throws -> [AuditRecord] {
+        try queue.sync {
+            guard let dbHandle = db else {
+                throw AuditStoreError.stepFailed(SQLITE_MISUSE)
+            }
+            let sql = """
+            SELECT seq, event_id, time, type, result, reason, key_fingerprint, key_kind, session_id, count, sensitive_format, sensitive
+            FROM events
+            WHERE seq >= ?
+            ORDER BY seq ASC;
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(dbHandle, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw AuditStoreError.prepareFailed(sqlite3_errcode(dbHandle))
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_int64(stmt, 1, fromSeq)
+
+            var records: [AuditRecord] = []
+            let decoder = JSONDecoder()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                records.append(extractRecord(from: stmt!, decoder: decoder))
+            }
+            return records
+        }
+    }
+
     private func extractRecord(from stmt: OpaquePointer, decoder: JSONDecoder) -> AuditRecord {
         let seq = sqlite3_column_int64(stmt, 0)
         let eventIdStr = String(cString: sqlite3_column_text(stmt, 1))

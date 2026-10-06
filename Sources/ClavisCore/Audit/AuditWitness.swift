@@ -60,11 +60,29 @@ public enum AuditWitness {
         sensitiveFormat: Int,
         sensitiveBlob: Data
     ) -> String {
-        let bitPatternStr = String(time.timeIntervalSinceReferenceDate.bitPattern)
+        let normalizedTime = Date(timeIntervalSince1970: time.timeIntervalSince1970)
+        let bitPatternStr = String(normalizedTime.timeIntervalSinceReferenceDate.bitPattern)
         let blobBase64 = (sensitiveFormat == 1) ? sensitiveBlob.base64EncodedString() : ""
         let payload = "w1|\(seq)|\(eventID.uuidString.lowercased())|\(bitPatternStr)|\(type)|\(result)|\(reason ?? "")|\(fingerprint ?? "")|\(kind ?? "")|\(session ?? "")|\(count)|\(sensitiveFormat)|\(blobBase64)"
         let hash = SHA256.hash(data: Data(payload.utf8))
         return hash.prefix(16).map { String(format: "%02x", $0) }.joined()
+    }
+
+    public static func digest(for record: AuditRecord) -> String {
+        digest(
+            seq: record.seq,
+            eventID: record.event.id,
+            time: record.event.time,
+            type: record.event.type.rawValue,
+            result: record.event.result.rawValue,
+            reason: record.event.reason?.rawValue,
+            fingerprint: record.event.keyFingerprint,
+            kind: record.event.keyKind?.rawValue,
+            session: record.event.sessionID,
+            count: record.event.count,
+            sensitiveFormat: record.sensitiveFormat,
+            sensitiveBlob: record.sealedSensitive ?? Data()
+        )
     }
 
     public static func line(_ e: AuditWitnessEntry) -> String {
