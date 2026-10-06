@@ -1039,11 +1039,11 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             XCTAssertEqual(error as? KeyDeletionError, .partial(label: label))
         }
 
-        let securityURL = ClavisLogger.securityLogFileURL
-        let securityContent = try String(contentsOf: securityURL, encoding: .utf8)
-        XCTAssertTrue(securityContent.contains("SECURITY_ALERT"))
-        XCTAssertTrue(securityContent.contains(label))
-        XCTAssertTrue(securityContent.contains("injected revocation error"))
+        let logURL = ClavisLogger.logFileURL
+        let logContent = try String(contentsOf: logURL, encoding: .utf8)
+        XCTAssertTrue(logContent.contains("SECURITY_ALERT"))
+        XCTAssertTrue(logContent.contains(label))
+        XCTAssertTrue(logContent.contains("injected revocation error"))
     }
 
     func testGenerateKeyRollsBackPrivateAndVaultRecordsWhenPublicStoreSaveFails() throws {
@@ -1113,11 +1113,11 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let signature = try manager.sign(label: label, data: payload, prompt: "Sign with restored key")
         XCTAssertTrue(originalPublic.isValidSignature(signature, for: payload))
 
-        let securityURL = ClavisLogger.securityLogFileURL
-        let securityContent = try String(contentsOf: securityURL, encoding: .utf8)
-        XCTAssertTrue(securityContent.contains("SECURITY_ALERT"))
-        XCTAssertTrue(securityContent.contains(label))
-        XCTAssertTrue(securityContent.contains("Keychain record validation failed"))
+        let logURL = ClavisLogger.logFileURL
+        let logContent = try String(contentsOf: logURL, encoding: .utf8)
+        XCTAssertTrue(logContent.contains("SECURITY_ALERT"))
+        XCTAssertTrue(logContent.contains(label))
+        XCTAssertTrue(logContent.contains("Keychain record validation failed"))
     }
 }
 

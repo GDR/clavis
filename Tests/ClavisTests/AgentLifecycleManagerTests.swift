@@ -22,8 +22,8 @@ final class AgentLifecycleManagerTests: ClavisBaseTestCase {
         XCTAssertFalse(stopped, "stopAgent() must return false if the process survives SIGKILL")
         XCTAssertTrue(FileManager.default.fileExists(atPath: sockPath), "Socket must NOT be removed if agent process survived SIGKILL")
 
-        let securityLogURL = ClavisLogger.securityLogFileURL
-        let logs = (try? String(contentsOf: securityLogURL, encoding: .utf8)) ?? ""
+        let logURL = ClavisLogger.logFileURL
+        let logs = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
         XCTAssertTrue(logs.contains("Failed to terminate agent daemon PID 99999; process survived SIGKILL"))
     }
 

@@ -42,31 +42,6 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
     }
 
 
-    func testSecurityEventsSurviveGeneralLogRotation() throws {
-        ClavisLogger.customMaximumLogFileSize = 256
-        let logURL = try XCTUnwrap(ClavisLogger.customLogFileURL)
-        let securityURL = ClavisLogger.securityLogFileURL
-        XCTAssertNotEqual(securityURL, logURL)
-
-        ClavisLogger.log("SECURITY_ALERT", "evidence-\(UUID().uuidString)")
-        let evidence = try String(contentsOf: securityURL, encoding: .utf8)
-        XCTAssertTrue(evidence.contains("SECURITY_ALERT"))
-
-        // Enough routine traffic to rotate the general log well past its 3 retained files.
-        for index in 0..<60 {
-            ClavisLogger.log("TEST", "routine-\(index)-\(String(repeating: "y", count: 80))")
-        }
-
-        let general = ClavisLogger.rotatedLogFiles()
-            .compactMap { try? String(contentsOf: $0, encoding: .utf8) }
-            .joined()
-        XCTAssertFalse(general.contains("evidence-"), "Alert should have rotated out of the general log")
-        XCTAssertTrue(try String(contentsOf: securityURL, encoding: .utf8).contains("evidence-"))
-
-        let attributes = try FileManager.default.attributesOfItem(atPath: securityURL.path)
-        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
-    }
-
 
     func testLoggerEscapesEmbeddedNewlines() throws {
         ClavisLogger.log("TEST\nFORGED", "message\r\n[AUTH] forged")
