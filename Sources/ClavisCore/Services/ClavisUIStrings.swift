@@ -55,6 +55,7 @@ public enum ClavisUIStrings {
         public static var noKeysHint: String { localized("menubar.no_keys_hint", "Create or import an SSH key to start") }
         public static var preferences: String { localized("menubar.preferences", "Preferences...") }
         public static var settings: String { localized("menubar.settings", "Settings…") }
+        public static var history: String { localized("menubar.history", "History…") }
         public static var newKey: String { localized("menubar.new_key", "New Key…") }
         public static var importKey: String { localized("menubar.import_key", "Import Key…") }
         public static var openKeyManager: String { localized("menubar.open_key_manager", "Open Key Manager…") }
@@ -334,5 +335,29 @@ public enum ClavisUIStrings {
     public enum Auth {
         public static var errorTimedOut: String { localized("auth.error_timed_out", "User authentication timed out") }
         public static var errorRejected: String { localized("auth.error_rejected", "User authentication failed or was cancelled") }
+    }
+
+    public enum History {
+        public static var windowTitle: String { localized("history.window_title", "Signing History") }
+        public static var showHistory: String { localized("history.show_history", "Show History") }
+        public static var filterAllKeys: String { localized("history.filter_all_keys", "All Keys") }
+        public static var filterAllKinds: String { localized("history.filter_all_kinds", "All Types") }
+        public static var filterKindPersonal: String { localized("history.filter_kind_personal", "Personal") }
+        public static var filterKindAgent: String { localized("history.filter_kind_agent", "Agent") }
+        public static var filterAllResult: String { localized("history.filter_all_results", "All Results") }
+        public static var filterRangeHour: String { localized("history.filter_range_hour", "Last Hour") }
+        public static var filterRangeDay: String { localized("history.filter_range_day", "Last 24 Hours") }
+        public static var filterRangeWeek: String { localized("history.filter_range_week", "Last 7 Days") }
+        public static var filterRangeAll: String { localized("history.filter_range_all", "All Time") }
+        public static var resultAllowed: String { localized("history.result_allowed", "Allowed") }
+        public static var resultDenied: String { localized("history.result_denied", "Denied") }
+        public static var resultCancelled: String { localized("history.result_cancelled", "Cancelled") }
+        public static var resultFailed: String { localized("history.result_failed", "Failed") }
+        public static var resultInfo: String { localized("history.result_info", "Info") }
+        public static var empty: String { localized("history.empty", "No audit events recorded") }
+        public static var export: String { localized("history.export", "Export…") }
+        public static func suppressedCount(_ count: Int) -> String {
+            localizedFormat("history.suppressed_count", "%d similar events suppressed", count)
+        }
     }
 }

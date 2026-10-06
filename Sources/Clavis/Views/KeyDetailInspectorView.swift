@@ -105,6 +105,20 @@ public struct KeyDetailInspectorView: View {
                         .clipShape(Capsule())
                     }
 
+                    Button(action: {
+                        WindowManager.shared.openHistory(keyFingerprint: key.fingerprint)
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "clock.arrow.circlepath")
+                            Text(ClavisUIStrings.History.showHistory)
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.bordered)
+                    .focusable(false)
+
                     // Context Menu
                     Menu {
                         if key.isAgeCompatible {
@@ -117,6 +131,12 @@ public struct KeyDetailInspectorView: View {
                         }
                         Button(action: copyFingerprint) {
                             Label(ClavisUIStrings.Inspector.copyFingerprintMenu, systemImage: "number")
+                        }
+                        Divider()
+                        Button(action: {
+                            WindowManager.shared.openHistory(keyFingerprint: key.fingerprint)
+                        }) {
+                            Label(ClavisUIStrings.History.showHistory, systemImage: "clock.arrow.circlepath")
                         }
                         Divider()
                         Button(role: .destructive, action: { showingDeleteAlert = true }) {

@@ -7,6 +7,8 @@ public class WindowManager: NSObject, NSWindowDelegate {
     public static let shared = WindowManager()
     internal var keyManagerWindow: NSWindow?
     internal var settingsWindow: NSWindow?
+    internal var historyWindow: NSWindow?
+    internal var historyViewModel: HistoryViewModel?
     public weak var menuBarWindow: NSWindow?
 
     public func dismissMenuBarExtra() {
@@ -105,15 +107,55 @@ public class WindowManager: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    public func openHistory(keyFingerprint: String? = nil) {
+        dismissMenuBarExtra()
+        NSApp.setActivationPolicy(.regular)
+
+        if let window = historyWindow {
+            if let keyFingerprint {
+                historyViewModel?.query.keyFingerprint = keyFingerprint
+                historyViewModel?.reload()
+            }
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let viewModel = HistoryViewModel(initialKeyFingerprint: keyFingerprint)
+        self.historyViewModel = viewModel
+        let historyView = HistoryView(viewModel: viewModel)
+        let hostingController = NSHostingController(rootView: historyView)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = ClavisUIStrings.History.windowTitle
+        window.minSize = NSSize(width: 750, height: 500)
+        window.contentViewController = hostingController
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+
+        self.historyWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     public func windowWillClose(_ notification: Notification) {
         if let closedWindow = notification.object as? NSWindow {
             if closedWindow === keyManagerWindow {
                 keyManagerWindow = nil
             } else if closedWindow === settingsWindow {
                 settingsWindow = nil
+            } else if closedWindow === historyWindow {
+                historyWindow = nil
+                historyViewModel = nil
             }
         }
-        if keyManagerWindow == nil && settingsWindow == nil {
+        if keyManagerWindow == nil && settingsWindow == nil && historyWindow == nil {
             NSApp.setActivationPolicy(.accessory)
         }
     }

@@ -195,4 +195,26 @@ final class LocalizationTests: XCTestCase {
             XCTAssertFalse(enVal?.isEmpty ?? true, "Key '\(key)' has empty English default translation")
         }
     }
+
+    func testHistoryLocalizedStrings() {
+        XCTAssertEqual(ClavisUIStrings.History.windowTitle, "Signing History")
+        XCTAssertEqual(ClavisUIStrings.History.showHistory, "Show History")
+        XCTAssertEqual(ClavisUIStrings.History.filterAllKeys, "All Keys")
+        XCTAssertEqual(ClavisUIStrings.History.filterAllKinds, "All Types")
+        XCTAssertEqual(ClavisUIStrings.History.filterKindPersonal, "Personal")
+        XCTAssertEqual(ClavisUIStrings.History.filterKindAgent, "Agent")
+        XCTAssertEqual(ClavisUIStrings.History.filterAllResult, "All Results")
+        XCTAssertEqual(ClavisUIStrings.History.filterRangeHour, "Last Hour")
+        XCTAssertEqual(ClavisUIStrings.History.filterRangeDay, "Last 24 Hours")
+        XCTAssertEqual(ClavisUIStrings.History.filterRangeWeek, "Last 7 Days")
+        XCTAssertEqual(ClavisUIStrings.History.filterRangeAll, "All Time")
+        XCTAssertEqual(ClavisUIStrings.History.resultAllowed, "Allowed")
+        XCTAssertEqual(ClavisUIStrings.History.resultDenied, "Denied")
+        XCTAssertEqual(ClavisUIStrings.History.resultCancelled, "Cancelled")
+        XCTAssertEqual(ClavisUIStrings.History.resultFailed, "Failed")
+        XCTAssertEqual(ClavisUIStrings.History.resultInfo, "Info")
+        XCTAssertEqual(ClavisUIStrings.History.empty, "No audit events recorded")
+        XCTAssertEqual(ClavisUIStrings.History.export, "Export…")
+        XCTAssertEqual(ClavisUIStrings.History.suppressedCount(5), "5 similar events suppressed")
+    }
 }
