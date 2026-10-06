@@ -37,7 +37,7 @@ public final class AuditRecorder: AuditRecording {
     private let sealer: AuditSealer?
 
     public static func makeDefaultSealer() -> AuditSealer? {
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+        if NSClassFromString("XCTestCase") != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
             return nil
         }
         return AuditSealer(keyring: KeychainAuditKeyring())

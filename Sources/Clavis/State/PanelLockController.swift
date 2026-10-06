@@ -87,7 +87,7 @@ public final class PanelLockController: ObservableObject {
     }
 
     public nonisolated static func makeDefaultKeyring() -> AuditKeyring? {
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+        if NSClassFromString("XCTestCase") != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
             return nil
         }
         return KeychainAuditKeyring()

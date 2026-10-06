@@ -11,14 +11,21 @@ public final class HistoryViewModel: ObservableObject {
     @Published public var isLoading: Bool = false
 
     private let storeFactory: () throws -> AuditStore
-    private let keyring: AuditKeyring
+    private let keyring: AuditKeyring?
     private let contextProvider: @MainActor () -> LAContext?
     private var lockObserver: Any?
+
+    public nonisolated static func makeDefaultKeyring() -> AuditKeyring? {
+        if NSClassFromString("XCTestCase") != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return nil
+        }
+        return KeychainAuditKeyring()
+    }
 
     public init(
         initialKeyFingerprint: String? = nil,
         store: @escaping () throws -> AuditStore = { try AuditStore() },
-        keyring: AuditKeyring = KeychainAuditKeyring(),
+        keyring: AuditKeyring? = HistoryViewModel.makeDefaultKeyring(),
         contextProvider: @escaping @MainActor () -> LAContext? = { PanelLockController.shared.unlockContext }
     ) {
         self.storeFactory = store

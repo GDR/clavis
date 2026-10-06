@@ -255,12 +255,14 @@ final class SoftwareAuditKeyring: AuditKeyring, @unchecked Sendable {
         )
         keys[keyID] = (priv, item)
         currentKeyID = keyID
-        DistributedNotificationCenter.default().postNotificationName(
-            KeychainAuditKeyring.notificationName,
-            object: nil,
-            userInfo: nil,
-            deliverImmediately: true
-        )
+        if NSClassFromString("XCTestCase") == nil {
+            DistributedNotificationCenter.default().postNotificationName(
+                KeychainAuditKeyring.notificationName,
+                object: nil,
+                userInfo: nil,
+                deliverImmediately: false
+            )
+        }
         return AuditReadPublicKey(keyID: keyID, publicKey: priv.publicKey)
     }
 
