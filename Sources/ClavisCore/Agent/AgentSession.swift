@@ -35,6 +35,8 @@ public final class AgentSession: @unchecked Sendable, Equatable {
     public let root: AgentSessionRoot
     public let startedAt: Date
     public internal(set) var expiresAt: Date
+    public let maxExpiresAt: Date
+    public let policy: AgentKeyPolicy
     let grant: AgentSessionGrant
 
     public init(
@@ -45,6 +47,8 @@ public final class AgentSession: @unchecked Sendable, Equatable {
         root: AgentSessionRoot,
         startedAt: Date = Date(),
         expiresAt: Date,
+        maxExpiresAt: Date? = nil,
+        policy: AgentKeyPolicy = AgentKeyPolicy(),
         grant: AgentSessionGrant
     ) {
         self.id = id ?? Self.generateSessionID()
@@ -54,6 +58,8 @@ public final class AgentSession: @unchecked Sendable, Equatable {
         self.root = root
         self.startedAt = startedAt
         self.expiresAt = expiresAt
+        self.maxExpiresAt = maxExpiresAt ?? startedAt.addingTimeInterval(1440 * 60)
+        self.policy = policy
         self.grant = grant
     }
 

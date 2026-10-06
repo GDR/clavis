@@ -418,10 +418,22 @@ public final class AgentLifecycleManager: @unchecked Sendable {
     @discardableResult
     public func revokeAllAgentSessions() -> Int {
         guard FileManager.default.fileExists(atPath: socketPath),
-              let response = try? sendControlRequest(Data([SSHAgentServer.revokeAllAgentSessionsRequest])),
-              response.first == 6 else { return 0 }
+            let response = try? sendControlRequest(Data([SSHAgentServer.revokeAllAgentSessionsRequest])),
+            response.first == 6 else { return 0 }
         var reader = DataReader(data: Data(response.dropFirst()))
         return Int(reader.readUInt32() ?? 0)
+    }
+
+    public func extendAgentSession(id: String, minutes: Int) -> Date? {
+        guard FileManager.default.fileExists(atPath: socketPath) else { return nil }
+        var payload = Data([SSHAgentServer.extendAgentSessionRequest])
+        payload.appendWireString(id)
+        payload.appendWireUInt32(UInt32(minutes))
+        guard let response = try? sendControlRequest(payload),
+              response.first == 6 else { return nil }
+        var reader = DataReader(data: Data(response.dropFirst()))
+        guard let newExpirySeconds = reader.readUInt32() else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(newExpirySeconds))
     }
 
     private func writeAll(_ data: Data, to fd: Int32) -> Bool {

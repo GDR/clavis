@@ -1106,6 +1106,14 @@ public class SSHAgentServer {
             var response = Data([6])
             response.appendWireUInt32(UInt32(ended))
             return response
+        case Self.extendAgentSessionRequest:
+            return handleExtendAgentSession(
+                payload: Data(payload.dropFirst()),
+                clientPid: clientPid,
+                clientExecutablePath: clientExecutablePath,
+                clientStartTime: clientStartTime,
+                clientSocket: clientSocket
+            )
         case Self.setAgentPolicyRequest:
             return handleSetAgentPolicy(
                 payload: Data(payload.dropFirst()),
@@ -1244,6 +1252,7 @@ public class SSHAgentServer {
 
         let startedAt = Date()
         let expiresAt = startedAt.addingTimeInterval(TimeInterval(leaseSeconds))
+        let maxExpiresAt = startedAt.addingTimeInterval(Double(global.maxLeaseMinutes * 60))
         let session = AgentSession(
             keyLabel: key.label,
             keyFingerprint: key.fingerprint,
@@ -1251,6 +1260,8 @@ public class SSHAgentServer {
             root: AgentSessionRoot(pid: pid, startTime: startTime),
             startedAt: startedAt,
             expiresAt: expiresAt,
+            maxExpiresAt: maxExpiresAt,
+            policy: policy,
             grant: grant
         )
         agentSessions.add(session)
@@ -1381,6 +1392,82 @@ public class SSHAgentServer {
         } catch {
             return Data([5])
         }
+    }
+
+    private func handleExtendAgentSession(
+        payload: Data,
+        clientPid: pid_t?,
+        clientExecutablePath: String?,
+        clientStartTime: UInt64?,
+        clientSocket: Int32?
+    ) -> Data {
+        var reader = DataReader(data: payload)
+        guard let sessionId = reader.readWireString(),
+              let minutes32 = reader.readUInt32(),
+              reader.isEOF else {
+            return Data([5])
+        }
+
+        let minutes = Int(minutes32)
+        guard minutes > 0 else {
+            return Data([5])
+        }
+
+        let summaries = agentSessions.summaries()
+        guard let summary = summaries.first(where: { $0.id == sessionId }) else {
+            return Data([5])
+        }
+
+        let pid = clientPid ?? 0
+        let processPath = clientExecutablePath ?? (clientPid.flatMap { SSHAgentServer.getProcessPath(pid: $0) }) ?? ""
+        let chain = clientPid != nil ? AuditProcessChain.build(pid: pid, executablePath: processPath) : []
+
+        do {
+            _ = try authenticator.authenticate(reason: ClavisUIStrings.AgentSession.extendPrompt)
+        } catch {
+            let isCancelled = AuditEvent.isUserCancellation(error)
+            auditRecorder.record(
+                AuditEvent(
+                    type: .sessionExtend,
+                    result: isCancelled ? .cancelled : .denied,
+                    reason: isCancelled ? .userCancelled : .authenticationFailed,
+                    keyFingerprint: summary.keyFingerprint,
+                    keyKind: .agent,
+                    sessionID: sessionId,
+                    sensitive: AuditSensitive(keyLabel: summary.keyLabel, processChain: chain)
+                )
+            )
+            return Data([5])
+        }
+
+        guard let newExpiry = agentSessions.extend(id: sessionId, by: minutes) else {
+            auditRecorder.record(
+                AuditEvent(
+                    type: .sessionExtend,
+                    result: .failed,
+                    keyFingerprint: summary.keyFingerprint,
+                    keyKind: .agent,
+                    sessionID: sessionId,
+                    sensitive: AuditSensitive(keyLabel: summary.keyLabel, processChain: chain)
+                )
+            )
+            return Data([5])
+        }
+
+        auditRecorder.record(
+            AuditEvent(
+                type: .sessionExtend,
+                result: .allowed,
+                keyFingerprint: summary.keyFingerprint,
+                keyKind: .agent,
+                sessionID: sessionId,
+                sensitive: AuditSensitive(keyLabel: summary.keyLabel, processChain: chain)
+            )
+        )
+
+        var response = Data([6])
+        response.appendWireUInt32(UInt32(newExpiry.timeIntervalSince1970))
+        return response
     }
 
     internal func handleRequestIdentities(

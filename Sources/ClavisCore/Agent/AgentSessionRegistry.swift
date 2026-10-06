@@ -16,6 +16,7 @@ public final class AgentSessionRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var sessions: [String: AgentSession] = [:]
     private var exitSources: [String: DispatchSourceProcess] = [:]
+    private var expiryTimers: [String: DispatchSourceTimer] = [:]
     private let exitQueue = DispatchQueue(label: "com.clavis.agent.session.exit", qos: .utility)
     private let now: () -> Date
     private let processInfo: ProcessInfoProvider
@@ -58,6 +59,7 @@ public final class AgentSessionRegistry: @unchecked Sendable {
             exitSources[session.id] = source
             source.resume()
         }
+        scheduleExpiryTimerLocked(for: session)
         lock.unlock()
         postNotification()
     }
@@ -205,12 +207,47 @@ public final class AgentSessionRegistry: @unchecked Sendable {
         return sessions.count
     }
 
+    public func extend(id: String, by minutes: Int) -> Date? {
+        lock.lock()
+        guard let session = sessions[id] else {
+            lock.unlock()
+            return nil
+        }
+        let currentTime = now()
+        let base = max(session.expiresAt, currentTime)
+        let proposed = base.addingTimeInterval(Double(minutes * 60))
+        let newExpiry = min(proposed, session.maxExpiresAt)
+        session.expiresAt = newExpiry
+        scheduleExpiryTimerLocked(for: session)
+        lock.unlock()
+        postNotification()
+        return newExpiry
+    }
+
+    private func scheduleExpiryTimerLocked(for session: AgentSession) {
+        if let existing = expiryTimers.removeValue(forKey: session.id) {
+            existing.cancel()
+        }
+        let delay = session.expiresAt.timeIntervalSince(now())
+        let timer = DispatchSource.makeTimerSource(queue: exitQueue)
+        let deadline: DispatchTime = delay <= 0 ? .now() : .now() + delay
+        timer.schedule(deadline: deadline)
+        timer.setEventHandler { [weak self] in
+            self?.end(id: session.id, reason: .leaseExpired)
+        }
+        expiryTimers[session.id] = timer
+        timer.resume()
+    }
+
     private func removeSessionLocked(id: String) -> AgentSession? {
         guard let session = sessions.removeValue(forKey: id) else {
             return nil
         }
         if let source = exitSources.removeValue(forKey: id) {
             source.cancel()
+        }
+        if let timer = expiryTimers.removeValue(forKey: id) {
+            timer.cancel()
         }
         session.grant.invalidate()
         return session
