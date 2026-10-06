@@ -81,6 +81,38 @@ final class InMemoryAuditRecorder: AuditRecording {
     }
 }
 
+final class InMemoryPinAttemptStore: PinAttemptStoring, @unchecked Sendable {
+    private let lock = NSLock()
+    private var state: PinAttemptState?
+    var shouldFailSave: Bool = false
+    var shouldCorrupt: Bool = false
+
+    init(initialState: PinAttemptState? = nil) {
+        self.state = initialState
+    }
+
+    func load() throws -> PinAttemptState {
+        lock.lock()
+        defer { lock.unlock() }
+        if shouldCorrupt { throw PinAttemptError.corrupt }
+        guard let state = state else { throw PinAttemptError.missing }
+        return state
+    }
+
+    func save(_ s: PinAttemptState) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if shouldFailSave { throw PinAttemptError.writeFailed }
+        self.state = s
+    }
+
+    func delete() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        self.state = nil
+    }
+}
+
 class ClavisBaseTestCase: XCTestCase {
 
     var testRootURL: URL!
