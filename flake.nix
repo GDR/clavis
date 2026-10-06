@@ -103,6 +103,7 @@
             swiftlint
             sops
             age
+            beads
           ];
 
           shellHook = ''

@@ -3,6 +3,7 @@ result
 .DS_Store
 .direnv/
 .plans/
+.planning/
 clavis-macos-*.tar.gz
 clavis-macos-*.tar.gz.sha256
 clavis-macos-*.dmg
