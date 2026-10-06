@@ -55,9 +55,14 @@ public final class PanelLockController: ObservableObject {
     private let defaults: UserDefaults
     private let authenticator: PanelAuthenticating
     private let keyring: AuditKeyring?
+    public private(set) var pinUnlockService: PinUnlockService?
     private let recorder: AuditRecording
     private let now: () -> Date
     private var lastActivity: Date
+
+    public var currentMode: AuditReadMode {
+        (try? keyring?.currentMode()) ?? .passwordOrBiometry
+    }
 
     @Published public private(set) var isEnabled: Bool {
         didSet {
@@ -91,6 +96,7 @@ public final class PanelLockController: ObservableObject {
         defaults: UserDefaults = .standard,
         authenticator: PanelAuthenticating = LAPanelAuthenticator(),
         keyring: AuditKeyring? = PanelLockController.makeDefaultKeyring(),
+        pinUnlockService: PinUnlockService? = nil,
         recorder: AuditRecording = AuditRecorder.shared,
         now: @escaping () -> Date = Date.init
     ) {
@@ -101,6 +107,18 @@ public final class PanelLockController: ObservableObject {
         self.now = now
         let currentTime = now()
         self.lastActivity = currentTime
+
+        if let pinUnlockService = pinUnlockService {
+            self.pinUnlockService = pinUnlockService
+        } else if let keyring = keyring {
+            self.pinUnlockService = PinUnlockService(
+                keyring: keyring,
+                counter: KeychainPinAttemptStore(),
+                keyAuth: PanelKeyAuthenticator(keyring: keyring),
+                passwordAuth: DevicePasswordAuthenticator(),
+                now: now
+            )
+        }
 
         if let storedEnabled = defaults.object(forKey: Self.enabledKey) as? Bool {
             self.isEnabled = storedEnabled
@@ -130,33 +148,72 @@ public final class PanelLockController: ObservableObject {
             return
         }
 
+        let mode = (try? keyring?.currentMode()) ?? .passwordOrBiometry
+        if mode.requiresPIN {
+            // In PIN modes, the placeholder drives PinUnlockService
+            return
+        }
+
         isUnlocking = true
         defer { isUnlocking = false }
 
         do {
             let context = try await authenticator.authenticate(reason: ClavisUIStrings.PanelLock.reason)
-            self.unlockContext = context
-            let currentTime = now()
-            self.state = .unlocked(since: currentTime)
-            self.lastActivity = currentTime
-
-            if let keyring = self.keyring {
-                let recorder = self.recorder
-                Task.detached {
-                    let status = keyring.validateCurrent(context: context)
-                    switch status {
-                    case .ok:
-                        break
-                    case .mismatch:
-                        recorder.record(AuditEvent(type: .securityAlert, result: .info, reason: .auditKeyMismatch))
-                        _ = try? keyring.rotate(mode: .passwordOrBiometry)
-                    case .unusable, .missing:
-                        _ = try? keyring.rotate(mode: .passwordOrBiometry)
-                    }
-                }
-            }
+            applyUnlock(context: context)
         } catch {
             // Cancelled or failed unlock stays locked without error alert
+        }
+    }
+
+    @discardableResult
+    public func unlockWithPIN(_ pin: String?) async -> PinUnlockService.Outcome {
+        guard isLocked else { return .unlocked }
+        guard let service = pinUnlockService else { return .wrongPIN }
+        isUnlocking = true
+        defer { isUnlocking = false }
+
+        let (outcome, context) = await service.unlock(pin: pin)
+        if outcome == .unlocked {
+            applyUnlock(context: context)
+        }
+        return outcome
+    }
+
+    @discardableResult
+    public func unlockWithPassword() async -> PinUnlockService.Outcome {
+        guard isLocked else { return .unlocked }
+        guard let service = pinUnlockService else { return .wrongPIN }
+        isUnlocking = true
+        defer { isUnlocking = false }
+
+        let (outcome, context) = await service.unlockWithPassword()
+        if outcome == .unlocked {
+            applyUnlock(context: context)
+        }
+        return outcome
+    }
+
+    public func applyUnlock(context: LAContext?) {
+        self.unlockContext = context
+        let currentTime = now()
+        self.state = .unlocked(since: currentTime)
+        self.lastActivity = currentTime
+
+        let mode = (try? self.keyring?.currentMode()) ?? .passwordOrBiometry
+        if mode == .passwordOrBiometry, let keyring = self.keyring, let context = context {
+            let recorder = self.recorder
+            Task.detached {
+                let status = keyring.validateCurrent(context: context)
+                switch status {
+                case .ok:
+                    break
+                case .mismatch:
+                    recorder.record(AuditEvent(type: .securityAlert, result: .info, reason: .auditKeyMismatch))
+                    _ = try? keyring.rotate(mode: .passwordOrBiometry)
+                case .unusable, .missing:
+                    _ = try? keyring.rotate(mode: .passwordOrBiometry)
+                }
+            }
         }
     }
 
