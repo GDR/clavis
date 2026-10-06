@@ -64,8 +64,16 @@ final class AuditEventTests: ClavisBaseTestCase {
         XCTAssertEqual(AuditReason.screenLocked.rawValue, "screen_locked")
         XCTAssertEqual(AuditReason.partialDeletion.rawValue, "partial_deletion")
         XCTAssertEqual(AuditReason.noAgentSession.rawValue, "no_agent_session")
-        XCTAssertEqual(AuditReason.wrongKeyKind.rawValue, "wrong_key_kind")
         XCTAssertEqual(AuditReason.auditKeyMismatch.rawValue, "audit_key_mismatch")
+        XCTAssertEqual(AuditReason.viaAgentSession.rawValue, "via_agent_session")
+        XCTAssertEqual(AuditReason.outsideSessionTree.rawValue, "outside_session_tree")
+        XCTAssertEqual(AuditReason.rootExited.rawValue, "root_exited")
+        XCTAssertEqual(AuditReason.lockAll.rawValue, "lock_all")
+        XCTAssertEqual(AuditReason.revokedByUser.rawValue, "revoked_by_user")
+        XCTAssertEqual(AuditReason.leaseExpired.rawValue, "lease_expired")
+        XCTAssertEqual(AuditReason.keyChanged.rawValue, "key_changed")
+        XCTAssertEqual(AuditReason.daemonStopping.rawValue, "daemon_stopping")
+        XCTAssertEqual(AuditReason.sessionApproved.rawValue, "session_approved")
     }
 
     func test_002_T1_sanitizedPathStripsControlAndBidi() {

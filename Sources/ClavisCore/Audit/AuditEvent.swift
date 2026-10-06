@@ -49,6 +49,15 @@ public enum AuditReason: String, Codable, CaseIterable, Sendable {
     case noAgentSession = "no_agent_session"
     case wrongKeyKind = "wrong_key_kind"
     case auditKeyMismatch = "audit_key_mismatch"
+    case viaAgentSession = "via_agent_session"
+    case outsideSessionTree = "outside_session_tree"
+    case rootExited = "root_exited"
+    case lockAll = "lock_all"
+    case revokedByUser = "revoked_by_user"
+    case leaseExpired = "lease_expired"
+    case keyChanged = "key_changed"
+    case daemonStopping = "daemon_stopping"
+    case sessionApproved = "session_approved"
 }
 
 public struct AuditProcess: Codable, Equatable, Sendable {
