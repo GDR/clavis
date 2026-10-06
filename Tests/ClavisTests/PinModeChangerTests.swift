@@ -297,4 +297,65 @@ final class PinModeChangerTests: ClavisBaseTestCase {
             XCTAssertFalse(desc.contains(testPIN), "PIN found in UserDefaults key '\(key)'")
         }
     }
+
+    func test_changeMode_skipPasswordAuth_succeedsWithoutPasswordAuth() async throws {
+        let keyring = SoftwareAuditKeyring()
+        let store = try AuditStore(url: dbURL)
+        let counter = InMemoryPinAttemptStore()
+
+        let passwordAuth = FakePasswordAuthenticator { _ in
+            throw LAError(.authenticationFailed)
+        }
+        let changer = PinModeChanger(
+            keyring: keyring,
+            store: { store },
+            counter: counter,
+            passwordAuth: passwordAuth,
+            makePINContext: { pin in
+                let ctx = LAContext()
+                TestContextPinRegistry.shared.setPIN(pin, for: ctx)
+                return ctx
+            },
+            sleep: { _ in }
+        )
+
+        let report = try await changer.changeMode(
+            to: .biometryOrPIN,
+            newPIN: "123456",
+            confirmPIN: "123456",
+            oldContext: LAContext(),
+            skipPasswordAuth: true
+        )
+        XCTAssertEqual(report.unreadable, 0)
+        XCTAssertEqual(try keyring.currentMode(), .biometryOrPIN)
+    }
+
+    func test_resetPIN_skipPasswordAuth_succeedsWithoutPasswordAuth() async throws {
+        let keyring = SoftwareAuditKeyring()
+        let store = try AuditStore(url: dbURL)
+        let counter = InMemoryPinAttemptStore()
+
+        let passwordAuth = FakePasswordAuthenticator { _ in
+            throw LAError(.authenticationFailed)
+        }
+        let changer = PinModeChanger(
+            keyring: keyring,
+            store: { store },
+            counter: counter,
+            passwordAuth: passwordAuth,
+            makePINContext: { pin in
+                let ctx = LAContext()
+                TestContextPinRegistry.shared.setPIN(pin, for: ctx)
+                return ctx
+            },
+            sleep: { _ in }
+        )
+
+        try await changer.resetPIN(
+            newPIN: "654321",
+            confirmPIN: "654321",
+            skipPasswordAuth: true
+        )
+        XCTAssertEqual(try counter.load().attempts, 0)
+    }
 }

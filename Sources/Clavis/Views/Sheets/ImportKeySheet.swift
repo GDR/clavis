@@ -132,10 +132,14 @@ public struct ImportKeySheet: View {
         }
         .padding(24)
         .frame(width: 560)
+        .onAppear {
+            ClavisLogger.promptDebug("calvis-ui", "ImportKeySheet: presenting import key sheet")
+        }
     }
 
     private func importKey() {
         let label = keyLabel.trimmingCharacters(in: .whitespaces)
+        ClavisLogger.promptDebug("calvis-ui", "ImportKeySheet: submitting import key for '\(label)' (purpose: \(selectedPurpose.rawValue))")
 
         guard !label.isEmpty, var seedData = decodeSeedHex() else {
             errorMessage = ClavisUIStrings.ImportKey.errorInvalidInput

@@ -190,6 +190,7 @@ struct KeyListView: View {
     }
 
     private func deleteKey(label: String) {
+        ClavisLogger.promptDebug("calvis-ui", "KeyListView: initiating delete for key '\(label)'")
         defer { appState.refresh() }
         do {
             try KeychainManager.shared.deleteKey(label: label)

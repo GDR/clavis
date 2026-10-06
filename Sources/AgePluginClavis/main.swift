@@ -222,7 +222,8 @@ public struct AgePluginClavis {
         outputHandler: (String) -> Void = { print($0) },
         fetchKeys: () throws -> [Ed25519KeyInfo] = { try KeychainManager.shared.listKeys() },
         unwrapKey: (String, String, Data, String) throws -> Data = { label, prompt, wrappedKey, epkB64 in
-            try KeychainManager.shared.unwrapAgeFileKey(label: label, prompt: prompt, wrappedKey: wrappedKey, epkB64: epkB64)
+            ClavisLogger.promptDebug("clavis-code", "AgePlugin: requesting unwrap key '\(label)' with prompt \"\(prompt)\"")
+            return try KeychainManager.shared.unwrapAgeFileKey(label: label, prompt: prompt, wrappedKey: wrappedKey, epkB64: epkB64)
         }
     ) {
         let stdinReader = inputProvider == nil

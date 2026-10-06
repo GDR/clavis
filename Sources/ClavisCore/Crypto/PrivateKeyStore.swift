@@ -155,6 +155,7 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
     }
 
     public func load(label: String, context: LAContext, prompt: String) throws -> Data? {
+        ClavisLogger.promptDebug("clavis-code", "PrivateKeyStore: loading private key '\(label)' with prompt \"\(prompt)\"")
         context.localizedReason = prompt
         let (status, result) = loadItem(label: label, serviceName: serviceName, context: context)
         if status == errSecSuccess, let data = result as? Data {
@@ -167,6 +168,7 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
     }
 
     public func remove(label: String, context: LAContext?, prompt: String) throws {
+        ClavisLogger.promptDebug("clavis-code", "PrivateKeyStore: removing private key '\(label)' with prompt \"\(prompt)\"")
         var query = lookup(label: label, serviceName: serviceName)
         if let context {
             context.localizedReason = prompt

@@ -89,9 +89,7 @@ public class WindowManager: NSObject, NSWindowDelegate {
             return
         }
 
-        let settingsView = PanelLockGate {
-            SettingsView().environmentObject(AppState.shared)
-        }
+        let settingsView = SettingsView().environmentObject(AppState.shared)
         let hostingController = NSHostingController(rootView: settingsView)
 
         let window = NSWindow(

@@ -371,6 +371,7 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
         with peer: P256.KeyAgreement.PublicKey,
         context: LAContext?
     ) throws -> SharedSecret {
+        ClavisLogger.promptDebug("clavis-code", "AuditKeyring: performing ECDH key agreement for keyID '\(keyID)' (context: \(context != nil))")
         guard let data = readItemData(account: keyID) else {
             throw AuditKeyringError.keyNotFound(keyID)
         }
@@ -394,6 +395,7 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
     }
 
     public func validateCurrent(context: LAContext?) -> AuditKeyringValidation {
+        ClavisLogger.promptDebug("clavis-code", "AuditKeyring: validating current key (context: \(context != nil))")
         guard let curData = readItemData(account: "current"),
               let keyID = String(data: curData, encoding: .utf8) else {
             return .missing

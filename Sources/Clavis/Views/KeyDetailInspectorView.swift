@@ -8,11 +8,6 @@ public struct KeyDetailInspectorView: View {
 
     @State private var copyFeedback: String? = nil
     @State private var showingDeleteAlert: Bool = false
-    @State private var showingChangeKindAlert: Bool = false
-
-    private var targetKind: KeyPurpose {
-        (key.purpose == .agent) ? .general : .agent
-    }
 
     public init(key: Ed25519KeyInfo, appState: AppState, onDelete: @escaping () -> Void) {
         self.key = key
@@ -142,12 +137,6 @@ public struct KeyDetailInspectorView: View {
                         Button(action: copyFingerprint) {
                             Label(ClavisUIStrings.Inspector.copyFingerprintMenu, systemImage: "number")
                         }
-                        if key.purpose == .general || key.purpose == .agent {
-                            Divider()
-                            Button(action: { showingChangeKindAlert = true }) {
-                                Label(ClavisUIStrings.KeyDetail.changeKind, systemImage: "arrow.triangle.2.circlepath")
-                            }
-                        }
                         Divider()
                         Button(action: {
                             WindowManager.shared.openHistory(keyFingerprint: key.fingerprint)
@@ -155,7 +144,10 @@ public struct KeyDetailInspectorView: View {
                             Label(ClavisUIStrings.History.showHistory, systemImage: "clock.arrow.circlepath")
                         }
                         Divider()
-                        Button(role: .destructive, action: { showingDeleteAlert = true }) {
+                        Button(role: .destructive, action: {
+                            ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: displaying delete confirmation alert for '\(key.label)'")
+                            showingDeleteAlert = true
+                        }) {
                             Label(ClavisUIStrings.Inspector.deleteKeyMenu, systemImage: "trash")
                         }
                     } label: {
@@ -358,13 +350,6 @@ public struct KeyDetailInspectorView: View {
                             Text(key.purpose.title)
                                 .font(.caption)
                                 .fontWeight(.medium)
-                            if key.purpose == .general || key.purpose == .agent {
-                                Button(ClavisUIStrings.KeyDetail.changeKind) {
-                                    showingChangeKindAlert = true
-                                }
-                                .buttonStyle(.link)
-                                .font(.caption)
-                            }
                         }
                     }
                     .padding(14)
@@ -457,28 +442,14 @@ public struct KeyDetailInspectorView: View {
         .background(Color.clear)
         .alert(ClavisUIStrings.Inspector.deleteAlertTitle, isPresented: $showingDeleteAlert) {
             Button(ClavisUIStrings.Common.delete, role: .destructive) {
+                ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: user confirmed deletion of key '\(key.label)'")
                 onDelete()
             }
-            Button(ClavisUIStrings.Common.cancel, role: .cancel) {}
+            Button(ClavisUIStrings.Common.cancel, role: .cancel) {
+                ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: user cancelled deletion of key '\(key.label)'")
+            }
         } message: {
             Text(ClavisUIStrings.Inspector.deleteAlertMessage(label: key.label))
-        }
-        .alert(ClavisUIStrings.KeyDetail.changeKindConfirm, isPresented: $showingChangeKindAlert) {
-            Button(ClavisUIStrings.KeyDetail.changeKindConfirm) {
-                let target = targetKind
-                Task {
-                    do {
-                        try appState.changeKind(label: key.label, to: target)
-                    } catch {
-                        await MainActor.run {
-                            appState.errorMessage = error.localizedDescription
-                        }
-                    }
-                }
-            }
-            Button(ClavisUIStrings.Common.cancel, role: .cancel) {}
-        } message: {
-            Text(ClavisUIStrings.KeyDetail.changeKindAlertMessage(label: key.label, newPurpose: targetKind))
         }
     }
 

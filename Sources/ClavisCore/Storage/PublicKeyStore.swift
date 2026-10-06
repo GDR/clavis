@@ -20,8 +20,20 @@ public enum PublicKeyStoreError: LocalizedError {
 /// The index is not a trust root — private records are authoritative and are cross-checked on
 /// every use — so it needs neither a file nor its own integrity protection.
 public struct PublicKeyStore {
+    private static var isRunningUnderXCTest: Bool {
+        NSClassFromString("XCTestCase") != nil ||
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+
+    private static var isKeychainAccessAllowed: Bool {
+        if !isRunningUnderXCTest {
+            return true
+        }
+        return ProcessInfo.processInfo.environment["CLAVIS_RUN_KEYCHAIN_INTEGRATION_TESTS"] == "1"
+    }
+
     /// Test-only: keep the index purely in memory and never touch the real Keychain.
-    static var disableKeychainMirrorForTesting = false
+    static var disableKeychainMirrorForTesting: Bool = isRunningUnderXCTest
 
     #if DEBUG
     /// Test-only: force saveChecked to throw this error instead of completing.
@@ -42,7 +54,10 @@ public struct PublicKeyStore {
 
     #if DEBUG
     /// Test seam for loading keys without touching host Keychain.
-    static var keychainLoader: () -> [Ed25519KeyInfo] = { loadAllFromKeychain() }
+    static var keychainLoader: () -> [Ed25519KeyInfo] = {
+        guard isKeychainAccessAllowed else { return [] }
+        return loadAllFromKeychain()
+    }
     static var cachedKeysForTesting: [Ed25519KeyInfo]? {
         stateLock.lock(); defer { stateLock.unlock() }
         return cachedKeys
@@ -117,9 +132,13 @@ public struct PublicKeyStore {
         cachedKeys = nil
         cachedAt = .distantPast
         memoryOnlyKeys = [:]
+        disableKeychainMirrorForTesting = isRunningUnderXCTest
         #if DEBUG
         forcedSaveErrorForTesting = nil
-        keychainLoader = { loadAllFromKeychain() }
+        keychainLoader = {
+            guard isKeychainAccessAllowed else { return [] }
+            return loadAllFromKeychain()
+        }
         #endif
     }
 
@@ -130,7 +149,7 @@ public struct PublicKeyStore {
     }
 
     public static func saveToKeychainChecked(_ info: Ed25519KeyInfo) throws {
-        if disableKeychainMirrorForTesting {
+        if disableKeychainMirrorForTesting || !isKeychainAccessAllowed {
             stateLock.lock()
             memoryOnlyKeys[info.label] = info
             stateLock.unlock()
@@ -143,12 +162,18 @@ public struct PublicKeyStore {
             kSecAttrService as String: KeychainManager.publicServiceName,
             kSecAttrAccount as String: info.label
         ]
-        let attributes: [String: Any] = [
+        var attributes: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
             kSecAttrSynchronizable as String: false,
             kSecAttrDescription as String: "Clavis public key metadata"
         ]
+        #if os(macOS)
+        var access: SecAccess?
+        if SecAccessCreate("Clavis public key metadata" as CFString, nil, &access) == errSecSuccess, let access {
+            attributes[kSecAttrAccess as String] = access
+        }
+        #endif
         var status = SecItemUpdate(lookup as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             var item = lookup
@@ -164,7 +189,7 @@ public struct PublicKeyStore {
     }
 
     public static func removeFromKeychainChecked(label: String) throws {
-        if disableKeychainMirrorForTesting {
+        if disableKeychainMirrorForTesting || !isKeychainAccessAllowed {
             stateLock.lock()
             memoryOnlyKeys[label] = nil
             stateLock.unlock()
@@ -184,6 +209,7 @@ public struct PublicKeyStore {
     }
 
     public static func loadAllFromKeychain() -> [Ed25519KeyInfo] {
+        guard isKeychainAccessAllowed else { return [] }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: KeychainManager.publicServiceName,

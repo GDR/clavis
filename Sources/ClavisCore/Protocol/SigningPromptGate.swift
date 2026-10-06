@@ -220,6 +220,7 @@ public final class SigningPromptGate: @unchecked Sendable {
         if let req = requester {
             waitingCounts[req, default: 0] += 1
         }
+        ClavisLogger.promptDebug("clavis-code", "SigningPromptGate: queuing prompt for requester '\(effectiveReq)' (ticket: \(myTicket))")
 
         // 3. Wait for our turn
         while hasActivePrompt || myTicket != currentTicket {
@@ -258,6 +259,8 @@ public final class SigningPromptGate: @unchecked Sendable {
         activeRequester = requester
         lock.unlock()
 
+        ClavisLogger.promptDebug("clavis-code", "SigningPromptGate: displaying gated prompt for requester '\(effectiveReq)'")
+
         // 5. Execute prompt body
         var bodyError: Error?
         var result: T?
@@ -266,6 +269,8 @@ public final class SigningPromptGate: @unchecked Sendable {
         } catch {
             bodyError = error
         }
+
+        ClavisLogger.promptDebug("clavis-code", "SigningPromptGate: gated prompt finished for requester '\(effectiveReq)' (error: \(String(describing: bodyError)))")
 
         // 6. Complete turn and update counters under lock
         lock.lock()

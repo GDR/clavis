@@ -21,6 +21,7 @@ public final class PanelKeyAuthenticator: PanelKeyAuthenticating, @unchecked Sen
     }
 
     public func authenticate(mode: AuditReadMode, pin: String?, reason: String) async throws -> LAContext {
+        ClavisLogger.promptDebug("calvis-ui", "PanelKeyAuthenticator: evaluating access control for mode \(mode.rawValue) (hasPIN: \(pin != nil), reason: \"\(reason)\")")
         let context = LAContext()
         if let pin = pin {
             _ = context.setCredential(Data(pin.utf8), type: .applicationPassword)
@@ -47,6 +48,7 @@ public final class DevicePasswordAuthenticator: PasswordAuthenticating, @uncheck
     public init() {}
 
     public func authenticateWithPassword(reason: String) async throws -> LAContext {
+        ClavisLogger.promptDebug("calvis-ui", "DevicePasswordAuthenticator: prompting device passcode/password (reason: \"\(reason)\")")
         let context = LAContext()
         var error: Unmanaged<CFError>?
         guard let ac = SecAccessControlCreateWithFlags(
@@ -138,6 +140,7 @@ public final class PinUnlockService: ObservableObject {
 
         let mode = (try? keyring.currentMode()) ?? .biometryOrPIN
         let reason = ClavisUIStrings.PanelLock.reason
+        ClavisLogger.promptDebug("calvis-ui", "PinUnlockService: evaluating unlock (hasPIN: \(pin != nil), mode: \(mode.rawValue))")
 
         do {
             let context = try await keyAuth.authenticate(mode: mode, pin: pin, reason: reason)

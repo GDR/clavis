@@ -112,6 +112,7 @@ public struct PinEntryView: View {
 
     private func submitPIN() {
         guard pin.count >= 6, waitRemaining == 0, !isSubmitting else { return }
+        ClavisLogger.promptDebug("calvis-ui", "PinEntryView: user submitted PIN")
         isSubmitting = true
         let enteredPIN = pin
         Task {
@@ -123,6 +124,7 @@ public struct PinEntryView: View {
 
     private func submitTouchID() {
         guard !isSubmitting else { return }
+        ClavisLogger.promptDebug("calvis-ui", "PinEntryView: user submitted Touch ID unlock")
         isSubmitting = true
         Task {
             let res = await lock.unlockWithPIN(nil)
@@ -133,6 +135,7 @@ public struct PinEntryView: View {
 
     private func submitPassword() {
         guard !isSubmitting else { return }
+        ClavisLogger.promptDebug("calvis-ui", "PinEntryView: user submitted device password unlock")
         isSubmitting = true
         Task {
             let res = await lock.unlockWithPassword()

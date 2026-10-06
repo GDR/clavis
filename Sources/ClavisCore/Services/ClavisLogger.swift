@@ -57,10 +57,33 @@ public struct ClavisLogger {
         "SSH_AGENT_REQ", "SSH_AGENT_IDENTITIES", "KEY_LIST"
     ]
 
+    /// Categories that are only emitted in debug builds or when debug/verbose logging is explicitly enabled.
+    private static let debugOnlyCategories: Set<String> = [
+        "PROMPT_DEBUG"
+    ]
+
     /// Enabled with `CLAVIS_VERBOSE_LOG=1` for troubleshooting.
     public static var isVerboseLoggingEnabled: Bool {
         if let override = _customVerbose { return override }
         return ProcessInfo.processInfo.environment["CLAVIS_VERBOSE_LOG"] == "1"
+    }
+
+    private static var _customDebug: Bool?
+    internal static var customDebug: Bool? {
+        get { lock.lock(); defer { lock.unlock() }; return _customDebug }
+        set { lock.lock(); _customDebug = newValue; lock.unlock() }
+    }
+
+    /// Enabled in debug builds or with `CLAVIS_DEBUG_LOG=1` / `CLAVIS_VERBOSE_LOG=1`.
+    public static var isDebugLoggingEnabled: Bool {
+        if let override = customDebug { return override }
+        #if DEBUG
+        return true
+        #else
+        if let override = customVerbose { return override }
+        return ProcessInfo.processInfo.environment["CLAVIS_DEBUG_LOG"] == "1" ||
+               ProcessInfo.processInfo.environment["CLAVIS_VERBOSE_LOG"] == "1"
+        #endif
     }
 
     private static var _customVerbose: Bool?
@@ -90,14 +113,24 @@ public struct ClavisLogger {
         case touchIdPrompt = "TOUCH_ID_PROMPT"
         case touchIdResult = "TOUCH_ID_RESULT"
         case securityAlert = "SECURITY_ALERT"
+        case promptDebug = "PROMPT_DEBUG"
     }
 
     public static func log(_ category: Category, _ message: String) {
         log(category.rawValue, message)
     }
 
+    public static func promptDebug(_ message: String) {
+        log(.promptDebug, message)
+    }
+
+    public static func promptDebug(_ component: String, _ message: String) {
+        log(.promptDebug, "[\(component)] \(message)")
+    }
+
     public static func log(_ category: String, _ message: String) {
         if verboseOnlyCategories.contains(category) && !isVerboseLoggingEnabled { return }
+        if debugOnlyCategories.contains(category) && !isDebugLoggingEnabled { return }
 
         let now = Date()
         let formatter = DateFormatter()

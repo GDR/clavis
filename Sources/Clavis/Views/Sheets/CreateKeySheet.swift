@@ -332,11 +332,15 @@ public struct CreateKeySheet: View {
         }
         .padding(24)
         .frame(width: 580)
+        .onAppear {
+            ClavisLogger.promptDebug("calvis-ui", "CreateKeySheet: presenting create key sheet")
+        }
     }
 
     private func createKey() {
         let label = keyName.trimmingCharacters(in: .whitespaces)
         guard !label.isEmpty else { return }
+        ClavisLogger.promptDebug("calvis-ui", "CreateKeySheet: submitting create key for '\(label)' (preset: \(selectedPreset.rawValue), purpose: \(selectedPurpose.rawValue))")
 
         isCreating = true
         errorMessage = nil
