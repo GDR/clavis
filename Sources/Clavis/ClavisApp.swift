@@ -75,6 +75,20 @@ struct ClavisApp: App {
                 WindowManager.shared.openKeyManager()
             }
         }
+
+        // Wire panel lock triggers
+        PanelLockController.shared.installSystemEventHandler(monitor: SystemEventMonitor.shared)
+
+        NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .scrollWheel, .mouseMoved]) { event in
+            PanelLockController.shared.noteActivity()
+            return event
+        }
+
+        Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { _ in
+            Task { @MainActor in
+                PanelLockController.shared.tick()
+            }
+        }
     }
 
     var body: some Scene {

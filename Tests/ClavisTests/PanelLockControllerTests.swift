@@ -29,6 +29,18 @@ final class FakePanelAuthenticator: PanelAuthenticating {
     }
 }
 
+final class FakeSystemEventMonitor: SystemEventMonitoring {
+    var handlers: [String: () -> Void] = [:]
+
+    func addHandler(id: String, handler: @escaping () -> Void) {
+        handlers[id] = handler
+    }
+
+    func fire(id: String) {
+        handlers[id]?()
+    }
+}
+
 @MainActor
 final class PanelLockControllerTests: XCTestCase {
     private var testDefaults: UserDefaults!
@@ -212,4 +224,27 @@ final class PanelLockControllerTests: XCTestCase {
         controller.idleMinutes = 7
         XCTAssertEqual(controller.idleMinutes, 5)
     }
+
+    func test_003_AC4_screenLockHandlerLocks() async {
+        let fakeAuth = FakePanelAuthenticator()
+        let fakeMonitor = FakeSystemEventMonitor()
+        let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth)
+
+        await controller.unlock()
+        XCTAssertFalse(controller.isLocked)
+
+        controller.installSystemEventHandler(monitor: fakeMonitor)
+        XCTAssertNotNil(fakeMonitor.handlers["panel.lock"])
+
+        fakeMonitor.fire(id: "panel.lock")
+        for _ in 0..<10 {
+            if controller.isLocked { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertTrue(controller.isLocked)
+        XCTAssertEqual(controller.state, .locked)
+        XCTAssertEqual(controller.lastLockReason, .screenLocked)
+    }
 }
+

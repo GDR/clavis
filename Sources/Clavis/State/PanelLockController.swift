@@ -10,10 +10,17 @@ public enum PanelLockReason: String, CaseIterable, Equatable {
     case disabledChange
 }
 
+public protocol SystemEventMonitoring: AnyObject {
+    func addHandler(id: String, handler: @escaping () -> Void)
+}
+
+extension SystemEventMonitor: SystemEventMonitoring {}
+
 public protocol PanelAuthenticating {
     /// Evaluates .deviceOwnerAuthentication with a new LAContext and returns it.
     func authenticate(reason: String) async throws -> LAContext
 }
+
 
 public final class LAPanelAuthenticator: PanelAuthenticating {
     public init() {}
@@ -129,6 +136,14 @@ public final class PanelLockController: ObservableObject {
         unlockContext?.invalidate()
         unlockContext = nil
         state = .locked
+    }
+
+    public func installSystemEventHandler(monitor: SystemEventMonitoring) {
+        monitor.addHandler(id: "panel.lock") { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.lock(reason: .screenLocked)
+            }
+        }
     }
 
     public func noteActivity() {
