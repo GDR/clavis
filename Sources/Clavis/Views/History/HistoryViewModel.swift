@@ -9,6 +9,9 @@ public final class HistoryViewModel: ObservableObject {
     @Published public var query: AuditQuery = AuditQuery()
     @Published public var errorMessage: String?
     @Published public var isLoading: Bool = false
+    @Published public var integrityReport: AuditIntegrityReport?
+    @Published public var isCheckingIntegrity: Bool = false
+    @Published public var integrityCheckError: String?
 
     private let storeFactory: () throws -> AuditStore
     private let keyring: AuditKeyring?
@@ -123,5 +126,34 @@ public final class HistoryViewModel: ObservableObject {
     public func export(to url: URL) throws {
         let data = AuditExporter.export(records, unsealed: sensitive)
         try data.write(to: url, options: .atomic)
+    }
+
+    @discardableResult
+    public func checkIntegrity(days: Int = 7) -> Task<Void, Never> {
+        isCheckingIntegrity = true
+        integrityCheckError = nil
+        let factory = self.storeFactory
+        return Task.detached {
+            do {
+                let store = try factory()
+                let reader = LogWitnessReader()
+                let witness = reader.read(days: days)
+                let report = try AuditIntegrityChecker.check(
+                    store: store,
+                    witness: witness,
+                    now: Date(),
+                    days: days
+                )
+                await MainActor.run {
+                    self.integrityReport = report
+                    self.isCheckingIntegrity = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.integrityCheckError = error.localizedDescription
+                    self.isCheckingIntegrity = false
+                }
+            }
+        }
     }
 }

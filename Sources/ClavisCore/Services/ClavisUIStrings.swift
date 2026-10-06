@@ -381,6 +381,38 @@ public enum ClavisUIStrings {
         public static func suppressedCount(_ count: Int) -> String {
             localizedFormat("history.suppressed_count", "%d similar events suppressed", count)
         }
+        public static var checkIntegrity: String { localized("history.check_integrity", "Check Integrity") }
+        public static var checkIntegrityTitle: String { localized("history.check_integrity_title", "Audit History Integrity") }
+        public static var checkingIntegrity: String { localized("history.checking_integrity", "Checking history integrity…") }
+        public static var checkStatusOk: String { localized("history.check_status_ok", "History is intact") }
+        public static var checkStatusOkDesc: String { localized("history.check_status_ok_desc", "No missing or altered records detected within the verification window.") }
+        public static var checkStatusProblems: String { localized("history.check_status_problems", "Potential tampering detected") }
+        public static var checkStatusProblemsDesc: String { localized("history.check_status_problems_desc", "Discrepancies found between local database and system witness records.") }
+        public static var checkStatusUnavailable: String { localized("history.check_status_unavailable", "Integrity check unavailable") }
+        public static func checkCheckedRows(_ count: Int) -> String {
+            localizedFormat("history.check_checked_rows", "Checked rows: %d", count)
+        }
+        public static func checkMissingRows(_ count: Int) -> String {
+            localizedFormat("history.check_missing_rows", "Missing rows: %d", count)
+        }
+        public static func checkInconsistentRows(_ count: Int) -> String {
+            localizedFormat("history.check_inconsistent_rows", "Inconsistent rows: %d", count)
+        }
+        public static var checkTruncatedTail: String { localized("history.check_truncated_tail", "History tail truncated: Yes") }
+        public static var checkProblemsHeader: String { localized("history.check_problems_header", "Detected Problems") }
+        public static func checkMissingRowFormat(seq: Int64, witnessedAt: String) -> String {
+            localizedFormat("history.check_missing_row_format", "Missing sequence %1$lld (witnessed %2$@)", seq, witnessedAt)
+        }
+        public static func checkInconsistentRowFormat(seq: Int64) -> String {
+            localizedFormat("history.check_inconsistent_row_format", "Inconsistent row sequence %lld", seq)
+        }
+        public static var checkRetentionExplanation: String {
+            localized("history.check_retention_explanation", "Unified log witness records are kept by macOS for up to several days. Verification only covers events within the retention window.")
+        }
+        public static var checkLearnMore: String { localized("history.check_learn_more", "Learn more") }
+        public static func gapBanner(count: Int64) -> String {
+            localizedFormat("history.gap_banner", "%lld entries missing (gap detected)", count)
+        }
     }
 
     public enum PanelLock {
