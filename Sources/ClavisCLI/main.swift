@@ -80,12 +80,15 @@ if let cliResult = CLIService.handle(args: CommandLine.arguments) {
                 printErr(CLIMessages.Agent.alreadyRunning(pid: existingPid))
                 exit(1)
             }
+            let resealer = AuditResealer()
             let terminationSignalSources = installTerminationSignalSources {
+                resealer.stop()
                 AgentServers.stopAll()
                 SingleInstanceLock.agent.release()
             }
             do {
                 try AgentServers.startAll()
+                resealer.start()
                 printOut(CLIMessages.Agent.daemonStarted(socketPath: SSHAgentServer.defaultSocketPath, pid: getpid()))
                 withExtendedLifetime(terminationSignalSources) {
                     dispatchMain()
