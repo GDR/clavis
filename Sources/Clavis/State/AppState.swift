@@ -31,6 +31,7 @@ public class AppState: ObservableObject {
     @Published public var selectedTimeout: SessionTimeout = .never
     @Published public var cachedKeysCount: Int = 0
     @Published public var activeGitGrace: ActiveGitGraceInfo? = nil
+    @Published public var agentSessions: [AgentSessionSummary] = []
     @Published public var errorMessage: String? = nil
     @Published public var isDaemonMode: Bool = false
     @Published public var launchAtLogin: Bool = false
@@ -67,6 +68,17 @@ public class AppState: ObservableObject {
             guard let self else { return }
             Task { @MainActor in
                 self.updateGitGraceState()
+            }
+        }
+
+        DistributedNotificationCenter.default().addObserver(
+            forName: AgentSessionRegistry.agentSessionsChangedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                self.refreshAgentSessions()
             }
         }
 
@@ -120,8 +132,41 @@ public class AppState: ObservableObject {
             launchAtLogin = LaunchAtLoginManager.shared.isEnabled
             errorMessage = nil
             updateGitGraceState()
+            refreshAgentSessions()
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    public func refreshAgentSessions() {
+        let lifecycle = self.agentLifecycle
+        Task.detached { [weak self] in
+            let sessions = lifecycle.listAgentSessions()
+            await MainActor.run { [weak self] in
+                self?.agentSessions = sessions
+            }
+        }
+    }
+
+    public func endAgentSession(id: String) {
+        let lifecycle = self.agentLifecycle
+        Task.detached { [weak self] in
+            _ = lifecycle.endAgentSession(id: id)
+            let sessions = lifecycle.listAgentSessions()
+            await MainActor.run { [weak self] in
+                self?.agentSessions = sessions
+            }
+        }
+    }
+
+    public func revokeAllAgentSessions() {
+        let lifecycle = self.agentLifecycle
+        Task.detached { [weak self] in
+            _ = lifecycle.revokeAllAgentSessions()
+            let sessions = lifecycle.listAgentSessions()
+            await MainActor.run { [weak self] in
+                self?.agentSessions = sessions
+            }
         }
     }
 

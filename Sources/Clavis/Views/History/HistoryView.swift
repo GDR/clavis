@@ -64,6 +64,44 @@ public struct HistoryView: View {
 
             Divider()
 
+            // Active Session Filter Banner
+            if let activeSessionID = viewModel.query.sessionID {
+                HStack(spacing: 8) {
+                    Image(systemName: "cpu")
+                        .foregroundColor(.purple)
+                        .font(.system(size: 11))
+                    Text("Session: \(activeSessionID)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.primary)
+                    Button(action: {
+                        viewModel.query.sessionID = nil
+                        viewModel.reload()
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer()
+
+                    if AppState.shared.agentSessions.contains(where: { $0.id == activeSessionID }) {
+                        Button(action: {
+                            AppState.shared.endAgentSession(id: activeSessionID)
+                        }) {
+                            Text(ClavisUIStrings.AgentSession.historyEndSession)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.red)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .background(Color.purple.opacity(0.1))
+
+                Divider()
+            }
+
             // Content
             if let error = viewModel.errorMessage {
                 VStack(spacing: 8) {
@@ -328,6 +366,14 @@ public struct HistoryView: View {
             }
         }
         .padding(.vertical, 4)
+        .contextMenu {
+            if let sid = event.sessionID {
+                Button(ClavisUIStrings.AgentSession.historyShowSession) {
+                    viewModel.query.sessionID = sid
+                    viewModel.reload()
+                }
+            }
+        }
     }
 
     private func resultBadge(for result: AuditResult) -> some View {
