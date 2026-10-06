@@ -113,6 +113,10 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(ClavisUIStrings.Prompt.sshAuthentication(keyLabel: "my-key"), "use “my-key” for SSH authentication")
         XCTAssertEqual(ClavisUIStrings.Prompt.gitCommitSigning(keyLabel: "my-key"), "sign a Git commit with “my-key”")
         XCTAssertEqual(ClavisUIStrings.Prompt.gitSigningSession(keyLabel: "my-key"), "authorize a 5-minute Git signing session with “my-key”")
+        XCTAssertEqual(
+            ClavisUIStrings.AgentSession.approvePrompt(tool: "/usr/bin/claude", keyLabel: "my-key", minutes: 30),
+            "Start agent session for “claude” with key “my-key” for 30 minutes"
+        )
     }
 
     func testMenuBarFormatting() {

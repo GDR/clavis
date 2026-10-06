@@ -1,6 +1,23 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "agent_session.approve_prompt": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start agent session for “%@” with key “%@” for %d minutes"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Запустить сессию агента для «%@» с ключом «%@» на %d мин"
+          }
+        }
+      }
+    },
     "common.app_name": {
       "extractionState": "manual",
       "localizations": {
