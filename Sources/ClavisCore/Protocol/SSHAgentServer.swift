@@ -57,9 +57,11 @@ public class SSHAgentServer {
     internal static let invalidateKeyRequest: UInt8 = 240
     internal static let queryGitGraceRequest: UInt8 = 241
     internal static let lockAllRequest: UInt8 = 242
+    public static let defaultSocketPath = NSString(string: "~/.ssh/clavis.sock").expandingTildeInPath
+    public static let defaultAgentSocketPath = NSString(string: "~/.ssh/clavis-agent.sock").expandingTildeInPath
     public static let shared = SSHAgentServer()
     public static let sharedInstance = shared
-    public static let defaultSocketPath = NSString(string: "~/.ssh/clavis.sock").expandingTildeInPath
+    public static let agentShared = SSHAgentServer(socketPath: defaultAgentSocketPath, role: .agent)
 
     public static let defaultMaxConnectionLifetime: TimeInterval = 120.0
     public static let defaultMaxRequestsPerConnection: Int = 200
@@ -985,10 +987,16 @@ public class SSHAgentServer {
         let msgType = payload[0]
         ClavisLogger.log("SSH_AGENT_REQ", "Received SSH Agent request type \(msgType)")
 
-        if isControlOpcode(msgType), !isTrustedControlPeer() {
+        if isControlOpcode(msgType) {
             let clientDesc = clientPid.map { "PID \($0)" } ?? "unknown peer"
-            ClavisLogger.log("SECURITY_ALERT", "Refused control request type \(msgType) from untrusted peer (\(clientDesc)).")
-            return Data([5]) // SSH_AGENT_FAILURE
+            if role == .agent {
+                ClavisLogger.log("SECURITY_ALERT", "Refused control request type \(msgType) on agent socket (\(clientDesc)).")
+                return Data([5]) // SSH_AGENT_FAILURE
+            }
+            if !isTrustedControlPeer() {
+                ClavisLogger.log("SECURITY_ALERT", "Refused control request type \(msgType) from untrusted peer (\(clientDesc)).")
+                return Data([5]) // SSH_AGENT_FAILURE
+            }
         }
 
         switch msgType {
@@ -1094,6 +1102,19 @@ public class SSHAgentServer {
         }
     }
 
+    private enum AgentSignDecision {
+        case allow
+        case deny(AuditReason)
+    }
+
+    private func authorizeAgentSign(
+        key: Ed25519KeyInfo,
+        clientPid: pid_t,
+        clientExecutablePath: String
+    ) -> AgentSignDecision {
+        .deny(.noAgentSession)
+    }
+
     internal func handleSignRequest(
         payload: Data,
         clientPid: pid_t? = nil,
@@ -1145,6 +1166,23 @@ public class SSHAgentServer {
             audit.reason = .wrongKeyKind
             ClavisLogger.log("SECURITY_ALERT", "Key '\(matchingKey.label)' with purpose '\(matchingKey.purpose.rawValue)' is not allowed on \(role.rawValue) socket. Refusing request from \(clientDesc).")
             return Data([5]) // SSH_AGENT_FAILURE
+        }
+
+        if role == .agent {
+            let decision = authorizeAgentSign(
+                key: matchingKey,
+                clientPid: pid,
+                clientExecutablePath: processPath
+            )
+            switch decision {
+            case .allow:
+                break
+            case .deny(let reason):
+                audit.result = .denied
+                audit.reason = reason
+                ClavisLogger.log("SECURITY_ALERT", "Agent signing denied for '\(matchingKey.label)' from \(clientDesc): \(reason.rawValue)")
+                return Data([5]) // SSH_AGENT_FAILURE
+            }
         }
         let requester = Self.requesterDescription(processPath: processPath, pid: pid)
         let requesterIdentity = SigningPromptGate.Requester(executablePath: processPath, pid: pid)

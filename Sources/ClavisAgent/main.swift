@@ -21,7 +21,7 @@ func setupSignalHandlers() -> [DispatchSourceSignal] {
             guard !isTerminating else { return }
             isTerminating = true
             ClavisLogger.log(.agentDaemon, "Received signal \(signalNumber), terminating...")
-            SSHAgentServer.sharedInstance.stop()
+            AgentServers.stopAll()
             AuditRecorder.shared.flush()
             SingleInstanceLock.agent.release()
             exit(0)
@@ -46,9 +46,13 @@ let terminationSignalSources = setupSignalHandlers()
 
 let server = SSHAgentServer.sharedInstance
 server.onPermanentListenerFailure = { exit(1) }
+let agentServer = SSHAgentServer.agentShared
+agentServer.onPermanentListenerFailure = {
+    ClavisLogger.log(.agentDaemon, "Agent socket listener failed permanently.")
+}
 
 do {
-    try server.start()
+    try AgentServers.startAll(personal: server, agent: agentServer)
     ClavisLogger.log(.agentDaemon, "🔑 Clavis SSH Agent daemon active at \(SSHAgentServer.defaultSocketPath) (PID: \(getpid()))")
     _ = SystemEventMonitor.shared
     SystemEventMonitor.shared.addHandler(id: "audit.lock") {

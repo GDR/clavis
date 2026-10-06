@@ -218,4 +218,128 @@ final class AgentPathSeparationTests: ClavisBaseTestCase {
             XCTAssertEqual(error as? KeyPurposeError, .notAllowedOnThisPath(.agent))
         }
     }
+
+    func test_005_AC4_agentSocketListsOnlyAgentKeys() throws {
+        let keyManager = makeKeyManager()
+        _ = try keyManager.generateKey(label: "personal-general", keyPurpose: .general)
+        _ = try keyManager.generateKey(label: "personal-git-only", keyPurpose: .gitSigningOnly)
+        let agentKey = try keyManager.generateKey(label: "agent-specific", keyPurpose: .agent)
+
+        let server = SSHAgentServer(
+            role: .agent,
+            keyManager: keyManager,
+            peerProcessValidator: { _, _, _ in true }
+        )
+
+        let response = server.processAgentRequest(
+            payload: Data([11]), // SSH2_AGENTC_REQUEST_IDENTITIES
+            clientPid: getpid(),
+            clientExecutablePath: "/usr/bin/ssh"
+        )
+
+        XCTAssertFalse(response.isEmpty)
+        XCTAssertEqual(response[0], 12) // SSH2_AGENT_IDENTITIES_ANSWER
+
+        var reader = DataReader(data: response.dropFirst())
+        guard let count = reader.readUInt32() else {
+            XCTFail("Failed to read identity count")
+            return
+        }
+        XCTAssertEqual(count, 1, "Agent socket should only list agent keys")
+
+        guard let blob = reader.readWireData(),
+              let comment = reader.readWireString() else {
+            XCTFail("Failed to read identity data")
+            return
+        }
+        XCTAssertEqual(blob, agentKey.publicKeyBlob)
+        XCTAssertEqual(comment, "agent-specific")
+    }
+
+    func test_005_T3_agentSocketDeniesSignWithoutSession() throws {
+        let recorder = InMemoryAuditRecorder()
+        let keyManager = makeKeyManager(auditRecorder: recorder)
+        let agentKey = try keyManager.generateKey(label: "agent-nosession", keyPurpose: .agent)
+
+        let server = SSHAgentServer(
+            role: .agent,
+            keyManager: keyManager,
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: recorder
+        )
+
+        let signRequest = makeSignRequest(keyBlob: agentKey.publicKeyBlob)
+        let response = server.processAgentRequest(
+            payload: signRequest,
+            clientPid: getpid(),
+            clientExecutablePath: "/usr/bin/ssh"
+        )
+
+        XCTAssertEqual(response, Data([5]))
+        let signEvents = recorder.events.filter { $0.type == .signature }
+        XCTAssertEqual(signEvents.count, 1)
+        let event = signEvents[0]
+        XCTAssertEqual(event.result, .denied)
+        XCTAssertEqual(event.reason, .noAgentSession)
+        XCTAssertEqual(event.keyKind, .agent)
+    }
+
+    func test_005_C1_agentSocketDeniesPersonalKey() throws {
+        let recorder = InMemoryAuditRecorder()
+        let keyManager = makeKeyManager(auditRecorder: recorder)
+        let personalKey = try keyManager.generateKey(label: "personal-on-agent", keyPurpose: .general)
+
+        let server = SSHAgentServer(
+            role: .agent,
+            keyManager: keyManager,
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: recorder
+        )
+
+        let signRequest = makeSignRequest(keyBlob: personalKey.publicKeyBlob)
+        let response = server.processAgentRequest(
+            payload: signRequest,
+            clientPid: getpid(),
+            clientExecutablePath: "/usr/bin/ssh"
+        )
+
+        XCTAssertEqual(response, Data([5]))
+        let signEvents = recorder.events.filter { $0.type == .signature }
+        XCTAssertEqual(signEvents.count, 1)
+        let event = signEvents[0]
+        XCTAssertEqual(event.result, .denied)
+        XCTAssertEqual(event.reason, .wrongKeyKind)
+        XCTAssertEqual(event.keyKind, .personal)
+    }
+
+    func test_005_T3_agentSocketRefusesControlOpcodes() throws {
+        let server = SSHAgentServer(role: .agent)
+
+        for opcode: UInt8 in [240, 241, 242] {
+            var payload = Data([opcode])
+            payload.appendWireString("test-label")
+            let response = server.processAgentRequest(
+                payload: payload,
+                clientPid: getpid(),
+                clientExecutablePath: "/usr/bin/ssh",
+                isTrustedControlPeer: { true }
+            )
+            XCTAssertEqual(response, Data([5]), "Agent socket must reject control opcode \(opcode)")
+        }
+    }
+
+    func test_005_T3_startAllKeepsPersonalWhenAgentFails() throws {
+        let personalSock = testRootURL.appendingPathComponent("p.sock").path
+        let invalidAgentSock = "/dev/null/impossible/agent.sock"
+
+        let personalServer = SSHAgentServer(socketPath: personalSock, role: .personal)
+        let failingAgentServer = SSHAgentServer(socketPath: invalidAgentSock, role: .agent)
+
+        defer {
+            AgentServers.stopAll(personal: personalServer, agent: failingAgentServer)
+        }
+
+        XCTAssertNoThrow(try AgentServers.startAll(personal: personalServer, agent: failingAgentServer))
+        XCTAssertTrue(SSHAgentServer.isSocketListening(atPath: personalSock))
+    }
 }
