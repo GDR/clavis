@@ -10,12 +10,6 @@ public enum PanelLockReason: String, CaseIterable, Equatable {
     case disabledChange
 }
 
-public protocol SystemEventMonitoring: AnyObject {
-    func addHandler(id: String, handler: @escaping () -> Void)
-}
-
-extension SystemEventMonitor: SystemEventMonitoring {}
-
 public protocol PanelAuthenticating {
     /// Evaluates .deviceOwnerAuthentication with a new LAContext and returns it.
     func authenticate(reason: String) async throws -> LAContext

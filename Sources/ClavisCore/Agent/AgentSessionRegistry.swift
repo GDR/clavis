@@ -246,4 +246,10 @@ public final class AgentSessionRegistry: @unchecked Sendable {
             deliverImmediately: true
         )
     }
+
+    public func installSystemEventHandler(monitor: SystemEventMonitoring = SystemEventMonitor.shared) {
+        monitor.addHandler(id: "agent.sessions") { [weak self] in
+            _ = self?.endAll(reason: .screenLocked)
+        }
+    }
 }

@@ -20,6 +20,8 @@ public enum AgentServers {
         personal: SSHAgentServer = .shared,
         agent: SSHAgentServer = .agentShared
     ) {
+        AgentSessionRegistry.shared.endAll(reason: .daemonStopping)
+        AuditRecorder.shared.flush()
         agent.stop()
         personal.stop()
     }

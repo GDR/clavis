@@ -1028,6 +1028,7 @@ public class SSHAgentServer {
                 return Data([5])
             }
             GitSigningGraceManager.shared.invalidate(keyLabel: label)
+            agentSessions.endAll(keyLabel: label, reason: .keyChanged)
             return Data([6]) // SSH_AGENT_SUCCESS
         case Self.queryGitGraceRequest:
             guard payload.count == 1 else { return Data([5]) }
@@ -1046,6 +1047,7 @@ public class SSHAgentServer {
             guard payload.count == 1 else { return Data([5]) }
             SessionCacheManager.shared.clearCacheInternal(broadcast: false)
             GitSigningGraceManager.shared.invalidateAll(broadcast: false)
+            agentSessions.endAll(reason: .lockAll)
             auditRecorder.record(
                 AuditEvent(
                     type: .lock,
