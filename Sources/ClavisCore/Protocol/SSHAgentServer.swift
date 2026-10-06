@@ -1024,6 +1024,13 @@ public class SSHAgentServer {
             guard payload.count == 1 else { return Data([5]) }
             SessionCacheManager.shared.clearCacheInternal(broadcast: false)
             GitSigningGraceManager.shared.invalidateAll(broadcast: false)
+            auditRecorder.record(
+                AuditEvent(
+                    type: .lock,
+                    result: .info,
+                    reason: .lockNow
+                )
+            )
             return Data([6]) // SSH_AGENT_SUCCESS
         default:
             ClavisLogger.log("SSH_AGENT_REQ", "Unsupported SSH Agent request type \(msgType)")
