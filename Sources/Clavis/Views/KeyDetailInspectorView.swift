@@ -144,7 +144,10 @@ public struct KeyDetailInspectorView: View {
                         }
                         if key.purpose == .general || key.purpose == .agent {
                             Divider()
-                            Button(action: { showingChangeKindAlert = true }) {
+                            Button(action: {
+                                ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: displaying change kind confirmation alert for '\(key.label)'")
+                                showingChangeKindAlert = true
+                            }) {
                                 Label(ClavisUIStrings.KeyDetail.changeKind, systemImage: "arrow.triangle.2.circlepath")
                             }
                         }
@@ -155,7 +158,10 @@ public struct KeyDetailInspectorView: View {
                             Label(ClavisUIStrings.History.showHistory, systemImage: "clock.arrow.circlepath")
                         }
                         Divider()
-                        Button(role: .destructive, action: { showingDeleteAlert = true }) {
+                        Button(role: .destructive, action: {
+                            ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: displaying delete confirmation alert for '\(key.label)'")
+                            showingDeleteAlert = true
+                        }) {
                             Label(ClavisUIStrings.Inspector.deleteKeyMenu, systemImage: "trash")
                         }
                     } label: {
@@ -457,15 +463,19 @@ public struct KeyDetailInspectorView: View {
         .background(Color.clear)
         .alert(ClavisUIStrings.Inspector.deleteAlertTitle, isPresented: $showingDeleteAlert) {
             Button(ClavisUIStrings.Common.delete, role: .destructive) {
+                ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: user confirmed deletion of key '\(key.label)'")
                 onDelete()
             }
-            Button(ClavisUIStrings.Common.cancel, role: .cancel) {}
+            Button(ClavisUIStrings.Common.cancel, role: .cancel) {
+                ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: user cancelled deletion of key '\(key.label)'")
+            }
         } message: {
             Text(ClavisUIStrings.Inspector.deleteAlertMessage(label: key.label))
         }
         .alert(ClavisUIStrings.KeyDetail.changeKindConfirm, isPresented: $showingChangeKindAlert) {
             Button(ClavisUIStrings.KeyDetail.changeKindConfirm) {
                 let target = targetKind
+                ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: user confirmed change kind of key '\(key.label)' to \(target.rawValue)")
                 Task {
                     do {
                         try appState.changeKind(label: key.label, to: target)
@@ -476,7 +486,9 @@ public struct KeyDetailInspectorView: View {
                     }
                 }
             }
-            Button(ClavisUIStrings.Common.cancel, role: .cancel) {}
+            Button(ClavisUIStrings.Common.cancel, role: .cancel) {
+                ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: user cancelled change kind of key '\(key.label)'")
+            }
         } message: {
             Text(ClavisUIStrings.KeyDetail.changeKindAlertMessage(label: key.label, newPurpose: targetKind))
         }

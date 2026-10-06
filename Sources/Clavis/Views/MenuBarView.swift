@@ -106,6 +106,7 @@ struct MenuBarView: View {
 
                 if visibleSections.contains(.lockNow) && (hasSessions || lock.isLocked) {
                     Button(action: {
+                        ClavisLogger.promptDebug("calvis-ui", "MenuBarView: lock all triggered by user")
                         appState.lockNow()
                     }) {
                         HStack(spacing: 4) {
@@ -207,6 +208,7 @@ struct MenuBarView: View {
                             .foregroundColor(.secondary)
                         Spacer()
                         Button(action: {
+                            ClavisLogger.promptDebug("calvis-ui", "MenuBarView: revoke all agent sessions triggered by user")
                             appState.revokeAllAgentSessions()
                         }) {
                             Text(ClavisUIStrings.AgentSession.revokeAll)
@@ -323,6 +325,7 @@ struct MenuBarView: View {
                         icon: "lock.open.fill",
                         shortcut: "⌘U"
                     ) {
+                        ClavisLogger.promptDebug("calvis-ui", "MenuBarView: unlock triggered by user")
                         Task {
                             await lock.unlock()
                             if !lock.isLocked {
@@ -338,6 +341,7 @@ struct MenuBarView: View {
                         icon: "lock.fill",
                         shortcut: "⌘L"
                     ) {
+                        ClavisLogger.promptDebug("calvis-ui", "MenuBarView: lock all triggered by user")
                         appState.lockNow()
                     }
                 }

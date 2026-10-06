@@ -20,12 +20,15 @@ public final class LAPanelAuthenticator: PanelAuthenticating {
     public init() {}
 
     public func authenticate(reason: String) async throws -> LAContext {
+        ClavisLogger.promptDebug("calvis-ui", "LAPanelAuthenticator: prompting system authentication (reason: \"\(reason)\")")
         let context = LAContext()
         return try await withCheckedThrowingContinuation { continuation in
             context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, error in
                 if success {
+                    ClavisLogger.promptDebug("calvis-ui", "LAPanelAuthenticator: prompt SUCCEEDED (reason: \"\(reason)\")")
                     continuation.resume(returning: context)
                 } else {
+                    ClavisLogger.promptDebug("calvis-ui", "LAPanelAuthenticator: prompt FAILED: \(String(describing: error)) (reason: \"\(reason)\")")
                     continuation.resume(throwing: error ?? LAError(.authenticationFailed))
                 }
             }
@@ -158,6 +161,7 @@ public final class PanelLockController: ObservableObject {
         defer { isUnlocking = false }
 
         do {
+            ClavisLogger.promptDebug("calvis-ui", "PanelLockController: requesting panel unlock prompt: \"\(ClavisUIStrings.PanelLock.reason)\"")
             let context = try await authenticator.authenticate(reason: ClavisUIStrings.PanelLock.reason)
             applyUnlock(context: context)
         } catch {
@@ -167,6 +171,7 @@ public final class PanelLockController: ObservableObject {
 
     @discardableResult
     public func unlockWithPIN(_ pin: String?) async -> PinUnlockService.Outcome {
+        ClavisLogger.promptDebug("calvis-ui", "PanelLockController: attempting unlock with PIN")
         guard let service = pinUnlockService else {
             return isLocked ? .wrongPIN : .unlocked
         }
@@ -182,6 +187,7 @@ public final class PanelLockController: ObservableObject {
 
     @discardableResult
     public func unlockWithPassword() async -> PinUnlockService.Outcome {
+        ClavisLogger.promptDebug("calvis-ui", "PanelLockController: attempting unlock with password")
         guard let service = pinUnlockService else {
             return isLocked ? .wrongPIN : .unlocked
         }
@@ -257,6 +263,7 @@ public final class PanelLockController: ObservableObject {
             return true
         } else {
             do {
+                ClavisLogger.promptDebug("calvis-ui", "PanelLockController: requesting disable lock prompt: \"\(ClavisUIStrings.PanelLock.disableReason)\"")
                 _ = try await authenticator.authenticate(reason: ClavisUIStrings.PanelLock.disableReason)
                 isEnabled = false
                 return true

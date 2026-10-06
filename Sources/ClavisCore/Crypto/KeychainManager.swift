@@ -291,6 +291,7 @@ public class KeychainManager {
         let fingerprint = (try? fetchKeyInfo(label: label))?.fingerprint
         ClavisLogger.log("KEY_DELETE", "Deleting key '\(label)'...")
         let prompt = "Authenticate to permanently delete key '\(label)'"
+        ClavisLogger.promptDebug("clavis-code", "KeychainManager: prompting for key deletion '\(label)': \"\(prompt)\"")
         let context: LAContext
         do {
             context = try authenticator.authenticate(reason: prompt)
@@ -653,6 +654,7 @@ public class KeychainManager {
         let cacheGeneration = sessionCache.generationSnapshot()
 
         // 2. Cache miss: authenticate user
+        ClavisLogger.promptDebug("clavis-code", "KeychainManager: displaying authentication prompt for buffer '\(label)': \"\(prompt)\"")
         ClavisLogger.log("TOUCH_ID_PROMPT", "Displaying user authentication prompt: \"\(prompt)\"")
         do {
             let context = try authenticator.authenticate(reason: prompt)
@@ -728,7 +730,8 @@ public class KeychainManager {
 
     // Sign challenge data using Ed25519 private key within scoped seed buffer
     public func sign(label: String, data: Data, prompt: String, useCache: Bool = true) throws -> Data {
-        try withEd25519Seed(label: label, prompt: prompt, useCache: useCache, requiredPurpose: .general) { seedBytes in
+        ClavisLogger.promptDebug("clavis-code", "KeychainManager: signing request for key '\(label)': \"\(prompt)\"")
+        return try withEd25519Seed(label: label, prompt: prompt, useCache: useCache, requiredPurpose: .general) { seedBytes in
             let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: seedBytes)
             return try privateKey.signature(for: data)
         }
@@ -736,7 +739,8 @@ public class KeychainManager {
 
     // Unwrap age file key directly using Ed25519 seed bytes without allocating intermediate Data or PrivateKey
     public func unwrapAgeFileKey(label: String, prompt: String, wrappedKey: Data, epkB64: String) throws -> Data {
-        try withEd25519Seed(label: label, prompt: prompt, useCache: true, requiredPurpose: .general) { seedBytes in
+        ClavisLogger.promptDebug("clavis-code", "KeychainManager: Age file unwrap request for key '\(label)': \"\(prompt)\"")
+        return try withEd25519Seed(label: label, prompt: prompt, useCache: true, requiredPurpose: .general) { seedBytes in
             try AgePluginCrypto.unwrapFileKey(
                 wrappedKey: wrappedKey,
                 epkB64: epkB64,
@@ -836,6 +840,7 @@ public class KeychainManager {
             let laPolicy: LAPolicy = (key.biometricPolicy == .biometryCurrentSet)
                 ? .deviceOwnerAuthenticationWithBiometrics
                 : .deviceOwnerAuthentication
+            ClavisLogger.promptDebug("clavis-code", "KeychainManager: prompting for SSH signature '\(key.label)' (storage: \(key.storageType.rawValue), policy: \(key.biometricPolicy?.rawValue ?? "default")): \"\(prompt)\"")
             context = try authenticator.authenticate(reason: prompt, policy: laPolicy)
         }
         guard sessionCache.isGenerationCurrent(cacheGeneration) else {
@@ -1045,6 +1050,7 @@ public class KeychainManager {
         let laPolicy: LAPolicy = (key.biometricPolicy == .biometryCurrentSet)
             ? .deviceOwnerAuthenticationWithBiometrics
             : .deviceOwnerAuthentication
+        ClavisLogger.promptDebug("clavis-code", "KeychainManager: prompting for agent session authorization '\(key.label)': \"\(prompt)\"")
         let context = try authenticator.authenticate(reason: prompt, policy: laPolicy)
         var record: StoredPrivateKeyRecord
         do {

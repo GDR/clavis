@@ -119,6 +119,7 @@ public struct SettingsView: View {
                                 .controlSize(.small)
 
                                 Button(ClavisUIStrings.PinUnlock.forgotPIN) {
+                                    ClavisLogger.promptDebug("calvis-ui", "SettingsSheet: displaying forgot PIN reset confirmation alert")
                                     showingResetAlert = true
                                 }
                                 .buttonStyle(.bordered)
@@ -229,9 +230,12 @@ public struct SettingsView: View {
         .frame(width: 480, height: 560)
         .alert(ClavisUIStrings.PinUnlock.forgotPIN, isPresented: $showingResetAlert) {
             Button(ClavisUIStrings.PinUnlock.setPinTitle, role: .destructive) {
+                ClavisLogger.promptDebug("calvis-ui", "SettingsSheet: user confirmed reset PIN dialog")
                 activeSheet = .resetPIN
             }
-            Button(ClavisUIStrings.Common.cancel, role: .cancel) {}
+            Button(ClavisUIStrings.Common.cancel, role: .cancel) {
+                ClavisLogger.promptDebug("calvis-ui", "SettingsSheet: user cancelled reset PIN dialog")
+            }
         } message: {
             Text(ClavisUIStrings.PinUnlock.resetWarning)
         }

@@ -72,6 +72,7 @@ public final class PinModeChanger {
         confirmPIN: String?,
         oldContext: LAContext?
     ) async throws -> RewrapReport {
+        ClavisLogger.promptDebug("calvis-ui", "PinModeChanger: requesting change mode to \(mode.rawValue)")
         // 1. Password authentication required first (AC5)
         do {
             _ = try await passwordAuth.authenticateWithPassword(reason: ClavisUIStrings.PanelLock.disableReason)

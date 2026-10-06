@@ -171,6 +171,7 @@ public struct CLIService {
                 return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.usage(for: .delete))
             }
             let label = args[2].trimmingCharacters(in: .whitespaces)
+            ClavisLogger.promptDebug("clavis-cli", "CLIService: delete key '\(label)' requested")
             do {
                 try keyManager.deleteKey(label: label)
                 return CLICommandResult(exitCode: 0, output: CLIMessages.successfullyDeleted(label: label))
@@ -265,6 +266,7 @@ public struct CLIService {
             }
 
             let confirmed: Bool
+            ClavisLogger.promptDebug("clavis-cli", "CLIService: displaying vault repair confirmation prompt (fingerprint: \(fingerprint))")
             if let confirmationPrompt {
                 confirmed = confirmationPrompt()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "yes"
             } else {
@@ -273,6 +275,7 @@ public struct CLIService {
                 let input = readLine(strippingNewline: true)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 confirmed = (input == "yes")
             }
+            ClavisLogger.promptDebug("clavis-cli", "CLIService: vault repair confirmation result: \(confirmed ? "confirmed" : "cancelled")")
 
             guard confirmed else {
                 ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt failed: cancelled by user.")
@@ -461,6 +464,7 @@ public struct CLIService {
                 }
             }
         }
+        ClavisLogger.promptDebug("clavis-cli", "CLIService: prompting for seed via terminal passphrase prompt")
         guard readpassphrase(CLIMessages.promptSeedTerminal, &buffer, buffer.count, RPP_REQUIRE_TTY) != nil else {
             return nil
         }
@@ -468,6 +472,7 @@ public struct CLIService {
     }
 
     private static func readSeedFromStandardInput() -> Data? {
+        ClavisLogger.promptDebug("clavis-cli", "CLIService: reading seed from standard input")
         var bytes: [UInt8] = []
         bytes.reserveCapacity(65)
         defer {

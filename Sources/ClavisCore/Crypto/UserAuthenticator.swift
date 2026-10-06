@@ -40,6 +40,7 @@ public final class LocalUserAuthenticator: UserAuthenticating {
 
     @discardableResult
     public func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) throws -> LAContext {
+        ClavisLogger.promptDebug("clavis-code", "LocalUserAuthenticator: prompting system authentication (policy: \(policy), reason: \"\(reason)\")")
         let context = LAContext()
         context.localizedReason = reason
         if policy == .deviceOwnerAuthenticationWithBiometrics {
@@ -51,14 +52,17 @@ public final class LocalUserAuthenticator: UserAuthenticating {
 
         context.evaluatePolicy(policy, localizedReason: reason) { success, error in
             if success {
+                ClavisLogger.promptDebug("clavis-code", "LocalUserAuthenticator: prompt SUCCEEDED (reason: \"\(reason)\")")
                 result = .success(())
             } else {
+                ClavisLogger.promptDebug("clavis-code", "LocalUserAuthenticator: prompt FAILED: \(String(describing: error)) (reason: \"\(reason)\")")
                 result = .failure(UserAuthenticationError.rejected(error))
             }
             semaphore.signal()
         }
 
         guard semaphore.wait(timeout: .now() + 60) == .success else {
+            ClavisLogger.promptDebug("clavis-code", "LocalUserAuthenticator: prompt TIMED OUT (reason: \"\(reason)\")")
             context.invalidate()
             throw UserAuthenticationError.timedOut
         }
@@ -75,14 +79,22 @@ public final class LocalUserAuthenticator: UserAuthenticating {
 
     @discardableResult
     public func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) async throws -> LAContext {
+        ClavisLogger.promptDebug("clavis-code", "LocalUserAuthenticator (async): prompting system authentication (policy: \(policy), reason: \"\(reason)\")")
         let context = LAContext()
         context.localizedReason = reason
         if policy == .deviceOwnerAuthenticationWithBiometrics {
             context.localizedFallbackTitle = ""
         }
-        guard try await context.evaluatePolicy(policy, localizedReason: reason) else {
-            throw UserAuthenticationError.rejected(nil)
+        do {
+            guard try await context.evaluatePolicy(policy, localizedReason: reason) else {
+                ClavisLogger.promptDebug("clavis-code", "LocalUserAuthenticator (async): prompt REJECTED (reason: \"\(reason)\")")
+                throw UserAuthenticationError.rejected(nil)
+            }
+            ClavisLogger.promptDebug("clavis-code", "LocalUserAuthenticator (async): prompt SUCCEEDED (reason: \"\(reason)\")")
+            return context
+        } catch {
+            ClavisLogger.promptDebug("clavis-code", "LocalUserAuthenticator (async): prompt ERROR: \(error.localizedDescription) (reason: \"\(reason)\")")
+            throw error
         }
-        return context
     }
 }
