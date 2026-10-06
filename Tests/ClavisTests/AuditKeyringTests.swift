@@ -63,4 +63,59 @@ final class AuditKeyringTests: ClavisBaseTestCase {
         XCTAssertEqual(k1.keyID, k2.keyID)
         XCTAssertEqual(k1.publicKey.x963Representation, k2.publicKey.x963Representation)
     }
+
+    func test_004_T2_accessControlFlagsPerMode() throws {
+        XCTAssertEqual(flags(for: .passwordOrBiometry), [.privateKeyUsage, .userPresence])
+        XCTAssertEqual(flags(for: .biometryOrPIN), [.privateKeyUsage, .biometryAny, .or, .applicationPassword])
+        XCTAssertEqual(flags(for: .biometryAndPIN), [.privateKeyUsage, .biometryAny, .and, .applicationPassword])
+
+        XCTAssertFalse(AuditReadMode.passwordOrBiometry.requiresPIN)
+        XCTAssertTrue(AuditReadMode.biometryOrPIN.requiresPIN)
+        XCTAssertTrue(AuditReadMode.biometryAndPIN.requiresPIN)
+
+        // Verify accessControl creation succeeds for each mode
+        XCTAssertNoThrow(try accessControl(for: .passwordOrBiometry))
+        XCTAssertNoThrow(try accessControl(for: .biometryOrPIN))
+        XCTAssertNoThrow(try accessControl(for: .biometryAndPIN))
+    }
+
+    func test_004_T2_softwareKeyringModesAndLifecycle() throws {
+        let keyring = SoftwareAuditKeyring(requireContext: true)
+
+        let initialKey = try keyring.currentPublicKey()
+        XCTAssertEqual(try keyring.currentMode(), .passwordOrBiometry)
+
+        // Create new PIN-bound key
+        let pinContext = LAContext()
+        TestContextPinRegistry.shared.setPIN("123456", for: pinContext)
+        let pinKey = try keyring.createKey(mode: .biometryOrPIN, context: pinContext)
+        XCTAssertNotEqual(pinKey.keyID, initialKey.keyID)
+
+        // Current mode is still passwordOrBiometry until setCurrent
+        XCTAssertEqual(try keyring.currentMode(), .passwordOrBiometry)
+
+        // Switch current
+        try keyring.setCurrent(keyID: pinKey.keyID)
+        XCTAssertEqual(try keyring.currentMode(), .biometryOrPIN)
+        XCTAssertEqual(try keyring.currentPublicKey().keyID, pinKey.keyID)
+
+        // Validate current with correct PIN context is ok
+        XCTAssertEqual(keyring.validateCurrent(context: pinContext), .ok)
+
+        // Validate current with wrong PIN context is unusable
+        let wrongContext = LAContext()
+        TestContextPinRegistry.shared.setPIN("wrong!", for: wrongContext)
+        XCTAssertEqual(keyring.validateCurrent(context: wrongContext), .unusable)
+
+        // Deleting current key fails
+        XCTAssertThrowsError(try keyring.deleteKey(keyID: pinKey.keyID)) { error in
+            XCTAssertEqual(error as? AuditKeyringError, .cannotDeleteCurrentKey)
+        }
+
+        // Deleting old key succeeds
+        try keyring.deleteKey(keyID: initialKey.keyID)
+        let knownIDs = try keyring.knownKeyIDs()
+        XCTAssertFalse(knownIDs.contains(initialKey.keyID))
+        XCTAssertTrue(knownIDs.contains(pinKey.keyID))
+    }
 }

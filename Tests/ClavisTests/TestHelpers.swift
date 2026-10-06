@@ -214,9 +214,33 @@ class ClavisBaseTestCase: XCTestCase {
     }
 }
 
+final class TestContextPinRegistry: @unchecked Sendable {
+    static let shared = TestContextPinRegistry()
+    private let lock = NSLock()
+    private var pins: [ObjectIdentifier: String] = [:]
+
+    func setPIN(_ pin: String, for context: LAContext) {
+        lock.lock()
+        defer { lock.unlock() }
+        pins[ObjectIdentifier(context)] = pin
+    }
+
+    func pin(for context: LAContext) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return pins[ObjectIdentifier(context)]
+    }
+
+    func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        pins.removeAll()
+    }
+}
+
 final class SoftwareAuditKeyring: AuditKeyring, @unchecked Sendable {
     private let lock = NSLock()
-    private var keys: [String: (privateKey: P256.KeyAgreement.PrivateKey, item: AuditReadKeyItem)] = [:]
+    private var keys: [String: (privateKey: P256.KeyAgreement.PrivateKey, item: AuditReadKeyItem, pin: String?)] = [:]
     private var currentKeyID: String?
     var requireContext: Bool = true
     private(set) var agreeCalls: Int = 0
@@ -243,6 +267,13 @@ final class SoftwareAuditKeyring: AuditKeyring, @unchecked Sendable {
         guard let entry = keys[keyID] else {
             throw AuditKeyringError.keyNotFound(keyID)
         }
+        if entry.item.mode.requiresPIN {
+            guard let context = context,
+                  let ctxPin = TestContextPinRegistry.shared.pin(for: context),
+                  ctxPin == entry.pin else {
+                throw LAError(.authenticationFailed)
+            }
+        }
         agreeCalls += 1
         return try entry.privateKey.sharedSecretFromKeyAgreement(with: peer)
     }
@@ -256,6 +287,13 @@ final class SoftwareAuditKeyring: AuditKeyring, @unchecked Sendable {
         if requireContext && context == nil {
             return .unusable
         }
+        if entry.item.mode.requiresPIN {
+            guard let context = context,
+                  let ctxPin = TestContextPinRegistry.shared.pin(for: context),
+                  ctxPin == entry.pin else {
+                return .unusable
+            }
+        }
         guard let expectedPub = Data(base64Encoded: entry.item.publicKeyX963) else {
             return .unusable
         }
@@ -263,6 +301,55 @@ final class SoftwareAuditKeyring: AuditKeyring, @unchecked Sendable {
             return .ok
         } else {
             return .mismatch
+        }
+    }
+
+    func createKey(mode: AuditReadMode, context: LAContext?) throws -> AuditReadPublicKey {
+        lock.lock()
+        defer { lock.unlock() }
+        let priv = P256.KeyAgreement.PrivateKey()
+        let pubX963 = priv.publicKey.x963Representation
+        let hash = SHA256.hash(data: pubX963)
+        let keyID = String(hash.map { String(format: "%02x", $0) }.joined().prefix(16))
+        let pin = context.flatMap { TestContextPinRegistry.shared.pin(for: $0) }
+        let item = AuditReadKeyItem(
+            version: 1,
+            keyID: keyID,
+            publicKeyX963: pubX963.base64EncodedString(),
+            seBlob: priv.rawRepresentation.base64EncodedString(),
+            mode: mode,
+            created: Date()
+        )
+        keys[keyID] = (priv, item, pin)
+        return AuditReadPublicKey(keyID: keyID, publicKey: priv.publicKey)
+    }
+
+    func setCurrent(keyID: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard keys[keyID] != nil else {
+            throw AuditKeyringError.keyNotFound(keyID)
+        }
+        currentKeyID = keyID
+    }
+
+    func currentMode() throws -> AuditReadMode {
+        lock.lock()
+        defer { lock.unlock() }
+        if let cur = currentKeyID, let entry = keys[cur] {
+            return entry.item.mode
+        }
+        return .passwordOrBiometry
+    }
+
+    func deleteKey(keyID: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if currentKeyID == keyID {
+            throw AuditKeyringError.cannotDeleteCurrentKey
+        }
+        guard keys.removeValue(forKey: keyID) != nil else {
+            throw AuditKeyringError.keyNotFound(keyID)
         }
     }
 
@@ -285,7 +372,7 @@ final class SoftwareAuditKeyring: AuditKeyring, @unchecked Sendable {
             mode: mode,
             created: Date()
         )
-        keys[keyID] = (priv, item)
+        keys[keyID] = (priv, item, nil)
         currentKeyID = keyID
         if NSClassFromString("XCTestCase") == nil {
             DistributedNotificationCenter.default().postNotificationName(
@@ -316,7 +403,7 @@ final class SoftwareAuditKeyring: AuditKeyring, @unchecked Sendable {
             mode: entry.item.mode,
             created: entry.item.created
         )
-        keys[keyID] = (entry.privateKey, tamperedItem)
+        keys[keyID] = (entry.privateKey, tamperedItem, entry.pin)
     }
 
     func dropKey(keyID: String) {
