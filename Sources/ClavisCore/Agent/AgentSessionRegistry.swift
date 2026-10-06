@@ -17,6 +17,7 @@ public final class AgentSessionRegistry: @unchecked Sendable {
     private var sessions: [String: AgentSession] = [:]
     private var exitSources: [String: DispatchSourceProcess] = [:]
     private var expiryTimers: [String: DispatchSourceTimer] = [:]
+    private var tokenBuckets: [String: TokenBucket] = [:]
     private let exitQueue = DispatchQueue(label: "com.clavis.agent.session.exit", qos: .utility)
     private let now: () -> Date
     private let processInfo: ProcessInfoProvider
@@ -40,6 +41,7 @@ public final class AgentSessionRegistry: @unchecked Sendable {
     public func add(_ session: AgentSession) {
         lock.lock()
         sessions[session.id] = session
+        tokenBuckets[session.id] = TokenBucket(burst: session.policy.burst, refillPerMinute: session.policy.refillPerMinute, now: now())
 
         guard let snap = processInfo(session.root.pid), snap.startTime == session.root.startTime else {
             let ended = removeSessionLocked(id: session.id)
@@ -239,6 +241,15 @@ public final class AgentSessionRegistry: @unchecked Sendable {
         timer.resume()
     }
 
+    public func takeToken(id: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var bucket = tokenBuckets[id] else { return false }
+        let granted = bucket.take(now: now())
+        tokenBuckets[id] = bucket
+        return granted
+    }
+
     private func removeSessionLocked(id: String) -> AgentSession? {
         guard let session = sessions.removeValue(forKey: id) else {
             return nil
@@ -249,6 +260,7 @@ public final class AgentSessionRegistry: @unchecked Sendable {
         if let timer = expiryTimers.removeValue(forKey: id) {
             timer.cancel()
         }
+        tokenBuckets.removeValue(forKey: id)
         session.grant.invalidate()
         return session
     }

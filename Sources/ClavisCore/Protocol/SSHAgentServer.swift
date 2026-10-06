@@ -99,6 +99,7 @@ public class SSHAgentServer {
     private var _clientPIDCounts: [pid_t: Int] = [:]
     private var _boundInode: ino_t?
     private var _boundDevice: dev_t?
+    private var lastRateLimitAlertTimes: [String: Date] = [:]
     private var _onPermanentListenerFailure: (() -> Void)?
     public var onPermanentListenerFailure: (() -> Void)? {
         get {
@@ -1480,6 +1481,37 @@ public class SSHAgentServer {
         return response
     }
 
+    private func recordRateLimitAlertIfNeeded(session: AgentSession, chain: [AuditProcess]) {
+        let now = Date()
+        stateLock.lock()
+        let shouldAlert: Bool
+        if let last = lastRateLimitAlertTimes[session.id], now.timeIntervalSince(last) < 60.0 {
+            shouldAlert = false
+        } else {
+            lastRateLimitAlertTimes[session.id] = now
+            shouldAlert = true
+        }
+        stateLock.unlock()
+
+        if shouldAlert {
+            auditRecorder.record(
+                AuditEvent(
+                    type: .securityAlert,
+                    result: .info,
+                    reason: .rateLimited,
+                    keyFingerprint: session.keyFingerprint,
+                    keyKind: .agent,
+                    sessionID: session.id,
+                    sensitive: AuditSensitive(keyLabel: session.keyLabel, processChain: chain)
+                )
+            )
+            notificationPoster(
+                "com.clavis.agentRateLimited",
+                ["sessionID": session.id, "fingerprint": session.keyFingerprint]
+            )
+        }
+    }
+
     internal func handleRequestIdentities(
         clientPid: pid_t? = nil,
         clientExecutablePath: String? = nil
@@ -1601,6 +1633,12 @@ public class SSHAgentServer {
             switch agentSessions.session(forKeyFingerprint: matchingKey.fingerprint, peerPid: pid) {
             case .found(let session):
                 audit.sessionID = session.id
+                guard agentSessions.takeToken(id: session.id) else {
+                    audit.result = .denied
+                    audit.reason = .rateLimited
+                    recordRateLimitAlertIfNeeded(session: session, chain: audit.chain)
+                    return Data([5])
+                }
                 switch session.policy.mode {
                 case .none:
                     do {
