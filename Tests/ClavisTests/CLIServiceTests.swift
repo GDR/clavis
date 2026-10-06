@@ -35,7 +35,7 @@ final class CLIServiceTests: ClavisBaseTestCase {
 
         let missingArgsRes = CLIService.handle(args: ["clavis", "generate"], keyManager: keyManager)
         XCTAssertEqual(missingArgsRes?.exitCode, 1)
-        XCTAssertEqual(missingArgsRes?.error, "Usage: clavis generate <label>")
+        XCTAssertEqual(missingArgsRes?.error, CLIMessages.usage(for: .generate))
     }
 
 
