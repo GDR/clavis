@@ -64,7 +64,7 @@ struct MenuBarView: View {
     @State private var copiedLabel: String? = nil
 
     private var sessionCount: Int {
-        appState.cachedKeysCount + (appState.activeGitGrace != nil ? 1 : 0)
+        appState.cachedKeysCount + (appState.activeGitGrace != nil ? 1 : 0) + appState.agentSessions.count
     }
 
     private var hasSessions: Bool {
@@ -196,6 +196,48 @@ struct MenuBarView: View {
                 .padding(6)
                 .background(Color.blue.opacity(0.12))
                 .cornerRadius(6)
+            }
+
+            // Active Agent Sessions
+            if !appState.agentSessions.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(ClavisUIStrings.AgentSession.menuSection)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 4)
+
+                    ForEach(appState.agentSessions, id: \.id) { session in
+                        HStack(spacing: 8) {
+                            Image(systemName: "cpu")
+                                .foregroundColor(.purple)
+                                .font(.system(size: 12))
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("\(session.toolName) · \(session.keyLabel)")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(.primary)
+                                let remainingMin = max(0, Int(session.expiresAt.timeIntervalSinceNow / 60))
+                                Text(ClavisUIStrings.AgentSession.remainingFormat(minutes: remainingMin))
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Button(action: {
+                                appState.endAgentSession(id: session.id)
+                            }) {
+                                Text(ClavisUIStrings.AgentSession.end)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(Color.secondary.opacity(0.15))
+                                    .cornerRadius(4)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(6)
+                        .background(Color.purple.opacity(0.1))
+                        .cornerRadius(6)
+                    }
+                }
             }
 
             if visibleSections.contains(.identities) {

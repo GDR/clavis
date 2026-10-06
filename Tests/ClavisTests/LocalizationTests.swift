@@ -251,4 +251,12 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(ClavisUIStrings.KeyDetail.changeKindConfirm, "Change Kind")
         XCTAssertFalse(ClavisUIStrings.KeyDetail.changeKindAlertMessage(label: "test-key", newPurpose: .agent).isEmpty)
     }
+
+    func testAgentSessionLocalizedStrings() {
+        XCTAssertEqual(ClavisUIStrings.AgentSession.menuSection, "Agent Sessions")
+        XCTAssertEqual(ClavisUIStrings.AgentSession.end, "End")
+        XCTAssertEqual(ClavisUIStrings.AgentSession.remainingFormat(minutes: 12), "12 min remaining")
+        XCTAssertEqual(ClavisUIStrings.AgentSession.historyShowSession, "Show session")
+        XCTAssertEqual(ClavisUIStrings.AgentSession.historyEndSession, "End session")
+    }
 }

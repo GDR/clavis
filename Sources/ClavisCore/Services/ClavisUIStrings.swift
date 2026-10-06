@@ -411,6 +411,13 @@ public enum ClavisUIStrings {
                 minutes
             )
         }
+        public static var menuSection: String { localized("agent_session.menu_section", "Agent Sessions") }
+        public static var end: String { localized("agent_session.end", "End") }
+        public static func remainingFormat(minutes: Int) -> String {
+            localizedFormat("agent_session.remaining_format", "%d min remaining", minutes)
+        }
+        public static var historyShowSession: String { localized("agent_session.history_show_session", "Show session") }
+        public static var historyEndSession: String { localized("agent_session.history_end_session", "End session") }
     }
 }
 

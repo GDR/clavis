@@ -163,4 +163,22 @@ final class HistoryViewModelTests: ClavisBaseTestCase {
         // host is unredacted in export
         XCTAssertTrue(jsonString.contains("export.host"))
     }
+
+    func test_002_AC5_sessionFilterShowsOnlySessionRows() async throws {
+        let store = try createTestStore()
+        let eventSession = AuditEvent(type: .signature, result: .allowed, sessionID: "sess-123", sensitive: AuditSensitive(keyLabel: "k1"))
+        let eventOther = AuditEvent(type: .signature, result: .allowed, sessionID: "sess-456", sensitive: AuditSensitive(keyLabel: "k2"))
+        let eventNoSession = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k3"))
+        try store.insert(eventSession)
+        try store.insert(eventOther)
+        try store.insert(eventNoSession)
+
+        let viewModel = HistoryViewModel(store: { store })
+        viewModel.query.sessionID = "sess-123"
+
+        await viewModel.reload().value
+
+        XCTAssertEqual(viewModel.records.count, 1)
+        XCTAssertEqual(viewModel.records[0].event.sessionID, "sess-123")
+    }
 }
