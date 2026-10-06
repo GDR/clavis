@@ -9,11 +9,14 @@ public enum AgentSessionLookup: Equatable {
 
 public final class AgentSessionRegistry: @unchecked Sendable {
     public static let shared = AgentSessionRegistry()
+    public static let agentSessionsChangedNotification = NSNotification.Name("com.clavis.agentSessionsChanged")
 
     public typealias ProcessInfoProvider = (pid_t) -> (startTime: UInt64, parentPid: pid_t)?
 
     private let lock = NSLock()
     private var sessions: [String: AgentSession] = [:]
+    private var exitSources: [String: DispatchSourceProcess] = [:]
+    private let exitQueue = DispatchQueue(label: "com.clavis.agent.session.exit", qos: .utility)
     private let now: () -> Date
     private let processInfo: ProcessInfoProvider
     private let auditRecorder: AuditRecording
@@ -35,16 +38,37 @@ public final class AgentSessionRegistry: @unchecked Sendable {
 
     public func add(_ session: AgentSession) {
         lock.lock()
-        defer { lock.unlock() }
         sessions[session.id] = session
+
+        guard let snap = processInfo(session.root.pid), snap.startTime == session.root.startTime else {
+            let ended = removeSessionLocked(id: session.id)
+            lock.unlock()
+            if let ended {
+                recordAudit(session: ended, reason: .rootExited)
+                postNotification()
+            }
+            return
+        }
+
+        if watchRootExit {
+            let source = DispatchSource.makeProcessSource(identifier: session.root.pid, eventMask: .exit, queue: exitQueue)
+            source.setEventHandler { [weak self] in
+                self?.end(id: session.id, reason: .rootExited)
+            }
+            exitSources[session.id] = source
+            source.resume()
+        }
+        lock.unlock()
+        postNotification()
     }
 
     public func session(forKeyFingerprint fp: String, peerPid: pid_t) -> AgentSessionLookup {
+        var endedSessions: [(AgentSession, AgentSessionEndReason)] = []
         lock.lock()
-        defer { lock.unlock() }
 
         let candidates = sessions.values.filter { $0.keyFingerprint == fp }
         guard !candidates.isEmpty else {
+            lock.unlock()
             return .noSession
         }
 
@@ -53,15 +77,17 @@ public final class AgentSessionRegistry: @unchecked Sendable {
         let currentTime = now()
 
         for candidate in candidates {
-            // Liveness check: root must still be alive and have matching startTime
             guard let snap = processInfo(candidate.root.pid), snap.startTime == candidate.root.startTime else {
-                endInternal(id: candidate.id, reason: .rootExited)
+                if let ended = removeSessionLocked(id: candidate.id) {
+                    endedSessions.append((ended, .rootExited))
+                }
                 continue
             }
 
-            // Expiry check
             if currentTime >= candidate.expiresAt {
-                endInternal(id: candidate.id, reason: .leaseExpired)
+                if let ended = removeSessionLocked(id: candidate.id) {
+                    endedSessions.append((ended, .leaseExpired))
+                }
                 expiredCandidates.append(candidate)
                 continue
             }
@@ -69,12 +95,16 @@ public final class AgentSessionRegistry: @unchecked Sendable {
             aliveCandidates.append(candidate)
         }
 
-        // Check if peer is member of any alive candidate's process tree
         for candidate in aliveCandidates {
             if isProcessInTree(peerPid: peerPid, root: candidate.root) {
+                lock.unlock()
+                recordAudits(endedSessions)
                 return .found(candidate)
             }
         }
+
+        lock.unlock()
+        recordAudits(endedSessions)
 
         if let firstExpired = expiredCandidates.first {
             return .expired(firstExpired)
@@ -94,7 +124,6 @@ public final class AgentSessionRegistry: @unchecked Sendable {
 
         while currentPid > 1 && hops < 64 {
             guard visited.insert(currentPid).inserted else {
-                // Cycle detected
                 break
             }
             guard let snap = processInfo(currentPid) else {
@@ -116,45 +145,52 @@ public final class AgentSessionRegistry: @unchecked Sendable {
     @discardableResult
     public func end(id: String, reason: AgentSessionEndReason) -> Bool {
         lock.lock()
-        defer { lock.unlock() }
-        return endInternal(id: id, reason: reason)
-    }
-
-    @discardableResult
-    private func endInternal(id: String, reason: AgentSessionEndReason) -> Bool {
-        guard let session = sessions.removeValue(forKey: id) else {
-            return false
-        }
-        session.grant.invalidate()
+        let session = removeSessionLocked(id: id)
+        lock.unlock()
+        guard let ended = session else { return false }
+        recordAudit(session: ended, reason: reason)
+        postNotification()
         return true
     }
 
     @discardableResult
     public func endAll(reason: AgentSessionEndReason) -> Int {
         lock.lock()
-        defer { lock.unlock() }
         let ids = Array(sessions.keys)
-        var count = 0
+        var endedSessions: [AgentSession] = []
         for id in ids {
-            if endInternal(id: id, reason: reason) {
-                count += 1
+            if let s = removeSessionLocked(id: id) {
+                endedSessions.append(s)
             }
         }
-        return count
+        lock.unlock()
+        for s in endedSessions {
+            recordAudit(session: s, reason: reason)
+        }
+        if !endedSessions.isEmpty {
+            postNotification()
+        }
+        return endedSessions.count
     }
 
     @discardableResult
     public func endAll(keyLabel: String, reason: AgentSessionEndReason) -> Int {
         lock.lock()
-        defer { lock.unlock() }
         let matchingIds = sessions.values.filter { $0.keyLabel == keyLabel }.map { $0.id }
-        var count = 0
+        var endedSessions: [AgentSession] = []
         for id in matchingIds {
-            if endInternal(id: id, reason: reason) {
-                count += 1
+            if let s = removeSessionLocked(id: id) {
+                endedSessions.append(s)
             }
         }
-        return count
+        lock.unlock()
+        for s in endedSessions {
+            recordAudit(session: s, reason: reason)
+        }
+        if !endedSessions.isEmpty {
+            postNotification()
+        }
+        return endedSessions.count
     }
 
     public func summaries() -> [AgentSessionSummary] {
@@ -167,5 +203,47 @@ public final class AgentSessionRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return sessions.count
+    }
+
+    private func removeSessionLocked(id: String) -> AgentSession? {
+        guard let session = sessions.removeValue(forKey: id) else {
+            return nil
+        }
+        if let source = exitSources.removeValue(forKey: id) {
+            source.cancel()
+        }
+        session.grant.invalidate()
+        return session
+    }
+
+    private func recordAudit(session: AgentSession, reason: AgentSessionEndReason) {
+        let event = AuditEvent(
+            type: reason == .revokedByUser ? .sessionRevoke : .sessionEnd,
+            result: .info,
+            reason: reason.auditReason,
+            keyFingerprint: session.keyFingerprint,
+            keyKind: .agent,
+            sessionID: session.id,
+            sensitive: AuditSensitive(keyLabel: session.keyLabel)
+        )
+        auditRecorder.record(event)
+    }
+
+    private func recordAudits(_ sessions: [(AgentSession, AgentSessionEndReason)]) {
+        for (session, reason) in sessions {
+            recordAudit(session: session, reason: reason)
+        }
+        if !sessions.isEmpty {
+            postNotification()
+        }
+    }
+
+    private func postNotification() {
+        DistributedNotificationCenter.default().postNotificationName(
+            Self.agentSessionsChangedNotification,
+            object: nil,
+            userInfo: nil,
+            deliverImmediately: true
+        )
     }
 }
