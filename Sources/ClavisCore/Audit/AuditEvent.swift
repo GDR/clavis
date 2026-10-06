@@ -166,9 +166,18 @@ public struct AuditEvent: Equatable, Sendable {
 public struct AuditRecord: Equatable, Sendable {
     public let seq: Int64
     public let event: AuditEvent
+    public let sensitiveFormat: Int
+    public let sealedSensitive: Data?
 
-    public init(seq: Int64, event: AuditEvent) {
+    public init(
+        seq: Int64,
+        event: AuditEvent,
+        sensitiveFormat: Int = 0,
+        sealedSensitive: Data? = nil
+    ) {
         self.seq = seq
         self.event = event
+        self.sensitiveFormat = sensitiveFormat
+        self.sealedSensitive = sealedSensitive
     }
 }
