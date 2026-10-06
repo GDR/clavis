@@ -277,4 +277,17 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(ClavisUIStrings.AgentSession.historyShowSession, "Show session")
         XCTAssertEqual(ClavisUIStrings.AgentSession.historyEndSession, "End session")
     }
+
+    func testPinUnlockLocalizedStrings() {
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.pinLabel, "PIN")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.pinPlaceholder, "Enter PIN")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.unlock, "Unlock")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.useTouchID, "Use Touch ID")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.usePassword, "Use login password…")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.wrongPIN, "Incorrect PIN")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.waitFormat(30), "Try again in 30 s")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.passwordRequired, "PIN is disabled. Login password required.")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.historyBanner, "Enter PIN to read details")
+    }
 }
+

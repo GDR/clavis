@@ -167,8 +167,9 @@ public final class PanelLockController: ObservableObject {
 
     @discardableResult
     public func unlockWithPIN(_ pin: String?) async -> PinUnlockService.Outcome {
-        guard isLocked else { return .unlocked }
-        guard let service = pinUnlockService else { return .wrongPIN }
+        guard let service = pinUnlockService else {
+            return isLocked ? .wrongPIN : .unlocked
+        }
         isUnlocking = true
         defer { isUnlocking = false }
 
@@ -181,8 +182,9 @@ public final class PanelLockController: ObservableObject {
 
     @discardableResult
     public func unlockWithPassword() async -> PinUnlockService.Outcome {
-        guard isLocked else { return .unlocked }
-        guard let service = pinUnlockService else { return .wrongPIN }
+        guard let service = pinUnlockService else {
+            return isLocked ? .wrongPIN : .unlocked
+        }
         isUnlocking = true
         defer { isUnlocking = false }
 

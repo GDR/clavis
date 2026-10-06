@@ -451,6 +451,20 @@ public enum ClavisUIStrings {
         public static var historyShowSession: String { localized("agent_session.history_show_session", "Show session") }
         public static var historyEndSession: String { localized("agent_session.history_end_session", "End session") }
     }
+
+    public enum PinUnlock {
+        public static var pinLabel: String { localized("pin_unlock.pin_label", "PIN") }
+        public static var pinPlaceholder: String { localized("pin_unlock.pin_placeholder", "Enter PIN") }
+        public static var unlock: String { localized("pin_unlock.unlock", "Unlock") }
+        public static var useTouchID: String { localized("pin_unlock.use_touch_id", "Use Touch ID") }
+        public static var usePassword: String { localized("pin_unlock.use_password", "Use login password…") }
+        public static var wrongPIN: String { localized("pin_unlock.wrong_pin", "Incorrect PIN") }
+        public static func waitFormat(_ seconds: Int) -> String {
+            localizedFormat("pin_unlock.wait_format", "Try again in %d s", seconds)
+        }
+        public static var passwordRequired: String { localized("pin_unlock.password_required", "PIN is disabled. Login password required.") }
+        public static var historyBanner: String { localized("pin_unlock.history_banner", "Enter PIN to read details") }
+    }
 }
 
 

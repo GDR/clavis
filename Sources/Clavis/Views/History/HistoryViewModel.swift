@@ -43,6 +43,7 @@ public final class HistoryViewModel: ObservableObject {
     @Published public var integrityReport: AuditIntegrityReport?
     @Published public var isCheckingIntegrity: Bool = false
     @Published public var integrityCheckError: String?
+    @Published public var needsKeyContext: Bool = false
 
     private let storeFactory: () throws -> AuditStore
     private let keyring: AuditKeyring?
@@ -75,6 +76,7 @@ public final class HistoryViewModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.sensitive.removeAll()
+                self?.needsKeyContext = false
             }
         }
     }
@@ -131,6 +133,8 @@ public final class HistoryViewModel: ObservableObject {
         let keyring = self.keyring
         let context = self.contextProvider()
         return Task.detached {
+            let mode = (try? keyring?.currentMode()) ?? .passwordOrBiometry
+            let needsKey = mode.requiresPIN && (keyring?.validateCurrent(context: context) != .ok)
             do {
                 let store = try factory()
                 let fetched = try store.query(currentQuery)
@@ -150,10 +154,12 @@ public final class HistoryViewModel: ObservableObject {
                     self.records = fetched
                     self.items = computedItems
                     self.sensitive = finalMap
+                    self.needsKeyContext = needsKey
                     self.isLoading = false
                 }
             } catch {
                 await MainActor.run {
+                    self.needsKeyContext = needsKey
                     self.errorMessage = error.localizedDescription
                     self.isLoading = false
                 }

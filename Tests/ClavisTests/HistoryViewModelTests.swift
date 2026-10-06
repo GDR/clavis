@@ -181,4 +181,35 @@ final class HistoryViewModelTests: ClavisBaseTestCase {
         XCTAssertEqual(viewModel.records.count, 1)
         XCTAssertEqual(viewModel.records[0].event.sessionID, "sess-123")
     }
+
+    func test_004_T5a_historyNeedsKeyContextWhenPinRequired() async throws {
+        let store = try createTestStore()
+        let keyring = SoftwareAuditKeyring()
+        let pinContext = LAContext()
+        TestContextPinRegistry.shared.setPIN("654321", for: pinContext)
+        let pub = try keyring.createKey(mode: .biometryOrPIN, context: pinContext)
+        try keyring.setCurrent(keyID: pub.keyID)
+
+        var currentContext: LAContext? = nil
+        let viewModel = HistoryViewModel(
+            store: { store },
+            keyring: keyring,
+            contextProvider: { currentContext }
+        )
+
+        // Without PIN context: needsKeyContext is true
+        await viewModel.reload().value
+        XCTAssertTrue(viewModel.needsKeyContext)
+
+        // With PIN context: needsKeyContext is false
+        currentContext = pinContext
+        await viewModel.reload().value
+        XCTAssertFalse(viewModel.needsKeyContext)
+
+        // On lock: needsKeyContext becomes false
+        viewModel.needsKeyContext = true
+        NotificationCenter.default.post(name: PanelLockController.didLockNotification, object: nil)
+        await Task.yield()
+        XCTAssertFalse(viewModel.needsKeyContext)
+    }
 }
