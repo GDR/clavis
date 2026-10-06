@@ -201,10 +201,21 @@ struct MenuBarView: View {
             // Active Agent Sessions
             if !appState.agentSessions.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(ClavisUIStrings.AgentSession.menuSection)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 4)
+                    HStack {
+                        Text(ClavisUIStrings.AgentSession.menuSection)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Button(action: {
+                            appState.revokeAllAgentSessions()
+                        }) {
+                            Text(ClavisUIStrings.AgentSession.revokeAll)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.red)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 4)
 
                     ForEach(appState.agentSessions, id: \.id) { session in
                         HStack(spacing: 8) {
@@ -221,6 +232,33 @@ struct MenuBarView: View {
                                     .foregroundColor(.secondary)
                             }
                             Spacer()
+                            Menu {
+                                Button(ClavisUIStrings.AgentSession.extend30m) {
+                                    Task {
+                                        _ = appState.extendAgentSession(id: session.id, minutes: 30)
+                                    }
+                                }
+                                Button(ClavisUIStrings.AgentSession.extend1h) {
+                                    Task {
+                                        _ = appState.extendAgentSession(id: session.id, minutes: 60)
+                                    }
+                                }
+                                Button(ClavisUIStrings.AgentSession.extend4h) {
+                                    Task {
+                                        _ = appState.extendAgentSession(id: session.id, minutes: 240)
+                                    }
+                                }
+                            } label: {
+                                Text(ClavisUIStrings.AgentSession.extend)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(Color.secondary.opacity(0.15))
+                                    .cornerRadius(4)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+
                             Button(action: {
                                 appState.endAgentSession(id: session.id)
                             }) {
