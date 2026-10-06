@@ -464,6 +464,18 @@ public enum ClavisUIStrings {
         }
         public static var passwordRequired: String { localized("pin_unlock.password_required", "PIN is disabled. Login password required.") }
         public static var historyBanner: String { localized("pin_unlock.history_banner", "Enter PIN to read details") }
+        public static var confirmPinPlaceholder: String { localized("pin_unlock.confirm_pin_placeholder", "Confirm PIN") }
+        public static var warningOrMode: String { localized("pin_unlock.warning_or_mode", "A PIN is easier to guess than your login password. Anyone who learns it can unlock Clavis and read your history.") }
+        public static var resetWarning: String { localized("pin_unlock.reset_warning", "Your existing history will become unreadable.") }
+        public static var tooShort: String { localized("pin_unlock.too_short", "PIN must be at least 6 characters.") }
+        public static var pinMismatch: String { localized("pin_unlock.pin_mismatch", "PINs do not match.") }
+        public static var changePIN: String { localized("pin_unlock.change_pin", "Change PIN…") }
+        public static var forgotPIN: String { localized("pin_unlock.forgot_pin", "Forgot PIN…") }
+        public static var settingsSection: String { localized("pin_unlock.settings_section", "Unlock Method") }
+        public static var modePasswordOrBiometry: String { localized("pin_unlock.mode_password_or_biometry", "Touch ID or password") }
+        public static var modeBiometryOrPIN: String { localized("pin_unlock.mode_biometry_or_pin", "Touch ID or PIN") }
+        public static var modeBiometryAndPIN: String { localized("pin_unlock.mode_biometry_and_pin", "Touch ID and PIN") }
+        public static var setPinTitle: String { localized("pin_unlock.set_pin_title", "Set PIN") }
     }
 }
 

@@ -46,6 +46,26 @@ public final class PinModeChanger {
         self.sleep = sleep
     }
 
+    public static func makeDefault(
+        keyring: AuditKeyring? = PanelLockController.makeDefaultKeyring(),
+        store: @escaping () throws -> AuditStore = { try AuditStore() },
+        counter: PinAttemptStoring = KeychainPinAttemptStore(),
+        passwordAuth: PasswordAuthenticating = DevicePasswordAuthenticator()
+    ) -> PinModeChanger? {
+        guard let keyring = keyring else { return nil }
+        return PinModeChanger(
+            keyring: keyring,
+            store: store,
+            counter: counter,
+            passwordAuth: passwordAuth,
+            makePINContext: { pin in
+                let ctx = LAContext()
+                _ = ctx.setCredential(Data(pin.utf8), type: .applicationPassword)
+                return ctx
+            }
+        )
+    }
+
     public func changeMode(
         to mode: AuditReadMode,
         newPIN: String?,

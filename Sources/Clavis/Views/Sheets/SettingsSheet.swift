@@ -1,12 +1,38 @@
 import SwiftUI
 import ClavisCore
 
+public enum PinModeUI {
+    public static func showsWeakPINWarning(_ mode: AuditReadMode) -> Bool {
+        mode == .biometryOrPIN
+    }
+}
+
 public struct SettingsView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject var lock = PanelLockController.shared
-    @State private var copiedEnv = false
+    private let modeChanger: PinModeChanger?
 
-    public init() {}
+    @State private var copiedEnv = false
+    @State private var activeSheet: ActiveSheet?
+    @State private var showingResetAlert = false
+
+    private enum ActiveSheet: Identifiable {
+        case modeChange(AuditReadMode)
+        case changePIN
+        case resetPIN
+
+        var id: String {
+            switch self {
+            case .modeChange(let m): return "mode-\(m.rawValue)"
+            case .changePIN: return "changePIN"
+            case .resetPIN: return "resetPIN"
+            }
+        }
+    }
+
+    public init(modeChanger: PinModeChanger? = nil) {
+        self.modeChanger = modeChanger ?? PinModeChanger.makeDefault()
+    }
 
     public var body: some View {
         ScrollView {
@@ -53,6 +79,50 @@ public struct SettingsView: View {
                                 .pickerStyle(.menu)
                                 .frame(width: 120)
                             }
+                        }
+                    }
+                }
+
+                // Unlock Method Section
+                SettingsGroup(title: ClavisUIStrings.PinUnlock.settingsSection) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach([AuditReadMode.passwordOrBiometry, .biometryOrPIN, .biometryAndPIN], id: \.self) { mode in
+                            let isSelected = lock.currentMode == mode
+                            let isAvailable = !mode.requiresPIN || PlatformSupport.hasSecureEnclave
+                            Button(action: {
+                                guard !isSelected && isAvailable else { return }
+                                selectMode(mode)
+                            }) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                                        .foregroundColor(isSelected ? .accentColor : .secondary)
+                                    Text(modeTitle(for: mode))
+                                        .font(.system(size: 13))
+                                        .foregroundColor(isAvailable ? .primary : .secondary)
+                                    Spacer()
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!isAvailable)
+                        }
+
+                        if lock.currentMode.requiresPIN {
+                            Divider()
+
+                            HStack(spacing: 12) {
+                                Button(ClavisUIStrings.PinUnlock.changePIN) {
+                                    activeSheet = .changePIN
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+
+                                Button(ClavisUIStrings.PinUnlock.forgotPIN) {
+                                    showingResetAlert = true
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                            .padding(.top, 4)
                         }
                     }
                 }
@@ -130,7 +200,194 @@ public struct SettingsView: View {
             }
             .padding(20)
         }
-        .frame(width: 480, height: 520)
+        .frame(width: 480, height: 560)
+        .alert(ClavisUIStrings.PinUnlock.forgotPIN, isPresented: $showingResetAlert) {
+            Button(ClavisUIStrings.PinUnlock.setPinTitle, role: .destructive) {
+                activeSheet = .resetPIN
+            }
+            Button(ClavisUIStrings.Common.cancel, role: .cancel) {}
+        } message: {
+            Text(ClavisUIStrings.PinUnlock.resetWarning)
+        }
+        .sheet(item: $activeSheet) { sheet in
+            let title: String = {
+                switch sheet {
+                case .modeChange: return ClavisUIStrings.PinUnlock.setPinTitle
+                case .changePIN: return ClavisUIStrings.PinUnlock.changePIN
+                case .resetPIN: return ClavisUIStrings.PinUnlock.forgotPIN
+                }
+            }()
+            let subtitle: String? = {
+                if case .modeChange(let m) = sheet { return modeTitle(for: m) }
+                return nil
+            }()
+            let warning: String? = {
+                switch sheet {
+                case .modeChange(let m): return PinModeUI.showsWeakPINWarning(m) ? ClavisUIStrings.PinUnlock.warningOrMode : nil
+                case .changePIN: return nil
+                case .resetPIN: return ClavisUIStrings.PinUnlock.resetWarning
+                }
+            }()
+            PinModeChangeSheet(
+                title: title,
+                subtitle: subtitle,
+                warning: warning,
+                onSave: { pin, confirmPin in
+                    switch sheet {
+                    case .modeChange(let targetMode):
+                        _ = try await modeChanger?.changeMode(to: targetMode, newPIN: pin, confirmPIN: confirmPin, oldContext: lock.unlockContext)
+                    case .changePIN:
+                        _ = try await modeChanger?.changeMode(to: lock.currentMode, newPIN: pin, confirmPIN: confirmPin, oldContext: lock.unlockContext)
+                    case .resetPIN:
+                        try await modeChanger?.resetPIN(newPIN: pin, confirmPIN: confirmPin)
+                    }
+                    await MainActor.run { lock.objectWillChange.send() }
+                },
+                onDismiss: { activeSheet = nil }
+            )
+        }
+    }
+
+    private func selectMode(_ mode: AuditReadMode) {
+        if mode == .passwordOrBiometry {
+            Task {
+                do {
+                    _ = try await modeChanger?.changeMode(
+                        to: .passwordOrBiometry,
+                        newPIN: nil,
+                        confirmPIN: nil,
+                        oldContext: lock.unlockContext
+                    )
+                    await MainActor.run {
+                        lock.objectWillChange.send()
+                    }
+                } catch {
+                    // Password authentication cancelled or failed
+                }
+            }
+        } else {
+            activeSheet = .modeChange(mode)
+        }
+    }
+
+    private func modeTitle(for mode: AuditReadMode) -> String {
+        switch mode {
+        case .passwordOrBiometry:
+            return ClavisUIStrings.PinUnlock.modePasswordOrBiometry
+        case .biometryOrPIN:
+            return ClavisUIStrings.PinUnlock.modeBiometryOrPIN
+        case .biometryAndPIN:
+            return ClavisUIStrings.PinUnlock.modeBiometryAndPIN
+        }
+    }
+}
+
+struct PinModeChangeSheet: View {
+    let title: String
+    let subtitle: String?
+    let warning: String?
+    let onSave: (String, String) async throws -> Void
+    let onDismiss: () -> Void
+
+    @State private var pin: String = ""
+    @State private var confirmPin: String = ""
+    @State private var errorMessage: String?
+    @State private var isProcessing: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                if let subtitle = subtitle {
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if let warning = warning {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                        .font(.system(size: 14))
+                    Text(warning)
+                        .font(.system(size: 11))
+                        .foregroundColor(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(8)
+                .background(Color.orange.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                SecureField(ClavisUIStrings.PinUnlock.pinPlaceholder, text: $pin)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(isProcessing)
+
+                SecureField(ClavisUIStrings.PinUnlock.confirmPinPlaceholder, text: $confirmPin)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(isProcessing)
+            }
+
+            if pin.count > 0 && pin.count < 6 {
+                Text(ClavisUIStrings.PinUnlock.tooShort)
+                    .font(.system(size: 11))
+                    .foregroundColor(.red)
+            } else if confirmPin.count > 0 && pin != confirmPin {
+                Text(ClavisUIStrings.PinUnlock.pinMismatch)
+                    .font(.system(size: 11))
+                    .foregroundColor(.red)
+            } else if let errorMessage = errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 11))
+                    .foregroundColor(.red)
+            }
+
+            HStack {
+                Button(ClavisUIStrings.Common.cancel) {
+                    onDismiss()
+                }
+                .disabled(isProcessing)
+
+                Spacer()
+
+                Button(action: save) {
+                    HStack(spacing: 4) {
+                        if isProcessing {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(ClavisUIStrings.PinUnlock.setPinTitle)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(pin.count < 6 || pin != confirmPin || isProcessing)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+    }
+
+    private func save() {
+        guard pin.count >= 6, pin == confirmPin, !isProcessing else { return }
+        isProcessing = true
+        errorMessage = nil
+        Task {
+            do {
+                try await onSave(pin, confirmPin)
+                await MainActor.run {
+                    isProcessing = false
+                    onDismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    isProcessing = false
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
     }
 }
 
