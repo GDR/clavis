@@ -262,6 +262,13 @@ public struct CLIService {
                 return CLICommandResult(exitCode: 1, output: outputLines.joined(separator: "\n"), error: "Failed to save pin to Keychain: \(error.localizedDescription)")
             }
 
+        case .run:
+            return handleRun(
+                args: Array(args.dropFirst(2)),
+                keyManager: keyManager,
+                agentLifecycle: agentLifecycle
+            )
+
         case .dashDashHelp, .dashH, .help:
             return CLICommandResult(exitCode: 0, output: CLIMessages.help)
         }
@@ -405,5 +412,69 @@ public struct CLIService {
             lines.append("   Public Key:  \(key.publicKeyOpenSSH)")
         }
         return lines
+    }
+
+    private static func handleRun(
+        args: [String],
+        keyManager: KeychainManager,
+        agentLifecycle: AgentLifecycleManager
+    ) -> CLICommandResult {
+        let options: AgentRunOptions
+        do {
+            options = try AgentRunner.parse(args)
+        } catch {
+            return CLICommandResult(exitCode: 1, output: "", error: error.localizedDescription)
+        }
+
+        guard SSHAgentServer.isSocketListening(atPath: SSHAgentServer.defaultSocketPath) &&
+              SSHAgentServer.isSocketListening(atPath: SSHAgentServer.defaultAgentSocketPath) else {
+            return CLICommandResult(exitCode: 1, output: "", error: AgentRunError.agentNotRunning.localizedDescription)
+        }
+
+        let keys = (try? keyManager.listKeys()) ?? []
+        let key: Ed25519KeyInfo
+        do {
+            key = try AgentRunner.chooseKey(options.keyLabel, keys: keys)
+        } catch {
+            return CLICommandResult(exitCode: 1, output: "", error: error.localizedDescription)
+        }
+
+        let toolName = (options.command[0] as NSString).lastPathComponent
+        let leaseMinutes = options.leaseMinutes ?? 0
+
+        let session: (id: String, leaseSeconds: Int)
+        do {
+            session = try agentLifecycle.registerAgentSession(
+                keyLabel: key.label,
+                toolName: toolName,
+                leaseMinutes: leaseMinutes
+            )
+        } catch {
+            return CLICommandResult(exitCode: 1, output: "", error: AgentRunError.registrationRefused.localizedDescription)
+        }
+
+        let childEnv: [String: String]
+        do {
+            childEnv = try AgentRunner.childEnvironment(
+                base: ProcessInfo.processInfo.environment,
+                agentSocket: SSHAgentServer.defaultAgentSocketPath,
+                sessionID: session.id,
+                options: options
+            )
+        } catch {
+            _ = agentLifecycle.endAgentSession(id: session.id)
+            return CLICommandResult(exitCode: 1, output: "", error: error.localizedDescription)
+        }
+
+        let exitCode: Int32
+        do {
+            exitCode = try AgentRunner.spawnAndWait(options.command, environment: childEnv)
+        } catch {
+            _ = agentLifecycle.endAgentSession(id: session.id)
+            return CLICommandResult(exitCode: 1, output: "", error: "Failed to spawn command: \(error.localizedDescription)")
+        }
+
+        _ = agentLifecycle.endAgentSession(id: session.id)
+        return CLICommandResult(exitCode: exitCode, output: "")
     }
 }
