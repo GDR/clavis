@@ -424,3 +424,67 @@ final class FakeSystemEventMonitor: SystemEventMonitoring {
         handlers[id]?()
     }
 }
+
+public final class InMemoryAgentPolicyStore: AgentPolicyStoring, @unchecked Sendable {
+    private let lock = NSLock()
+    private var policies: [String: AgentKeyPolicy]
+    private var globalPolicy: AgentGlobalPolicy
+    public var corruptFingerprints: Set<String> = []
+    public var isGlobalCorrupt: Bool = false
+    public var shouldThrowOnRead: Error?
+    public var shouldThrowOnWrite: Error?
+
+    public init(
+        policies: [String: AgentKeyPolicy] = [:],
+        global: AgentGlobalPolicy = AgentGlobalPolicy()
+    ) {
+        self.policies = policies
+        self.globalPolicy = global
+    }
+
+    public func policy(forFingerprint fingerprint: String) throws -> AgentKeyPolicy {
+        lock.lock()
+        defer { lock.unlock() }
+        if let err = shouldThrowOnRead { throw err }
+        if corruptFingerprints.contains(fingerprint) {
+            throw AgentPolicyError.corrupt
+        }
+        return policies[fingerprint] ?? AgentKeyPolicy()
+    }
+
+    public func save(_ policy: AgentKeyPolicy, forFingerprint fingerprint: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if let err = shouldThrowOnWrite { throw err }
+        try policy.validate()
+        policies[fingerprint] = policy
+        corruptFingerprints.remove(fingerprint)
+    }
+
+    public func deletePolicy(forFingerprint fingerprint: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if let err = shouldThrowOnWrite { throw err }
+        policies.removeValue(forKey: fingerprint)
+        corruptFingerprints.remove(fingerprint)
+    }
+
+    public func global() throws -> AgentGlobalPolicy {
+        lock.lock()
+        defer { lock.unlock() }
+        if let err = shouldThrowOnRead { throw err }
+        if isGlobalCorrupt {
+            throw AgentPolicyError.corrupt
+        }
+        return globalPolicy
+    }
+
+    public func saveGlobal(_ policy: AgentGlobalPolicy) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if let err = shouldThrowOnWrite { throw err }
+        try policy.validate()
+        globalPolicy = policy
+        isGlobalCorrupt = false
+    }
+}
