@@ -23,26 +23,32 @@ public struct LockedPlaceholderView: View {
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundColor(.primary)
 
-            Button(action: {
-                Task {
-                    await lock.unlock()
+            if lock.currentMode.requiresPIN {
+                PinEntryView(lock: lock)
+            } else {
+                Button(action: {
+                    Task {
+                        await lock.unlock()
+                    }
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "lock.open.fill")
+                        Text(ClavisUIStrings.PanelLock.unlock)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
                 }
-            }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "lock.open.fill")
-                    Text(ClavisUIStrings.PanelLock.unlock)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .disabled(lock.isUnlocking)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.regular)
-            .disabled(lock.isUnlocking)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
         .task {
-            await lock.unlock()
+            if !lock.currentMode.requiresPIN {
+                await lock.unlock()
+            }
         }
     }
 }

@@ -103,6 +103,18 @@ public struct HistoryView: View {
                 Divider()
             }
 
+            // Key Context Required Banner (PIN mode unlocked with device password)
+            if viewModel.needsKeyContext {
+                PinEntryView(isInlineBanner: true) { _ in
+                    viewModel.reload()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color(nsColor: .controlBackgroundColor))
+
+                Divider()
+            }
+
             // Content
             if let error = viewModel.errorMessage {
                 VStack(spacing: 8) {
