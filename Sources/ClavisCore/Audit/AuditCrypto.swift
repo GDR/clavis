@@ -74,6 +74,19 @@ public enum AuditCrypto {
         return SymmetricKey(data: dekData)
     }
 
+    /// Re-wraps an epoch DEK from an old key to a new public key using ECDH agreement.
+    public static func rewrapDEK(
+        epk: Data,
+        wrapped: Data,
+        epochID: Data,
+        keyID: String,
+        agree: (P256.KeyAgreement.PublicKey) throws -> SharedSecret,
+        to newKey: AuditReadPublicKey
+    ) throws -> (epk: Data, wrapped: Data) {
+        let dek = try unwrapDEK(epk: epk, wrapped: wrapped, epochID: epochID, keyID: keyID, agree: agree)
+        return try wrapDEK(dek, epochID: epochID, keyID: newKey.keyID, to: newKey.publicKey)
+    }
+
     /// Computes the authenticated associated data for an audit row.
     /// aad = "clavis-audit-row-v1" | event_id | time.bitPattern (UInt64 big-endian, 8 bytes) | type | fingerprint ?? ""
     /// where `|` is a single 0x00 byte separator.
