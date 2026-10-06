@@ -70,14 +70,17 @@ public final class PinModeChanger {
         to mode: AuditReadMode,
         newPIN: String?,
         confirmPIN: String?,
-        oldContext: LAContext?
+        oldContext: LAContext?,
+        skipPasswordAuth: Bool = false
     ) async throws -> RewrapReport {
         ClavisLogger.promptDebug("calvis-ui", "PinModeChanger: requesting change mode to \(mode.rawValue)")
         // 1. Password authentication required first (AC5)
-        do {
-            _ = try await passwordAuth.authenticateWithPassword(reason: ClavisUIStrings.PanelLock.disableReason)
-        } catch {
-            throw ChangeError.passwordFailed
+        if !skipPasswordAuth {
+            do {
+                _ = try await passwordAuth.authenticateWithPassword(reason: ClavisUIStrings.PanelLock.disableReason)
+            } catch {
+                throw ChangeError.passwordFailed
+            }
         }
 
         // 2. PIN validation if required
@@ -166,12 +169,14 @@ public final class PinModeChanger {
         return RewrapReport(rewrapped: rewrappedCount, unreadable: unreadableCount)
     }
 
-    public func resetPIN(newPIN: String, confirmPIN: String) async throws {
+    public func resetPIN(newPIN: String, confirmPIN: String, skipPasswordAuth: Bool = false) async throws {
         // 1. Password authentication required first (AC5)
-        do {
-            _ = try await passwordAuth.authenticateWithPassword(reason: ClavisUIStrings.PanelLock.disableReason)
-        } catch {
-            throw ChangeError.passwordFailed
+        if !skipPasswordAuth {
+            do {
+                _ = try await passwordAuth.authenticateWithPassword(reason: ClavisUIStrings.PanelLock.disableReason)
+            } catch {
+                throw ChangeError.passwordFailed
+            }
         }
 
         // 2. PIN validation

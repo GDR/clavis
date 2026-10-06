@@ -388,6 +388,32 @@ final class PanelLockControllerTests: ClavisBaseTestCase {
         XCTAssertNotEqual(rotatedKey.keyID, initialKey.keyID)
         XCTAssertTrue(recorder.events.isEmpty)
     }
+
+    func test_setEnabled_false_whenAuthenticated_doesNotPrompt() async {
+        let fakeAuth = FakePanelAuthenticator()
+        let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth)
+
+        await controller.unlock()
+        XCTAssertEqual(fakeAuth.authCount, 1)
+
+        // Disabling with authenticated: true should NOT invoke authenticator again
+        let success = await controller.setEnabled(false, authenticated: true)
+        XCTAssertTrue(success)
+        XCTAssertEqual(fakeAuth.authCount, 1)
+        XCTAssertFalse(controller.isEnabled)
+        XCTAssertFalse(controller.isLocked)
+    }
+
+    func test_authenticateUser_success_appliesUnlock() async throws {
+        let fakeAuth = FakePanelAuthenticator()
+        let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth)
+        XCTAssertTrue(controller.isLocked)
+
+        let context = try await controller.authenticateUser()
+        XCTAssertNotNil(context)
+        XCTAssertEqual(fakeAuth.authCount, 1)
+        XCTAssertFalse(controller.isLocked)
+    }
 }
 
 

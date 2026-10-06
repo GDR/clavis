@@ -170,6 +170,14 @@ public final class PanelLockController: ObservableObject {
     }
 
     @discardableResult
+    public func authenticateUser(reason: String = ClavisUIStrings.PanelLock.reason) async throws -> LAContext {
+        ClavisLogger.promptDebug("calvis-ui", "PanelLockController: authenticating user: \"\(reason)\"")
+        let context = try await authenticator.authenticate(reason: reason)
+        applyUnlock(context: context)
+        return context
+    }
+
+    @discardableResult
     public func unlockWithPIN(_ pin: String?) async -> PinUnlockService.Outcome {
         ClavisLogger.promptDebug("calvis-ui", "PanelLockController: attempting unlock with PIN")
         guard let service = pinUnlockService else {
@@ -253,7 +261,7 @@ public final class PanelLockController: ObservableObject {
         }
     }
 
-    public func setEnabled(_ enabled: Bool) async -> Bool {
+    public func setEnabled(_ enabled: Bool, authenticated: Bool = false) async -> Bool {
         if enabled == isEnabled {
             return true
         }
@@ -262,14 +270,16 @@ public final class PanelLockController: ObservableObject {
             lock(reason: .disabledChange)
             return true
         } else {
-            do {
-                ClavisLogger.promptDebug("calvis-ui", "PanelLockController: requesting disable lock prompt: \"\(ClavisUIStrings.PanelLock.disableReason)\"")
-                _ = try await authenticator.authenticate(reason: ClavisUIStrings.PanelLock.disableReason)
-                isEnabled = false
-                return true
-            } catch {
-                return false
+            if !authenticated {
+                do {
+                    ClavisLogger.promptDebug("calvis-ui", "PanelLockController: requesting disable lock prompt: \"\(ClavisUIStrings.PanelLock.disableReason)\"")
+                    _ = try await authenticator.authenticate(reason: ClavisUIStrings.PanelLock.disableReason)
+                } catch {
+                    return false
+                }
             }
+            isEnabled = false
+            return true
         }
     }
 }

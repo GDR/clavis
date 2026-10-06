@@ -17,6 +17,8 @@ public struct SettingsView: View {
     @State private var copiedEnv = false
     @State private var activeSheet: ActiveSheet?
     @State private var showingResetAlert = false
+    @State private var isSettingsAuthenticated: Bool
+    @State private var isAuthenticating: Bool = false
 
     private enum ActiveSheet: Identifiable {
         case modeChange(AuditReadMode)
@@ -32,33 +34,75 @@ public struct SettingsView: View {
         }
     }
 
-    public init(modeChanger: PinModeChanger? = nil) {
+    public init(modeChanger: PinModeChanger? = nil, isSettingsAuthenticated: Bool = false) {
         self.modeChanger = modeChanger ?? PinModeChanger.makeDefault()
+        self._isSettingsAuthenticated = State(initialValue: isSettingsAuthenticated)
     }
 
     public var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                // Control Panel Lock Section
-                SettingsGroup(title: ClavisUIStrings.PanelLock.settingsSection) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        SettingsRow(
-                            icon: "lock.fill",
-                            iconColor: Color(red: 0.88, green: 0.45, blue: 0.12),
-                            title: ClavisUIStrings.PanelLock.settingsToggle,
-                            subtitle: ""
-                        ) {
-                            Toggle("", isOn: Binding(
-                                get: { lock.isEnabled },
-                                set: { newValue in
-                                    Task {
-                                        _ = await lock.setEnabled(newValue)
-                                    }
-                                }
-                            ))
-                            .toggleStyle(.switch)
-                            .labelsHidden()
+        Group {
+            if !isSettingsAuthenticated {
+                VStack(spacing: 16) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 48))
+                        .foregroundColor(.secondary)
+
+                    Text(ClavisUIStrings.Settings.windowTitle)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.primary)
+
+                    if lock.currentMode.requiresPIN {
+                        PinEntryView(lock: lock, onUnlockSuccess: { _ in
+                            isSettingsAuthenticated = true
+                        })
+                    } else {
+                        Button(action: {
+                            Task {
+                                await authenticateSettings()
+                            }
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "lock.open.fill")
+                                Text(ClavisUIStrings.PanelLock.unlock)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
                         }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                        .disabled(isAuthenticating)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(nsColor: .windowBackgroundColor))
+                .task {
+                    if !lock.currentMode.requiresPIN {
+                        await authenticateSettings()
+                    }
+                }
+            } else {
+                ScrollView {
+                    VStack(spacing: 16) {
+                        // Control Panel Lock Section
+                        SettingsGroup(title: ClavisUIStrings.PanelLock.settingsSection) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                SettingsRow(
+                                    icon: "lock.fill",
+                                    iconColor: Color(red: 0.88, green: 0.45, blue: 0.12),
+                                    title: ClavisUIStrings.PanelLock.settingsToggle,
+                                    subtitle: ""
+                                ) {
+                                    Toggle("", isOn: Binding(
+                                        get: { lock.isEnabled },
+                                        set: { newValue in
+                                            Task {
+                                                _ = await lock.setEnabled(newValue, authenticated: true)
+                                            }
+                                        }
+                                    ))
+                                    .toggleStyle(.switch)
+                                    .labelsHidden()
+                                }
 
                         if lock.isEnabled {
                             Divider()
@@ -227,7 +271,14 @@ public struct SettingsView: View {
             }
             .padding(20)
         }
-        .frame(width: 480, height: 560)
+        }
+    }
+    .frame(width: 480, height: 560)
+    .onChange(of: lock.isLocked) { isLocked in
+        if isLocked {
+            isSettingsAuthenticated = false
+        }
+    }
         .alert(ClavisUIStrings.PinUnlock.forgotPIN, isPresented: $showingResetAlert) {
             Button(ClavisUIStrings.PinUnlock.setPinTitle, role: .destructive) {
                 ClavisLogger.promptDebug("calvis-ui", "SettingsSheet: user confirmed reset PIN dialog")
@@ -265,11 +316,11 @@ public struct SettingsView: View {
                 onSave: { pin, confirmPin in
                     switch sheet {
                     case .modeChange(let targetMode):
-                        _ = try await modeChanger?.changeMode(to: targetMode, newPIN: pin, confirmPIN: confirmPin, oldContext: lock.unlockContext)
+                        _ = try await modeChanger?.changeMode(to: targetMode, newPIN: pin, confirmPIN: confirmPin, oldContext: lock.unlockContext, skipPasswordAuth: true)
                     case .changePIN:
-                        _ = try await modeChanger?.changeMode(to: lock.currentMode, newPIN: pin, confirmPIN: confirmPin, oldContext: lock.unlockContext)
+                        _ = try await modeChanger?.changeMode(to: lock.currentMode, newPIN: pin, confirmPIN: confirmPin, oldContext: lock.unlockContext, skipPasswordAuth: true)
                     case .resetPIN:
-                        try await modeChanger?.resetPIN(newPIN: pin, confirmPIN: confirmPin)
+                        try await modeChanger?.resetPIN(newPIN: pin, confirmPIN: confirmPin, skipPasswordAuth: true)
                     }
                     await MainActor.run { lock.objectWillChange.send() }
                 },
@@ -283,6 +334,21 @@ public struct SettingsView: View {
         }
     }
 
+    private func authenticateSettings() async {
+        guard !isAuthenticating && !isSettingsAuthenticated else { return }
+        isAuthenticating = true
+        defer { isAuthenticating = false }
+        do {
+            ClavisLogger.promptDebug("calvis-ui", "SettingsView: authenticating settings access")
+            _ = try await lock.authenticateUser()
+            await MainActor.run {
+                isSettingsAuthenticated = true
+            }
+        } catch {
+            // Cancelled or failed unlock stays in gate
+        }
+    }
+
     private func selectMode(_ mode: AuditReadMode) {
         if mode == .passwordOrBiometry {
             Task {
@@ -291,7 +357,8 @@ public struct SettingsView: View {
                         to: .passwordOrBiometry,
                         newPIN: nil,
                         confirmPIN: nil,
-                        oldContext: lock.unlockContext
+                        oldContext: lock.unlockContext,
+                        skipPasswordAuth: true
                     )
                     await MainActor.run {
                         lock.objectWillChange.send()
