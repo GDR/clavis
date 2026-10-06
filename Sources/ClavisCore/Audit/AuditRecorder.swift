@@ -35,6 +35,7 @@ public final class AuditRecorder: AuditRecording {
 
     private var buckets: [FloodKey: FloodBucket] = [:]
     private let sealer: AuditSealer?
+    private let witness: AuditWitnessWriting?
 
     public static func makeDefaultSealer() -> AuditSealer? {
         if NSClassFromString("XCTestCase") != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
@@ -43,10 +44,18 @@ public final class AuditRecorder: AuditRecording {
         return AuditSealer(keyring: KeychainAuditKeyring())
     }
 
+    public static func makeDefaultWitness() -> AuditWitnessWriting? {
+        if NSClassFromString("XCTestCase") != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return nil
+        }
+        return OSLogAuditWitness()
+    }
+
     public init(
         storeFactory: @escaping () throws -> AuditStore = { try AuditStore() },
         now: @escaping () -> Date = Date.init,
         sealer: AuditSealer? = AuditRecorder.makeDefaultSealer(),
+        witness: AuditWitnessWriting? = AuditRecorder.makeDefaultWitness(),
         floodThreshold: Int = 30,
         floodWindow: TimeInterval = 60,
         retentionAge: TimeInterval = 90 * 24 * 3600,
@@ -56,6 +65,7 @@ public final class AuditRecorder: AuditRecording {
         self.storeFactory = storeFactory
         self.now = now
         self.sealer = sealer
+        self.witness = witness
         self.floodThreshold = floodThreshold
         self.floodWindow = floodWindow
         self.retentionAge = retentionAge
@@ -199,15 +209,48 @@ public final class AuditRecorder: AuditRecording {
 
     private func insertEventLocked(_ event: AuditEvent, into store: AuditStore, currentTime: Date) {
         do {
+            let seq: Int64
+            let fmt: Int
+            let blob: Data
             if let sealer = sealer {
-                let (fmt, blob) = sealer.seal(event, store: store)
-                try store.insert(event, sensitiveFormat: fmt, sensitiveBlob: blob)
+                let (sealedFmt, sealedBlob) = sealer.seal(event, store: store)
+                fmt = sealedFmt
+                blob = sealedBlob
+                seq = try store.insert(event, sensitiveFormat: fmt, sensitiveBlob: blob)
             } else {
-                try store.insert(event, sensitiveFormat: 2, sensitiveBlob: Data())
+                fmt = 2
+                blob = Data()
+                seq = try store.insert(event, sensitiveFormat: 2, sensitiveBlob: Data())
             }
             insertCounter += 1
             if insertCounter % pruneEvery == 0 {
                 try? store.prune(olderThan: currentTime.addingTimeInterval(-retentionAge), maxRows: retentionMaxRows)
+            }
+
+            if let witness = witness {
+                let digest = AuditWitness.digest(
+                    seq: seq,
+                    eventID: event.id,
+                    time: event.time,
+                    type: event.type.rawValue,
+                    result: event.result.rawValue,
+                    reason: event.reason?.rawValue,
+                    fingerprint: event.keyFingerprint,
+                    kind: event.keyKind?.rawValue,
+                    session: event.sessionID,
+                    count: event.count,
+                    sensitiveFormat: fmt,
+                    sensitiveBlob: blob
+                )
+                let entry = AuditWitnessEntry(
+                    seq: seq,
+                    eventID: event.id,
+                    type: event.type.rawValue,
+                    result: event.result.rawValue,
+                    fingerprint: event.keyFingerprint,
+                    digest: digest
+                )
+                witness.write(entry)
             }
         } catch {
             ClavisLogger.log("AUDIT", "Failed to insert audit event: \(error.localizedDescription)")
