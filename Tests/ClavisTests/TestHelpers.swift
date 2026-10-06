@@ -71,6 +71,16 @@ final class InMemoryPrivateKeyStore: PrivateKeyStoring {
     }
 }
 
+final class InMemoryAuditRecorder: AuditRecording {
+    private let lock = NSLock()
+    private(set) var events: [AuditEvent] = []
+    func record(_ event: AuditEvent) {
+        lock.lock()
+        events.append(event)
+        lock.unlock()
+    }
+}
+
 class ClavisBaseTestCase: XCTestCase {
 
     var testRootURL: URL!
