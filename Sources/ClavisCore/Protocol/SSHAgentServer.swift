@@ -72,6 +72,7 @@ public class SSHAgentServer {
     internal let maxConnectionLifetime: TimeInterval
     internal let maxRequestsPerConnection: Int
     private let keyManager: KeychainManager
+    private let auditRecorder: AuditRecording
     private let controlPeerValidator: (Int32) -> Bool
     private let peerProcessValidator: (pid_t, String, UInt64) -> Bool
     private let backoffHandler: (useconds_t) -> Void
@@ -125,7 +126,8 @@ public class SSHAgentServer {
         peerProcessValidator: ((pid_t, String, UInt64) -> Bool)? = nil,
         backoffHandler: ((useconds_t) -> Void)? = nil,
         acceptCall: ((Int32) -> (fd: Int32, err: Int32))? = nil,
-        onPermanentListenerFailure: (() -> Void)? = nil
+        onPermanentListenerFailure: (() -> Void)? = nil,
+        auditRecorder: AuditRecording = AuditRecorder.shared
     ) {
         self.promptGate = promptGate
         self.controlPeerValidator = controlPeerValidator ?? { ClavisCodeTrust.isTrustedPeer(socket: $0) }
@@ -143,6 +145,7 @@ public class SSHAgentServer {
         self.maxConnectionLifetime = max(0.01, maxConnectionLifetime)
         self.maxRequestsPerConnection = max(1, maxRequestsPerConnection)
         self.keyManager = keyManager
+        self.auditRecorder = auditRecorder
         self._onPermanentListenerFailure = onPermanentListenerFailure
     }
 
@@ -1021,6 +1024,13 @@ public class SSHAgentServer {
             guard payload.count == 1 else { return Data([5]) }
             SessionCacheManager.shared.clearCacheInternal(broadcast: false)
             GitSigningGraceManager.shared.invalidateAll(broadcast: false)
+            auditRecorder.record(
+                AuditEvent(
+                    type: .lock,
+                    result: .info,
+                    reason: .lockNow
+                )
+            )
             return Data([6]) // SSH_AGENT_SUCCESS
         default:
             ClavisLogger.log("SSH_AGENT_REQ", "Unsupported SSH Agent request type \(msgType)")
@@ -1055,6 +1065,31 @@ public class SSHAgentServer {
         return response
     }
 
+    private struct PendingSignAudit {
+        var result: AuditResult = .failed
+        var reason: AuditReason? = .signingError
+        var keyFingerprint: String?
+        var keyLabel: String?
+        var chain: [AuditProcess] = []
+
+        func makeEvent() -> AuditEvent {
+            AuditEvent(
+                type: .signature,
+                result: result,
+                reason: reason,
+                keyFingerprint: keyFingerprint,
+                keyKind: .personal,
+                sessionID: nil,
+                count: 1,
+                sensitive: AuditSensitive(
+                    keyLabel: keyLabel,
+                    processChain: chain,
+                    host: nil
+                )
+            )
+        }
+    }
+
     internal func handleSignRequest(
         payload: Data,
         clientPid: pid_t? = nil,
@@ -1062,27 +1097,42 @@ public class SSHAgentServer {
         clientStartTime: UInt64? = nil,
         clientSocket: Int32? = nil
     ) -> Data {
+        var audit = PendingSignAudit()
+        defer { auditRecorder.record(audit.makeEvent()) }
+
         var reader = DataReader(data: payload)
         guard let keyBlob = reader.readWireData(),
               let dataToSign = reader.readWireData(),
               let flags = reader.readUInt32(),
               flags == 0,
               reader.isEOF else {
+            audit.result = .denied
+            audit.reason = .malformedRequest
             ClavisLogger.log("SSH_AGENT_REJECT", "Failed to parse sign request wire payload.")
             return Data([5]) // SSH_AGENT_FAILURE
         }
 
         let keys = (try? keyManager.listKeys()) ?? []
         guard let matchingKey = keys.first(where: { $0.publicKeyBlob == keyBlob }) else {
+            audit.result = .denied
+            audit.reason = .unknownKey
             ClavisLogger.log("SSH_AGENT_REJECT", "No matching key found for requested public key blob.")
             return Data([5]) // SSH_AGENT_FAILURE
         }
 
+        audit.keyFingerprint = matchingKey.fingerprint
+        audit.keyLabel = matchingKey.label
+
         guard let pid = clientPid,
               let processPath = clientExecutablePath ?? SSHAgentServer.getProcessPath(pid: pid) else {
+            audit.result = .denied
+            audit.reason = .noPeerAttribution
             ClavisLogger.log("SSH_AGENT_REJECT", "Rejected signing request because peer process attribution was unavailable.")
             return Data([5])
         }
+
+        audit.chain = AuditProcessChain.build(pid: pid, executablePath: processPath)
+
         let clientDesc = "\(Self.safeProcessPath(processPath)) (PID \(pid))"
         let requester = Self.requesterDescription(processPath: processPath, pid: pid)
         let requesterIdentity = SigningPromptGate.Requester(executablePath: processPath, pid: pid)
@@ -1097,12 +1147,15 @@ public class SSHAgentServer {
 
         // Security invariant: If key is restricted to Git signing, reject any non-Git payload
         if matchingKey.purpose == .gitSigningOnly && gitSSHSIG == nil {
+            audit.result = .denied
+            audit.reason = .gitOnlyKeyNonGitPayload
             ClavisLogger.log("SECURITY_ALERT", "Key '\(matchingKey.label)' is restricted to Git signing. Refusing non-Git signature request from \(clientDesc).")
             return Data([5]) // SSH_AGENT_FAILURE
         }
 
         do {
             let sigBlob: Data
+            var isFromGitGrant = false
 
             if let _ = gitSSHSIG {
                 // Git signing request
@@ -1123,6 +1176,7 @@ public class SSHAgentServer {
                     // Fast-path: Active 5-minute grant
                     ClavisLogger.log("GIT_GRACE", "Using active client-bound Git signing grant for '\(matchingKey.label)'. 0 Touch ID prompts.")
                     sigBlob = grantedSignature
+                    isFromGitGrant = true
                 } else if GitSigningGraceManager.shared.hasRecentGitSignature(
                     for: matchingKey.label,
                     clientIdentity: clientIdentity,
@@ -1142,11 +1196,15 @@ public class SSHAgentServer {
                     }
                     switch choice {
                     case .cancel:
+                        audit.result = .cancelled
+                        audit.reason = .userCancelled
                         ClavisLogger.log("GIT_GRACE", "User cancelled Git signing session.")
                         return Data([5]) // SSH_AGENT_FAILURE
 
                     case .grantFiveMinutes:
                         guard let anchor = gitAnchor else {
+                            audit.result = .denied
+                            audit.reason = .gitAnchorUnavailable
                             ClavisLogger.log("SECURITY_ALERT", "Refusing Git signing grant: peer PID \(pid) (\(processPath)) cannot be anchored on a valid Git process.")
                             return Data([5])
                         }
@@ -1182,6 +1240,8 @@ public class SSHAgentServer {
                                 }
                             ) else {
                                 grant.invalidate()
+                                audit.result = .failed
+                                audit.reason = .signingError
                                 return Data([5])
                             }
                             grantedSignature = signature
@@ -1190,6 +1250,7 @@ public class SSHAgentServer {
                             throw error
                         }
                         sigBlob = grantedSignature
+                        isFromGitGrant = true
 
                     case .singleShot:
                         ClavisLogger.log("GIT_GRACE", "User chose single-shot signing.")
@@ -1235,9 +1296,19 @@ public class SSHAgentServer {
 
             // TOCTOU check: re-run peerProcessUnchanged after signing prompt returns and before sending signature
             guard let start = attributedStartTime, self.peerProcessValidator(pid, processPath, start) else {
+                audit.result = .denied
+                audit.reason = .peerChanged
                 ClavisLogger.log("SECURITY_ALERT", "Dropping connection: peer process changed during signing prompt (TOCTOU violation for PID \(pid)).")
                 GitSigningGraceManager.shared.invalidateAll(broadcast: false)
                 return Data()
+            }
+
+            if isFromGitGrant {
+                audit.result = .allowed
+                audit.reason = .viaGitGrant
+            } else {
+                audit.result = .allowed
+                audit.reason = .viaPrompt
             }
 
             var response = Data()
@@ -1246,6 +1317,16 @@ public class SSHAgentServer {
             ClavisLogger.log("SSH_AGENT_SIGN", "Signature completed successfully for '\(matchingKey.label)' (\(clientDesc)).")
             return response
         } catch {
+            if AuditEvent.isUserCancellation(error) {
+                audit.result = .cancelled
+                audit.reason = .userCancelled
+            } else if case UserAuthenticationError.rejected = error {
+                audit.result = .denied
+                audit.reason = .authenticationFailed
+            } else {
+                audit.result = .failed
+                audit.reason = .signingError
+            }
             ClavisLogger.log("SSH_AGENT_SIGN", "Signature failed for '\(matchingKey.label)' (\(clientDesc)): \(error.localizedDescription)")
             return Data([5]) // SSH_AGENT_FAILURE
         }

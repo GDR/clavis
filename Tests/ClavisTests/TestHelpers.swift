@@ -71,6 +71,16 @@ final class InMemoryPrivateKeyStore: PrivateKeyStoring {
     }
 }
 
+final class InMemoryAuditRecorder: AuditRecording {
+    private let lock = NSLock()
+    private(set) var events: [AuditEvent] = []
+    func record(_ event: AuditEvent) {
+        lock.lock()
+        events.append(event)
+        lock.unlock()
+    }
+}
+
 class ClavisBaseTestCase: XCTestCase {
 
     var testRootURL: URL!
@@ -114,6 +124,7 @@ class ClavisBaseTestCase: XCTestCase {
     func makeKeyManager(
         sessionCache: SessionCacheManager? = nil,
         authenticator: UserAuthenticating = AllowingAuthenticator(),
+        auditRecorder: AuditRecording = InMemoryAuditRecorder(),
         secureBufferFactory: @escaping (inout Data) -> SecureBuffer? = { data in
             SecureBuffer(consuming: &data)
         }
@@ -123,7 +134,8 @@ class ClavisBaseTestCase: XCTestCase {
             privateKeyStore: InMemoryPrivateKeyStore(),
             sessionCache: sessionCache ?? makeSessionCache(),
             secureBufferFactory: secureBufferFactory,
-            agentGrantRevoker: { _ in }
+            agentGrantRevoker: { _ in },
+            auditRecorder: auditRecorder
         )
     }
 

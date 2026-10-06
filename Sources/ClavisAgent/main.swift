@@ -22,6 +22,7 @@ func setupSignalHandlers() -> [DispatchSourceSignal] {
             isTerminating = true
             ClavisLogger.log(.agentDaemon, "Received signal \(signalNumber), terminating...")
             SSHAgentServer.sharedInstance.stop()
+            AuditRecorder.shared.flush()
             SingleInstanceLock.agent.release()
             exit(0)
         }
@@ -50,6 +51,9 @@ do {
     try server.start()
     ClavisLogger.log(.agentDaemon, "🔑 Clavis SSH Agent daemon active at \(SSHAgentServer.defaultSocketPath) (PID: \(getpid()))")
     _ = SystemEventMonitor.shared
+    SystemEventMonitor.shared.addHandler(id: "audit.lock") {
+        AuditRecorder.shared.record(AuditEvent(type: .lock, result: .info, reason: .screenLocked))
+    }
     withExtendedLifetime(terminationSignalSources) {
         RunLoop.main.run()
     }

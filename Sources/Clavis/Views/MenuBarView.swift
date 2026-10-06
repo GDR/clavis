@@ -183,6 +183,14 @@ struct MenuBarView: View {
                 }
 
                 MenuBarActionItem(
+                    title: ClavisUIStrings.MenuBar.history,
+                    icon: "clock.arrow.circlepath",
+                    shortcut: "⌘Y"
+                ) {
+                    WindowManager.shared.openHistory()
+                }
+
+                MenuBarActionItem(
                     title: ClavisUIStrings.MenuBar.settings,
                     icon: "gearshape",
                     shortcut: "⌘,"

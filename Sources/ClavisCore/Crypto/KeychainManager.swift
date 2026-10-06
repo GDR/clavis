@@ -14,6 +14,7 @@ public class KeychainManager {
     private let sessionCache: SessionCacheManager
     private let secureBufferFactory: (inout Data) -> SecureBuffer?
     private let agentGrantRevoker: (String) throws -> Void
+    private let auditRecorder: AuditRecording
 
     init(
         authenticator: UserAuthenticating = LocalUserAuthenticator(),
@@ -24,13 +25,15 @@ public class KeychainManager {
         },
         agentGrantRevoker: @escaping (String) throws -> Void = { label in
             try AgentLifecycleManager.shared.invalidateAgentGrant(label: label)
-        }
+        },
+        auditRecorder: AuditRecording = AuditRecorder.shared
     ) {
         self.authenticator = authenticator
         self.privateKeyStore = privateKeyStore
         self.sessionCache = sessionCache
         self.secureBufferFactory = secureBufferFactory
         self.agentGrantRevoker = agentGrantRevoker
+        self.auditRecorder = auditRecorder
     }
 
     // Generate new Key and save private seed (guarded by Touch ID) and public metadata (unencrypted)
@@ -139,11 +142,30 @@ public class KeychainManager {
                 EncryptedVaultStore.shared.removeRecord(label: label)
                 throw error
             }
+            auditRecorder.record(
+                AuditEvent(
+                    type: .keyCreate,
+                    result: .allowed,
+                    keyFingerprint: keyInfo.fingerprint,
+                    keyKind: .personal,
+                    sensitive: AuditSensitive(keyLabel: keyInfo.label, processChain: [], host: nil)
+                )
+            )
             return keyInfo
         }
 
         let privateKey = Curve25519.Signing.PrivateKey()
-        return try storeKey(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)
+        let keyInfo = try storeKey(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)
+        auditRecorder.record(
+            AuditEvent(
+                type: .keyCreate,
+                result: .allowed,
+                keyFingerprint: keyInfo.fingerprint,
+                keyKind: .personal,
+                sensitive: AuditSensitive(keyLabel: keyInfo.label, processChain: [], host: nil)
+            )
+        )
+        return keyInfo
     }
 
     // Import existing Ed25519 seed (32 bytes)
@@ -181,7 +203,17 @@ public class KeychainManager {
         let privateKey = try seedData.withUnsafeBytes { raw in
             try Curve25519.Signing.PrivateKey(rawRepresentation: raw)
         }
-        return try storeKey(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)
+        let keyInfo = try storeKey(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)
+        auditRecorder.record(
+            AuditEvent(
+                type: .keyImport,
+                result: .allowed,
+                keyFingerprint: keyInfo.fingerprint,
+                keyKind: .personal,
+                sensitive: AuditSensitive(keyLabel: keyInfo.label, processChain: [], host: nil)
+            )
+        )
+        return keyInfo
     }
 
     private func validateGenerationConfiguration(algorithm: String, storageType: KeyStorageType) throws {
@@ -256,9 +288,25 @@ public class KeychainManager {
 
     // Delete key (both private seed and public metadata)
     public func deleteKey(label: String) throws {
+        let fingerprint = (try? fetchKeyInfo(label: label))?.fingerprint
         ClavisLogger.log("KEY_DELETE", "Deleting key '\(label)'...")
         let prompt = "Authenticate to permanently delete key '\(label)'"
-        let context = try authenticator.authenticate(reason: prompt)
+        let context: LAContext
+        do {
+            context = try authenticator.authenticate(reason: prompt)
+        } catch {
+            auditRecorder.record(
+                AuditEvent(
+                    type: .keyDelete,
+                    result: .denied,
+                    reason: .authenticationFailed,
+                    keyFingerprint: fingerprint,
+                    keyKind: .personal,
+                    sensitive: AuditSensitive(keyLabel: label, processChain: [], host: nil)
+                )
+            )
+            throw error
+        }
 
         var revocationError: Error?
         do {
@@ -281,6 +329,15 @@ public class KeychainManager {
             EncryptedVaultStore.shared.removeRecord(label: label)
             try PublicKeyStore.removeChecked(label: label)
             ClavisLogger.log("KEY_DELETE", "Key '\(label)' deleted successfully.")
+            auditRecorder.record(
+                AuditEvent(
+                    type: .keyDelete,
+                    result: .allowed,
+                    keyFingerprint: fingerprint,
+                    keyKind: .personal,
+                    sensitive: AuditSensitive(keyLabel: label, processChain: [], host: nil)
+                )
+            )
         } else {
             if let revocationError {
                 ClavisLogger.log(
@@ -291,6 +348,16 @@ public class KeychainManager {
             ClavisLogger.log(
                 "KEY_DELETE",
                 "Removed the Keychain item for '\(label)' but left the encrypted vault record in place because it did not match the authenticated key."
+            )
+            auditRecorder.record(
+                AuditEvent(
+                    type: .keyDelete,
+                    result: .failed,
+                    reason: .partialDeletion,
+                    keyFingerprint: fingerprint,
+                    keyKind: .personal,
+                    sensitive: AuditSensitive(keyLabel: label, processChain: [], host: nil)
+                )
             )
             throw KeyDeletionError.partial(label: label)
         }
