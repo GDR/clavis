@@ -371,6 +371,10 @@ public struct KeyDetailInspectorView: View {
                     .glassCard(cornerRadius: 10)
                 }
 
+                if key.purpose == .agent {
+                    AgentPolicyView(key: key, appState: appState)
+                }
+
                 // Session Cache Section
                 VStack(alignment: .leading, spacing: 8) {
                     Text(ClavisUIStrings.Inspector.sessionCacheSection)

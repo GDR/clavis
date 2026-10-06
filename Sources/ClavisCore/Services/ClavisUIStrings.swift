@@ -450,11 +450,35 @@ public enum ClavisUIStrings {
         }
         public static var historyShowSession: String { localized("agent_session.history_show_session", "Show session") }
         public static var historyEndSession: String { localized("agent_session.history_end_session", "End session") }
+        public static var extend: String { localized("agent_session.extend", "Extend…") }
+        public static var extend30m: String { localized("agent_session.extend_30m", "+30 min") }
+        public static var extend1h: String { localized("agent_session.extend_1h", "+1 hour") }
+        public static var extend4h: String { localized("agent_session.extend_4h", "+4 hours") }
         public static var extendPrompt: String { localized("agent_session.extend_prompt", "Extend agent session") }
         public static var askPrompt: String { localized("agent_session.ask_prompt", "Approve agent signature") }
+        public static var revokeAll: String { localized("agent_session.revoke_all", "Revoke all agent sessions") }
+        public static var notificationSignedTitle: String { localized("agent_session.notification_signed_title", "Agent signed") }
+        public static var notificationRateLimitedTitle: String { localized("agent_session.notification_rate_limited_title", "Agent rate limited") }
     }
 
     public enum AgentPolicy {
+        public static var sectionTitle: String { localized("agent_policy.section_title", "Agent Session Policy") }
+        public static var modeTitle: String { localized("agent_policy.mode_title", "Approval Mode") }
+        public static var modeNone: String { localized("agent_policy.mode_none", "None (Silent)") }
+        public static var modeNotify: String { localized("agent_policy.mode_notify", "Notify") }
+        public static var modeAsk: String { localized("agent_policy.mode_ask", "Ask every time") }
+        public static var leaseTitle: String { localized("agent_policy.lease_title", "Session Length") }
+        public static var allowedHostsTitle: String { localized("agent_policy.allowed_hosts_title", "Allowed Hosts") }
+        public static var allowedHostsAny: String { localized("agent_policy.allowed_hosts_any", "Any host") }
+        public static var addHost: String { localized("agent_policy.add_host", "Add host…") }
+        public static var addHostButton: String { localized("agent_policy.add_host_button", "Add") }
+        public static var hostNotFound: String { localized("agent_policy.host_not_found", "Host not found in known_hosts — connect once with ssh first") }
+        public static var rateLimitTitle: String { localized("agent_policy.rate_limit_title", "Rate Limit") }
+        public static var burstTitle: String { localized("agent_policy.burst_title", "Burst") }
+        public static var refillTitle: String { localized("agent_policy.refill_title", "Refill per minute") }
+        public static var saveButton: String { localized("agent_policy.save_button", "Save Policy") }
+        public static var savedFeedback: String { localized("agent_policy.saved_feedback", "Policy saved") }
+        public static var globalMaxLease: String { localized("agent_policy.global_max_lease", "Maximum agent session length") }
         public static var changePrompt: String { localized("agent_policy.change_prompt", "Change agent session policy") }
     }
 
