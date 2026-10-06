@@ -1,4 +1,5 @@
 import XCTest
+import LocalAuthentication
 @testable import ClavisCore
 @testable import Clavis
 
@@ -65,5 +66,101 @@ final class HistoryViewModelTests: ClavisBaseTestCase {
         XCTAssertEqual(viewModel.records.count, 4)
         XCTAssertEqual(viewModel.records[2].seq, 3)
         XCTAssertEqual(viewModel.records[3].seq, 2)
+    }
+
+    func test_008_T5_viewModelUnsealsAndClearsOnLock() async throws {
+        let store = try createTestStore()
+        let keyring = SoftwareAuditKeyring(requireContext: true)
+        let sealer = AuditSealer(keyring: keyring)
+
+        // Row 1: format 1 sealed
+        let event1 = AuditEvent(
+            type: .signature,
+            result: .allowed,
+            sensitive: AuditSensitive(keyLabel: "secret-key", processChain: [], host: "test.host")
+        )
+        let (fmt1, blob1) = sealer.seal(event1, store: store)
+        let seq1 = try store.insert(event1, sensitiveFormat: fmt1, sensitiveBlob: blob1)
+
+        // Row 2: format 0 legacy
+        let event2 = AuditEvent(
+            type: .signature,
+            result: .allowed,
+            sensitive: AuditSensitive(keyLabel: "legacy-key", processChain: [], host: "legacy.host")
+        )
+        let seq2 = try store.insert(event2)
+
+        // Row 3: format 2 omitted
+        let event3 = AuditEvent(type: .signature, result: .allowed)
+        let seq3 = try store.insert(event3, sensitiveFormat: 2, sensitiveBlob: Data())
+
+        let dummyContext = LAContext()
+        let viewModel = HistoryViewModel(
+            store: { store },
+            keyring: keyring,
+            contextProvider: { dummyContext }
+        )
+
+        await viewModel.reload().value
+
+        XCTAssertEqual(viewModel.records.count, 3)
+        XCTAssertEqual(viewModel.sensitive.count, 3)
+
+        if case .plaintext(let s1) = viewModel.sensitive[seq1] {
+            XCTAssertEqual(s1.keyLabel, "secret-key")
+        } else {
+            XCTFail("Expected plaintext for seq1")
+        }
+
+        if case .plaintext(let s2) = viewModel.sensitive[seq2] {
+            XCTAssertEqual(s2.keyLabel, "legacy-key")
+        } else {
+            XCTFail("Expected plaintext for seq2")
+        }
+
+        XCTAssertEqual(viewModel.sensitive[seq3], AuditUnsealResult.omitted)
+
+        // Lock notification must clear sensitive dictionary
+        NotificationCenter.default.post(name: PanelLockController.didLockNotification, object: nil)
+        // Yield to allow Task @MainActor to execute
+        await Task.yield()
+
+        XCTAssertTrue(viewModel.sensitive.isEmpty)
+    }
+
+    func test_008_T5_viewModelExportWithUnsealed() async throws {
+        let store = try createTestStore()
+        let keyring = SoftwareAuditKeyring(requireContext: true)
+        let sealer = AuditSealer(keyring: keyring)
+
+        let event = AuditEvent(
+            type: .signature,
+            result: .allowed,
+            sensitive: AuditSensitive(keyLabel: "export-key", processChain: [], host: "export.host")
+        )
+        let (fmt, blob) = sealer.seal(event, store: store)
+        _ = try store.insert(event, sensitiveFormat: fmt, sensitiveBlob: blob)
+
+        let dummyContext = LAContext()
+        let viewModel = HistoryViewModel(
+            store: { store },
+            keyring: keyring,
+            contextProvider: { dummyContext }
+        )
+
+        await viewModel.reload().value
+        XCTAssertEqual(viewModel.sensitive.count, 1)
+
+        let exportURL = testRootURL.appendingPathComponent("export.jsonl")
+        try viewModel.export(to: exportURL)
+
+        let exportedData = try Data(contentsOf: exportURL)
+        let jsonString = String(decoding: exportedData, as: UTF8.self)
+        XCTAssertFalse(jsonString.isEmpty)
+
+        // Key label should be hashed, not plaintext
+        XCTAssertFalse(jsonString.contains("export-key"))
+        // host is unredacted in export
+        XCTAssertTrue(jsonString.contains("export.host"))
     }
 }

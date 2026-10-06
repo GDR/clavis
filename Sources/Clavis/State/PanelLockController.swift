@@ -53,12 +53,15 @@ public final class PanelLockController: ObservableObject {
     public private(set) var unlockContext: LAContext?
     public private(set) var lastLockReason: PanelLockReason?
 
+    public static let didLockNotification = NSNotification.Name("com.clavis.panelDidLock")
     public static let enabledKey = "panelLock.enabled"
     public static let idleMinutesKey = "panelLock.idleMinutes"
     public static let idleOptions = [1, 5, 15, 60]
 
     private let defaults: UserDefaults
     private let authenticator: PanelAuthenticating
+    private let keyring: AuditKeyring?
+    private let recorder: AuditRecording
     private let now: () -> Date
     private var lastActivity: Date
 
@@ -83,13 +86,24 @@ public final class PanelLockController: ObservableObject {
         isEnabled && state == .locked
     }
 
+    public nonisolated static func makeDefaultKeyring() -> AuditKeyring? {
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return nil
+        }
+        return KeychainAuditKeyring()
+    }
+
     public init(
         defaults: UserDefaults = .standard,
         authenticator: PanelAuthenticating = LAPanelAuthenticator(),
+        keyring: AuditKeyring? = PanelLockController.makeDefaultKeyring(),
+        recorder: AuditRecording = AuditRecorder.shared,
         now: @escaping () -> Date = Date.init
     ) {
         self.defaults = defaults
         self.authenticator = authenticator
+        self.keyring = keyring
+        self.recorder = recorder
         self.now = now
         let currentTime = now()
         self.lastActivity = currentTime
@@ -131,6 +145,22 @@ public final class PanelLockController: ObservableObject {
             let currentTime = now()
             self.state = .unlocked(since: currentTime)
             self.lastActivity = currentTime
+
+            if let keyring = self.keyring {
+                let recorder = self.recorder
+                Task.detached {
+                    let status = keyring.validateCurrent(context: context)
+                    switch status {
+                    case .ok:
+                        break
+                    case .mismatch:
+                        recorder.record(AuditEvent(type: .securityAlert, result: .info, reason: .auditKeyMismatch))
+                        _ = try? keyring.rotate(mode: .passwordOrBiometry)
+                    case .unusable, .missing:
+                        _ = try? keyring.rotate(mode: .passwordOrBiometry)
+                    }
+                }
+            }
         } catch {
             // Cancelled or failed unlock stays locked without error alert
         }
@@ -141,6 +171,7 @@ public final class PanelLockController: ObservableObject {
         unlockContext?.invalidate()
         unlockContext = nil
         state = .locked
+        NotificationCenter.default.post(name: Self.didLockNotification, object: self)
     }
 
     public func installSystemEventHandler(monitor: SystemEventMonitoring) {

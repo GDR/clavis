@@ -48,6 +48,7 @@ public enum AuditReason: String, Codable, CaseIterable, Sendable {
     case partialDeletion = "partial_deletion"
     case noAgentSession = "no_agent_session"
     case wrongKeyKind = "wrong_key_kind"
+    case auditKeyMismatch = "audit_key_mismatch"
 }
 
 public struct AuditProcess: Codable, Equatable, Sendable {
