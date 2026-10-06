@@ -181,3 +181,114 @@ class ClavisBaseTestCase: XCTestCase {
         return clientSocket
     }
 }
+
+final class SoftwareAuditKeyring: AuditKeyring, @unchecked Sendable {
+    private let lock = NSLock()
+    private var keys: [String: (privateKey: P256.KeyAgreement.PrivateKey, item: AuditReadKeyItem)] = [:]
+    private var currentKeyID: String?
+    var requireContext: Bool = true
+    private(set) var agreeCalls: Int = 0
+
+    init(requireContext: Bool = true) {
+        self.requireContext = requireContext
+    }
+
+    func currentPublicKey() throws -> AuditReadPublicKey {
+        lock.lock()
+        defer { lock.unlock() }
+        if let cur = currentKeyID, let entry = keys[cur] {
+            return AuditReadPublicKey(keyID: cur, publicKey: entry.privateKey.publicKey)
+        }
+        return try rotateLocked(mode: .passwordOrBiometry)
+    }
+
+    func agree(keyID: String, with peer: P256.KeyAgreement.PublicKey, context: LAContext?) throws -> SharedSecret {
+        lock.lock()
+        defer { lock.unlock() }
+        if requireContext && context == nil {
+            throw LAError(.authenticationFailed)
+        }
+        guard let entry = keys[keyID] else {
+            throw AuditKeyringError.keyNotFound(keyID)
+        }
+        agreeCalls += 1
+        return try entry.privateKey.sharedSecretFromKeyAgreement(with: peer)
+    }
+
+    func validateCurrent(context: LAContext?) -> AuditKeyringValidation {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let cur = currentKeyID, let entry = keys[cur] else {
+            return .missing
+        }
+        if requireContext && context == nil {
+            return .unusable
+        }
+        guard let expectedPub = Data(base64Encoded: entry.item.publicKeyX963) else {
+            return .unusable
+        }
+        if entry.privateKey.publicKey.x963Representation == expectedPub {
+            return .ok
+        } else {
+            return .mismatch
+        }
+    }
+
+    func rotate(mode: AuditReadMode) throws -> AuditReadPublicKey {
+        lock.lock()
+        defer { lock.unlock() }
+        return try rotateLocked(mode: mode)
+    }
+
+    private func rotateLocked(mode: AuditReadMode) throws -> AuditReadPublicKey {
+        let priv = P256.KeyAgreement.PrivateKey()
+        let pubX963 = priv.publicKey.x963Representation
+        let hash = SHA256.hash(data: pubX963)
+        let keyID = String(hash.map { String(format: "%02x", $0) }.joined().prefix(16))
+        let item = AuditReadKeyItem(
+            version: 1,
+            keyID: keyID,
+            publicKeyX963: pubX963.base64EncodedString(),
+            seBlob: priv.rawRepresentation.base64EncodedString(),
+            mode: mode,
+            created: Date()
+        )
+        keys[keyID] = (priv, item)
+        currentKeyID = keyID
+        DistributedNotificationCenter.default().postNotificationName(
+            KeychainAuditKeyring.notificationName,
+            object: nil,
+            userInfo: nil,
+            deliverImmediately: true
+        )
+        return AuditReadPublicKey(keyID: keyID, publicKey: priv.publicKey)
+    }
+
+    func knownKeyIDs() throws -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(keys.keys)
+    }
+
+    func tamperPublicKey(for keyID: String, with otherPub: P256.KeyAgreement.PublicKey) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = keys[keyID] else { return }
+        let tamperedItem = AuditReadKeyItem(
+            version: entry.item.version,
+            keyID: entry.item.keyID,
+            publicKeyX963: otherPub.x963Representation.base64EncodedString(),
+            seBlob: entry.item.seBlob,
+            mode: entry.item.mode,
+            created: entry.item.created
+        )
+        keys[keyID] = (entry.privateKey, tamperedItem)
+    }
+
+    func dropKey(keyID: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        keys.removeValue(forKey: keyID)
+    }
+}
+
