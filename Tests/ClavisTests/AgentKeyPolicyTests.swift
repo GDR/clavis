@@ -194,4 +194,206 @@ final class AgentKeyPolicyTests: ClavisBaseTestCase {
             XCTAssertEqual(error as? AgentPolicyError, .corrupt)
         }
     }
+
+    private func makeSetPolicyPayload(fingerprint: String, policyJson: String) -> Data {
+        var payload = Data([SSHAgentServer.setAgentPolicyRequest])
+        payload.appendWireString(fingerprint)
+        payload.appendWireString(policyJson)
+        return payload
+    }
+
+    private func makeGetPolicyPayload(fingerprint: String) -> Data {
+        var payload = Data([SSHAgentServer.getAgentPolicyRequest])
+        payload.appendWireString(fingerprint)
+        return payload
+    }
+
+    private func makeRegisterPayload(keyLabel: String, toolName: String, leaseMinutes: UInt32) -> Data {
+        var payload = Data([SSHAgentServer.registerAgentSessionRequest])
+        payload.appendWireString(keyLabel)
+        payload.appendWireString(toolName)
+        payload.appendWireUInt32(leaseMinutes)
+        return payload
+    }
+
+    func test_006_T1_setPolicyRequiresUserPresence() throws {
+        let auditRecorder = InMemoryAuditRecorder()
+        let authenticator = CountingAuthenticator()
+        let manager = makeKeyManager(authenticator: AllowingAuthenticator(), auditRecorder: auditRecorder)
+        let key = try manager.generateKey(label: "agent-presence-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+
+        let policyStore = InMemoryAgentPolicyStore()
+        let server = SSHAgentServer(
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentPolicies: policyStore,
+            authenticator: authenticator
+        )
+
+        let policy = AgentKeyPolicy(mode: .notify, leaseMinutes: 120, burst: 10, refillPerMinute: 2)
+        let policyData = try JSONEncoder().encode(policy)
+        let policyJson = String(data: policyData, encoding: .utf8)!
+
+        let payload = makeSetPolicyPayload(fingerprint: key.fingerprint, policyJson: policyJson)
+        let response = server.processAgentRequest(
+            payload: payload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+
+        XCTAssertEqual(response, Data([6]))
+        XCTAssertEqual(authenticator.authenticationCount, 1)
+
+        let saved = try policyStore.policy(forFingerprint: key.fingerprint)
+        XCTAssertEqual(saved, policy)
+
+        let policyEvents = auditRecorder.events.filter { $0.type == .policyChange }
+        XCTAssertEqual(policyEvents.count, 1)
+        XCTAssertEqual(policyEvents.first?.result, .allowed)
+        XCTAssertEqual(policyEvents.first?.keyFingerprint, key.fingerprint)
+    }
+
+    func test_006_T1_setPolicyRejectsInvalidBeforePrompt() throws {
+        let auditRecorder = InMemoryAuditRecorder()
+        let authenticator = CountingAuthenticator()
+        let manager = makeKeyManager(authenticator: AllowingAuthenticator(), auditRecorder: auditRecorder)
+        let key = try manager.generateKey(label: "agent-invalid-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+
+        let policyStore = InMemoryAgentPolicyStore()
+        let server = SSHAgentServer(
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentPolicies: policyStore,
+            authenticator: authenticator
+        )
+
+        // Invalid JSON
+        let badJsonPayload = makeSetPolicyPayload(fingerprint: key.fingerprint, policyJson: "not json")
+        let badJsonResponse = server.processAgentRequest(
+            payload: badJsonPayload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(badJsonResponse, Data([5]))
+        XCTAssertEqual(authenticator.authenticationCount, 0)
+
+        // Valid JSON but out-of-range policy (burst = 99999)
+        let outOfRangePolicy = AgentKeyPolicy(burst: 99999)
+        let outOfRangeData = try JSONEncoder().encode(outOfRangePolicy)
+        let outOfRangeJson = String(data: outOfRangeData, encoding: .utf8)!
+
+        let outOfRangePayload = makeSetPolicyPayload(fingerprint: key.fingerprint, policyJson: outOfRangeJson)
+        let outOfRangeResponse = server.processAgentRequest(
+            payload: outOfRangePayload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(outOfRangeResponse, Data([5]))
+        XCTAssertEqual(authenticator.authenticationCount, 0)
+    }
+
+    func test_006_T1_setPolicyRejectsPersonalKeyFingerprint() throws {
+        let auditRecorder = InMemoryAuditRecorder()
+        let authenticator = CountingAuthenticator()
+        let manager = makeKeyManager(authenticator: AllowingAuthenticator(), auditRecorder: auditRecorder)
+        let personalKey = try manager.generateKey(label: "personal-key-for-policy", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .general)
+
+        let policyStore = InMemoryAgentPolicyStore()
+        let server = SSHAgentServer(
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentPolicies: policyStore,
+            authenticator: authenticator
+        )
+
+        let policy = AgentKeyPolicy(mode: .notify)
+        let policyData = try JSONEncoder().encode(policy)
+        let policyJson = String(data: policyData, encoding: .utf8)!
+
+        let payload = makeSetPolicyPayload(fingerprint: personalKey.fingerprint, policyJson: policyJson)
+        let response = server.processAgentRequest(
+            payload: payload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(response, Data([5]))
+        XCTAssertEqual(authenticator.authenticationCount, 0)
+    }
+
+    func test_006_T1_corruptPolicyRefusesSessionStart() throws {
+        let auditRecorder = InMemoryAuditRecorder()
+        let manager = makeKeyManager(authenticator: AllowingAuthenticator(), auditRecorder: auditRecorder)
+        let key = try manager.generateKey(label: "agent-corrupt-policy-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+
+        let policyStore = InMemoryAgentPolicyStore()
+        policyStore.corruptFingerprints.insert(key.fingerprint)
+
+        let server = SSHAgentServer(
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentPolicies: policyStore
+        )
+
+        let payload = makeRegisterPayload(keyLabel: key.label, toolName: "agent-tool", leaseMinutes: 60)
+        let response = server.processAgentRequest(
+            payload: payload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+
+        XCTAssertEqual(response, Data([5]))
+
+        let deniedEvent = auditRecorder.events.first { $0.type == .sessionStart && $0.result == .denied }
+        XCTAssertNotNil(deniedEvent)
+        XCTAssertEqual(deniedEvent?.reason, .policyUnavailable)
+    }
+
+    func test_006_T1_getAgentPolicyRoundTrip() throws {
+        let auditRecorder = InMemoryAuditRecorder()
+        let manager = makeKeyManager(authenticator: AllowingAuthenticator(), auditRecorder: auditRecorder)
+        let key = try manager.generateKey(label: "agent-get-policy-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+
+        let policyStore = InMemoryAgentPolicyStore()
+        let customPolicy = AgentKeyPolicy(mode: .ask, leaseMinutes: 240, burst: 50, refillPerMinute: 10)
+        try policyStore.save(customPolicy, forFingerprint: key.fingerprint)
+
+        let server = SSHAgentServer(
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentPolicies: policyStore
+        )
+
+        let payload = makeGetPolicyPayload(fingerprint: key.fingerprint)
+        let response = server.processAgentRequest(
+            payload: payload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+
+        XCTAssertEqual(response.first, 6)
+        var reader = DataReader(data: Data(response.dropFirst()))
+        guard let jsonString = reader.readWireString() else {
+            XCTFail("Failed to read JSON string from response")
+            return
+        }
+        let decoded = try JSONDecoder().decode(AgentKeyPolicy.self, from: Data(jsonString.utf8))
+        XCTAssertEqual(decoded, customPolicy)
+    }
 }
+

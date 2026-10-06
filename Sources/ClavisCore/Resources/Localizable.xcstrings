@@ -1,6 +1,57 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "agent_policy.change_prompt": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change agent session policy"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Изменить политику сессии агента"
+          }
+        }
+      }
+    },
+    "agent_session.ask_prompt": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Approve agent signature"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Разрешить подпись агента"
+          }
+        }
+      }
+    },
+    "agent_session.extend_prompt": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Extend agent session"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Продлить сессию агента"
+          }
+        }
+      }
+    },
     "agent_session.approve_prompt": {
       "extractionState": "manual",
       "localizations": {
