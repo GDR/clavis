@@ -115,7 +115,12 @@ public final class PanelLockController: ObservableObject {
 
     public func unlock() async {
         guard isLocked else { return }
-        guard !isUnlocking else { return }
+        if isUnlocking {
+            while isUnlocking {
+                await Task.yield()
+            }
+            return
+        }
 
         isUnlocking = true
         defer { isUnlocking = false }

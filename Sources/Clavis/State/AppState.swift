@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import ClavisCore
 
 public enum KeyManagerSheet: String, Identifiable {
@@ -36,6 +37,8 @@ public class AppState: ObservableObject {
     @Published public var showingSettings: Bool = false
     @Published public var activeSheet: KeyManagerSheet? = nil
 
+    private var lockCancellable: AnyCancellable?
+
     private let keyManager: KeychainManager
     private let sessionCache: SessionCacheManager
     private let sshAgentServer: SSHAgentServer
@@ -66,6 +69,15 @@ public class AppState: ObservableObject {
                 self.updateGitGraceState()
             }
         }
+
+        lockCancellable = PanelLockController.shared.$state
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                if state == .locked {
+                    self?.activeSheet = nil
+                    self?.showingSettings = false
+                }
+            }
 
         refresh()
     }

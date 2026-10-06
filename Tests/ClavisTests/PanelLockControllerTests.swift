@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @preconcurrency import LocalAuthentication
 @testable import Clavis
 @testable import ClavisCore
@@ -246,5 +247,30 @@ final class PanelLockControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .locked)
         XCTAssertEqual(controller.lastLockReason, .screenLocked)
     }
+
+    func test_003_T3_gateBuildsContentOnlyWhenUnlocked() async {
+        let fakeAuth = FakePanelAuthenticator()
+        let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth)
+        var buildCount = 0
+
+        let gate = PanelLockGate(lock: controller) {
+            buildCount += 1
+            return Text("Secret Content")
+        }
+
+        XCTAssertTrue(controller.isLocked)
+        let hostingView = NSHostingView(rootView: gate)
+        hostingView.layout()
+        _ = gate.body
+        XCTAssertEqual(buildCount, 0, "Content should not be built when locked")
+
+        await controller.unlock()
+        XCTAssertFalse(controller.isLocked)
+
+        _ = gate.body
+        hostingView.layout()
+        XCTAssertGreaterThanOrEqual(buildCount, 1, "Content should be built when unlocked")
+    }
 }
+
 
