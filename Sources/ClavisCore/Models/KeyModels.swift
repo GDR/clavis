@@ -132,11 +132,14 @@ public enum KeyPurpose: String, CaseIterable, Identifiable, Codable {
 
 public enum KeyPurposeError: LocalizedError, Equatable {
     case notAllowedOnThisPath(KeyPurpose)
+    case kindChangeNotAllowed
 
     public var errorDescription: String? {
         switch self {
         case .notAllowedOnThisPath(let purpose):
             return "Key with purpose '\(purpose.rawValue)' is not allowed on this path."
+        case .kindChangeNotAllowed:
+            return "Changing key kind is only allowed between general and agent."
         }
     }
 }
