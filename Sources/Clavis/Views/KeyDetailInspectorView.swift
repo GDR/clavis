@@ -8,11 +8,6 @@ public struct KeyDetailInspectorView: View {
 
     @State private var copyFeedback: String? = nil
     @State private var showingDeleteAlert: Bool = false
-    @State private var showingChangeKindAlert: Bool = false
-
-    private var targetKind: KeyPurpose {
-        (key.purpose == .agent) ? .general : .agent
-    }
 
     public init(key: Ed25519KeyInfo, appState: AppState, onDelete: @escaping () -> Void) {
         self.key = key
@@ -141,15 +136,6 @@ public struct KeyDetailInspectorView: View {
                         }
                         Button(action: copyFingerprint) {
                             Label(ClavisUIStrings.Inspector.copyFingerprintMenu, systemImage: "number")
-                        }
-                        if key.purpose == .general || key.purpose == .agent {
-                            Divider()
-                            Button(action: {
-                                ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: displaying change kind confirmation alert for '\(key.label)'")
-                                showingChangeKindAlert = true
-                            }) {
-                                Label(ClavisUIStrings.KeyDetail.changeKind, systemImage: "arrow.triangle.2.circlepath")
-                            }
                         }
                         Divider()
                         Button(action: {
@@ -364,13 +350,6 @@ public struct KeyDetailInspectorView: View {
                             Text(key.purpose.title)
                                 .font(.caption)
                                 .fontWeight(.medium)
-                            if key.purpose == .general || key.purpose == .agent {
-                                Button(ClavisUIStrings.KeyDetail.changeKind) {
-                                    showingChangeKindAlert = true
-                                }
-                                .buttonStyle(.link)
-                                .font(.caption)
-                            }
                         }
                     }
                     .padding(14)
@@ -471,26 +450,6 @@ public struct KeyDetailInspectorView: View {
             }
         } message: {
             Text(ClavisUIStrings.Inspector.deleteAlertMessage(label: key.label))
-        }
-        .alert(ClavisUIStrings.KeyDetail.changeKindConfirm, isPresented: $showingChangeKindAlert) {
-            Button(ClavisUIStrings.KeyDetail.changeKindConfirm) {
-                let target = targetKind
-                ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: user confirmed change kind of key '\(key.label)' to \(target.rawValue)")
-                Task {
-                    do {
-                        try appState.changeKind(label: key.label, to: target)
-                    } catch {
-                        await MainActor.run {
-                            appState.errorMessage = error.localizedDescription
-                        }
-                    }
-                }
-            }
-            Button(ClavisUIStrings.Common.cancel, role: .cancel) {
-                ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: user cancelled change kind of key '\(key.label)'")
-            }
-        } message: {
-            Text(ClavisUIStrings.KeyDetail.changeKindAlertMessage(label: key.label, newPurpose: targetKind))
         }
     }
 
