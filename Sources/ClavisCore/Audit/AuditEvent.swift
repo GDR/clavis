@@ -24,6 +24,12 @@ public enum AuditKeyKind: String, Codable, CaseIterable, Sendable {
     case personal, agent                     // always .personal until story 005
 }
 
+extension KeyPurpose {
+    public var auditKind: AuditKeyKind {
+        self == .agent ? .agent : .personal
+    }
+}
+
 /// Machine-readable reason. Never free text (story 002 C1).
 public enum AuditReason: String, Codable, CaseIterable, Sendable {
     case malformedRequest = "malformed_request"

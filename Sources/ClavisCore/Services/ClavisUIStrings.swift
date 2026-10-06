@@ -279,6 +279,8 @@ public enum ClavisUIStrings {
         public static var generalSubtitle: String { localized("key_purpose.general_subtitle", "Available for SSH login and Git commit/tag signing") }
         public static var gitSigningOnlyTitle: String { localized("key_purpose.git_signing_only_title", "Git Signing Only") }
         public static var gitSigningOnlySubtitle: String { localized("key_purpose.git_signing_only_subtitle", "Restricted strictly to Git commits. Hidden from SSH login") }
+        public static var agentTitle: String { localized("key_purpose.agent_title", "Agent") }
+        public static var agentSubtitle: String { localized("key_purpose.agent_subtitle", "Restricted to agent socket. Cannot sign Git commits") }
     }
 
     public enum Prompt {

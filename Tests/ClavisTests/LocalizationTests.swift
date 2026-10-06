@@ -106,6 +106,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(BiometricPolicy.biometryCurrentSet.title, "Strict Biometrics")
         XCTAssertEqual(KeyPurpose.general.title, "General (SSH & Git)")
         XCTAssertEqual(KeyPurpose.gitSigningOnly.title, "Git Signing Only")
+        XCTAssertEqual(KeyPurpose.agent.title, "Agent")
     }
 
     func testPromptStrings() {

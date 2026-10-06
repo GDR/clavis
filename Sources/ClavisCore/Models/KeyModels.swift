@@ -99,8 +99,13 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
 public enum KeyPurpose: String, CaseIterable, Identifiable, Codable {
     case general = "general"
     case gitSigningOnly = "gitSigningOnly"
+    case agent = "agent"
 
     public var id: String { rawValue }
+
+    public var isPersonal: Bool {
+        self != .agent
+    }
 
     public var title: String {
         switch self {
@@ -108,6 +113,8 @@ public enum KeyPurpose: String, CaseIterable, Identifiable, Codable {
             return ClavisUIStrings.KeyPurposeStrings.generalTitle
         case .gitSigningOnly:
             return ClavisUIStrings.KeyPurposeStrings.gitSigningOnlyTitle
+        case .agent:
+            return ClavisUIStrings.KeyPurposeStrings.agentTitle
         }
     }
 
@@ -117,6 +124,8 @@ public enum KeyPurpose: String, CaseIterable, Identifiable, Codable {
             return ClavisUIStrings.KeyPurposeStrings.generalSubtitle
         case .gitSigningOnly:
             return ClavisUIStrings.KeyPurposeStrings.gitSigningOnlySubtitle
+        case .agent:
+            return ClavisUIStrings.KeyPurposeStrings.agentSubtitle
         }
     }
 }

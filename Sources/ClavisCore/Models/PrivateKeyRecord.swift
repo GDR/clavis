@@ -101,7 +101,14 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         output.append(UInt8(version))
         output.append(algorithm == .ed25519 ? 1 : 2)
         output.append(storageType == .keychain ? 1 : 2)
-        output.append(purpose == .general ? 1 : 2)
+        switch purpose {
+        case .general:
+            output.append(1)
+        case .gitSigningOnly:
+            output.append(2)
+        case .agent:
+            output.append(3)
+        }
         switch biometricPolicy {
         case nil: output.append(0)
         case .userPresence: output.append(1)
@@ -167,6 +174,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         switch purposeByte {
         case 1: purpose = .general
         case 2: purpose = .gitSigningOnly
+        case 3: purpose = .agent
         default: throw PrivateKeyRecordError.corruptedRecord("Unknown purpose identifier")
         }
         let biometric: BiometricPolicy?

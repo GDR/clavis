@@ -3027,6 +3027,40 @@
         }
       }
     },
+    "key_purpose.agent_subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restricted to agent socket. Cannot sign Git commits"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ограничен сокетом агента. Не может подписывать коммиты Git"
+          }
+        }
+      }
+    },
+    "key_purpose.agent_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Агентский"
+          }
+        }
+      }
+    },
     "prompt.ssh_auth": {
       "extractionState": "manual",
       "localizations": {
