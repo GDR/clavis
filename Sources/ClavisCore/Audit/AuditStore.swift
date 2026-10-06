@@ -9,6 +9,30 @@ public enum AuditStoreError: Error, Equatable {
     case schemaTooNew(Int32)
 }
 
+public struct AuditEpoch: Equatable, Sendable {
+    public let epochID: Data
+    public let keyID: String
+    public let epk: Data
+    public let wrappedDEK: Data
+    public let created: Date
+
+    public init(epochID: Data, keyID: String, epk: Data, wrappedDEK: Data, created: Date = Date()) {
+        self.epochID = epochID
+        self.keyID = keyID
+        self.epk = epk
+        self.wrappedDEK = wrappedDEK
+        self.created = created
+    }
+
+    public static func == (lhs: AuditEpoch, rhs: AuditEpoch) -> Bool {
+        lhs.epochID == rhs.epochID
+            && lhs.keyID == rhs.keyID
+            && lhs.epk == rhs.epk
+            && lhs.wrappedDEK == rhs.wrappedDEK
+            && abs(lhs.created.timeIntervalSince1970 - rhs.created.timeIntervalSince1970) < 0.001
+    }
+}
+
 public struct AuditQuery: Equatable {
     public var from: Date?
     public var to: Date?
@@ -162,14 +186,14 @@ public final class AuditStore {
         }
         defer { sqlite3_finalize(stmt) }
 
-        let version: Int32
+        var currentVersion: Int32
         if sqlite3_step(stmt) == SQLITE_ROW {
-            version = sqlite3_column_int(stmt, 0)
+            currentVersion = sqlite3_column_int(stmt, 0)
         } else {
-            version = 0
+            currentVersion = 0
         }
 
-        if version == 0 {
+        if currentVersion == 0 {
             let schemaSQL = """
             BEGIN IMMEDIATE;
             CREATE TABLE events (
@@ -202,23 +226,45 @@ public final class AuditStore {
             if sqlite3_exec(dbHandle, "PRAGMA user_version = 1;", nil, nil, nil) != SQLITE_OK {
                 throw AuditStoreError.stepFailed(sqlite3_errcode(dbHandle))
             }
-        } else if version > 1 {
+            currentVersion = 1
+        }
+
+        if currentVersion == 1 {
+            let v2SQL = """
+            BEGIN IMMEDIATE;
+            CREATE TABLE epochs (
+              epoch_id    BLOB    PRIMARY KEY,
+              key_id      TEXT    NOT NULL,
+              epk         BLOB    NOT NULL,
+              wrapped_dek BLOB    NOT NULL,
+              created     REAL    NOT NULL
+            ) STRICT;
+            CREATE INDEX idx_events_format ON events(sensitive_format, seq);
+            COMMIT;
+            """
+            var execErr: UnsafeMutablePointer<CChar>?
+            if sqlite3_exec(dbHandle, v2SQL, nil, nil, &execErr) != SQLITE_OK {
+                let code = sqlite3_errcode(dbHandle)
+                sqlite3_free(execErr)
+                throw AuditStoreError.stepFailed(code)
+            }
+            if sqlite3_exec(dbHandle, "PRAGMA user_version = 2;", nil, nil, nil) != SQLITE_OK {
+                throw AuditStoreError.stepFailed(sqlite3_errcode(dbHandle))
+            }
+            currentVersion = 2
+        } else if currentVersion > 2 {
             sqlite3_close(dbHandle)
             self.db = nil
-            throw AuditStoreError.schemaTooNew(version)
+            throw AuditStoreError.schemaTooNew(currentVersion)
         }
     }
 
     @discardableResult
-    public func insert(_ event: AuditEvent) throws -> Int64 {
+    public func insert(_ event: AuditEvent, sensitiveFormat: Int, sensitiveBlob: Data) throws -> Int64 {
         try queue.sync {
             guard let dbHandle = db else {
                 throw AuditStoreError.stepFailed(SQLITE_MISUSE)
             }
-
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys]
-            let sensitiveData = try encoder.encode(event.sensitive)
 
             let sql = """
             INSERT INTO events (
@@ -262,9 +308,9 @@ public final class AuditStore {
             }
 
             sqlite3_bind_int(stmt, 9, Int32(event.count))
-            sqlite3_bind_int(stmt, 10, 0) // sensitive_format = 0 (unencrypted JSON)
+            sqlite3_bind_int(stmt, 10, Int32(sensitiveFormat))
 
-            _ = sensitiveData.withUnsafeBytes { raw in
+            _ = sensitiveBlob.withUnsafeBytes { raw in
                 sqlite3_bind_blob(stmt, 11, raw.baseAddress, Int32(raw.count), Self.SQLITE_TRANSIENT)
             }
 
@@ -275,6 +321,14 @@ public final class AuditStore {
             Self.enforceAuxiliaryPermissions(for: url)
             return sqlite3_last_insert_rowid(dbHandle)
         }
+    }
+
+    @discardableResult
+    public func insert(_ event: AuditEvent) throws -> Int64 {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let sensitiveData = try encoder.encode(event.sensitive)
+        return try insert(event, sensitiveFormat: 0, sensitiveBlob: sensitiveData)
     }
 
     public func query(_ q: AuditQuery) throws -> [AuditRecord] {
@@ -393,72 +447,7 @@ public final class AuditStore {
             let decoder = JSONDecoder()
 
             while sqlite3_step(stmt) == SQLITE_ROW {
-                let seq = sqlite3_column_int64(stmt, 0)
-                let eventIdStr = String(cString: sqlite3_column_text(stmt, 1))
-                let eventId = UUID(uuidString: eventIdStr) ?? UUID()
-                let time = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2))
-                let typeStr = String(cString: sqlite3_column_text(stmt, 3))
-                let type = AuditEventType(rawValue: typeStr) ?? .signature
-                let resultStr = String(cString: sqlite3_column_text(stmt, 4))
-                let result = AuditResult(rawValue: resultStr) ?? .info
-
-                let reason: AuditReason?
-                if sqlite3_column_type(stmt, 5) != SQLITE_NULL {
-                    reason = AuditReason(rawValue: String(cString: sqlite3_column_text(stmt, 5)))
-                } else {
-                    reason = nil
-                }
-
-                let keyFingerprint: String?
-                if sqlite3_column_type(stmt, 6) != SQLITE_NULL {
-                    keyFingerprint = String(cString: sqlite3_column_text(stmt, 6))
-                } else {
-                    keyFingerprint = nil
-                }
-
-                let keyKind: AuditKeyKind?
-                if sqlite3_column_type(stmt, 7) != SQLITE_NULL {
-                    keyKind = AuditKeyKind(rawValue: String(cString: sqlite3_column_text(stmt, 7)))
-                } else {
-                    keyKind = nil
-                }
-
-                let sessionID: String?
-                if sqlite3_column_type(stmt, 8) != SQLITE_NULL {
-                    sessionID = String(cString: sqlite3_column_text(stmt, 8))
-                } else {
-                    sessionID = nil
-                }
-
-                let count = Int(sqlite3_column_int(stmt, 9))
-                let sensitiveFormat = sqlite3_column_int(stmt, 10)
-
-                let sensitive: AuditSensitive
-                if sensitiveFormat == 0 {
-                    if let blobPtr = sqlite3_column_blob(stmt, 11) {
-                        let byteCount = Int(sqlite3_column_bytes(stmt, 11))
-                        let data = Data(bytes: blobPtr, count: byteCount)
-                        sensitive = (try? decoder.decode(AuditSensitive.self, from: data)) ?? AuditSensitive()
-                    } else {
-                        sensitive = AuditSensitive()
-                    }
-                } else {
-                    sensitive = AuditSensitive(keyLabel: nil, processChain: [], host: nil)
-                }
-
-                let event = AuditEvent(
-                    id: eventId,
-                    time: time,
-                    type: type,
-                    result: result,
-                    reason: reason,
-                    keyFingerprint: keyFingerprint,
-                    keyKind: keyKind,
-                    sessionID: sessionID,
-                    count: count,
-                    sensitive: sensitive
-                )
-                records.append(AuditRecord(seq: seq, event: event))
+                records.append(extractRecord(from: stmt!, decoder: decoder))
             }
 
             return records
@@ -622,6 +611,267 @@ public final class AuditStore {
 
         guard sqlite3_step(stmt) == SQLITE_DONE else {
             throw AuditStoreError.stepFailed(sqlite3_errcode(dbHandle))
+        }
+    }
+
+    public func insertEpoch(_ e: AuditEpoch) throws {
+        try queue.sync {
+            guard let dbHandle = db else {
+                throw AuditStoreError.stepFailed(SQLITE_MISUSE)
+            }
+            let sql = "INSERT OR IGNORE INTO epochs (epoch_id, key_id, epk, wrapped_dek, created) VALUES (?, ?, ?, ?, ?);"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(dbHandle, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw AuditStoreError.prepareFailed(sqlite3_errcode(dbHandle))
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            _ = e.epochID.withUnsafeBytes { raw in
+                sqlite3_bind_blob(stmt, 1, raw.baseAddress, Int32(raw.count), Self.SQLITE_TRANSIENT)
+            }
+            sqlite3_bind_text(stmt, 2, e.keyID, -1, Self.SQLITE_TRANSIENT)
+            _ = e.epk.withUnsafeBytes { raw in
+                sqlite3_bind_blob(stmt, 3, raw.baseAddress, Int32(raw.count), Self.SQLITE_TRANSIENT)
+            }
+            _ = e.wrappedDEK.withUnsafeBytes { raw in
+                sqlite3_bind_blob(stmt, 4, raw.baseAddress, Int32(raw.count), Self.SQLITE_TRANSIENT)
+            }
+            sqlite3_bind_double(stmt, 5, e.created.timeIntervalSince1970)
+
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw AuditStoreError.stepFailed(sqlite3_errcode(dbHandle))
+            }
+        }
+    }
+
+    public func epoch(id: Data) throws -> AuditEpoch? {
+        try queue.sync {
+            guard let dbHandle = db else {
+                throw AuditStoreError.stepFailed(SQLITE_MISUSE)
+            }
+            let sql = "SELECT epoch_id, key_id, epk, wrapped_dek, created FROM epochs WHERE epoch_id = ?;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(dbHandle, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw AuditStoreError.prepareFailed(sqlite3_errcode(dbHandle))
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            _ = id.withUnsafeBytes { raw in
+                sqlite3_bind_blob(stmt, 1, raw.baseAddress, Int32(raw.count), Self.SQLITE_TRANSIENT)
+            }
+
+            guard sqlite3_step(stmt) == SQLITE_ROW else {
+                return nil
+            }
+            return extractEpoch(from: stmt!)
+        }
+    }
+
+    public func epochs() throws -> [AuditEpoch] {
+        try queue.sync {
+            guard let dbHandle = db else {
+                throw AuditStoreError.stepFailed(SQLITE_MISUSE)
+            }
+            let sql = "SELECT epoch_id, key_id, epk, wrapped_dek, created FROM epochs ORDER BY created ASC;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(dbHandle, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw AuditStoreError.prepareFailed(sqlite3_errcode(dbHandle))
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            var list: [AuditEpoch] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let epoch = extractEpoch(from: stmt!) {
+                    list.append(epoch)
+                }
+            }
+            return list
+        }
+    }
+
+    public func updateEpochWrap(id: Data, keyID: String, epk: Data, wrappedDEK: Data) throws {
+        try queue.sync {
+            guard let dbHandle = db else {
+                throw AuditStoreError.stepFailed(SQLITE_MISUSE)
+            }
+            let sql = "UPDATE epochs SET key_id = ?, epk = ?, wrapped_dek = ? WHERE epoch_id = ?;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(dbHandle, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw AuditStoreError.prepareFailed(sqlite3_errcode(dbHandle))
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, keyID, -1, Self.SQLITE_TRANSIENT)
+            _ = epk.withUnsafeBytes { raw in
+                sqlite3_bind_blob(stmt, 2, raw.baseAddress, Int32(raw.count), Self.SQLITE_TRANSIENT)
+            }
+            _ = wrappedDEK.withUnsafeBytes { raw in
+                sqlite3_bind_blob(stmt, 3, raw.baseAddress, Int32(raw.count), Self.SQLITE_TRANSIENT)
+            }
+            _ = id.withUnsafeBytes { raw in
+                sqlite3_bind_blob(stmt, 4, raw.baseAddress, Int32(raw.count), Self.SQLITE_TRANSIENT)
+            }
+
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw AuditStoreError.stepFailed(sqlite3_errcode(dbHandle))
+            }
+        }
+    }
+
+    private func extractEpoch(from stmt: OpaquePointer) -> AuditEpoch? {
+        guard let epochIdPtr = sqlite3_column_blob(stmt, 0),
+              let epkPtr = sqlite3_column_blob(stmt, 2),
+              let wrappedPtr = sqlite3_column_blob(stmt, 3) else {
+            return nil
+        }
+        let epochID = Data(bytes: epochIdPtr, count: Int(sqlite3_column_bytes(stmt, 0)))
+        let keyID = String(cString: sqlite3_column_text(stmt, 1))
+        let epk = Data(bytes: epkPtr, count: Int(sqlite3_column_bytes(stmt, 2)))
+        let wrappedDEK = Data(bytes: wrappedPtr, count: Int(sqlite3_column_bytes(stmt, 3)))
+        let created = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 4))
+        return AuditEpoch(epochID: epochID, keyID: keyID, epk: epk, wrappedDEK: wrappedDEK, created: created)
+    }
+
+    public func legacyPlaintextRows(limit: Int) throws -> [AuditRecord] {
+        try queue.sync {
+            guard let dbHandle = db else {
+                throw AuditStoreError.stepFailed(SQLITE_MISUSE)
+            }
+            let sql = """
+            SELECT seq, event_id, time, type, result, reason, key_fingerprint, key_kind, session_id, count, sensitive_format, sensitive
+            FROM events
+            WHERE sensitive_format = 0
+            ORDER BY seq ASC
+            LIMIT ?;
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(dbHandle, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw AuditStoreError.prepareFailed(sqlite3_errcode(dbHandle))
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_int(stmt, 1, Int32(limit))
+
+            var records: [AuditRecord] = []
+            let decoder = JSONDecoder()
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                records.append(extractRecord(from: stmt!, decoder: decoder))
+            }
+            return records
+        }
+    }
+
+    private func extractRecord(from stmt: OpaquePointer, decoder: JSONDecoder) -> AuditRecord {
+        let seq = sqlite3_column_int64(stmt, 0)
+        let eventIdStr = String(cString: sqlite3_column_text(stmt, 1))
+        let eventId = UUID(uuidString: eventIdStr) ?? UUID()
+        let time = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2))
+        let typeStr = String(cString: sqlite3_column_text(stmt, 3))
+        let type = AuditEventType(rawValue: typeStr) ?? .signature
+        let resultStr = String(cString: sqlite3_column_text(stmt, 4))
+        let result = AuditResult(rawValue: resultStr) ?? .info
+
+        let reason: AuditReason?
+        if sqlite3_column_type(stmt, 5) != SQLITE_NULL {
+            reason = AuditReason(rawValue: String(cString: sqlite3_column_text(stmt, 5)))
+        } else {
+            reason = nil
+        }
+
+        let keyFingerprint: String?
+        if sqlite3_column_type(stmt, 6) != SQLITE_NULL {
+            keyFingerprint = String(cString: sqlite3_column_text(stmt, 6))
+        } else {
+            keyFingerprint = nil
+        }
+
+        let keyKind: AuditKeyKind?
+        if sqlite3_column_type(stmt, 7) != SQLITE_NULL {
+            keyKind = AuditKeyKind(rawValue: String(cString: sqlite3_column_text(stmt, 7)))
+        } else {
+            keyKind = nil
+        }
+
+        let sessionID: String?
+        if sqlite3_column_type(stmt, 8) != SQLITE_NULL {
+            sessionID = String(cString: sqlite3_column_text(stmt, 8))
+        } else {
+            sessionID = nil
+        }
+
+        let count = Int(sqlite3_column_int(stmt, 9))
+        let sensitiveFormat = Int(sqlite3_column_int(stmt, 10))
+
+        var blobData = Data()
+        if let blobPtr = sqlite3_column_blob(stmt, 11) {
+            let byteCount = Int(sqlite3_column_bytes(stmt, 11))
+            blobData = Data(bytes: blobPtr, count: byteCount)
+        }
+
+        let sensitive: AuditSensitive
+        let sealedSensitive: Data?
+        if sensitiveFormat == 0 {
+            sensitive = (try? decoder.decode(AuditSensitive.self, from: blobData)) ?? AuditSensitive()
+            sealedSensitive = nil
+        } else if sensitiveFormat == 1 {
+            sensitive = AuditSensitive(keyLabel: nil, processChain: [], host: nil)
+            sealedSensitive = blobData
+        } else {
+            sensitive = AuditSensitive(keyLabel: nil, processChain: [], host: nil)
+            sealedSensitive = nil
+        }
+
+        let event = AuditEvent(
+            id: eventId,
+            time: time,
+            type: type,
+            result: result,
+            reason: reason,
+            keyFingerprint: keyFingerprint,
+            keyKind: keyKind,
+            sessionID: sessionID,
+            count: count,
+            sensitive: sensitive
+        )
+        return AuditRecord(seq: seq, event: event, sensitiveFormat: sensitiveFormat, sealedSensitive: sealedSensitive)
+    }
+
+    public func replaceSensitive(seq: Int64, expectedFormat: Int, newFormat: Int, blob: Data) throws -> Bool {
+        try queue.sync {
+            guard let dbHandle = db else {
+                throw AuditStoreError.stepFailed(SQLITE_MISUSE)
+            }
+            let sql = "UPDATE events SET sensitive_format = ?, sensitive = ? WHERE seq = ? AND sensitive_format = ?;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(dbHandle, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw AuditStoreError.prepareFailed(sqlite3_errcode(dbHandle))
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_int(stmt, 1, Int32(newFormat))
+            _ = blob.withUnsafeBytes { raw in
+                sqlite3_bind_blob(stmt, 2, raw.baseAddress, Int32(raw.count), Self.SQLITE_TRANSIENT)
+            }
+            sqlite3_bind_int64(stmt, 3, seq)
+            sqlite3_bind_int(stmt, 4, Int32(expectedFormat))
+
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw AuditStoreError.stepFailed(sqlite3_errcode(dbHandle))
+            }
+
+            return sqlite3_changes(dbHandle) > 0
+        }
+    }
+
+    public func checkpoint() throws {
+        try queue.sync {
+            guard let dbHandle = db else {
+                throw AuditStoreError.stepFailed(SQLITE_MISUSE)
+            }
+            if sqlite3_exec(dbHandle, "PRAGMA wal_checkpoint(TRUNCATE);", nil, nil, nil) != SQLITE_OK {
+                throw AuditStoreError.stepFailed(sqlite3_errcode(dbHandle))
+            }
         }
     }
 }
