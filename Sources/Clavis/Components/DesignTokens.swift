@@ -20,6 +20,7 @@ public enum DesignTokens {
     public static let accentBlue = Color(red: 0.0, green: 0.53, blue: 1.0)
     public static let accentOrange = Color(red: 1.0, green: 0.55, blue: 0.16)
     public static let accentIndigo = Color(red: 0.38, green: 0.33, blue: 0.96)
+    public static let accentPurple = Color(red: 0.69, green: 0.32, blue: 0.87)
     public static let textSecondary = Color(nsColor: NSColor.secondaryLabelColor)
     public static let textTertiary = Color(nsColor: NSColor.tertiaryLabelColor)
 }

@@ -86,6 +86,18 @@ public struct PurposeBadge: View {
             .padding(.vertical, 2)
             .background(Color.orange.opacity(0.15))
             .cornerRadius(4)
+        } else if purpose == .agent {
+            HStack(spacing: 3) {
+                Image(systemName: "cpu")
+                    .font(.system(size: 8, weight: .bold))
+                Text(ClavisUIStrings.Badges.agent)
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundColor(.purple)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(Color.purple.opacity(0.15))
+            .cornerRadius(4)
         }
     }
 }

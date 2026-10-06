@@ -9,12 +9,17 @@ struct KeyListView: View {
     @State private var selectedKeyId: String? = nil
     @State private var showingAddPopover: Bool = false
     @State private var statusMessage: String? = nil
+    @State private var kindFilter: KeyKindFilter = .all
+
+    private var filteredKeys: [Ed25519KeyInfo] {
+        KeyKindFilter.apply(kindFilter, to: appState.keys)
+    }
 
     private var selectedKey: Ed25519KeyInfo? {
         if let id = selectedKeyId {
-            return appState.keys.first(where: { $0.id == id })
+            return filteredKeys.first(where: { $0.id == id })
         }
-        return appState.keys.first
+        return filteredKeys.first
     }
 
     var body: some View {
@@ -36,20 +41,29 @@ struct KeyListView: View {
                             Text(ClavisUIStrings.KeyList.title)
                                 .font(.system(size: 24, weight: .semibold))
                                 .foregroundColor(.primary)
-                            Text(ClavisUIStrings.KeyList.identitiesAvailable(count: appState.keys.count))
+                            Text(ClavisUIStrings.KeyList.identitiesAvailable(count: filteredKeys.count))
                                 .font(.system(size: 12))
                                 .foregroundColor(DesignTokens.textSecondary)
                         }
                         .padding(.horizontal, 20)
                         .padding(.top, 44)
 
+                        // Kind Filter Picker
+                        Picker("", selection: $kindFilter) {
+                            Text(ClavisUIStrings.KeyList.filterAll).tag(KeyKindFilter.all)
+                            Text(ClavisUIStrings.KeyList.filterPersonal).tag(KeyKindFilter.personal)
+                            Text(ClavisUIStrings.KeyList.filterAgent).tag(KeyKindFilter.agent)
+                        }
+                        .pickerStyle(.segmented)
+                        .padding(.horizontal, 20)
+
                         // Key List
-                        if appState.keys.isEmpty {
+                        if filteredKeys.isEmpty {
                             Spacer()
                         } else {
                             ScrollView {
                                 LazyVStack(spacing: 8) {
-                                    ForEach(appState.keys) { key in
+                                    ForEach(filteredKeys) { key in
                                         KeySidebarRowView(
                                             key: key,
                                             isSelected: (selectedKey?.id == key.id),
