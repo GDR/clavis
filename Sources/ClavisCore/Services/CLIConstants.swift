@@ -9,6 +9,7 @@ public enum CLICommand: String, CaseIterable {
     case lock
     case logs
     case vault
+    case kind
     case help
     case dashH = "-h"
     case dashDashHelp = "--help"
@@ -23,6 +24,7 @@ public enum CLICommand: String, CaseIterable {
 
 public enum CLIFlag: String {
     case gitOnly = "--git-only"
+    case agent = "--agent"
     case stdin = "--stdin"
     case dash = "-"
     case daemon = "--daemon"
@@ -34,13 +36,15 @@ public enum CLIMessages {
     public static func usage(for command: CLICommand) -> String {
         switch command {
         case .generate:
-            return "Usage: clavis generate <label>"
+            return "Usage: clavis generate <label> [--git-only] [--agent]"
         case .importCmd:
             return "Usage: clavis import <label> [--stdin] [--git-only]"
         case .delete:
             return "Usage: clavis delete <label> --yes"
         case .exportPub:
             return "Usage: clavis export-pub <label>"
+        case .kind:
+            return "Usage: clavis kind <label> agent|personal"
         case .vault:
             return "Usage: clavis vault repair [--replace-pin]"
         default:
@@ -52,17 +56,20 @@ public enum CLIMessages {
     Clavis — Native macOS Ed25519 Keychain & SSH Agent Daemon
 
     USAGE:
-      clavis generate <label> [--git-only]  Generate a new key pair in Keychain
+      clavis generate <label> [--git-only] [--agent]  Generate a new key pair in Keychain
       clavis import <label> [--stdin]       Import a 32-byte hex seed into Keychain
       clavis list                          List all stored keys and OpenSSH public keys
       clavis export-pub <label>            Print the OpenSSH public key for <label>
       clavis delete <label> --yes          Authenticate and permanently delete a key pair
+      clavis kind <label> agent|personal   Change key kind between personal and agent
       clavis lock                          Lock all session caches and active Git sessions
       clavis logs                          Print live Touch ID and authentication logs
       clavis vault repair [--replace-pin]  Repair vault master key pin in Keychain
       clavis daemon / --daemon            Run SSH Agent socket daemon in background
       clavis                               Launch SwiftUI Key Manager GUI
     """
+
+    public static let agentAndGitOnlyExclusive = "--agent and --git-only cannot be used together."
 
     public static let seedFromArgvRejected = "Refusing private seed in command arguments. Use interactive input or --stdin."
     public static let invalidSeedLength = "Invalid hex seed string (must be 64 hex characters / 32 bytes)."
@@ -116,6 +123,14 @@ public enum CLIMessages {
 
     public static func failedToExport(error: Error) -> String {
         "Failed to export public key: \(error.localizedDescription)"
+    }
+
+    public static func successfullyChangedKind(label: String, newPurpose: KeyPurpose) -> String {
+        "Successfully changed kind of key '\(label)' to \(newPurpose == .agent ? "agent" : "personal")."
+    }
+
+    public static func failedToChangeKind(error: Error) -> String {
+        "Failed to change key kind: \(error.localizedDescription)"
     }
 
     public enum Agent {

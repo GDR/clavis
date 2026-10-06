@@ -34,8 +34,12 @@ public struct CLIService {
                 return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.usage(for: .generate))
             }
             let label = args[2].trimmingCharacters(in: .whitespaces)
-            let isGitOnly = args.contains(CLIFlag.gitOnly.rawValue)
-            let purpose: KeyPurpose = isGitOnly ? .gitSigningOnly : .general
+            let purpose: KeyPurpose
+            do {
+                purpose = try parseGeneratePurpose(args: args)
+            } catch {
+                return CLICommandResult(exitCode: 1, output: "", error: error.localizedDescription)
+            }
             let isEnclave = args.contains("--enclave") || args.contains("--secure-enclave")
             let storage: KeyStorageType = isEnclave ? .secureEnclave : .keychain
             let algorithm = isEnclave ? "ECDSA P-256" : "Ed25519"
@@ -103,19 +107,26 @@ public struct CLIService {
         case .list:
             do {
                 let keys = try keyManager.listKeys()
-                if keys.isEmpty {
-                    return CLICommandResult(exitCode: 0, output: CLIMessages.noKeysFound())
-                }
-                var lines: [String] = [CLIMessages.foundKeysHeader(count: keys.count)]
-                for key in keys {
-                    let purposeTag = key.purpose == .gitSigningOnly ? " [Git Only]" : ""
-                    lines.append(" - [\(key.label)]\(purposeTag)")
-                    lines.append("   Fingerprint: \(key.fingerprint)")
-                    lines.append("   Public Key:  \(key.publicKeyOpenSSH)")
-                }
+                let lines = formatKeyListEntries(keys: keys)
                 return CLICommandResult(exitCode: 0, output: lines.joined(separator: "\n"))
             } catch {
                 return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.failedToList(error: error))
+            }
+
+        case .kind:
+            guard args.count >= 4 else {
+                return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.usage(for: .kind))
+            }
+            let label = args[2].trimmingCharacters(in: .whitespaces)
+            guard let newPurpose = parseKindTarget(argument: args[3]) else {
+                return CLICommandResult(exitCode: 1, output: "", error: "Invalid target kind '\(args[3])'. Must be 'agent' or 'personal'.")
+            }
+
+            do {
+                try keyManager.changeKind(label: label, to: newPurpose)
+                return CLICommandResult(exitCode: 0, output: CLIMessages.successfullyChangedKind(label: label, newPurpose: newPurpose))
+            } catch {
+                return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.failedToChangeKind(error: error))
             }
 
         case .lock:
@@ -344,5 +355,55 @@ public struct CLIService {
 
     private static func isASCIIWhitespace(_ byte: UInt8) -> Bool {
         byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D
+    }
+
+    // MARK: - Pure CLI Helpers
+
+    public static func parseGeneratePurpose(args: [String]) throws -> KeyPurpose {
+        let isGitOnly = args.contains(CLIFlag.gitOnly.rawValue)
+        let isAgent = args.contains(CLIFlag.agent.rawValue)
+        if isGitOnly && isAgent {
+            throw NSError(
+                domain: "ClavisCLI",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: CLIMessages.agentAndGitOnlyExclusive]
+            )
+        }
+        if isGitOnly { return .gitSigningOnly }
+        if isAgent { return .agent }
+        return .general
+    }
+
+    public static func parseKindTarget(argument: String) -> KeyPurpose? {
+        let lower = argument.trimmingCharacters(in: .whitespaces).lowercased()
+        if lower == "agent" { return .agent }
+        if lower == "personal" { return .general }
+        return nil
+    }
+
+    public static func formatKeyHeader(label: String, purpose: KeyPurpose) -> String {
+        let tag: String
+        switch purpose {
+        case .general:
+            tag = ""
+        case .gitSigningOnly:
+            tag = " [Git Only]"
+        case .agent:
+            tag = " [Agent]"
+        }
+        return " - [\(label)]\(tag)"
+    }
+
+    public static func formatKeyListEntries(keys: [Ed25519KeyInfo]) -> [String] {
+        if keys.isEmpty {
+            return [CLIMessages.noKeysFound()]
+        }
+        var lines: [String] = [CLIMessages.foundKeysHeader(count: keys.count)]
+        for key in keys {
+            lines.append(formatKeyHeader(label: key.label, purpose: key.purpose))
+            lines.append("   Fingerprint: \(key.fingerprint)")
+            lines.append("   Public Key:  \(key.publicKeyOpenSSH)")
+        }
+        return lines
     }
 }
