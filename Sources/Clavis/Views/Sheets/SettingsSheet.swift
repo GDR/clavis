@@ -11,6 +11,8 @@ public struct SettingsView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject var lock = PanelLockController.shared
     private let modeChanger: PinModeChanger?
+    @State private var globalMaxLease: Int = 1440
+    private let globalMaxLeaseOptions = [60, 240, 480, 1440, 2880, 10080]
 
     @State private var copiedEnv = false
     @State private var activeSheet: ActiveSheet?
@@ -197,6 +199,30 @@ public struct SettingsView: View {
                         .padding(.top, 2)
                     }
                 }
+
+                // Agent Session Policy Section
+                SettingsGroup(title: ClavisUIStrings.AgentPolicy.sectionTitle) {
+                    SettingsRow(
+                        icon: "person.crop.circle.badge.clock",
+                        iconColor: Color(red: 0.58, green: 0.35, blue: 0.88),
+                        title: ClavisUIStrings.AgentPolicy.globalMaxLease,
+                        subtitle: ""
+                    ) {
+                        Picker("", selection: $globalMaxLease) {
+                            ForEach(globalMaxLeaseOptions, id: \.self) { minutes in
+                                Text(ClavisUIStrings.PanelLock.minutesFormat(minutes))
+                                    .tag(minutes)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 120)
+                        .onChange(of: globalMaxLease) { newValue in
+                            Task {
+                                try? appState.setGlobalPolicy(AgentGlobalPolicy(maxLeaseMinutes: newValue))
+                            }
+                        }
+                    }
+                }
             }
             .padding(20)
         }
@@ -245,6 +271,11 @@ public struct SettingsView: View {
                 },
                 onDismiss: { activeSheet = nil }
             )
+        }
+        .onAppear {
+            if let global = appState.getGlobalPolicy() {
+                globalMaxLease = global.maxLeaseMinutes
+            }
         }
     }
 

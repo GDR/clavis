@@ -276,6 +276,36 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(ClavisUIStrings.AgentSession.remainingFormat(minutes: 12), "12 min remaining")
         XCTAssertEqual(ClavisUIStrings.AgentSession.historyShowSession, "Show session")
         XCTAssertEqual(ClavisUIStrings.AgentSession.historyEndSession, "End session")
+        XCTAssertEqual(ClavisUIStrings.AgentSession.extend, "Extend…")
+        XCTAssertEqual(ClavisUIStrings.AgentSession.extend30m, "+30 min")
+        XCTAssertEqual(ClavisUIStrings.AgentSession.extend1h, "+1 hour")
+        XCTAssertEqual(ClavisUIStrings.AgentSession.extend4h, "+4 hours")
+        XCTAssertEqual(ClavisUIStrings.AgentSession.extendPrompt, "Extend agent session")
+        XCTAssertEqual(ClavisUIStrings.AgentSession.askPrompt, "Approve agent signature")
+        XCTAssertEqual(ClavisUIStrings.AgentSession.revokeAll, "Revoke all agent sessions")
+        XCTAssertEqual(ClavisUIStrings.AgentSession.notificationSignedTitle, "Agent signed")
+        XCTAssertEqual(ClavisUIStrings.AgentSession.notificationRateLimitedTitle, "Agent rate limited")
+    }
+
+    func testAgentPolicyLocalizedStrings() {
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.sectionTitle, "Agent Session Policy")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.modeTitle, "Approval Mode")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.modeNone, "None (Silent)")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.modeNotify, "Notify")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.modeAsk, "Ask every time")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.leaseTitle, "Session Length")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.allowedHostsTitle, "Allowed Hosts")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.allowedHostsAny, "Any host")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.addHost, "Add host…")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.addHostButton, "Add")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.hostNotFound, "Host not found in known_hosts — connect once with ssh first")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.rateLimitTitle, "Rate Limit")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.burstTitle, "Burst")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.refillTitle, "Refill per minute")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.saveButton, "Save Policy")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.savedFeedback, "Policy saved")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.globalMaxLease, "Maximum agent session length")
+        XCTAssertEqual(ClavisUIStrings.AgentPolicy.changePrompt, "Change agent session policy")
     }
 
     func testPinUnlockLocalizedStrings() {

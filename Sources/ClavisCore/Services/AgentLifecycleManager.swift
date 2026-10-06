@@ -429,11 +429,31 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         var payload = Data([SSHAgentServer.extendAgentSessionRequest])
         payload.appendWireString(id)
         payload.appendWireUInt32(UInt32(minutes))
-        guard let response = try? sendControlRequest(payload),
+        guard let response = try? sendControlRequest(payload, timeout: 75),
               response.first == 6 else { return nil }
         var reader = DataReader(data: Data(response.dropFirst()))
         guard let newExpirySeconds = reader.readUInt32() else { return nil }
         return Date(timeIntervalSince1970: TimeInterval(newExpirySeconds))
+    }
+
+    public func setAgentPolicy(target: String, policyJson: String) -> Bool {
+        guard FileManager.default.fileExists(atPath: socketPath) else { return false }
+        var payload = Data([SSHAgentServer.setAgentPolicyRequest])
+        payload.appendWireString(target)
+        payload.appendWireString(policyJson)
+        guard let response = try? sendControlRequest(payload, timeout: 75),
+              response.first == 6 else { return false }
+        return true
+    }
+
+    public func getAgentPolicy(target: String) -> String? {
+        guard FileManager.default.fileExists(atPath: socketPath) else { return nil }
+        var payload = Data([SSHAgentServer.getAgentPolicyRequest])
+        payload.appendWireString(target)
+        guard let response = try? sendControlRequest(payload),
+              response.first == 6 else { return nil }
+        var reader = DataReader(data: Data(response.dropFirst()))
+        return reader.readWireString()
     }
 
     private func writeAll(_ data: Data, to fd: Int32) -> Bool {

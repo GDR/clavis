@@ -299,4 +299,33 @@ public class AppState: ObservableObject {
     public func clearError() {
         errorMessage = nil
     }
+
+    public func getAgentPolicy(fingerprint: String) -> AgentKeyPolicy? {
+        guard let json = agentLifecycle.getAgentPolicy(target: fingerprint),
+              let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(AgentKeyPolicy.self, from: data)
+    }
+
+    public func setAgentPolicy(_ policy: AgentKeyPolicy, fingerprint: String) throws {
+        try policy.validate()
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        guard let json = String(data: try encoder.encode(policy), encoding: .utf8),
+              agentLifecycle.setAgentPolicy(target: fingerprint, policyJson: json) else {
+            throw AgentPolicyError.policyUnavailable
+        }
+    }
+
+    public func getGlobalPolicy() -> AgentGlobalPolicy? {
+        guard let json = agentLifecycle.getAgentPolicy(target: "global"),
+              let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(AgentGlobalPolicy.self, from: data)
+    }
+
+    public func setGlobalPolicy(_ global: AgentGlobalPolicy) throws {
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        guard let json = String(data: try encoder.encode(global), encoding: .utf8),
+              agentLifecycle.setAgentPolicy(target: "global", policyJson: json) else {
+            throw AgentPolicyError.policyUnavailable
+        }
+    }
 }
