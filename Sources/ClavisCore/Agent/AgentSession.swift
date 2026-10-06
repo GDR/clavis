@@ -3,6 +3,19 @@ import Security
 
 public enum AgentSessionEndReason: String, Sendable {
     case rootExited, screenLocked, lockAll, revokedByUser, leaseExpired, keyChanged, signingError, daemonStopping
+
+    public var auditReason: AuditReason {
+        switch self {
+        case .rootExited: return .rootExited
+        case .screenLocked: return .screenLocked
+        case .lockAll: return .lockAll
+        case .revokedByUser: return .revokedByUser
+        case .leaseExpired: return .leaseExpired
+        case .keyChanged: return .keyChanged
+        case .signingError: return .signingError
+        case .daemonStopping: return .daemonStopping
+        }
+    }
 }
 
 public struct AgentSessionRoot: Equatable, Sendable {
