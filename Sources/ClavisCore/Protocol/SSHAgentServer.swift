@@ -57,6 +57,10 @@ public class SSHAgentServer {
     internal static let invalidateKeyRequest: UInt8 = 240
     internal static let queryGitGraceRequest: UInt8 = 241
     internal static let lockAllRequest: UInt8 = 242
+    internal static let registerAgentSessionRequest: UInt8 = 243
+    internal static let endAgentSessionRequest: UInt8 = 244
+    internal static let listAgentSessionsRequest: UInt8 = 245
+    internal static let revokeAllAgentSessionsRequest: UInt8 = 246
     public static let defaultSocketPath = NSString(string: "~/.ssh/clavis.sock").expandingTildeInPath
     public static let defaultAgentSocketPath = NSString(string: "~/.ssh/clavis-agent.sock").expandingTildeInPath
     public static let shared = SSHAgentServer()
@@ -76,6 +80,7 @@ public class SSHAgentServer {
     internal let maxRequestsPerConnection: Int
     private let keyManager: KeychainManager
     private let auditRecorder: AuditRecording
+    private let agentSessions: AgentSessionRegistry
     private let controlPeerValidator: (Int32) -> Bool
     private let peerProcessValidator: (pid_t, String, UInt64) -> Bool
     private let backoffHandler: (useconds_t) -> Void
@@ -131,7 +136,8 @@ public class SSHAgentServer {
         backoffHandler: ((useconds_t) -> Void)? = nil,
         acceptCall: ((Int32) -> (fd: Int32, err: Int32))? = nil,
         onPermanentListenerFailure: (() -> Void)? = nil,
-        auditRecorder: AuditRecording = AuditRecorder.shared
+        auditRecorder: AuditRecording = AuditRecorder.shared,
+        agentSessions: AgentSessionRegistry = .shared
     ) {
         self.role = role
         self.promptGate = promptGate
@@ -151,6 +157,7 @@ public class SSHAgentServer {
         self.maxRequestsPerConnection = max(1, maxRequestsPerConnection)
         self.keyManager = keyManager
         self.auditRecorder = auditRecorder
+        self.agentSessions = agentSessions
         self._onPermanentListenerFailure = onPermanentListenerFailure
     }
 
@@ -971,6 +978,10 @@ public class SSHAgentServer {
         msgType == Self.invalidateKeyRequest
             || msgType == Self.queryGitGraceRequest
             || msgType == Self.lockAllRequest
+            || msgType == Self.registerAgentSessionRequest
+            || msgType == Self.endAgentSessionRequest
+            || msgType == Self.listAgentSessionsRequest
+            || msgType == Self.revokeAllAgentSessionsRequest
     }
 
     /// - Parameter isTrustedControlPeer: lazily evaluated, only for control opcodes.
@@ -1043,10 +1054,177 @@ public class SSHAgentServer {
                 )
             )
             return Data([6]) // SSH_AGENT_SUCCESS
+        case Self.registerAgentSessionRequest:
+            return handleRegisterAgentSession(
+                payload: Data(payload.dropFirst()),
+                clientPid: clientPid,
+                clientExecutablePath: clientExecutablePath,
+                clientStartTime: clientStartTime,
+                clientSocket: clientSocket
+            )
+        case Self.endAgentSessionRequest:
+            var reader = DataReader(data: Data(payload.dropFirst()))
+            guard let sessionId = reader.readWireString(), !sessionId.isEmpty, reader.isEOF else {
+                return Data([5])
+            }
+            let ended = agentSessions.end(id: sessionId, reason: .revokedByUser)
+            return ended ? Data([6]) : Data([5])
+        case Self.listAgentSessionsRequest:
+            let reader = DataReader(data: Data(payload.dropFirst()))
+            guard reader.isEOF else { return Data([5]) }
+            let summaries = agentSessions.summaries()
+            var response = Data([6])
+            response.appendWireUInt32(UInt32(summaries.count))
+            for s in summaries {
+                response.appendWireString(s.id)
+                response.appendWireString(s.keyLabel)
+                response.appendWireString(s.keyFingerprint)
+                response.appendWireString(s.toolName)
+                response.appendWireUInt32(UInt32(s.rootPid))
+                response.appendWireUInt32(UInt32(s.startedAt.timeIntervalSince1970))
+                response.appendWireUInt32(UInt32(s.expiresAt.timeIntervalSince1970))
+            }
+            return response
+        case Self.revokeAllAgentSessionsRequest:
+            let reader = DataReader(data: Data(payload.dropFirst()))
+            guard reader.isEOF else { return Data([5]) }
+            let ended = agentSessions.endAll(reason: .revokedByUser)
+            var response = Data([6])
+            response.appendWireUInt32(UInt32(ended))
+            return response
         default:
             ClavisLogger.log("SSH_AGENT_REQ", "Unsupported SSH Agent request type \(msgType)")
             return Data([5]) // SSH_AGENT_FAILURE
         }
+    }
+
+    private func handleRegisterAgentSession(
+        payload: Data,
+        clientPid: pid_t?,
+        clientExecutablePath: String?,
+        clientStartTime: UInt64?,
+        clientSocket: Int32?
+    ) -> Data {
+        var reader = DataReader(data: payload)
+        guard let keyLabel = reader.readWireString(),
+              let toolName = reader.readWireString(),
+              let leaseMinutes = reader.readUInt32(),
+              reader.isEOF else {
+            return Data([5])
+        }
+
+        guard !toolName.isEmpty, toolName.utf8.count <= 256, !keyLabel.isEmpty else {
+            return Data([5])
+        }
+
+        guard let pid = clientPid, let startTime = clientStartTime else {
+            return Data([5])
+        }
+
+        let processPath = clientExecutablePath ?? SSHAgentServer.getProcessPath(pid: pid) ?? ""
+        let chain = AuditProcessChain.build(pid: pid, executablePath: processPath)
+
+        let keys = (try? keyManager.listKeys()) ?? []
+        guard let key = keys.first(where: { $0.label == keyLabel }) else {
+            auditRecorder.record(
+                AuditEvent(
+                    type: .sessionStart,
+                    result: .denied,
+                    reason: .unknownKey,
+                    keyKind: .agent,
+                    sensitive: AuditSensitive(keyLabel: keyLabel, processChain: chain)
+                )
+            )
+            return Data([5])
+        }
+
+        guard key.purpose == .agent else {
+            auditRecorder.record(
+                AuditEvent(
+                    type: .sessionStart,
+                    result: .denied,
+                    reason: .wrongKeyKind,
+                    keyFingerprint: key.fingerprint,
+                    keyKind: key.purpose.auditKind,
+                    sensitive: AuditSensitive(keyLabel: keyLabel, processChain: chain)
+                )
+            )
+            return Data([5])
+        }
+
+        let leaseMinutesActual = min(leaseMinutes == 0 ? 480 : leaseMinutes, 1440)
+        let leaseSeconds = UInt32(leaseMinutesActual * 60)
+
+        let requester = SigningPromptGate.Requester(executablePath: processPath, pid: pid)
+        let grant: AgentSessionGrant
+        do {
+            grant = try promptGate.run(requester: requester, clientSocket: clientSocket) {
+                let promptText = ClavisUIStrings.AgentSession.approvePrompt(
+                    tool: toolName,
+                    keyLabel: key.label,
+                    minutes: Int(leaseMinutesActual)
+                )
+                return try keyManager.authorizeAgentSession(key: key, prompt: promptText)
+            }
+        } catch {
+            let isCancelled = AuditEvent.isUserCancellation(error)
+            auditRecorder.record(
+                AuditEvent(
+                    type: .sessionStart,
+                    result: isCancelled ? .cancelled : .denied,
+                    reason: isCancelled ? .userCancelled : .authenticationFailed,
+                    keyFingerprint: key.fingerprint,
+                    keyKind: .agent,
+                    sensitive: AuditSensitive(keyLabel: key.label, processChain: chain)
+                )
+            )
+            return Data([5])
+        }
+
+        guard self.peerProcessValidator(pid, processPath, startTime) else {
+            grant.invalidate()
+            auditRecorder.record(
+                AuditEvent(
+                    type: .sessionStart,
+                    result: .denied,
+                    reason: .peerChanged,
+                    keyFingerprint: key.fingerprint,
+                    keyKind: .agent,
+                    sensitive: AuditSensitive(keyLabel: key.label, processChain: chain)
+                )
+            )
+            return Data([5])
+        }
+
+        let startedAt = Date()
+        let expiresAt = startedAt.addingTimeInterval(TimeInterval(leaseSeconds))
+        let session = AgentSession(
+            keyLabel: key.label,
+            keyFingerprint: key.fingerprint,
+            toolName: toolName,
+            root: AgentSessionRoot(pid: pid, startTime: startTime),
+            startedAt: startedAt,
+            expiresAt: expiresAt,
+            grant: grant
+        )
+        agentSessions.add(session)
+
+        auditRecorder.record(
+            AuditEvent(
+                type: .sessionStart,
+                result: .allowed,
+                reason: .sessionApproved,
+                keyFingerprint: key.fingerprint,
+                keyKind: .agent,
+                sessionID: session.id,
+                sensitive: AuditSensitive(keyLabel: key.label, processChain: chain)
+            )
+        )
+
+        var response = Data([6])
+        response.appendWireString(session.id)
+        response.appendWireUInt32(leaseSeconds)
+        return response
     }
 
     internal func handleRequestIdentities(

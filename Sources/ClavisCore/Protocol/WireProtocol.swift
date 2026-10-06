@@ -9,6 +9,20 @@ public struct DataReader {
         self.offset = data.startIndex
     }
 
+    public mutating func readUInt8() -> UInt8? {
+        guard offset + 1 <= data.endIndex else { return nil }
+        let val = data[offset]
+        offset += 1
+        return val
+    }
+
+    public mutating func readBool() -> Bool? {
+        guard let byte = readUInt8() else { return nil }
+        if byte == 0 { return false }
+        if byte == 1 { return true }
+        return nil
+    }
+
     public mutating func readUInt32() -> UInt32? {
         guard offset + 4 <= data.endIndex else { return nil }
         var value: UInt32 = 0
