@@ -187,6 +187,7 @@ public class AppState: ObservableObject {
         sessionCache.clearCache()
         cachedKeysCount = sessionCache.cachedCount
         endGitSigningSession()
+        PanelLockController.shared.lock(reason: .lockNow)
     }
 
     public func isKeyUnlocked(label: String) -> Bool {

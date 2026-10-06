@@ -271,6 +271,55 @@ final class PanelLockControllerTests: XCTestCase {
         hostingView.layout()
         XCTAssertGreaterThanOrEqual(buildCount, 1, "Content should be built when unlocked")
     }
+
+    func test_003_AC5_lockedMenuShowsOnlyLockNowRevokeAndCount() {
+        let lockedWithSessions = MenuBarSections.visible(isLocked: true, hasSessions: true)
+        XCTAssertTrue(lockedWithSessions.contains(.lockNow))
+        XCTAssertTrue(lockedWithSessions.contains(.revokeAll))
+        XCTAssertTrue(lockedWithSessions.contains(.sessionCount))
+        XCTAssertTrue(lockedWithSessions.contains(.unlock))
+        XCTAssertTrue(lockedWithSessions.contains(.agentLifecycle))
+        XCTAssertTrue(lockedWithSessions.contains(.quit))
+
+        XCTAssertFalse(lockedWithSessions.contains(.identities))
+        XCTAssertFalse(lockedWithSessions.contains(.gitBanner))
+        XCTAssertFalse(lockedWithSessions.contains(.newKey))
+        XCTAssertFalse(lockedWithSessions.contains(.importKey))
+        XCTAssertFalse(lockedWithSessions.contains(.openKeyManager))
+        XCTAssertFalse(lockedWithSessions.contains(.history))
+        XCTAssertFalse(lockedWithSessions.contains(.settings))
+
+        let lockedNoSessions = MenuBarSections.visible(isLocked: true, hasSessions: false)
+        XCTAssertTrue(lockedNoSessions.contains(.lockNow))
+        XCTAssertFalse(lockedNoSessions.contains(.revokeAll))
+        XCTAssertFalse(lockedNoSessions.contains(.sessionCount))
+    }
+
+    func test_003_T4_unlockedMenuShowsEverything() {
+        let unlockedWithSessions = MenuBarSections.visible(isLocked: false, hasSessions: true)
+        XCTAssertTrue(unlockedWithSessions.contains(.identities))
+        XCTAssertTrue(unlockedWithSessions.contains(.gitBanner))
+        XCTAssertTrue(unlockedWithSessions.contains(.newKey))
+        XCTAssertTrue(unlockedWithSessions.contains(.importKey))
+        XCTAssertTrue(unlockedWithSessions.contains(.openKeyManager))
+        XCTAssertTrue(unlockedWithSessions.contains(.agentLifecycle))
+        XCTAssertTrue(unlockedWithSessions.contains(.history))
+        XCTAssertTrue(unlockedWithSessions.contains(.settings))
+        XCTAssertTrue(unlockedWithSessions.contains(.quit))
+        XCTAssertTrue(unlockedWithSessions.contains(.lockNow))
+        XCTAssertTrue(unlockedWithSessions.contains(.revokeAll))
+        XCTAssertTrue(unlockedWithSessions.contains(.sessionCount))
+        XCTAssertFalse(unlockedWithSessions.contains(.unlock))
+
+        let unlockedNoSessions = MenuBarSections.visible(isLocked: false, hasSessions: false)
+        XCTAssertTrue(unlockedNoSessions.contains(.identities))
+        XCTAssertTrue(unlockedNoSessions.contains(.gitBanner))
+        XCTAssertFalse(unlockedNoSessions.contains(.lockNow))
+        XCTAssertFalse(unlockedNoSessions.contains(.sessionCount))
+        XCTAssertFalse(unlockedNoSessions.contains(.revokeAll))
+        XCTAssertFalse(unlockedNoSessions.contains(.unlock))
+    }
 }
+
 
 
