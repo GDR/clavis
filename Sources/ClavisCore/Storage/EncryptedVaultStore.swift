@@ -499,6 +499,14 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         try? FileManager.default.removeItem(at: fileURL)
     }
 
+    public func hasRecord(label: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let hash = labelHash(label)
+        let fileURL = vaultDirectoryURL.appendingPathComponent("\(hash).enc")
+        return FileManager.default.fileExists(atPath: fileURL.path)
+    }
+
     public func loadRecord(label: String, context: LAContext? = nil) throws -> StoredPrivateKeyRecord? {
         guard PlatformSupport.hasSecureEnclave || Self.allowSoftwareMasterKeyForTesting else {
             throw VaultError.secureEnclaveRequired

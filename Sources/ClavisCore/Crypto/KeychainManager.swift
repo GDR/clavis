@@ -1145,6 +1145,149 @@ public class KeychainManager {
         try agentGrantRevoker(label)
     }
 
+    /// Change key purpose between general and agent. Requires user presence authentication.
+    public func changeKind(label: String, to newPurpose: KeyPurpose, prompt: String? = nil) throws {
+        guard let key = try fetchKeyInfo(label: label) else {
+            throw NSError(
+                domain: "Clavis",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Key with label '\(label)' not found."]
+            )
+        }
+
+        let currentPurpose = key.purpose
+        guard (currentPurpose == .general && newPurpose == .agent) || (currentPurpose == .agent && newPurpose == .general) else {
+            throw KeyPurposeError.kindChangeNotAllowed
+        }
+
+        let laPolicy: LAPolicy = (key.biometricPolicy == .biometryCurrentSet)
+            ? .deviceOwnerAuthenticationWithBiometrics
+            : .deviceOwnerAuthentication
+
+        let reason = prompt ?? "Touch ID to change key kind for '\(label)'"
+        let context: LAContext
+        do {
+            context = try authenticator.authenticate(reason: reason, policy: laPolicy)
+        } catch {
+            auditRecorder.record(
+                AuditEvent(
+                    type: .keyKindChange,
+                    result: .denied,
+                    reason: .authenticationFailed,
+                    keyFingerprint: key.fingerprint,
+                    keyKind: newPurpose.auditKind,
+                    sensitive: AuditSensitive(keyLabel: label, processChain: [], host: nil)
+                )
+            )
+            throw error
+        }
+
+        var record: StoredPrivateKeyRecord
+        do {
+            record = try loadAuthenticatedRecord(
+                label: label,
+                context: context,
+                prompt: reason,
+                expectedKeyInfo: key
+            )
+        } catch {
+            if laPolicy != .deviceOwnerAuthenticationWithBiometrics,
+               case PrivateKeyRecordError.metadataMismatch(let field, _, _) = error,
+               field == "biometricPolicy" {
+                context.invalidate()
+            }
+            if error is KeyPurposeError {
+                context.invalidate()
+            }
+            throw error
+        }
+        defer { record.wipe() }
+
+        try validateAuthenticatedRecord(record, against: key, context: context)
+
+        let recordPolicy = record.biometricPolicy ?? .userPresence
+        if recordPolicy == .biometryCurrentSet && laPolicy != .deviceOwnerAuthenticationWithBiometrics {
+            context.invalidate()
+            ClavisLogger.log("SECURITY_ALERT", "Refusing key kind change for '\(key.label)': record requires biometryCurrentSet but the authentication context was not evaluated with biometrics.")
+            throw PrivateKeyRecordError.metadataMismatch(
+                field: "biometricPolicy",
+                expected: BiometricPolicy.userPresence.rawValue,
+                actual: recordPolicy.rawValue
+            )
+        }
+
+        guard (record.purpose == .general && newPurpose == .agent) || (record.purpose == .agent && newPurpose == .general) else {
+            throw KeyPurposeError.kindChangeNotAllowed
+        }
+
+        var updatedRecord = StoredPrivateKeyRecord(
+            version: record.version,
+            label: record.label,
+            algorithm: record.algorithm,
+            storageType: record.storageType,
+            biometricPolicy: record.biometricPolicy,
+            keyPurpose: newPurpose,
+            keyData: record.keyData,
+            createdAt: record.createdAt
+        )
+        defer { updatedRecord.wipe() }
+
+        let hasVaultRecord = EncryptedVaultStore.shared.hasRecord(label: label)
+        if hasVaultRecord {
+            try EncryptedVaultStore.shared.saveRecord(updatedRecord)
+        }
+
+        var recordData = try updatedRecord.encode()
+        defer { Self.wipeData(&recordData) }
+
+        do {
+            try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
+        } catch {
+            if hasVaultRecord {
+                try? EncryptedVaultStore.shared.saveRecord(record)
+            }
+            throw error
+        }
+
+        let updatedKeyInfo = Ed25519KeyInfo(
+            label: key.label,
+            publicKeyOpenSSH: key.publicKeyOpenSSH,
+            publicKeyBlob: key.publicKeyBlob,
+            fingerprint: key.fingerprint,
+            createdAt: key.createdAt,
+            algorithmName: key.algorithmName,
+            storage: key.storageType,
+            biometricPolicy: key.biometricPolicy,
+            keyPurpose: newPurpose
+        )
+
+        do {
+            try PublicKeyStore.saveChecked(updatedKeyInfo)
+        } catch {
+            if var originalRecordData = try? record.encode() {
+                defer { Self.wipeData(&originalRecordData) }
+                try? privateKeyStore.save(label: label, data: originalRecordData, accessControlFlags: [.userPresence])
+            }
+            if hasVaultRecord {
+                try? EncryptedVaultStore.shared.saveRecord(record)
+            }
+            throw error
+        }
+
+        try revokeKeyCapabilities(label: label)
+
+        auditRecorder.record(
+            AuditEvent(
+                type: .keyKindChange,
+                result: .allowed,
+                keyFingerprint: key.fingerprint,
+                keyKind: newPurpose.auditKind,
+                sensitive: AuditSensitive(keyLabel: label, processChain: [], host: nil)
+            )
+        )
+        ClavisLogger.log("KEY_CHANGE_KIND", "Changed purpose of '\(label)' from '\(currentPurpose.rawValue)' to '\(newPurpose.rawValue)'.")
+    }
+
     // Convert Curve25519.Signing.PrivateKey to OpenSSH public key format & wire representation
     public func makeKeyInfo(
         label: String,
