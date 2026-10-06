@@ -2,12 +2,91 @@ import SwiftUI
 import AppKit
 import ClavisCore
 
+public enum MenuBarSection: Hashable, CaseIterable {
+    case unlock
+    case lockNow
+    case revokeAll
+    case sessionCount
+    case gitBanner
+    case identities
+    case newKey
+    case importKey
+    case openKeyManager
+    case agentLifecycle
+    case history
+    case settings
+    case quit
+
+    public static let revoke: MenuBarSection = .revokeAll
+    public static let gitSession: MenuBarSection = .gitBanner
+}
+
+public enum MenuBarSections {
+    public static func visible(isLocked: Bool, hasSessions: Bool) -> Set<MenuBarSection> {
+        if isLocked {
+            var sections: Set<MenuBarSection> = [
+                .unlock,
+                .lockNow,
+                .agentLifecycle,
+                .quit
+            ]
+            if hasSessions {
+                sections.insert(.revokeAll)
+                sections.insert(.sessionCount)
+            }
+            return sections
+        } else {
+            var sections: Set<MenuBarSection> = [
+                .gitBanner,
+                .identities,
+                .newKey,
+                .importKey,
+                .openKeyManager,
+                .agentLifecycle,
+                .history,
+                .settings,
+                .quit
+            ]
+            if hasSessions {
+                sections.insert(.lockNow)
+                sections.insert(.revokeAll)
+                sections.insert(.sessionCount)
+            }
+            return sections
+        }
+    }
+}
+
 @MainActor
 struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
+    @ObservedObject var lock: PanelLockController = .shared
     @State private var copiedLabel: String? = nil
 
+    private var sessionCount: Int {
+        appState.cachedKeysCount + (appState.activeGitGrace != nil ? 1 : 0)
+    }
+
+    private var hasSessions: Bool {
+        sessionCount > 0
+    }
+
+    private var statusSubtitle: String {
+        guard appState.isSocketActive else {
+            return ClavisUIStrings.MenuBar.agentOffline
+        }
+        if let pid = appState.agentPID {
+            return ClavisUIStrings.MenuBar.activeWithPID(pid)
+        }
+        if lock.isLocked {
+            return ClavisUIStrings.PanelLock.title
+        }
+        return ClavisUIStrings.MenuBar.identitiesReady(count: appState.keys.count)
+    }
+
     var body: some View {
+        let visibleSections = MenuBarSections.visible(isLocked: lock.isLocked, hasSessions: hasSessions)
+
         VStack(alignment: .leading, spacing: 8) {
             // Header: Agent Status & Lock All
             HStack(alignment: .center) {
@@ -17,7 +96,7 @@ struct MenuBarView: View {
                         Text(ClavisUIStrings.MenuBar.title)
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundColor(.primary)
-                        Text(appState.isSocketActive ? (appState.agentPID != nil ? ClavisUIStrings.MenuBar.activeWithPID(appState.agentPID!) : ClavisUIStrings.MenuBar.identitiesReady(count: appState.keys.count)) : ClavisUIStrings.MenuBar.agentOffline)
+                        Text(statusSubtitle)
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
@@ -25,7 +104,7 @@ struct MenuBarView: View {
 
                 Spacer()
 
-                if appState.cachedKeysCount > 0 {
+                if visibleSections.contains(.lockNow) && (hasSessions || lock.isLocked) {
                     Button(action: {
                         appState.lockNow()
                     }) {
@@ -71,8 +150,24 @@ struct MenuBarView: View {
                 .cornerRadius(6)
             }
 
+            // Locked active agent sessions count banner (D2)
+            if lock.isLocked && visibleSections.contains(.sessionCount) {
+                HStack(spacing: 8) {
+                    Image(systemName: "key.fill")
+                        .foregroundColor(.blue)
+                        .font(.system(size: 12))
+                    Text(ClavisUIStrings.PanelLock.agentSessionsCount(sessionCount))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.primary)
+                    Spacer()
+                }
+                .padding(6)
+                .background(Color.blue.opacity(0.12))
+                .cornerRadius(6)
+            }
+
             // Active Git Grace Session Banner
-            if let gitGrace = appState.activeGitGrace {
+            if visibleSections.contains(.gitBanner), let gitGrace = appState.activeGitGrace {
                 HStack(spacing: 8) {
                     Image(systemName: "arrow.triangle.branch")
                         .foregroundColor(.blue)
@@ -103,34 +198,36 @@ struct MenuBarView: View {
                 .cornerRadius(6)
             }
 
-            Divider()
+            if visibleSections.contains(.identities) {
+                Divider()
 
-            // Identities Section
-            VStack(alignment: .leading, spacing: 4) {
-                Text(ClavisUIStrings.MenuBar.identitiesHeader)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 4)
+                // Identities Section
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(ClavisUIStrings.MenuBar.identitiesHeader)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 4)
 
-                if appState.keys.isEmpty {
-                    VStack(spacing: 4) {
-                        Text(ClavisUIStrings.MenuBar.noKeysAvailable)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text(ClavisUIStrings.MenuBar.useNewKeyHint)
-                            .font(.caption2)
-                            .foregroundColor(.secondary.opacity(0.8))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                } else {
-                    VStack(spacing: 2) {
-                        ForEach(appState.keys.prefix(4)) { key in
-                            MenuBarIdentityRow(
-                                key: key,
-                                isCopied: copiedLabel == key.label,
-                                onCopy: { copyKey(key) }
-                            )
+                    if appState.keys.isEmpty {
+                        VStack(spacing: 4) {
+                            Text(ClavisUIStrings.MenuBar.noKeysAvailable)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text(ClavisUIStrings.MenuBar.useNewKeyHint)
+                                .font(.caption2)
+                                .foregroundColor(.secondary.opacity(0.8))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                    } else {
+                        VStack(spacing: 2) {
+                            ForEach(appState.keys.prefix(4)) { key in
+                                MenuBarIdentityRow(
+                                    key: key,
+                                    isCopied: copiedLabel == key.label,
+                                    onCopy: { copyKey(key) }
+                                )
+                            }
                         }
                     }
                 }
@@ -140,75 +237,114 @@ struct MenuBarView: View {
 
             // Menu Items (Control Center action style)
             VStack(spacing: 1) {
-                MenuBarActionItem(
-                    title: ClavisUIStrings.MenuBar.newKey,
-                    icon: "plus",
-                    shortcut: "⌘N"
-                ) {
-                    WindowManager.shared.openKeyManager(sheet: .create)
-                }
-
-                MenuBarActionItem(
-                    title: ClavisUIStrings.MenuBar.importKey,
-                    icon: "square.and.arrow.down",
-                    shortcut: "⇧⌘I"
-                ) {
-                    WindowManager.shared.openKeyManager(sheet: .importKey)
-                }
-
-                MenuBarActionItem(
-                    title: ClavisUIStrings.MenuBar.openKeyManager,
-                    icon: "slider.horizontal.3",
-                    shortcut: "⌘O"
-                ) {
-                    WindowManager.shared.openKeyManager()
-                }
-
-                if appState.isSocketActive {
+                if visibleSections.contains(.unlock) {
                     MenuBarActionItem(
-                        title: ClavisUIStrings.MenuBar.restartAgent,
-                        icon: "arrow.clockwise",
-                        shortcut: "⇧⌘R"
+                        title: ClavisUIStrings.PanelLock.unlockMenu,
+                        icon: "lock.open.fill",
+                        shortcut: "⌘U"
                     ) {
-                        appState.restartAgent()
-                    }
-                } else {
-                    MenuBarActionItem(
-                        title: ClavisUIStrings.MenuBar.startAgent,
-                        icon: "play.fill",
-                        shortcut: "⇧⌘S"
-                    ) {
-                        appState.startAgent()
+                        Task {
+                            await lock.unlock()
+                            if !lock.isLocked {
+                                WindowManager.shared.openKeyManager()
+                            }
+                        }
                     }
                 }
 
-                MenuBarActionItem(
-                    title: ClavisUIStrings.MenuBar.history,
-                    icon: "clock.arrow.circlepath",
-                    shortcut: "⌘Y"
-                ) {
-                    WindowManager.shared.openHistory()
+                if lock.isLocked && visibleSections.contains(.lockNow) {
+                    MenuBarActionItem(
+                        title: ClavisUIStrings.MenuBar.lockAll,
+                        icon: "lock.fill",
+                        shortcut: "⌘L"
+                    ) {
+                        appState.lockNow()
+                    }
                 }
 
-                MenuBarActionItem(
-                    title: ClavisUIStrings.MenuBar.settings,
-                    icon: "gearshape",
-                    shortcut: "⌘,"
-                ) {
-                    WindowManager.shared.openSettings()
+                if visibleSections.contains(.newKey) {
+                    MenuBarActionItem(
+                        title: ClavisUIStrings.MenuBar.newKey,
+                        icon: "plus",
+                        shortcut: "⌘N"
+                    ) {
+                        WindowManager.shared.openKeyManager(sheet: .create)
+                    }
+                }
+
+                if visibleSections.contains(.importKey) {
+                    MenuBarActionItem(
+                        title: ClavisUIStrings.MenuBar.importKey,
+                        icon: "square.and.arrow.down",
+                        shortcut: "⇧⌘I"
+                    ) {
+                        WindowManager.shared.openKeyManager(sheet: .importKey)
+                    }
+                }
+
+                if visibleSections.contains(.openKeyManager) {
+                    MenuBarActionItem(
+                        title: ClavisUIStrings.MenuBar.openKeyManager,
+                        icon: "slider.horizontal.3",
+                        shortcut: "⌘O"
+                    ) {
+                        WindowManager.shared.openKeyManager()
+                    }
+                }
+
+                if visibleSections.contains(.agentLifecycle) {
+                    if appState.isSocketActive {
+                        MenuBarActionItem(
+                            title: ClavisUIStrings.MenuBar.restartAgent,
+                            icon: "arrow.clockwise",
+                            shortcut: "⇧⌘R"
+                        ) {
+                            appState.restartAgent()
+                        }
+                    } else {
+                        MenuBarActionItem(
+                            title: ClavisUIStrings.MenuBar.startAgent,
+                            icon: "play.fill",
+                            shortcut: "⇧⌘S"
+                        ) {
+                            appState.startAgent()
+                        }
+                    }
+                }
+
+                if visibleSections.contains(.history) {
+                    MenuBarActionItem(
+                        title: ClavisUIStrings.MenuBar.history,
+                        icon: "clock.arrow.circlepath",
+                        shortcut: "⌘Y"
+                    ) {
+                        WindowManager.shared.openHistory()
+                    }
+                }
+
+                if visibleSections.contains(.settings) {
+                    MenuBarActionItem(
+                        title: ClavisUIStrings.MenuBar.settings,
+                        icon: "gearshape",
+                        shortcut: "⌘,"
+                    ) {
+                        WindowManager.shared.openSettings()
+                    }
                 }
             }
 
-            Divider()
+            if visibleSections.contains(.quit) {
+                Divider()
 
-            // Quit Action
-            MenuBarActionItem(
-                title: ClavisUIStrings.MenuBar.quit,
-                icon: "power",
-                shortcut: "⌘Q",
-                isDestructive: true
-            ) {
-                confirmQuit()
+                // Quit Action
+                MenuBarActionItem(
+                    title: ClavisUIStrings.MenuBar.quit,
+                    icon: "power",
+                    shortcut: "⌘Q",
+                    isDestructive: true
+                ) {
+                    confirmQuit()
+                }
             }
         }
         .padding(14)

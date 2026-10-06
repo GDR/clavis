@@ -45,7 +45,9 @@ public class WindowManager: NSObject, NSWindowDelegate {
             return
         }
 
-        let keyListView = KeyListView().environmentObject(AppState.shared)
+        let keyListView = PanelLockGate {
+            KeyListView().environmentObject(AppState.shared)
+        }
         let hostingController = NSHostingController(rootView: keyListView)
 
         let window = NSWindow(
@@ -87,11 +89,13 @@ public class WindowManager: NSObject, NSWindowDelegate {
             return
         }
 
-        let settingsView = SettingsView().environmentObject(AppState.shared)
+        let settingsView = PanelLockGate {
+            SettingsView().environmentObject(AppState.shared)
+        }
         let hostingController = NSHostingController(rootView: settingsView)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 320),
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 520),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -123,7 +127,9 @@ public class WindowManager: NSObject, NSWindowDelegate {
 
         let viewModel = HistoryViewModel(initialKeyFingerprint: keyFingerprint)
         self.historyViewModel = viewModel
-        let historyView = HistoryView(viewModel: viewModel)
+        let historyView = PanelLockGate {
+            HistoryView(viewModel: viewModel)
+        }
         let hostingController = NSHostingController(rootView: historyView)
 
         let window = NSWindow(
@@ -157,6 +163,7 @@ public class WindowManager: NSObject, NSWindowDelegate {
         }
         if keyManagerWindow == nil && settingsWindow == nil && historyWindow == nil {
             NSApp.setActivationPolicy(.accessory)
+            PanelLockController.shared.lock(reason: .windowsClosed)
         }
     }
 }
