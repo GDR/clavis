@@ -9,14 +9,14 @@ public enum AuditUnsealResult: Equatable, Sendable {
 }
 
 public final class AuditUnsealer: @unchecked Sendable {
-    private let keyring: AuditKeyring
+    private let keyring: AuditKeyring?
     private let store: AuditStore
     private let context: LAContext?
     private let lock = NSLock()
     private var dekCache: [Data: SymmetricKey] = [:]
     private var failedEpochs: Set<Data> = []
 
-    public init(keyring: AuditKeyring, store: AuditStore, context: LAContext?) {
+    public init(keyring: AuditKeyring?, store: AuditStore, context: LAContext?) {
         self.keyring = keyring
         self.store = store
         self.context = context
@@ -58,6 +58,11 @@ public final class AuditUnsealer: @unchecked Sendable {
             }
 
             do {
+                guard let keyring = self.keyring else {
+                    failedEpochs.insert(epochID)
+                    return .unreadable
+                }
+
                 guard let epoch = try store.epoch(id: epochID) else {
                     failedEpochs.insert(epochID)
                     return .unreadable
@@ -69,7 +74,7 @@ public final class AuditUnsealer: @unchecked Sendable {
                     epochID: epoch.epochID,
                     keyID: epoch.keyID,
                     agree: { peerPub in
-                        try self.keyring.agree(keyID: epoch.keyID, with: peerPub, context: self.context)
+                        try keyring.agree(keyID: epoch.keyID, with: peerPub, context: self.context)
                     }
                 )
 

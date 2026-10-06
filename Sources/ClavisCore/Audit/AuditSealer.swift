@@ -29,14 +29,16 @@ public final class AuditSealer: @unchecked Sendable {
         self.maxEpochAge = maxEpochAge
         self.maxEpochRows = maxEpochRows
 
-        self.observer = DistributedNotificationCenter.default().addObserver(
-            forName: KeychainAuditKeyring.notificationName,
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
-            self?.lock.lock()
-            self?.currentEpoch = nil
-            self?.lock.unlock()
+        if NSClassFromString("XCTestCase") == nil {
+            self.observer = DistributedNotificationCenter.default().addObserver(
+                forName: KeychainAuditKeyring.notificationName,
+                object: nil,
+                queue: nil
+            ) { [weak self] _ in
+                self?.lock.lock()
+                self?.currentEpoch = nil
+                self?.lock.unlock()
+            }
         }
     }
 

@@ -110,14 +110,16 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
         self.updateItem = updateItem
         self.copyItem = copyItem
 
-        self.observer = DistributedNotificationCenter.default().addObserver(
-            forName: Self.notificationName,
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
-            self?.lock.lock()
-            self?.cachedPublicKey = nil
-            self?.lock.unlock()
+        if NSClassFromString("XCTestCase") == nil {
+            self.observer = DistributedNotificationCenter.default().addObserver(
+                forName: Self.notificationName,
+                object: nil,
+                queue: nil
+            ) { [weak self] _ in
+                self?.lock.lock()
+                self?.cachedPublicKey = nil
+                self?.lock.unlock()
+            }
         }
     }
 
@@ -363,11 +365,12 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
     }
 
     private func notifyKeyringChanged() {
+        guard NSClassFromString("XCTestCase") == nil else { return }
         DistributedNotificationCenter.default().postNotificationName(
             Self.notificationName,
             object: nil,
             userInfo: nil,
-            deliverImmediately: true
+            deliverImmediately: false
         )
     }
 }
