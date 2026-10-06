@@ -399,5 +399,19 @@ public enum ClavisUIStrings {
             localizedFormat("panel_lock.agent_sessions_count", "%d agent sessions running", count)
         }
     }
+
+    public enum AgentSession {
+        public static func approvePrompt(tool: String, keyLabel: String, minutes: Int) -> String {
+            let sanitizedTool = String(AuditEvent.sanitizedPath((tool as NSString).lastPathComponent).prefix(64))
+            return localizedFormat(
+                "agent_session.approve_prompt",
+                "Start agent session for “%@” with key “%@” for %d minutes",
+                sanitizedTool,
+                keyLabel,
+                minutes
+            )
+        }
+    }
 }
+
 

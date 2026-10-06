@@ -1033,6 +1033,63 @@ public class KeychainManager {
         )
     }
 
+    /// Authorizes an agent session via Touch ID, returning an active grant.
+    internal func authorizeAgentSession(
+        key: Ed25519KeyInfo,
+        prompt: String
+    ) throws -> AgentSessionGrant {
+        guard key.purpose == .agent else {
+            throw KeyPurposeError.notAllowedOnThisPath(key.purpose)
+        }
+
+        let laPolicy: LAPolicy = (key.biometricPolicy == .biometryCurrentSet)
+            ? .deviceOwnerAuthenticationWithBiometrics
+            : .deviceOwnerAuthentication
+        let context = try authenticator.authenticate(reason: prompt, policy: laPolicy)
+        var record: StoredPrivateKeyRecord
+        do {
+            record = try loadAuthenticatedRecord(
+                label: key.label,
+                context: context,
+                prompt: prompt,
+                expectedKeyInfo: key
+            )
+        } catch {
+            if laPolicy != .deviceOwnerAuthenticationWithBiometrics,
+               case PrivateKeyRecordError.metadataMismatch(let field, _, _) = error,
+               field == "biometricPolicy" {
+                context.invalidate()
+            }
+            if error is KeyPurposeError {
+                context.invalidate()
+            }
+            throw error
+        }
+        defer { record.wipe() }
+
+        guard record.purpose == .agent else {
+            context.invalidate()
+            throw KeyPurposeError.notAllowedOnThisPath(record.purpose)
+        }
+
+        let recordPolicy = record.biometricPolicy ?? .userPresence
+        if recordPolicy == .biometryCurrentSet && laPolicy != .deviceOwnerAuthenticationWithBiometrics {
+            context.invalidate()
+            ClavisLogger.log("SECURITY_ALERT", "Refusing agent session for '\(key.label)': record requires biometryCurrentSet but the authentication context was not evaluated with biometrics.")
+            throw PrivateKeyRecordError.metadataMismatch(
+                field: "biometricPolicy",
+                expected: BiometricPolicy.userPresence.rawValue,
+                actual: recordPolicy.rawValue
+            )
+        }
+
+        try validateAuthenticatedRecord(record, against: key, context: context)
+
+        context.interactionNotAllowed = true
+
+        return AgentSessionGrant(key: key, context: context)
+    }
+
     public static func formatECDSASignatureBlob(_ ecdsaSig: P256.Signing.ECDSASignature) -> Data {
         let rawSig = ecdsaSig.rawRepresentation
         let r = rawSig.prefix(32)
