@@ -241,6 +241,11 @@ public class AppState: ObservableObject {
         refresh()
     }
 
+    public func changeKind(label: String, to newPurpose: KeyPurpose) throws {
+        try keyManager.changeKind(label: label, to: newPurpose)
+        refresh()
+    }
+
     public func lockKey(label: String) throws {
         try keyManager.lockKey(label: label)
         refresh()

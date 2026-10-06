@@ -231,4 +231,17 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(ClavisUIStrings.PanelLock.minutesFormat(5), "5 min")
         XCTAssertEqual(ClavisUIStrings.PanelLock.agentSessionsCount(2), "2 agent sessions running")
     }
+
+    func testAgentKeyLocalizedStrings() {
+        XCTAssertEqual(ClavisUIStrings.KeyPurposeStrings.agentTitle, "Agent")
+        XCTAssertEqual(ClavisUIStrings.KeyPurposeStrings.agentSubtitle, "Only usable by agents you start through Clavis. Never offered to your terminal.")
+        XCTAssertEqual(ClavisUIStrings.KeyList.filterAll, "All")
+        XCTAssertEqual(ClavisUIStrings.KeyList.filterPersonal, "Personal")
+        XCTAssertEqual(ClavisUIStrings.KeyList.filterAgent, "Agent")
+        XCTAssertEqual(ClavisUIStrings.Badges.agent, "Agent")
+        XCTAssertEqual(ClavisUIStrings.KeyDetail.copyDeployKey, "Copy Deploy Key")
+        XCTAssertEqual(ClavisUIStrings.KeyDetail.changeKind, "Change Kind…")
+        XCTAssertEqual(ClavisUIStrings.KeyDetail.changeKindConfirm, "Change Kind")
+        XCTAssertFalse(ClavisUIStrings.KeyDetail.changeKindAlertMessage(label: "test-key", newPurpose: .agent).isEmpty)
+    }
 }

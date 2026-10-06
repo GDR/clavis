@@ -91,6 +91,9 @@ public enum ClavisUIStrings {
         public static var noUnlockedKeysHelp: String { localized("key_list.no_unlocked_keys_help", "No Unlocked Keys") }
         public static var allCachedKeysLocked: String { localized("key_list.all_cached_keys_locked", "All cached keys locked.") }
         public static var settingsHelp: String { localized("key_list.settings_help", "Settings (Auto Start, Timeout, Nix)") }
+        public static var filterAll: String { localized("key_list.filter_all", "All") }
+        public static var filterPersonal: String { localized("key_list.filter_personal", "Personal") }
+        public static var filterAgent: String { localized("key_list.filter_agent", "Agent") }
     }
 
     public enum SessionTimeout {
@@ -127,6 +130,10 @@ public enum ClavisUIStrings {
         public static func deleteAlertMessage(label: String) -> String {
             localizedFormat("inspector.delete_alert_message", "Are you sure you want to delete '%@'? This action cannot be undone.", label)
         }
+
+        public static var copyDeployKey: String { KeyDetail.copyDeployKey }
+        public static var changeKind: String { KeyDetail.changeKind }
+        public static var changeKindConfirm: String { KeyDetail.changeKindConfirm }
 
         // Header & Context Menu
         public static func keySubtitle(algorithm: String, isHardware: Bool) -> String {
@@ -214,6 +221,7 @@ public enum ClavisUIStrings {
         public static var hardware: String { localized("badge.hardware", "Hardware") }
         public static var software: String { localized("badge.software", "Software") }
         public static var gitOnly: String { localized("badge.git_only", "Git Only") }
+        public static var agent: String { localized("badge.agent", "Agent") }
     }
 
     public enum AddKeyPopover {
@@ -280,7 +288,16 @@ public enum ClavisUIStrings {
         public static var gitSigningOnlyTitle: String { localized("key_purpose.git_signing_only_title", "Git Signing Only") }
         public static var gitSigningOnlySubtitle: String { localized("key_purpose.git_signing_only_subtitle", "Restricted strictly to Git commits. Hidden from SSH login") }
         public static var agentTitle: String { localized("key_purpose.agent_title", "Agent") }
-        public static var agentSubtitle: String { localized("key_purpose.agent_subtitle", "Restricted to agent socket. Cannot sign Git commits") }
+        public static var agentSubtitle: String { localized("key_purpose.agent_subtitle", "Only usable by agents you start through Clavis. Never offered to your terminal.") }
+    }
+
+    public enum KeyDetail {
+        public static var copyDeployKey: String { localized("key_detail.copy_deploy_key", "Copy Deploy Key") }
+        public static var changeKind: String { localized("key_detail.change_kind", "Change Kind…") }
+        public static var changeKindConfirm: String { localized("key_detail.change_kind_confirm", "Change Kind") }
+        public static func changeKindAlertMessage(label: String, newPurpose: KeyPurpose) -> String {
+            localizedFormat("key_detail.change_kind_message", "Are you sure you want to change the kind of key '%1$@' to %2$@? This requires confirmation with user presence.", label, newPurpose.title)
+        }
     }
 
     public enum Prompt {

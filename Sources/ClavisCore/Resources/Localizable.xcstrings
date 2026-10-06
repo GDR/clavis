@@ -2381,6 +2381,125 @@
         }
       }
     },
+    "key_list.filter_all": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Все"
+          }
+        }
+      }
+    },
+    "key_list.filter_personal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Personal"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Личные"
+          }
+        }
+      }
+    },
+    "key_list.filter_agent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Агентские"
+          }
+        }
+      }
+    },
+    "key_detail.copy_deploy_key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy Deploy Key"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Скопировать deploy key"
+          }
+        }
+      }
+    },
+    "key_detail.change_kind": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change Kind…"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сменить тип…"
+          }
+        }
+      }
+    },
+    "key_detail.change_kind_confirm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change Kind"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сменить тип"
+          }
+        }
+      }
+    },
+    "key_detail.change_kind_message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Are you sure you want to change the kind of key '%1$@' to %2$@? This requires confirmation with user presence."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Вы уверены, что хотите изменить тип ключа «%1$@» на %2$@? Это действие требует подтверждения присутствия пользователя."
+          }
+        }
+      }
+    },
     "menubar.quit_confirmation_title": {
       "extractionState": "manual",
       "localizations": {
@@ -2479,6 +2598,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Только Git"
+          }
+        }
+      }
+    },
+    "badge.agent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Агентский"
           }
         }
       }
@@ -3033,13 +3169,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Restricted to agent socket. Cannot sign Git commits"
+            "value": "Only usable by agents you start through Clavis. Never offered to your terminal."
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ограничен сокетом агента. Не может подписывать коммиты Git"
+            "value": "Доступен только для агентов, запущенных через Clavis. Не предлагается вашему терминалу."
           }
         }
       }

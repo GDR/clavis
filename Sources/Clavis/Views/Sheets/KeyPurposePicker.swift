@@ -20,7 +20,7 @@ struct KeyPurposePicker: View {
                     }) {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
-                                Image(systemName: purpose == .gitSigningOnly ? "arrow.triangle.branch" : "network")
+                                Image(systemName: icon(for: purpose))
                                     .foregroundColor(selection == purpose ? accent : .secondary)
                                 Spacer()
                                 if selection == purpose {
@@ -51,6 +51,17 @@ struct KeyPurposePicker: View {
                     .buttonStyle(.plain)
                 }
             }
+        }
+    }
+
+    private func icon(for purpose: KeyPurpose) -> String {
+        switch purpose {
+        case .general:
+            return "network"
+        case .gitSigningOnly:
+            return "arrow.triangle.branch"
+        case .agent:
+            return "cpu"
         }
     }
 }

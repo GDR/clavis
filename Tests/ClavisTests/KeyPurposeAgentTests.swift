@@ -135,4 +135,56 @@ final class KeyPurposeAgentTests: ClavisBaseTestCase {
         let allKeys = try keyManager.listKeys()
         XCTAssertTrue(allKeys.contains { $0.label == label && $0.purpose == .agent })
     }
+
+    func test_005_AC2_kindFilterShowsOnlyMatchingKeys() throws {
+        let keyManager = makeKeyManager()
+        let generalKey = try keyManager.generateKey(label: "filter-general", keyPurpose: .general)
+        let gitKey = try keyManager.generateKey(label: "filter-git", keyPurpose: .gitSigningOnly)
+        let agentKey = try keyManager.generateKey(label: "filter-agent", keyPurpose: .agent)
+
+        let allKeys = [generalKey, gitKey, agentKey]
+
+        let allFiltered = KeyKindFilter.apply(.all, to: allKeys)
+        XCTAssertEqual(allFiltered.count, 3)
+
+        let personalFiltered = KeyKindFilter.apply(.personal, to: allKeys)
+        XCTAssertEqual(personalFiltered.count, 2)
+        XCTAssertTrue(personalFiltered.contains { $0.label == "filter-general" })
+        XCTAssertTrue(personalFiltered.contains { $0.label == "filter-git" })
+        XCTAssertFalse(personalFiltered.contains { $0.label == "filter-agent" })
+
+        let agentFiltered = KeyKindFilter.apply(.agent, to: allKeys)
+        XCTAssertEqual(agentFiltered.count, 1)
+        XCTAssertEqual(agentFiltered.first?.label, "filter-agent")
+    }
+
+    func test_005_AC6_deployKeyIsValidOpenSSH() throws {
+        let keyManager = makeKeyManager()
+        let agentKey = try keyManager.generateKey(label: "deploy-key-test", keyPurpose: .agent)
+
+        let tempFile = testRootURL.appendingPathComponent("deploy_key.pub")
+        try agentKey.publicKeyOpenSSH.write(to: tempFile, atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
+        process.arguments = ["-l", "-f", tempFile.path]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        XCTAssertEqual(process.terminationStatus, 0, "ssh-keygen -l must validate public key format successfully")
+
+        let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(decoding: outputData, as: UTF8.self)
+
+        let rawFingerprint = agentKey.fingerprint.replacingOccurrences(of: "SHA256:", with: "")
+        XCTAssertTrue(
+            output.contains(rawFingerprint) || output.contains(agentKey.fingerprint),
+            "ssh-keygen output '\(output)' must contain key fingerprint '\(agentKey.fingerprint)'"
+        )
+    }
 }

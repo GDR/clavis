@@ -8,6 +8,11 @@ public struct KeyDetailInspectorView: View {
 
     @State private var copyFeedback: String? = nil
     @State private var showingDeleteAlert: Bool = false
+    @State private var showingChangeKindAlert: Bool = false
+
+    private var targetKind: KeyPurpose {
+        (key.purpose == .agent) ? .general : .agent
+    }
 
     public init(key: Ed25519KeyInfo, appState: AppState, onDelete: @escaping () -> Void) {
         self.key = key
@@ -126,11 +131,22 @@ public struct KeyDetailInspectorView: View {
                                 Label(ClavisUIStrings.Inspector.copyAgeRecipientMenu, systemImage: "doc.on.doc")
                             }
                         }
+                        if key.purpose == .agent {
+                            Button(action: copyDeployKey) {
+                                Label(ClavisUIStrings.KeyDetail.copyDeployKey, systemImage: "key.fill")
+                            }
+                        }
                         Button(action: copyOpenSSH) {
                             Label(ClavisUIStrings.Inspector.copyOpenSSHKeyMenu, systemImage: "terminal")
                         }
                         Button(action: copyFingerprint) {
                             Label(ClavisUIStrings.Inspector.copyFingerprintMenu, systemImage: "number")
+                        }
+                        if key.purpose == .general || key.purpose == .agent {
+                            Divider()
+                            Button(action: { showingChangeKindAlert = true }) {
+                                Label(ClavisUIStrings.KeyDetail.changeKind, systemImage: "arrow.triangle.2.circlepath")
+                            }
                         }
                         Divider()
                         Button(action: {
@@ -229,11 +245,19 @@ public struct KeyDetailInspectorView: View {
                                     .foregroundColor(DesignTokens.textSecondary)
                             }
                             Spacer()
-                            Button(ClavisUIStrings.Inspector.copySSHKeyButton, action: copyOpenSSH)
-                                .buttonStyle(.borderedProminent)
-                                .tint(DesignTokens.accentBlue)
-                                .controlSize(.small)
-                                .focusable(false)
+                            if key.purpose == .agent {
+                                Button(ClavisUIStrings.KeyDetail.copyDeployKey, action: copyDeployKey)
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(DesignTokens.accentPurple)
+                                    .controlSize(.small)
+                                    .focusable(false)
+                            } else {
+                                Button(ClavisUIStrings.Inspector.copySSHKeyButton, action: copyOpenSSH)
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(DesignTokens.accentBlue)
+                                    .controlSize(.small)
+                                    .focusable(false)
+                            }
                         }
 
                         Divider().background(DesignTokens.cardBorder)
@@ -325,6 +349,23 @@ public struct KeyDetailInspectorView: View {
                         )
                         Divider().background(DesignTokens.cardBorder)
                         SecurityPropertyRow(label: ClavisUIStrings.Inspector.created, value: formattedDate)
+                        Divider().background(DesignTokens.cardBorder)
+                        HStack {
+                            Text(ClavisUIStrings.Inspector.keyPurpose)
+                                .font(.caption)
+                                .foregroundColor(DesignTokens.textSecondary)
+                            Spacer()
+                            Text(key.purpose.title)
+                                .font(.caption)
+                                .fontWeight(.medium)
+                            if key.purpose == .general || key.purpose == .agent {
+                                Button(ClavisUIStrings.KeyDetail.changeKind) {
+                                    showingChangeKindAlert = true
+                                }
+                                .buttonStyle(.link)
+                                .font(.caption)
+                            }
+                        }
                     }
                     .padding(14)
                     .glassCard(cornerRadius: 10)
@@ -418,6 +459,29 @@ public struct KeyDetailInspectorView: View {
         } message: {
             Text(ClavisUIStrings.Inspector.deleteAlertMessage(label: key.label))
         }
+        .alert(ClavisUIStrings.KeyDetail.changeKindConfirm, isPresented: $showingChangeKindAlert) {
+            Button(ClavisUIStrings.KeyDetail.changeKindConfirm) {
+                let target = targetKind
+                Task {
+                    do {
+                        try appState.changeKind(label: key.label, to: target)
+                    } catch {
+                        await MainActor.run {
+                            appState.errorMessage = error.localizedDescription
+                        }
+                    }
+                }
+            }
+            Button(ClavisUIStrings.Common.cancel, role: .cancel) {}
+        } message: {
+            Text(ClavisUIStrings.KeyDetail.changeKindAlertMessage(label: key.label, newPurpose: targetKind))
+        }
+    }
+
+    private func copyDeployKey() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(key.publicKeyOpenSSH, forType: .string)
+        showFeedback(ClavisUIStrings.Inspector.feedbackCopiedOpenSSH)
     }
 
     private func copyRecipient() {
