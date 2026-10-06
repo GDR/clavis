@@ -1,5 +1,6 @@
 import XCTest
 import Darwin
+import CryptoKit
 @testable import ClavisCore
 
 final class AgentSessionProtocolTests: ClavisBaseTestCase {
@@ -199,4 +200,222 @@ final class AgentSessionProtocolTests: ClavisBaseTestCase {
         malformedRevoke.append(Data([0x01]))
         XCTAssertEqual(server.processAgentRequest(payload: malformedRevoke, isTrustedControlPeer: { true }), Data([5]))
     }
+
+    private func makeSignPayload(keyBlob: Data, data: Data) -> Data {
+        var p = Data([13])
+        p.appendWireData(keyBlob)
+        p.appendWireData(data)
+        p.appendWireUInt32(0)
+        return p
+    }
+
+    func test_001_AC1_registeredSessionSignsWithoutPrompt() throws {
+        let authenticator = CountingAuthenticator()
+        let countingManager = makeKeyManager(authenticator: authenticator, auditRecorder: auditRecorder)
+        let key = try countingManager.generateKey(label: "agent-ac1-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+
+        let testPid = getpid()
+        let snap = SSHAgentServer.processParentSnapshot(pid: testPid)
+        let startTime = snap?.startTime ?? 1000
+
+        let personalServer = SSHAgentServer(
+            role: .personal,
+            keyManager: countingManager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentSessions: registry
+        )
+        let agentServer = SSHAgentServer(
+            role: .agent,
+            keyManager: countingManager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentSessions: registry
+        )
+
+        // 1. Register session: 1 prompt
+        let regPayload = makeRegisterPayload(keyLabel: key.label, toolName: "agent-tool", leaseMinutes: 60)
+        let regResp = personalServer.processAgentRequest(payload: regPayload, clientPid: testPid, clientStartTime: startTime, isTrustedControlPeer: { true })
+        XCTAssertEqual(regResp[0], 6)
+        var reader = DataReader(data: Data(regResp.dropFirst()))
+        guard let sessionID = reader.readWireString() else { return XCTFail("Missing sessionID") }
+        XCTAssertEqual(authenticator.authenticationCount, 1)
+
+        let pubKey = try Curve25519.Signing.PublicKey(rawRepresentation: key.publicKeyBlob.subdata(in: 19..<51))
+
+        // 2. Sign 3 times via agent socket: 0 prompts
+        for i in 1...3 {
+            let dataToSign = Data("agent-commit-\(i)".utf8)
+            let signReq = makeSignPayload(keyBlob: key.publicKeyBlob, data: dataToSign)
+            let signResp = agentServer.processAgentRequest(
+                payload: signReq,
+                clientPid: testPid,
+                clientStartTime: startTime
+            )
+            XCTAssertEqual(signResp[0], 14)
+            var respReader = DataReader(data: Data(signResp.dropFirst()))
+            guard let sigWire = respReader.readWireData() else { return XCTFail("Missing wire sig") }
+            var wireReader = DataReader(data: sigWire)
+            XCTAssertEqual(wireReader.readWireString(), "ssh-ed25519")
+            guard let rawSig = wireReader.readWireData() else { return XCTFail("Missing raw sig") }
+            XCTAssertTrue(pubKey.isValidSignature(rawSig, for: dataToSign))
+        }
+
+        // Authenticator count is STILL 1
+        XCTAssertEqual(authenticator.authenticationCount, 1)
+
+        // Audit events recorded with viaAgentSession and sessionID
+        let signEvents = auditRecorder.events.filter { $0.type == .signature && $0.result == .allowed }
+        XCTAssertEqual(signEvents.count, 3)
+        for ev in signEvents {
+            XCTAssertEqual(ev.reason, .viaAgentSession)
+            XCTAssertEqual(ev.sessionID, sessionID)
+            XCTAssertEqual(ev.keyKind, .agent)
+        }
+    }
+
+    func test_001_AC2_signWithoutSessionIsDenied() throws {
+        let key = try manager.generateKey(label: "agent-ac2-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let agentServer = SSHAgentServer(
+            role: .agent,
+            keyManager: manager,
+            auditRecorder: auditRecorder,
+            agentSessions: registry
+        )
+
+        let dataToSign = Data("test".utf8)
+        let signReq = makeSignPayload(keyBlob: key.publicKeyBlob, data: dataToSign)
+        let response = agentServer.processAgentRequest(
+            payload: signReq,
+            clientPid: getpid(),
+            clientStartTime: 1000
+        )
+        XCTAssertEqual(response, Data([5]))
+
+        XCTAssertTrue(auditRecorder.events.contains { ev in
+            ev.type == .signature && ev.result == .denied && ev.reason == .noAgentSession
+        })
+    }
+
+    func test_001_AC3_signFromOutsideTreeIsDenied() throws {
+        let key = try manager.generateKey(label: "agent-ac3-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let personalServer = SSHAgentServer(
+            role: .personal,
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentSessions: registry
+        )
+        let agentServer = SSHAgentServer(
+            role: .agent,
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentSessions: registry
+        )
+
+        let rootPid = getpid()
+        let snap = SSHAgentServer.processParentSnapshot(pid: rootPid)
+        let startTime = snap?.startTime ?? 1000
+
+        // Register session for rootPid
+        let regPayload = makeRegisterPayload(keyLabel: key.label, toolName: "agent-tool", leaseMinutes: 60)
+        _ = personalServer.processAgentRequest(payload: regPayload, clientPid: rootPid, clientStartTime: startTime, isTrustedControlPeer: { true })
+
+        // Sign from pid 99999 (not in tree)
+        let dataToSign = Data("outside".utf8)
+        let signReq = makeSignPayload(keyBlob: key.publicKeyBlob, data: dataToSign)
+        let response = agentServer.processAgentRequest(
+            payload: signReq,
+            clientPid: 99999,
+            clientExecutablePath: "/bin/sh",
+            clientStartTime: 9999
+        )
+        XCTAssertEqual(response, Data([5]))
+
+        XCTAssertTrue(auditRecorder.events.contains { ev in
+            ev.type == .signature && ev.result == .denied && ev.reason == .outsideSessionTree
+        })
+    }
+
+    func test_001_AC6_personalKeyOnPersonalSocketStillPrompts() throws {
+        let authenticator = CountingAuthenticator()
+        let countingManager = makeKeyManager(authenticator: authenticator, auditRecorder: auditRecorder)
+        let agentKey = try countingManager.generateKey(label: "agent-ac6-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let personalKey = try countingManager.generateKey(label: "personal-ac6-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .general)
+
+        let testPid = getpid()
+        let snap = SSHAgentServer.processParentSnapshot(pid: testPid)
+        let startTime = snap?.startTime ?? 1000
+
+        let personalServer = SSHAgentServer(
+            role: .personal,
+            keyManager: countingManager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentSessions: registry
+        )
+
+        // 1. Register agent session: count becomes 1
+        let regPayload = makeRegisterPayload(keyLabel: agentKey.label, toolName: "agent-tool", leaseMinutes: 60)
+        _ = personalServer.processAgentRequest(payload: regPayload, clientPid: testPid, clientStartTime: startTime, isTrustedControlPeer: { true })
+        XCTAssertEqual(authenticator.authenticationCount, 1)
+
+        // 2. Personal key sign on personal socket: prompts again! Count becomes 2
+        let dataToSign = Data("personal-sign".utf8)
+        let signReq = makeSignPayload(keyBlob: personalKey.publicKeyBlob, data: dataToSign)
+        let signResp = personalServer.processAgentRequest(
+            payload: signReq,
+            clientPid: testPid,
+            clientStartTime: startTime
+        )
+        XCTAssertEqual(signResp[0], 14)
+        XCTAssertEqual(authenticator.authenticationCount, 2)
+    }
+
+    func test_001_C2_everyDecisionIsAudited() throws {
+        let key = try manager.generateKey(label: "agent-c2-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let testPid = getpid()
+        let snap = SSHAgentServer.processParentSnapshot(pid: testPid)
+        let startTime = snap?.startTime ?? 1000
+
+        let personalServer = SSHAgentServer(
+            role: .personal,
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentSessions: registry
+        )
+        let agentServer = SSHAgentServer(
+            role: .agent,
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentSessions: registry
+        )
+
+        let initialCount = auditRecorder.events.count
+
+        // 1. Register: exactly +1 event (sessionStart)
+        let regPayload = makeRegisterPayload(keyLabel: key.label, toolName: "agent-tool", leaseMinutes: 60)
+        _ = personalServer.processAgentRequest(payload: regPayload, clientPid: testPid, clientStartTime: startTime, isTrustedControlPeer: { true })
+        XCTAssertEqual(auditRecorder.events.count, initialCount + 1)
+
+        // 2. Sign via session: exactly +1 event (signature allowed)
+        let signReq = makeSignPayload(keyBlob: key.publicKeyBlob, data: Data("msg".utf8))
+        _ = agentServer.processAgentRequest(payload: signReq, clientPid: testPid, clientStartTime: startTime)
+        XCTAssertEqual(auditRecorder.events.count, initialCount + 2)
+
+        // 3. Denied sign (outside tree): exactly +1 event (signature denied)
+        _ = agentServer.processAgentRequest(payload: signReq, clientPid: 99999, clientExecutablePath: "/bin/sh", clientStartTime: 9999)
+        XCTAssertEqual(auditRecorder.events.count, initialCount + 3)
+    }
 }
+

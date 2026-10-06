@@ -1260,6 +1260,7 @@ public class SSHAgentServer {
         var keyFingerprint: String?
         var keyKind: AuditKeyKind? = .personal
         var keyLabel: String?
+        var sessionID: String?
         var chain: [AuditProcess] = []
 
         func makeEvent() -> AuditEvent {
@@ -1269,7 +1270,7 @@ public class SSHAgentServer {
                 reason: reason,
                 keyFingerprint: keyFingerprint,
                 keyKind: keyKind,
-                sessionID: nil,
+                sessionID: sessionID,
                 count: 1,
                 sensitive: AuditSensitive(
                     keyLabel: keyLabel,
@@ -1278,19 +1279,6 @@ public class SSHAgentServer {
                 )
             )
         }
-    }
-
-    private enum AgentSignDecision {
-        case allow
-        case deny(AuditReason)
-    }
-
-    private func authorizeAgentSign(
-        key: Ed25519KeyInfo,
-        clientPid: pid_t,
-        clientExecutablePath: String
-    ) -> AgentSignDecision {
-        .deny(.noAgentSession)
     }
 
     internal func handleSignRequest(
@@ -1346,20 +1334,46 @@ public class SSHAgentServer {
             return Data([5]) // SSH_AGENT_FAILURE
         }
 
+        // Domain verification: Parse signed payload as OpenSSH SSHSIG (strict Git format)
+        let gitSSHSIG = SSHSIGPayload.parse(from: dataToSign)
+
+        if matchingKey.purpose == .agent && gitSSHSIG != nil {
+            audit.result = .denied
+            audit.reason = .wrongKeyKind
+            ClavisLogger.log("SECURITY_ALERT", "Agent key '\(matchingKey.label)' cannot be used for SSHSIG signing. Refusing request from \(clientDesc).")
+            return Data([5]) // SSH_AGENT_FAILURE
+        }
+
         if role == .agent {
-            let decision = authorizeAgentSign(
-                key: matchingKey,
-                clientPid: pid,
-                clientExecutablePath: processPath
-            )
-            switch decision {
-            case .allow:
-                break
-            case .deny(let reason):
+            switch agentSessions.session(forKeyFingerprint: matchingKey.fingerprint, peerPid: pid) {
+            case .found(let session):
+                audit.sessionID = session.id
+                do {
+                    let sigBlob = try session.grant.sign(dataToSign, using: keyManager)
+                    audit.result = .allowed
+                    audit.reason = .viaAgentSession
+                    var response = Data()
+                    response.append(14) // SSH2_AGENT_SIGN_RESPONSE
+                    response.appendWireData(sigBlob)
+                    return response
+                } catch {
+                    agentSessions.end(id: session.id, reason: .signingError)
+                    audit.result = .failed
+                    audit.reason = .signingError
+                    return Data([5])
+                }
+            case .noSession:
                 audit.result = .denied
-                audit.reason = reason
-                ClavisLogger.log("SECURITY_ALERT", "Agent signing denied for '\(matchingKey.label)' from \(clientDesc): \(reason.rawValue)")
-                return Data([5]) // SSH_AGENT_FAILURE
+                audit.reason = .noAgentSession
+                return Data([5])
+            case .outsideTree:
+                audit.result = .denied
+                audit.reason = .outsideSessionTree
+                return Data([5])
+            case .expired:
+                audit.result = .denied
+                audit.reason = .leaseExpired
+                return Data([5])
             }
         }
         let requester = Self.requesterDescription(processPath: processPath, pid: pid)
@@ -1369,9 +1383,6 @@ public class SSHAgentServer {
         let peerProcess = attributedStartTime.map {
             GitApprovedProcess(pid: pid, startTime: $0, path: processPath)
         }
-
-        // Domain verification: Parse signed payload as OpenSSH SSHSIG (strict Git format)
-        let gitSSHSIG = SSHSIGPayload.parse(from: dataToSign)
 
         // Security invariant: If key is restricted to Git signing, reject any non-Git payload
         if matchingKey.purpose == .gitSigningOnly && gitSSHSIG == nil {
