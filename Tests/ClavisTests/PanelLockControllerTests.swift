@@ -43,19 +43,23 @@ final class FakeSystemEventMonitor: SystemEventMonitoring {
 }
 
 @MainActor
-final class PanelLockControllerTests: XCTestCase {
+final class PanelLockControllerTests: ClavisBaseTestCase {
     private var testDefaults: UserDefaults!
     private var suiteName: String!
 
     override func setUp() {
         super.setUp()
-        suiteName = "com.clavis.tests.panelLock.\(UUID().uuidString)"
-        testDefaults = UserDefaults(suiteName: suiteName)!
+        MainActor.assumeIsolated {
+            suiteName = "com.clavis.tests.panelLock.\(UUID().uuidString)"
+            testDefaults = UserDefaults(suiteName: suiteName)!
+        }
     }
 
     override func tearDown() {
-        testDefaults.removePersistentDomain(forName: suiteName)
-        testDefaults = nil
+        MainActor.assumeIsolated {
+            testDefaults?.removePersistentDomain(forName: suiteName)
+            testDefaults = nil
+        }
         super.tearDown()
     }
 
@@ -318,6 +322,25 @@ final class PanelLockControllerTests: XCTestCase {
         XCTAssertFalse(unlockedNoSessions.contains(.sessionCount))
         XCTAssertFalse(unlockedNoSessions.contains(.revokeAll))
         XCTAssertFalse(unlockedNoSessions.contains(.unlock))
+    }
+
+    func test_003_C1_deleteStillPromptsWhenUnlocked() async throws {
+        let fakeAuth = FakePanelAuthenticator()
+        let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth)
+        await controller.unlock()
+        XCTAssertFalse(controller.isLocked)
+        XCTAssertNotNil(controller.unlockContext)
+
+        let countingAuth = CountingAuthenticator()
+        let keyManager = makeKeyManager(authenticator: countingAuth)
+        let testLabel = "c1-test-key-\(UUID().uuidString)"
+        _ = try keyManager.generateKey(label: testLabel)
+
+        let countBeforeDelete = countingAuth.authenticationCount
+        try keyManager.deleteKey(label: testLabel)
+        let countAfterDelete = countingAuth.authenticationCount
+
+        XCTAssertEqual(countAfterDelete, countBeforeDelete + 1, "Deleting a key must still require its own authentication prompt even when the control panel is unlocked")
     }
 }
 

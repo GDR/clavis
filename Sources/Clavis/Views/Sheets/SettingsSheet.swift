@@ -3,6 +3,7 @@ import ClavisCore
 
 public struct SettingsView: View {
     @EnvironmentObject var appState: AppState
+    @ObservedObject var lock = PanelLockController.shared
     @State private var copiedEnv = false
 
     public init() {}
@@ -10,6 +11,52 @@ public struct SettingsView: View {
     public var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                // Control Panel Lock Section
+                SettingsGroup(title: ClavisUIStrings.PanelLock.settingsSection) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        SettingsRow(
+                            icon: "lock.fill",
+                            iconColor: Color(red: 0.88, green: 0.45, blue: 0.12),
+                            title: ClavisUIStrings.PanelLock.settingsToggle,
+                            subtitle: ""
+                        ) {
+                            Toggle("", isOn: Binding(
+                                get: { lock.isEnabled },
+                                set: { newValue in
+                                    Task {
+                                        _ = await lock.setEnabled(newValue)
+                                    }
+                                }
+                            ))
+                            .toggleStyle(.switch)
+                            .labelsHidden()
+                        }
+
+                        if lock.isEnabled {
+                            Divider()
+
+                            SettingsRow(
+                                icon: "timer",
+                                iconColor: Color(red: 0.35, green: 0.78, blue: 0.98),
+                                title: ClavisUIStrings.PanelLock.settingsIdle,
+                                subtitle: ""
+                            ) {
+                                Picker("", selection: Binding(
+                                    get: { lock.idleMinutes },
+                                    set: { lock.idleMinutes = $0 }
+                                )) {
+                                    ForEach(PanelLockController.idleOptions, id: \.self) { minutes in
+                                        Text(ClavisUIStrings.PanelLock.minutesFormat(minutes))
+                                            .tag(minutes)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 120)
+                            }
+                        }
+                    }
+                }
+
                 // System Startup Section
                 SettingsGroup(title: ClavisUIStrings.Settings.startupSection) {
                     SettingsRow(
@@ -83,7 +130,7 @@ public struct SettingsView: View {
             }
             .padding(20)
         }
-        .frame(width: 480, height: 320)
+        .frame(width: 480, height: 520)
     }
 }
 
@@ -148,10 +195,12 @@ private struct SettingsRow<Trailing: View>: View {
                 Text(title)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(.primary)
-                Text(subtitle)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer(minLength: 8)

@@ -217,4 +217,17 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(ClavisUIStrings.History.export, "Export…")
         XCTAssertEqual(ClavisUIStrings.History.suppressedCount(5), "5 similar events suppressed")
     }
+
+    func testPanelLockLocalizedStrings() {
+        XCTAssertEqual(ClavisUIStrings.PanelLock.title, "Clavis is locked")
+        XCTAssertEqual(ClavisUIStrings.PanelLock.unlock, "Unlock")
+        XCTAssertEqual(ClavisUIStrings.PanelLock.unlockMenu, "Unlock Clavis…")
+        XCTAssertEqual(ClavisUIStrings.PanelLock.reason, "unlock Clavis")
+        XCTAssertEqual(ClavisUIStrings.PanelLock.disableReason, "Modify control panel lock settings")
+        XCTAssertEqual(ClavisUIStrings.PanelLock.settingsSection, "Control Panel Lock")
+        XCTAssertEqual(ClavisUIStrings.PanelLock.settingsToggle, "Require authentication to open Clavis")
+        XCTAssertEqual(ClavisUIStrings.PanelLock.settingsIdle, "Lock after inactivity")
+        XCTAssertEqual(ClavisUIStrings.PanelLock.minutesFormat(5), "5 min")
+        XCTAssertEqual(ClavisUIStrings.PanelLock.agentSessionsCount(2), "2 agent sessions running")
+    }
 }
