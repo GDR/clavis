@@ -19,6 +19,18 @@ private final class FailingAuditKeyring: AuditKeyring, @unchecked Sendable {
     func knownKeyIDs() throws -> [String] {
         []
     }
+    func createKey(mode: AuditReadMode, context: LAContext?) throws -> AuditReadPublicKey {
+        throw AuditKeyringError.secureEnclaveUnavailable
+    }
+    func setCurrent(keyID: String) throws {
+        throw AuditKeyringError.secureEnclaveUnavailable
+    }
+    func currentMode() throws -> AuditReadMode {
+        throw AuditKeyringError.secureEnclaveUnavailable
+    }
+    func deleteKey(keyID: String) throws {
+        throw AuditKeyringError.secureEnclaveUnavailable
+    }
 }
 
 final class AuditSealingTests: ClavisBaseTestCase {

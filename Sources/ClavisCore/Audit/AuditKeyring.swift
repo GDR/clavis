@@ -5,6 +5,36 @@ import Security
 
 public enum AuditReadMode: String, Codable, Sendable {
     case passwordOrBiometry
+    case biometryOrPIN
+    case biometryAndPIN
+
+    public var requiresPIN: Bool {
+        self == .biometryOrPIN || self == .biometryAndPIN
+    }
+}
+
+public func flags(for mode: AuditReadMode) -> SecAccessControlCreateFlags {
+    switch mode {
+    case .passwordOrBiometry:
+        return [.privateKeyUsage, .userPresence]
+    case .biometryOrPIN:
+        return [.privateKeyUsage, .biometryAny, .or, .applicationPassword]
+    case .biometryAndPIN:
+        return [.privateKeyUsage, .biometryAny, .and, .applicationPassword]
+    }
+}
+
+public func accessControl(for mode: AuditReadMode) throws -> SecAccessControl {
+    var error: Unmanaged<CFError>?
+    guard let accessControl = SecAccessControlCreateWithFlags(
+        nil,
+        kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        flags(for: mode),
+        &error
+    ) else {
+        throw AuditKeyringError.accessControlFailed
+    }
+    return accessControl
 }
 
 public struct AuditReadPublicKey: Equatable, Sendable {
@@ -59,6 +89,7 @@ public enum AuditKeyringError: Error, Equatable {
     case corruptedItem
     case accessControlFailed
     case keychainError(OSStatus)
+    case cannotDeleteCurrentKey
 }
 
 public protocol AuditKeyring: AnyObject, Sendable {
@@ -67,6 +98,17 @@ public protocol AuditKeyring: AnyObject, Sendable {
     func validateCurrent(context: LAContext?) -> AuditKeyringValidation
     func rotate(mode: AuditReadMode) throws -> AuditReadPublicKey
     func knownKeyIDs() throws -> [String]
+    func accessControl(for mode: AuditReadMode) throws -> SecAccessControl
+    func createKey(mode: AuditReadMode, context: LAContext?) throws -> AuditReadPublicKey
+    func setCurrent(keyID: String) throws
+    func currentMode() throws -> AuditReadMode
+    func deleteKey(keyID: String) throws
+}
+
+extension AuditKeyring {
+    public func accessControl(for mode: AuditReadMode) throws -> SecAccessControl {
+        try ClavisCore.accessControl(for: mode)
+    }
 }
 
 public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
@@ -175,25 +217,26 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
         return AuditReadPublicKey(keyID: item.keyID, publicKey: pubKey)
     }
 
-    private func generateAndStoreSEKey(mode: AuditReadMode) throws -> (AuditReadPublicKey, String) {
+    private func generateAndStoreSEKey(mode: AuditReadMode, context: LAContext? = nil) throws -> (AuditReadPublicKey, String) {
         guard PlatformSupport.hasSecureEnclave else {
             throw AuditKeyringError.secureEnclaveUnavailable
         }
 
-        var error: Unmanaged<CFError>?
-        guard let accessControl = SecAccessControlCreateWithFlags(
-            nil,
-            kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            [.privateKeyUsage, .userPresence],
-            &error
-        ) else {
-            throw AuditKeyringError.accessControlFailed
-        }
+        let accessControl = try accessControl(for: mode)
 
-        let seKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(
-            compactRepresentable: false,
-            accessControl: accessControl
-        )
+        let seKey: SecureEnclave.P256.KeyAgreement.PrivateKey
+        if let context = context {
+            seKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(
+                compactRepresentable: false,
+                accessControl: accessControl,
+                authenticationContext: context
+            )
+        } else {
+            seKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(
+                compactRepresentable: false,
+                accessControl: accessControl
+            )
+        }
         let pubX963 = seKey.publicKey.x963Representation
         let hash = SHA256.hash(data: pubX963)
         let keyID = String(hash.map { String(format: "%02x", $0) }.joined().prefix(16))
@@ -221,6 +264,70 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
         }
 
         return (AuditReadPublicKey(keyID: keyID, publicKey: seKey.publicKey), keyID)
+    }
+
+    public func createKey(mode: AuditReadMode, context: LAContext?) throws -> AuditReadPublicKey {
+        let (pubKey, _) = try generateAndStoreSEKey(mode: mode, context: context)
+        return pubKey
+    }
+
+    public func setCurrent(keyID: String) throws {
+        let keyItem = try loadKeyItem(keyID: keyID)
+
+        let currentQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: "current"
+        ]
+        let updateAttributes: [String: Any] = [
+            kSecValueData as String: Data(keyID.utf8)
+        ]
+        let updateStatus = updateItem(currentQuery as CFDictionary, updateAttributes as CFDictionary)
+        if updateStatus == errSecItemNotFound {
+            var addCurrent = currentQuery
+            addCurrent[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            addCurrent[kSecValueData as String] = Data(keyID.utf8)
+            let addCurStatus = addItem(addCurrent as CFDictionary)
+            if addCurStatus != errSecSuccess {
+                throw AuditKeyringError.keychainError(addCurStatus)
+            }
+        } else if updateStatus != errSecSuccess {
+            throw AuditKeyringError.keychainError(updateStatus)
+        }
+
+        notifyKeyringChanged()
+        lock.lock()
+        cachedPublicKey = keyItem
+        lock.unlock()
+    }
+
+    public func currentMode() throws -> AuditReadMode {
+        guard let curData = readItemData(account: "current"),
+              let keyID = String(data: curData, encoding: .utf8) else {
+            return .passwordOrBiometry
+        }
+        guard let data = readItemData(account: keyID),
+              let item = try? JSONDecoder().decode(AuditReadKeyItem.self, from: data) else {
+            throw AuditKeyringError.corruptedItem
+        }
+        return item.mode
+    }
+
+    public func deleteKey(keyID: String) throws {
+        if let curData = readItemData(account: "current"),
+           let curID = String(data: curData, encoding: .utf8),
+           curID == keyID {
+            throw AuditKeyringError.cannotDeleteCurrentKey
+        }
+        let delQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: keyID
+        ]
+        let status = deleteItem(delQuery as CFDictionary)
+        if status != errSecSuccess && status != errSecItemNotFound {
+            throw AuditKeyringError.keychainError(status)
+        }
     }
 
     private func createAndSetCurrentKey(mode: AuditReadMode) throws -> AuditReadPublicKey {
@@ -255,32 +362,7 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
 
     public func rotate(mode: AuditReadMode) throws -> AuditReadPublicKey {
         let (pubKey, keyID) = try generateAndStoreSEKey(mode: mode)
-
-        let currentQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: "current"
-        ]
-        let updateAttributes: [String: Any] = [
-            kSecValueData as String: Data(keyID.utf8)
-        ]
-        let updateStatus = updateItem(currentQuery as CFDictionary, updateAttributes as CFDictionary)
-        if updateStatus == errSecItemNotFound {
-            var addCurrent = currentQuery
-            addCurrent[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            addCurrent[kSecValueData as String] = Data(keyID.utf8)
-            let addCurStatus = addItem(addCurrent as CFDictionary)
-            if addCurStatus != errSecSuccess {
-                throw AuditKeyringError.keychainError(addCurStatus)
-            }
-        } else if updateStatus != errSecSuccess {
-            throw AuditKeyringError.keychainError(updateStatus)
-        }
-
-        notifyKeyringChanged()
-        lock.lock()
-        cachedPublicKey = pubKey
-        lock.unlock()
+        try setCurrent(keyID: keyID)
         return pubKey
     }
 
