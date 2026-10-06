@@ -4726,6 +4726,210 @@
           }
         }
       }
+    },
+    "pin_unlock.change_pin": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change PIN…"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Изменить PIN-код…"
+          }
+        }
+      }
+    },
+    "pin_unlock.confirm_pin_placeholder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirm PIN"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Подтвердите PIN-код"
+          }
+        }
+      }
+    },
+    "pin_unlock.forgot_pin": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forgot PIN…"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Забыли PIN-код…"
+          }
+        }
+      }
+    },
+    "pin_unlock.mode_biometry_and_pin": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Touch ID and PIN"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Touch ID и PIN-код"
+          }
+        }
+      }
+    },
+    "pin_unlock.mode_biometry_or_pin": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Touch ID or PIN"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Touch ID или PIN-код"
+          }
+        }
+      }
+    },
+    "pin_unlock.mode_password_or_biometry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Touch ID or password"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Touch ID или пароль"
+          }
+        }
+      }
+    },
+    "pin_unlock.pin_mismatch": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PINs do not match."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PIN-коды не совпадают."
+          }
+        }
+      }
+    },
+    "pin_unlock.reset_warning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your existing history will become unreadable."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Существующая история станет нечитаемой."
+          }
+        }
+      }
+    },
+    "pin_unlock.set_pin_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set PIN"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Установить PIN-код"
+          }
+        }
+      }
+    },
+    "pin_unlock.settings_section": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unlock Method"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Способ разблокировки"
+          }
+        }
+      }
+    },
+    "pin_unlock.too_short": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PIN must be at least 6 characters."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PIN-код должен содержать не менее 6 символов."
+          }
+        }
+      }
+    },
+    "pin_unlock.warning_or_mode": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A PIN is easier to guess than your login password. Anyone who learns it can unlock Clavis and read your history."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PIN-код легче подобрать, чем пароль учетной записи. Любой, кто узнает его, сможет разблокировать Clavis и прочитать историю."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

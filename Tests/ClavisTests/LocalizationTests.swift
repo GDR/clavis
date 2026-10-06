@@ -281,6 +281,7 @@ final class LocalizationTests: XCTestCase {
     func testPinUnlockLocalizedStrings() {
         XCTAssertEqual(ClavisUIStrings.PinUnlock.pinLabel, "PIN")
         XCTAssertEqual(ClavisUIStrings.PinUnlock.pinPlaceholder, "Enter PIN")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.confirmPinPlaceholder, "Confirm PIN")
         XCTAssertEqual(ClavisUIStrings.PinUnlock.unlock, "Unlock")
         XCTAssertEqual(ClavisUIStrings.PinUnlock.useTouchID, "Use Touch ID")
         XCTAssertEqual(ClavisUIStrings.PinUnlock.usePassword, "Use login password…")
@@ -288,6 +289,17 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(ClavisUIStrings.PinUnlock.waitFormat(30), "Try again in 30 s")
         XCTAssertEqual(ClavisUIStrings.PinUnlock.passwordRequired, "PIN is disabled. Login password required.")
         XCTAssertEqual(ClavisUIStrings.PinUnlock.historyBanner, "Enter PIN to read details")
+        XCTAssertFalse(ClavisUIStrings.PinUnlock.warningOrMode.isEmpty)
+        XCTAssertFalse(ClavisUIStrings.PinUnlock.resetWarning.isEmpty)
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.tooShort, "PIN must be at least 6 characters.")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.pinMismatch, "PINs do not match.")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.changePIN, "Change PIN…")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.forgotPIN, "Forgot PIN…")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.settingsSection, "Unlock Method")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.modePasswordOrBiometry, "Touch ID or password")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.modeBiometryOrPIN, "Touch ID or PIN")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.modeBiometryAndPIN, "Touch ID and PIN")
+        XCTAssertEqual(ClavisUIStrings.PinUnlock.setPinTitle, "Set PIN")
     }
 }
 
