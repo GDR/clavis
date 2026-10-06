@@ -217,6 +217,9 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(ClavisUIStrings.History.empty, "No audit events recorded")
         XCTAssertEqual(ClavisUIStrings.History.export, "Export…")
         XCTAssertEqual(ClavisUIStrings.History.suppressedCount(5), "5 similar events suppressed")
+        XCTAssertEqual(ClavisUIStrings.History.unreadable, "Unreadable (history key changed)")
+        XCTAssertEqual(ClavisUIStrings.History.omitted, "—")
+        XCTAssertEqual(ClavisUIStrings.History.omittedTooltip, "Details were not recorded")
     }
 
     func testPanelLockLocalizedStrings() {

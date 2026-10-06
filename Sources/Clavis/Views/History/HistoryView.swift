@@ -193,6 +193,17 @@ public struct HistoryView: View {
         let event = record.event
         let isExpanded = expandedSeqs.contains(record.seq)
 
+        let unsealResult: AuditUnsealResult
+        if let res = viewModel.sensitive[record.seq] {
+            unsealResult = res
+        } else if record.sensitiveFormat == 0 {
+            unsealResult = .plaintext(event.sensitive)
+        } else if record.sensitiveFormat == 2 {
+            unsealResult = .omitted
+        } else {
+            unsealResult = .unreadable
+        }
+
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
                 // Timestamp
@@ -202,57 +213,84 @@ public struct HistoryView: View {
                     .frame(width: 80, alignment: .leading)
                     .help(absoluteDateFormatter.string(from: event.time))
 
-                // Key Label & Badge
-                HStack(spacing: 6) {
-                    Text(event.sensitive.keyLabel ?? event.keyFingerprint?.prefix(12).description ?? "—")
-                        .font(.system(size: 13, weight: .medium))
-                        .lineLimit(1)
+                switch unsealResult {
+                case .plaintext(let sensitive):
+                    // Key Label & Badge
+                    HStack(spacing: 6) {
+                        Text(sensitive.keyLabel ?? event.keyFingerprint?.prefix(12).description ?? "—")
+                            .font(.system(size: 13, weight: .medium))
+                            .lineLimit(1)
 
-                    if let kind = event.keyKind {
-                        Text(kind == .personal ? ClavisUIStrings.History.filterKindPersonal : ClavisUIStrings.History.filterKindAgent)
-                            .font(.system(size: 9, weight: .semibold))
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1.5)
-                            .background(Capsule().fill(Color.secondary.opacity(0.15)))
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .frame(width: 140, alignment: .leading)
-
-                // Process Info with Chain Disclosure
-                HStack(spacing: 4) {
-                    if let firstProc = event.sensitive.processChain.first {
-                        let procName = (firstProc.executablePath as NSString).lastPathComponent
-                        Text(procName)
-                            .font(.system(size: 12, design: .monospaced))
-
-                        if event.sensitive.processChain.count > 1 {
-                            Button(action: {
-                                if isExpanded {
-                                    expandedSeqs.remove(record.seq)
-                                } else {
-                                    expandedSeqs.insert(record.seq)
-                                }
-                            }) {
-                                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                                    .font(.system(size: 9))
-                                    .foregroundColor(.secondary)
-                            }
-                            .buttonStyle(.plain)
+                        if let kind = event.keyKind {
+                            Text(kind == .personal ? ClavisUIStrings.History.filterKindPersonal : ClavisUIStrings.History.filterKindAgent)
+                                .font(.system(size: 9, weight: .semibold))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                                .foregroundColor(.secondary)
                         }
-                    } else {
-                        Text("—")
+                    }
+                    .frame(width: 140, alignment: .leading)
+
+                    // Process Info with Chain Disclosure
+                    HStack(spacing: 4) {
+                        if let firstProc = sensitive.processChain.first {
+                            let procName = (firstProc.executablePath as NSString).lastPathComponent
+                            Text(procName)
+                                .font(.system(size: 12, design: .monospaced))
+
+                            if sensitive.processChain.count > 1 {
+                                Button(action: {
+                                    if isExpanded {
+                                        expandedSeqs.remove(record.seq)
+                                    } else {
+                                        expandedSeqs.insert(record.seq)
+                                    }
+                                }) {
+                                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                        .font(.system(size: 9))
+                                        .foregroundColor(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        } else {
+                            Text("—")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(width: 150, alignment: .leading)
+
+                    // Host
+                    Text(sensitive.host ?? "—")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(width: 90, alignment: .leading)
+
+                case .unreadable:
+                    Text(ClavisUIStrings.History.unreadable)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(width: 380, alignment: .leading)
+
+                case .omitted:
+                    HStack(spacing: 6) {
+                        Text(ClavisUIStrings.History.omitted)
                             .font(.caption)
                             .foregroundColor(.secondary)
-                    }
-                }
-                .frame(width: 150, alignment: .leading)
+                            .help(ClavisUIStrings.History.omittedTooltip)
 
-                // Host
-                Text(event.sensitive.host ?? "—")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .frame(width: 90, alignment: .leading)
+                        if let kind = event.keyKind {
+                            Text(kind == .personal ? ClavisUIStrings.History.filterKindPersonal : ClavisUIStrings.History.filterKindAgent)
+                                .font(.system(size: 9, weight: .semibold))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(width: 380, alignment: .leading)
+                }
 
                 Spacer()
 
@@ -272,9 +310,9 @@ public struct HistoryView: View {
             }
 
             // Expanded Process Chain
-            if isExpanded && event.sensitive.processChain.count > 1 {
+            if isExpanded, case .plaintext(let sensitive) = unsealResult, sensitive.processChain.count > 1 {
                 VStack(alignment: .leading, spacing: 3) {
-                    ForEach(Array(event.sensitive.processChain.enumerated()), id: \.offset) { idx, proc in
+                    ForEach(Array(sensitive.processChain.enumerated()), id: \.offset) { idx, proc in
                         HStack(spacing: 6) {
                             Text(idx == 0 ? "├─" : "└─")
                                 .font(.caption2)

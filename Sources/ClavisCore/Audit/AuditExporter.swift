@@ -41,7 +41,11 @@ public enum AuditExporter {
     }
 
     /// Exports records in JSON Lines format, one object per record, newest first.
-    public static func export(_ records: [AuditRecord], salt: Data = randomSalt()) -> Data {
+    public static func export(
+        _ records: [AuditRecord],
+        unsealed: [Int64: AuditUnsealResult] = [:],
+        salt: Data = randomSalt()
+    ) -> Data {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
@@ -55,13 +59,28 @@ public enum AuditExporter {
         for record in sortedRecords {
             let event = record.event
             let timeString = formatter.string(from: event.time)
-            let redactedLabel = event.sensitive.keyLabel.map { hashString($0, salt: salt) }
-            let redactedChain = event.sensitive.processChain.map { proc in
+
+            let resolvedSensitive: AuditSensitive?
+            if let result = unsealed[record.seq] {
+                switch result {
+                case .plaintext(let s):
+                    resolvedSensitive = s
+                case .omitted, .unreadable:
+                    resolvedSensitive = nil
+                }
+            } else if record.sensitiveFormat == 0 {
+                resolvedSensitive = event.sensitive
+            } else {
+                resolvedSensitive = nil
+            }
+
+            let redactedLabel = resolvedSensitive?.keyLabel.map { hashString($0, salt: salt) }
+            let redactedChain = resolvedSensitive?.processChain.map { proc in
                 ExportProcess(
                     executablePath: hashString(proc.executablePath, salt: salt),
                     pid: proc.pid
                 )
-            }
+            } ?? []
 
             let exportRec = ExportRecord(
                 seq: record.seq,
@@ -75,7 +94,7 @@ public enum AuditExporter {
                 count: event.count,
                 keyLabel: redactedLabel,
                 processChain: redactedChain,
-                host: event.sensitive.host
+                host: resolvedSensitive?.host
             )
 
             if let lineData = try? encoder.encode(exportRec),

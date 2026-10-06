@@ -375,6 +375,9 @@ public enum ClavisUIStrings {
         public static var resultInfo: String { localized("history.result_info", "Info") }
         public static var empty: String { localized("history.empty", "No audit events recorded") }
         public static var export: String { localized("history.export", "Export…") }
+        public static var unreadable: String { localized("history.unreadable", "Unreadable (history key changed)") }
+        public static var omitted: String { localized("history.omitted", "—") }
+        public static var omittedTooltip: String { localized("history.omitted_tooltip", "Details were not recorded") }
         public static func suppressedCount(_ count: Int) -> String {
             localizedFormat("history.suppressed_count", "%d similar events suppressed", count)
         }

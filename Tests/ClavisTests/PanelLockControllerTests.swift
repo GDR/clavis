@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import CryptoKit
 @preconcurrency import LocalAuthentication
 @testable import Clavis
 @testable import ClavisCore
@@ -341,6 +342,63 @@ final class PanelLockControllerTests: ClavisBaseTestCase {
         let countAfterDelete = countingAuth.authenticationCount
 
         XCTAssertEqual(countAfterDelete, countBeforeDelete + 1, "Deleting a key must still require its own authentication prompt even when the control panel is unlocked")
+    }
+
+    func test_008_T5_unlockValidatesKeyringAndRotatesOnMismatch() async throws {
+        let fakeAuth = FakePanelAuthenticator()
+        let keyring = SoftwareAuditKeyring(requireContext: false)
+        let recorder = InMemoryAuditRecorder()
+        let controller = PanelLockController(
+            defaults: testDefaults,
+            authenticator: fakeAuth,
+            keyring: keyring,
+            recorder: recorder
+        )
+
+        let initialKey = try keyring.currentPublicKey()
+        let intruderKey = P256.KeyAgreement.PrivateKey()
+        keyring.tamperPublicKey(for: initialKey.keyID, with: intruderKey.publicKey)
+
+        await controller.unlock()
+
+        for _ in 0..<50 {
+            if !recorder.events.isEmpty { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(recorder.events.count, 1)
+        XCTAssertEqual(recorder.events.first?.type, .securityAlert)
+        XCTAssertEqual(recorder.events.first?.reason, .auditKeyMismatch)
+
+        let rotatedKey = try keyring.currentPublicKey()
+        XCTAssertNotEqual(rotatedKey.keyID, initialKey.keyID)
+    }
+
+    func test_008_T5_unlockRotatesOnMissingKey() async throws {
+        let fakeAuth = FakePanelAuthenticator()
+        let keyring = SoftwareAuditKeyring(requireContext: false)
+        let recorder = InMemoryAuditRecorder()
+        let controller = PanelLockController(
+            defaults: testDefaults,
+            authenticator: fakeAuth,
+            keyring: keyring,
+            recorder: recorder
+        )
+
+        let initialKey = try keyring.currentPublicKey()
+        keyring.dropKey(keyID: initialKey.keyID)
+
+        await controller.unlock()
+
+        for _ in 0..<50 {
+            let cur = try keyring.currentPublicKey()
+            if cur.keyID != initialKey.keyID { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        let rotatedKey = try keyring.currentPublicKey()
+        XCTAssertNotEqual(rotatedKey.keyID, initialKey.keyID)
+        XCTAssertTrue(recorder.events.isEmpty)
     }
 }
 

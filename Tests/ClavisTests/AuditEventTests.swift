@@ -65,6 +65,7 @@ final class AuditEventTests: ClavisBaseTestCase {
         XCTAssertEqual(AuditReason.partialDeletion.rawValue, "partial_deletion")
         XCTAssertEqual(AuditReason.noAgentSession.rawValue, "no_agent_session")
         XCTAssertEqual(AuditReason.wrongKeyKind.rawValue, "wrong_key_kind")
+        XCTAssertEqual(AuditReason.auditKeyMismatch.rawValue, "audit_key_mismatch")
     }
 
     func test_002_T1_sanitizedPathStripsControlAndBidi() {
