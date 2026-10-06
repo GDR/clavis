@@ -76,7 +76,7 @@ public enum AgentRunner {
                 options.keyLabel = flagArgs[index]
             } else if arg.hasPrefix("--key=") {
                 options.keyLabel = String(arg.dropFirst("--key=".count))
-            } else if arg == "--lease" || arg == "--minutes" {
+            } else if arg == "--lease" || arg == "--minutes" || arg == "--timeout" {
                 index += 1
                 guard index < flagArgs.count, let minutes = Int(flagArgs[index]) else { throw AgentRunError.missingCommand }
                 options.leaseMinutes = minutes
@@ -85,6 +85,9 @@ public enum AgentRunner {
                 options.leaseMinutes = minutes
             } else if arg.hasPrefix("--minutes=") {
                 guard let minutes = Int(arg.dropFirst("--minutes=".count)) else { throw AgentRunError.missingCommand }
+                options.leaseMinutes = minutes
+            } else if arg.hasPrefix("--timeout=") {
+                guard let minutes = Int(arg.dropFirst("--timeout=".count)) else { throw AgentRunError.missingCommand }
                 options.leaseMinutes = minutes
             } else if arg == "--set-ssh-auth-sock" || arg == "--ssh-auth-sock" {
                 options.setSSHAuthSock = true
