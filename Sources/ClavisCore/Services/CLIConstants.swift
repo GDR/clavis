@@ -10,6 +10,7 @@ public enum CLICommand: String, CaseIterable {
     case logs
     case vault
     case kind
+    case run
     case help
     case dashH = "-h"
     case dashDashHelp = "--help"
@@ -47,6 +48,8 @@ public enum CLIMessages {
             return "Usage: clavis kind <label> agent|personal"
         case .vault:
             return "Usage: clavis vault repair [--replace-pin]"
+        case .run:
+            return "Usage: clavis run [--key <label>] [--minutes <n>] [--ssh-auth-sock] [--keep-git-ssh-command] -- <command...>"
         default:
             return help
         }
