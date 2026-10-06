@@ -529,6 +529,44 @@ final class AgentSessionProtocolTests: ClavisBaseTestCase {
         let revokeEvents = auditRecorder.events.filter { $0.type == .sessionRevoke && $0.reason == .revokedByUser }
         XCTAssertEqual(revokeEvents.count, 2)
     }
+
+    func test_001_T5_lifecycleManagerRoundTrip() throws {
+        let key = try manager.generateKey(label: "agent-lifecycle-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let sockPath = testRootURL.appendingPathComponent("lifecycle.sock").path
+        let server = SSHAgentServer(
+            socketPath: sockPath,
+            role: .personal,
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentSessions: registry
+        )
+        try server.start()
+        defer { server.stop() }
+
+        let lifecycle = AgentLifecycleManager(socketPath: sockPath)
+
+        let session = try lifecycle.registerAgentSession(keyLabel: key.label, toolName: "my-tool", leaseMinutes: 30)
+        XCTAssertFalse(session.id.isEmpty)
+        XCTAssertEqual(session.leaseSeconds, 1800)
+
+        let list = lifecycle.listAgentSessions()
+        XCTAssertEqual(list.count, 1)
+        XCTAssertEqual(list.first?.id, Optional(session.id))
+        XCTAssertEqual(list.first?.keyLabel, Optional(key.label))
+        XCTAssertEqual(list.first?.toolName, Optional("my-tool"))
+
+        let ended = lifecycle.endAgentSession(id: session.id)
+        XCTAssertTrue(ended)
+        XCTAssertEqual(lifecycle.listAgentSessions().count, 0)
+
+        _ = try lifecycle.registerAgentSession(keyLabel: key.label, toolName: "tool-2", leaseMinutes: 10)
+        XCTAssertEqual(lifecycle.listAgentSessions().count, 1)
+        let revoked = lifecycle.revokeAllAgentSessions()
+        XCTAssertEqual(revoked, 1)
+        XCTAssertEqual(lifecycle.listAgentSessions().count, 0)
+    }
 }
 
 

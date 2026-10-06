@@ -224,8 +224,8 @@ public final class AgentLifecycleManager: @unchecked Sendable {
     }
 
     /// Sends a control packet over the UNIX domain socket and reads the response body.
-    /// Sets socket timeouts (3s send/receive) and SO_NOSIGPIPE to prevent deadlocks and SIGPIPE crashes.
-    private func sendControlRequest(_ payload: Data) throws -> Data {
+    /// Sets socket timeouts and SO_NOSIGPIPE to prevent deadlocks and SIGPIPE crashes.
+    internal func sendControlRequest(_ payload: Data, timeout: TimeInterval = 3) throws -> Data {
         let sock = socket(AF_UNIX, SOCK_STREAM, 0)
         guard sock >= 0 else {
             throw AgentLifecycleError.agentControlFailed("socket creation failed (errno \(errno))")
@@ -235,7 +235,9 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         var nosigpipe: Int32 = 1
         setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
 
-        var tv = timeval(tv_sec: 3, tv_usec: 0)
+        let sec = Int(timeout)
+        let usec = Int32((timeout - Double(sec)) * 1_000_000)
+        var tv = timeval(tv_sec: sec, tv_usec: usec)
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
@@ -355,6 +357,71 @@ public final class AgentLifecycleManager: @unchecked Sendable {
             }
             throw error
         }
+    }
+
+    public func registerAgentSession(
+        keyLabel: String,
+        toolName: String,
+        leaseMinutes: Int
+    ) throws -> (id: String, leaseSeconds: Int) {
+        var payload = Data([SSHAgentServer.registerAgentSessionRequest])
+        payload.appendWireString(keyLabel)
+        payload.appendWireString(toolName)
+        payload.appendWireUInt32(UInt32(leaseMinutes))
+
+        let response = try sendControlRequest(payload, timeout: 75)
+        guard response.first == 6 else {
+            throw AgentLifecycleError.agentControlFailed("registration refused")
+        }
+        var reader = DataReader(data: Data(response.dropFirst()))
+        guard let id = reader.readWireString(),
+              let lease = reader.readUInt32(),
+              reader.isEOF else {
+            throw AgentLifecycleError.agentControlFailed("malformed response")
+        }
+        return (id, Int(lease))
+    }
+
+    @discardableResult
+    public func endAgentSession(id: String) -> Bool {
+        guard FileManager.default.fileExists(atPath: socketPath) else { return false }
+        var payload = Data([SSHAgentServer.endAgentSessionRequest])
+        payload.appendWireString(id)
+        return (try? sendControlRequest(payload))?.first == 6
+    }
+
+    public func listAgentSessions() -> [AgentSessionSummary] {
+        guard FileManager.default.fileExists(atPath: socketPath),
+              let response = try? sendControlRequest(Data([SSHAgentServer.listAgentSessionsRequest])),
+              response.first == 6 else { return [] }
+        var reader = DataReader(data: Data(response.dropFirst()))
+        guard let count = reader.readUInt32() else { return [] }
+        var list: [AgentSessionSummary] = []
+        for _ in 0..<count {
+            guard let id = reader.readWireString(),
+                  let label = reader.readWireString(),
+                  let fp = reader.readWireString(),
+                  let tool = reader.readWireString(),
+                  let pid = reader.readUInt32(),
+                  let start = reader.readUInt32(),
+                  let exp = reader.readUInt32() else { return list }
+            list.append(AgentSessionSummary(
+                id: id, keyLabel: label, keyFingerprint: fp, toolName: tool,
+                rootPid: pid_t(pid),
+                startedAt: Date(timeIntervalSince1970: TimeInterval(start)),
+                expiresAt: Date(timeIntervalSince1970: TimeInterval(exp))
+            ))
+        }
+        return list
+    }
+
+    @discardableResult
+    public func revokeAllAgentSessions() -> Int {
+        guard FileManager.default.fileExists(atPath: socketPath),
+              let response = try? sendControlRequest(Data([SSHAgentServer.revokeAllAgentSessionsRequest])),
+              response.first == 6 else { return 0 }
+        var reader = DataReader(data: Data(response.dropFirst()))
+        return Int(reader.readUInt32() ?? 0)
     }
 
     private func writeAll(_ data: Data, to fd: Int32) -> Bool {
