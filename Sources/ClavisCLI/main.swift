@@ -81,11 +81,11 @@ if let cliResult = CLIService.handle(args: CommandLine.arguments) {
                 exit(1)
             }
             let terminationSignalSources = installTerminationSignalSources {
-                SSHAgentServer.sharedInstance.stop()
+                AgentServers.stopAll()
                 SingleInstanceLock.agent.release()
             }
             do {
-                try SSHAgentServer.sharedInstance.start()
+                try AgentServers.startAll()
                 printOut(CLIMessages.Agent.daemonStarted(socketPath: SSHAgentServer.defaultSocketPath, pid: getpid()))
                 withExtendedLifetime(terminationSignalSources) {
                     dispatchMain()
