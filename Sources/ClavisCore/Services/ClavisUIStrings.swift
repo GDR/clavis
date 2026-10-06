@@ -360,4 +360,22 @@ public enum ClavisUIStrings {
             localizedFormat("history.suppressed_count", "%d similar events suppressed", count)
         }
     }
+
+    public enum PanelLock {
+        public static var title: String { localized("panel_lock.title", "Clavis is locked") }
+        public static var unlock: String { localized("panel_lock.unlock", "Unlock") }
+        public static var unlockMenu: String { localized("panel_lock.unlock_menu", "Unlock Clavis…") }
+        public static var reason: String { localized("panel_lock.reason", "unlock Clavis") }
+        public static var disableReason: String { localized("panel_lock.disable_reason", "Modify control panel lock settings") }
+        public static var settingsSection: String { localized("panel_lock.settings_section", "Control Panel Lock") }
+        public static var settingsToggle: String { localized("panel_lock.settings_toggle", "Require authentication to open Clavis") }
+        public static var settingsIdle: String { localized("panel_lock.settings_idle", "Lock after inactivity") }
+        public static func minutesFormat(_ minutes: Int) -> String {
+            localizedFormat("panel_lock.minutes_format", "%d min", minutes)
+        }
+        public static func agentSessionsCount(_ count: Int) -> String {
+            localizedFormat("panel_lock.agent_sessions_count", "%d agent sessions running", count)
+        }
+    }
 }
+
