@@ -134,7 +134,7 @@ class ClavisBaseTestCase: XCTestCase {
 
     override func tearDownWithError() throws {
         PublicKeyStore.resetForTesting()
-        PublicKeyStore.disableKeychainMirrorForTesting = false
+        PublicKeyStore.disableKeychainMirrorForTesting = true
         EncryptedVaultStore.customVaultDirectoryURL = nil
         EncryptedVaultStore.forceSoftwareMasterKeyForTesting = false
         ClavisLogger.customLogFileURL = nil
