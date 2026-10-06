@@ -117,7 +117,7 @@ public struct HistoryView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if viewModel.records.isEmpty && !viewModel.isLoading {
+            } else if viewModel.items.isEmpty && !viewModel.isLoading {
                 VStack(spacing: 12) {
                     Image(systemName: "clock.arrow.circlepath")
                         .font(.system(size: 40))
@@ -129,13 +129,18 @@ public struct HistoryView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
-                    ForEach(viewModel.records, id: \.seq) { record in
-                        recordRow(for: record)
-                            .onAppear {
-                                if record.seq == viewModel.records.last?.seq {
-                                    viewModel.loadMore()
+                    ForEach(viewModel.items) { item in
+                        switch item {
+                        case .record(let record):
+                            recordRow(for: record)
+                                .onAppear {
+                                    if record.seq == viewModel.records.last?.seq {
+                                        viewModel.loadMore()
+                                    }
                                 }
-                            }
+                        case .gap(let fromSeq, let toSeq, let count):
+                            gapRow(fromSeq: fromSeq, toSeq: toSeq, count: count)
+                        }
                     }
                 }
                 .listStyle(.inset(alternatesRowBackgrounds: true))
@@ -389,6 +394,35 @@ public struct HistoryView: View {
                 }
             }
         }
+    }
+
+    private func gapRow(fromSeq: Int64, toSeq: Int64, count: Int64) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+                .font(.system(size: 13))
+
+            Text(ClavisUIStrings.History.gapBanner(count: count))
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.orange)
+
+            Spacer()
+
+            Text(fromSeq == toSeq ? "seq \(fromSeq)" : "seq \(fromSeq)..\(toSeq)")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.orange.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.orange.opacity(0.3), lineWidth: 1)
+        )
+        .padding(.vertical, 2)
     }
 
     private func resultBadge(for result: AuditResult) -> some View {

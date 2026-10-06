@@ -2,9 +2,40 @@ import Foundation
 import LocalAuthentication
 import ClavisCore
 
+public enum HistoryItem: Identifiable, Equatable, Sendable {
+    case record(AuditRecord)
+    case gap(fromSeq: Int64, toSeq: Int64, missingCount: Int64)
+
+    public var id: String {
+        switch self {
+        case .record(let record):
+            return "record-\(record.seq)"
+        case .gap(let fromSeq, let toSeq, _):
+            return "gap-\(fromSeq)-\(toSeq)"
+        }
+    }
+
+    public var record: AuditRecord? {
+        if case .record(let r) = self { return r }
+        return nil
+    }
+
+    public var isGap: Bool {
+        if case .gap = self { return true }
+        return false
+    }
+}
+
+extension AuditQuery {
+    public var hasFiltersExceptTimeRange: Bool {
+        !types.isEmpty || !results.isEmpty || keyFingerprint != nil || keyKind != nil || sessionID != nil
+    }
+}
+
 @MainActor
 public final class HistoryViewModel: ObservableObject {
     @Published public var records: [AuditRecord] = []
+    @Published public var items: [HistoryItem] = []
     @Published public var sensitive: [Int64: AuditUnsealResult] = [:]
     @Published public var query: AuditQuery = AuditQuery()
     @Published public var errorMessage: String?
@@ -54,6 +85,41 @@ public final class HistoryViewModel: ObservableObject {
         }
     }
 
+    public nonisolated static func computeItems(
+        from records: [AuditRecord],
+        prunedThroughSeq: Int64 = 0,
+        hasFilters: Bool = false
+    ) -> [HistoryItem] {
+        guard !hasFilters else {
+            return records.map { .record($0) }
+        }
+        guard records.count > 1 else {
+            return records.map { .record($0) }
+        }
+        var result: [HistoryItem] = []
+        result.reserveCapacity(records.count)
+        for i in 0 ..< records.count {
+            result.append(.record(records[i]))
+            if i < records.count - 1 {
+                let current = records[i]
+                let next = records[i + 1]
+                if current.seq - next.seq > 1 && next.seq > prunedThroughSeq {
+                    let missingCount = current.seq - next.seq - 1
+                    result.append(.gap(fromSeq: next.seq + 1, toSeq: current.seq - 1, missingCount: missingCount))
+                }
+            }
+        }
+        return result
+    }
+
+    public func computeItems(from records: [AuditRecord], prunedThroughSeq: Int64) -> [HistoryItem] {
+        Self.computeItems(
+            from: records,
+            prunedThroughSeq: prunedThroughSeq,
+            hasFilters: query.hasFiltersExceptTimeRange
+        )
+    }
+
     @discardableResult
     public func reload() -> Task<Void, Never> {
         isLoading = true
@@ -68,14 +134,21 @@ public final class HistoryViewModel: ObservableObject {
             do {
                 let store = try factory()
                 let fetched = try store.query(currentQuery)
+                let prunedSeq = Int64((try? store.meta("pruned_through_seq")) ?? "0") ?? 0
                 let unsealer = AuditUnsealer(keyring: keyring, store: store, context: context)
                 var unsealedMap: [Int64: AuditUnsealResult] = [:]
                 for rec in fetched {
                     unsealedMap[rec.seq] = unsealer.open(rec)
                 }
                 let finalMap = unsealedMap
+                let computedItems = HistoryViewModel.computeItems(
+                    from: fetched,
+                    prunedThroughSeq: prunedSeq,
+                    hasFilters: currentQuery.hasFiltersExceptTimeRange
+                )
                 await MainActor.run {
                     self.records = fetched
+                    self.items = computedItems
                     self.sensitive = finalMap
                     self.isLoading = false
                 }
@@ -103,6 +176,7 @@ public final class HistoryViewModel: ObservableObject {
             do {
                 let store = try factory()
                 let fetched = try store.query(currentQuery)
+                let prunedSeq = Int64((try? store.meta("pruned_through_seq")) ?? "0") ?? 0
                 let unsealer = AuditUnsealer(keyring: keyring, store: store, context: context)
                 var unsealedMap: [Int64: AuditUnsealResult] = [:]
                 for rec in fetched {
@@ -114,6 +188,11 @@ public final class HistoryViewModel: ObservableObject {
                     for (seq, res) in finalMap {
                         self.sensitive[seq] = res
                     }
+                    self.items = HistoryViewModel.computeItems(
+                        from: self.records,
+                        prunedThroughSeq: prunedSeq,
+                        hasFilters: currentQuery.hasFiltersExceptTimeRange
+                    )
                 }
             } catch {
                 await MainActor.run {
