@@ -61,6 +61,7 @@ do {
     SystemEventMonitor.shared.addHandler(id: "audit.lock") {
         AuditRecorder.shared.record(AuditEvent(type: .lock, result: .info, reason: .screenLocked))
     }
+    AgentSessionRegistry.shared.installSystemEventHandler()
     withExtendedLifetime(terminationSignalSources) {
         RunLoop.main.run()
     }

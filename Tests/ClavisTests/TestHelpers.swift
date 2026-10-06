@@ -294,3 +294,14 @@ final class SoftwareAuditKeyring: AuditKeyring, @unchecked Sendable {
     }
 }
 
+final class FakeSystemEventMonitor: SystemEventMonitoring {
+    var handlers: [String: () -> Void] = [:]
+
+    func addHandler(id: String, handler: @escaping () -> Void) {
+        handlers[id] = handler
+    }
+
+    func fire(id: String) {
+        handlers[id]?()
+    }
+}

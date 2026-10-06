@@ -90,6 +90,11 @@ if let cliResult = CLIService.handle(args: CommandLine.arguments) {
                 try AgentServers.startAll()
                 resealer.start()
                 printOut(CLIMessages.Agent.daemonStarted(socketPath: SSHAgentServer.defaultSocketPath, pid: getpid()))
+                _ = SystemEventMonitor.shared
+                SystemEventMonitor.shared.addHandler(id: "audit.lock") {
+                    AuditRecorder.shared.record(AuditEvent(type: .lock, result: .info, reason: .screenLocked))
+                }
+                AgentSessionRegistry.shared.installSystemEventHandler()
                 withExtendedLifetime(terminationSignalSources) {
                     dispatchMain()
                 }

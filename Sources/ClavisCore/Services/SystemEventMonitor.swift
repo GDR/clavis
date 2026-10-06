@@ -162,3 +162,9 @@ public final class SystemEventMonitor: @unchecked Sendable {
         }
     }
 }
+
+public protocol SystemEventMonitoring: AnyObject {
+    func addHandler(id: String, handler: @escaping () -> Void)
+}
+
+extension SystemEventMonitor: SystemEventMonitoring {}

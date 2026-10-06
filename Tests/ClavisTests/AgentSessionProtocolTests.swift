@@ -417,5 +417,118 @@ final class AgentSessionProtocolTests: ClavisBaseTestCase {
         _ = agentServer.processAgentRequest(payload: signReq, clientPid: 99999, clientExecutablePath: "/bin/sh", clientStartTime: 9999)
         XCTAssertEqual(auditRecorder.events.count, initialCount + 3)
     }
+
+    func test_001_T4_lockAllEndsSessions() throws {
+        let key = try manager.generateKey(label: "agent-lockall-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let personalServer = SSHAgentServer(
+            role: .personal,
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentSessions: registry
+        )
+
+        let testPid = getpid()
+        let snap = SSHAgentServer.processParentSnapshot(pid: testPid)
+        let startTime = snap?.startTime ?? 1000
+
+        let regPayload = makeRegisterPayload(keyLabel: key.label, toolName: "agent-tool", leaseMinutes: 60)
+        _ = personalServer.processAgentRequest(payload: regPayload, clientPid: testPid, clientStartTime: startTime, isTrustedControlPeer: { true })
+        XCTAssertEqual(registry.count, 1)
+
+        // Send lockAllRequest (242)
+        let response = personalServer.processAgentRequest(
+            payload: Data([242]),
+            clientPid: testPid,
+            clientStartTime: startTime,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(response, Data([6]))
+        XCTAssertEqual(registry.count, 0)
+        XCTAssertTrue(auditRecorder.events.contains { $0.type == .sessionEnd && $0.reason == .lockAll })
+    }
+
+    func test_001_T4_invalidateKeyEndsSessionsForKey() throws {
+        let keyA = try manager.generateKey(label: "agent-key-a", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let keyB = try manager.generateKey(label: "agent-key-b", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+
+        let personalServer = SSHAgentServer(
+            role: .personal,
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentSessions: registry
+        )
+
+        let testPid = getpid()
+        let snap = SSHAgentServer.processParentSnapshot(pid: testPid)
+        let startTime = snap?.startTime ?? 1000
+
+        let regPayloadA = makeRegisterPayload(keyLabel: keyA.label, toolName: "tool-a", leaseMinutes: 60)
+        _ = personalServer.processAgentRequest(payload: regPayloadA, clientPid: testPid, clientStartTime: startTime, isTrustedControlPeer: { true })
+
+        let regPayloadB = makeRegisterPayload(keyLabel: keyB.label, toolName: "tool-b", leaseMinutes: 60)
+        _ = personalServer.processAgentRequest(payload: regPayloadB, clientPid: testPid, clientStartTime: startTime, isTrustedControlPeer: { true })
+
+        XCTAssertEqual(registry.count, 2)
+
+        // Invalidate key A (opcode 240)
+        var invPayload = Data([240])
+        invPayload.appendWireString(keyA.label)
+        let response = personalServer.processAgentRequest(
+            payload: invPayload,
+            clientPid: testPid,
+            clientStartTime: startTime,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(response, Data([6]))
+        XCTAssertEqual(registry.count, 1)
+        XCTAssertTrue(auditRecorder.events.contains { $0.type == .sessionEnd && $0.reason == .keyChanged })
+        XCTAssertEqual(registry.summaries().first?.keyLabel, keyB.label)
+    }
+
+    func test_001_T4_revokeAllReportsCount() throws {
+        let keyA = try manager.generateKey(label: "agent-rev-a", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let keyB = try manager.generateKey(label: "agent-rev-b", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+
+        let personalServer = SSHAgentServer(
+            role: .personal,
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentSessions: registry
+        )
+
+        let testPid = getpid()
+        let snap = SSHAgentServer.processParentSnapshot(pid: testPid)
+        let startTime = snap?.startTime ?? 1000
+
+        let regPayloadA = makeRegisterPayload(keyLabel: keyA.label, toolName: "tool-a", leaseMinutes: 60)
+        _ = personalServer.processAgentRequest(payload: regPayloadA, clientPid: testPid, clientStartTime: startTime, isTrustedControlPeer: { true })
+
+        let regPayloadB = makeRegisterPayload(keyLabel: keyB.label, toolName: "tool-b", leaseMinutes: 60)
+        _ = personalServer.processAgentRequest(payload: regPayloadB, clientPid: testPid, clientStartTime: startTime, isTrustedControlPeer: { true })
+
+        XCTAssertEqual(registry.count, 2)
+
+        // Revoke all (opcode 246)
+        let response = personalServer.processAgentRequest(
+            payload: Data([246]),
+            clientPid: testPid,
+            clientStartTime: startTime,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(response[0], 6)
+        var reader = DataReader(data: Data(response.dropFirst()))
+        let endedCount = reader.readUInt32()
+        XCTAssertEqual(endedCount, 2)
+        XCTAssertEqual(registry.count, 0)
+        let revokeEvents = auditRecorder.events.filter { $0.type == .sessionRevoke && $0.reason == .revokedByUser }
+        XCTAssertEqual(revokeEvents.count, 2)
+    }
 }
+
 

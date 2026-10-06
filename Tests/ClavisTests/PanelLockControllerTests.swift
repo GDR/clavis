@@ -31,18 +31,6 @@ final class FakePanelAuthenticator: PanelAuthenticating {
     }
 }
 
-final class FakeSystemEventMonitor: SystemEventMonitoring {
-    var handlers: [String: () -> Void] = [:]
-
-    func addHandler(id: String, handler: @escaping () -> Void) {
-        handlers[id] = handler
-    }
-
-    func fire(id: String) {
-        handlers[id]?()
-    }
-}
-
 @MainActor
 final class PanelLockControllerTests: ClavisBaseTestCase {
     private var testDefaults: UserDefaults!

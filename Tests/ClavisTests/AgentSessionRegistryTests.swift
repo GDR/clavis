@@ -214,5 +214,40 @@ final class AgentSessionRegistryTests: ClavisBaseTestCase {
             event.type == .sessionEnd && event.reason == .rootExited && event.sessionID == session.id
         })
     }
+
+    func test_001_AC5_screenLockEndsAllSessions() throws {
+        let fakeMonitor = FakeSystemEventMonitor()
+        let registry = AgentSessionRegistry(
+            processInfo: { _ in (startTime: 1000, parentPid: 1) },
+            auditRecorder: auditRecorder,
+            watchRootExit: false
+        )
+        let session1 = makeSession(id: "11111111111111111111111111111111", keyLabel: "key-1")
+        let session2 = makeSession(id: "22222222222222222222222222222222", keyLabel: "key-2")
+
+        registry.add(session1)
+        registry.add(session2)
+        XCTAssertEqual(registry.count, 2)
+
+        registry.installSystemEventHandler(monitor: fakeMonitor)
+        fakeMonitor.fire(id: "agent.sessions")
+
+        XCTAssertEqual(registry.count, 0)
+        let endEvents = auditRecorder.events.filter { $0.type == .sessionEnd && $0.reason == .screenLocked }
+        XCTAssertEqual(endEvents.count, 2)
+    }
+
+    func test_001_T4_daemonStopEndsAllSessions() throws {
+        let pid = getpid()
+        let snap = SSHAgentServer.processParentSnapshot(pid: pid)!
+        let session = makeSession(keyLabel: "key-stop", rootPid: pid, rootStartTime: snap.startTime)
+        AgentSessionRegistry.shared.add(session)
+        XCTAssertGreaterThanOrEqual(AgentSessionRegistry.shared.count, 1)
+
+        AgentServers.stopAll()
+
+        XCTAssertEqual(AgentSessionRegistry.shared.count, 0)
+    }
 }
+
 
