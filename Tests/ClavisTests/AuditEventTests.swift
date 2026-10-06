@@ -63,6 +63,8 @@ final class AuditEventTests: ClavisBaseTestCase {
         XCTAssertEqual(AuditReason.lockNow.rawValue, "lock_now")
         XCTAssertEqual(AuditReason.screenLocked.rawValue, "screen_locked")
         XCTAssertEqual(AuditReason.partialDeletion.rawValue, "partial_deletion")
+        XCTAssertEqual(AuditReason.noAgentSession.rawValue, "no_agent_session")
+        XCTAssertEqual(AuditReason.wrongKeyKind.rawValue, "wrong_key_kind")
     }
 
     func test_002_T1_sanitizedPathStripsControlAndBidi() {

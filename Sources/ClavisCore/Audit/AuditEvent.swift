@@ -46,6 +46,8 @@ public enum AuditReason: String, Codable, CaseIterable, Sendable {
     case lockNow = "lock_now"
     case screenLocked = "screen_locked"
     case partialDeletion = "partial_deletion"
+    case noAgentSession = "no_agent_session"
+    case wrongKeyKind = "wrong_key_kind"
 }
 
 public struct AuditProcess: Codable, Equatable, Sendable {

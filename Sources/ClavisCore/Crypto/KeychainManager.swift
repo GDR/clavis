@@ -423,6 +423,9 @@ public class KeychainManager {
             throw PrivateKeyRecordError.storageMismatch(expected: key.storageType.rawValue, actual: record.storageType.rawValue)
         }
         guard record.purpose == key.purpose else {
+            if record.purpose == .agent || key.purpose == .agent {
+                throw KeyPurposeError.notAllowedOnThisPath(record.purpose)
+            }
             ClavisLogger.log("SECURITY_ALERT", "Key purpose mismatch: record='\(record.purpose.rawValue)', metadata='\(key.purpose.rawValue)'")
             throw PrivateKeyRecordError.purposeMismatch(
                 expected: key.purpose.rawValue,
@@ -533,6 +536,9 @@ public class KeychainManager {
                     return record
                 } catch let validationError {
                     record.wipe()
+                    if let keyPurposeError = validationError as? KeyPurposeError {
+                        throw keyPurposeError
+                    }
                     ClavisLogger.log(
                         "SECURITY_ALERT",
                         "Keychain record validation failed for '\(label)': \(validationError.localizedDescription). Attempting restore from encrypted shadow vault."
@@ -555,6 +561,8 @@ public class KeychainManager {
                 throw PrivateKeyRecordError.labelMismatch(expected: label, actual: actual)
             }
             return record
+        } catch let error as KeyPurposeError {
+            throw error
         } catch let error as PrivateKeyRecordError {
             throw error
         } catch {
@@ -565,6 +573,8 @@ public class KeychainManager {
                     expectedKeyInfo: expectedKeyInfo,
                     logMessage: "Restored corrupted Keychain record for '\(label)' from encrypted shadow vault."
                 )
+            } catch let error as KeyPurposeError {
+                throw error
             } catch let error as PrivateKeyRecordError {
                 throw error
             } catch {
@@ -768,7 +778,8 @@ public class KeychainManager {
             data: data,
             prompt: prompt,
             useCache: useCache,
-            existingContext: nil
+            existingContext: nil,
+            allowedPurposes: AgentSocketRole.personal.allowedPurposes
         )
     }
 
@@ -777,8 +788,13 @@ public class KeychainManager {
         data: Data,
         prompt: String,
         useCache: Bool,
-        existingContext: LAContext?
+        existingContext: LAContext?,
+        allowedPurposes: Set<KeyPurpose> = AgentSocketRole.personal.allowedPurposes
     ) throws -> Data {
+        guard allowedPurposes.contains(key.purpose) else {
+            throw KeyPurposeError.notAllowedOnThisPath(key.purpose)
+        }
+
         let isGitSigningRequest = SSHSIGPayload.parse(from: data) != nil
         if key.purpose == .gitSigningOnly && !isGitSigningRequest {
             throw PrivateKeyRecordError.purposeNotAllowed(
@@ -834,6 +850,10 @@ public class KeychainManager {
             expectedKeyInfo: key
         )
         defer { record.wipe() }
+
+        guard allowedPurposes.contains(record.purpose) else {
+            throw KeyPurposeError.notAllowedOnThisPath(record.purpose)
+        }
 
         // 2. Validate every policy field against the authenticated record.
         try validateAuthenticatedRecord(record, against: key, context: context)
@@ -946,6 +966,10 @@ public class KeychainManager {
         maxOperations: Int = 200,
         approvedProcess: GitApprovedProcess? = nil
     ) throws -> GitSigningGrant {
+        guard key.purpose != .agent else {
+            throw KeyPurposeError.notAllowedOnThisPath(.agent)
+        }
+
         // Match signSSH: strict biometric keys must not accept a password fallback.
         // The returned context is reused for later signatures, so a weaker policy here
         // would quietly downgrade every signature under the grant.
@@ -969,9 +993,19 @@ public class KeychainManager {
                field == "biometricPolicy" {
                 context.invalidate()
             }
+            if error is KeyPurposeError {
+                context.invalidate()
+            }
             throw error
         }
         defer { record.wipe() }
+
+        guard record.purpose != .agent else {
+            context.invalidate()
+            throw KeyPurposeError.notAllowedOnThisPath(.agent)
+        }
+
+        try validateAuthenticatedRecord(record, against: key, context: context)
 
         // the public index chose the LocalAuthentication policy above and is not authenticated.
         // If the Keychain record requires the current biometric set, refuse a context
@@ -1016,9 +1050,14 @@ public class KeychainManager {
 
     // Unlock a key with Touch ID / password and place in session cache
     public func unlock(label: String, prompt: String? = nil) async throws {
-        // Fast preliminary check: if public metadata says hardware, fail fast
-        if let keyInfo = try fetchKeyInfo(label: label), keyInfo.storageType == .secureEnclave {
-            throw SessionCacheError.hardwareNotCacheable
+        // Fast preliminary check: if public metadata says hardware or agent, fail fast
+        if let keyInfo = try fetchKeyInfo(label: label) {
+            if keyInfo.purpose == .agent {
+                throw KeyPurposeError.notAllowedOnThisPath(.agent)
+            }
+            if keyInfo.storageType == .secureEnclave {
+                throw SessionCacheError.hardwareNotCacheable
+            }
         }
 
         let reason = prompt ?? "Touch ID to unlock '\(label)'"
@@ -1040,6 +1079,11 @@ public class KeychainManager {
             expectedKeyInfo: try fetchKeyInfo(label: label)
         )
         defer { record.wipe() }
+
+        guard record.purpose != .agent else {
+            context.invalidate()
+            throw KeyPurposeError.notAllowedOnThisPath(.agent)
+        }
 
         // Hard invariant: never unlock hardware keys into session cache,
         // regardless of what the public index claimed!

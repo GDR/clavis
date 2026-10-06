@@ -130,6 +130,17 @@ public enum KeyPurpose: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+public enum KeyPurposeError: LocalizedError, Equatable {
+    case notAllowedOnThisPath(KeyPurpose)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notAllowedOnThisPath(let purpose):
+            return "Key with purpose '\(purpose.rawValue)' is not allowed on this path."
+        }
+    }
+}
+
 public enum BiometricPolicy: String, CaseIterable, Identifiable, Codable {
     case userPresence = "userPresence"
     case biometryCurrentSet = "biometryCurrentSet"

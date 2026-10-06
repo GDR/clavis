@@ -65,6 +65,7 @@ public class SSHAgentServer {
     public static let defaultMaxRequestsPerConnection: Int = 200
 
     public let socketPath: String
+    public let role: AgentSocketRole
     private let maxConcurrentClients: Int
     private let maxConcurrentClientsPerPID: Int
     private let clientIdleTimeout: TimeInterval
@@ -114,6 +115,7 @@ public class SSHAgentServer {
 
     public init(
         socketPath: String = SSHAgentServer.defaultSocketPath,
+        role: AgentSocketRole = .personal,
         maxConcurrentClients: Int = 32,
         maxConcurrentClientsPerPID: Int = 8,
         clientIdleTimeout: TimeInterval = 30,
@@ -129,6 +131,7 @@ public class SSHAgentServer {
         onPermanentListenerFailure: (() -> Void)? = nil,
         auditRecorder: AuditRecording = AuditRecorder.shared
     ) {
+        self.role = role
         self.promptGate = promptGate
         self.controlPeerValidator = controlPeerValidator ?? { ClavisCodeTrust.isTrustedPeer(socket: $0) }
         self.peerProcessValidator = peerProcessValidator ?? { SSHAgentServer.peerProcessUnchanged(pid: $0, path: $1, startTime: $2) }
@@ -1049,8 +1052,8 @@ public class SSHAgentServer {
             clientDesc = "local process"
         }
         ClavisLogger.log("SSH_AGENT_IDENTITIES", "Listing active SSH identities for \(clientDesc)...")
-        // Exclude gitSigningOnly keys from general SSH identity listings (prevents accidental SSH login usage)
-        let keys = ((try? keyManager.listKeys()) ?? []).filter { $0.purpose != .gitSigningOnly }
+        // Filter keys according to socket role (personal lists general; agent lists agent)
+        let keys = ((try? keyManager.listKeys()) ?? []).filter { role.listedPurposes.contains($0.purpose) }
         var response = Data()
         response.append(12) // SSH2_AGENT_IDENTITIES_ANSWER
 
@@ -1069,6 +1072,7 @@ public class SSHAgentServer {
         var result: AuditResult = .failed
         var reason: AuditReason? = .signingError
         var keyFingerprint: String?
+        var keyKind: AuditKeyKind? = .personal
         var keyLabel: String?
         var chain: [AuditProcess] = []
 
@@ -1078,7 +1082,7 @@ public class SSHAgentServer {
                 result: result,
                 reason: reason,
                 keyFingerprint: keyFingerprint,
-                keyKind: .personal,
+                keyKind: keyKind,
                 sessionID: nil,
                 count: 1,
                 sensitive: AuditSensitive(
@@ -1122,6 +1126,7 @@ public class SSHAgentServer {
 
         audit.keyFingerprint = matchingKey.fingerprint
         audit.keyLabel = matchingKey.label
+        audit.keyKind = matchingKey.purpose.auditKind
 
         guard let pid = clientPid,
               let processPath = clientExecutablePath ?? SSHAgentServer.getProcessPath(pid: pid) else {
@@ -1134,6 +1139,13 @@ public class SSHAgentServer {
         audit.chain = AuditProcessChain.build(pid: pid, executablePath: processPath)
 
         let clientDesc = "\(Self.safeProcessPath(processPath)) (PID \(pid))"
+
+        guard role.allowedPurposes.contains(matchingKey.purpose) else {
+            audit.result = .denied
+            audit.reason = .wrongKeyKind
+            ClavisLogger.log("SECURITY_ALERT", "Key '\(matchingKey.label)' with purpose '\(matchingKey.purpose.rawValue)' is not allowed on \(role.rawValue) socket. Refusing request from \(clientDesc).")
+            return Data([5]) // SSH_AGENT_FAILURE
+        }
         let requester = Self.requesterDescription(processPath: processPath, pid: pid)
         let requesterIdentity = SigningPromptGate.Requester(executablePath: processPath, pid: pid)
         let clientIdentity = SSHAgentServer.resolveClientIdentity(pid: pid, processPath: processPath)
@@ -1169,7 +1181,8 @@ public class SSHAgentServer {
                             data: dataToSign,
                             prompt: "",
                             useCache: false,
-                            existingContext: context
+                            existingContext: context,
+                            allowedPurposes: role.allowedPurposes
                         )
                     }
                 ) {
@@ -1235,7 +1248,8 @@ public class SSHAgentServer {
                                         data: dataToSign,
                                         prompt: "",
                                         useCache: false,
-                                        existingContext: context
+                                        existingContext: context,
+                                        allowedPurposes: role.allowedPurposes
                                     )
                                 }
                             ) else {
@@ -1317,7 +1331,10 @@ public class SSHAgentServer {
             ClavisLogger.log("SSH_AGENT_SIGN", "Signature completed successfully for '\(matchingKey.label)' (\(clientDesc)).")
             return response
         } catch {
-            if AuditEvent.isUserCancellation(error) {
+            if error is KeyPurposeError {
+                audit.result = .denied
+                audit.reason = .wrongKeyKind
+            } else if AuditEvent.isUserCancellation(error) {
                 audit.result = .cancelled
                 audit.reason = .userCancelled
             } else if case UserAuthenticationError.rejected = error {
@@ -1409,7 +1426,14 @@ public class SSHAgentServer {
         clientSocket: Int32? = nil
     ) throws -> Data {
         try promptGate.run(requester: requester, clientSocket: clientSocket) {
-            try keyManager.signSSH(key: key, data: data, prompt: prompt, useCache: false)
+            try keyManager.signSSH(
+                key: key,
+                data: data,
+                prompt: prompt,
+                useCache: false,
+                existingContext: nil,
+                allowedPurposes: role.allowedPurposes
+            )
         }
     }
 
