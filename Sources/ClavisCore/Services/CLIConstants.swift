@@ -11,6 +11,7 @@ public enum CLICommand: String, CaseIterable {
     case vault
     case kind
     case run
+    case history
     case help
     case dashH = "-h"
     case dashDashHelp = "--help"
@@ -31,6 +32,8 @@ public enum CLIFlag: String {
     case daemon = "--daemon"
     case yes = "--yes"
     case replacePin = "--replace-pin"
+    case days = "--days"
+    case db = "--db"
 }
 
 public enum CLIMessages {
@@ -50,6 +53,8 @@ public enum CLIMessages {
             return "Usage: clavis vault repair [--replace-pin]"
         case .run:
             return "Usage: clavis run [--key <label>] [--minutes <n>] [--ssh-auth-sock] [--keep-git-ssh-command] -- <command...>"
+        case .history:
+            return "Usage: clavis history check [--days N] [--db PATH]"
         default:
             return help
         }
@@ -68,6 +73,7 @@ public enum CLIMessages {
       clavis lock                          Lock all session caches and active Git sessions
       clavis logs                          Print live Touch ID and authentication logs
       clavis vault repair [--replace-pin]  Repair vault master key pin in Keychain
+      clavis history check [--days N] [--db PATH]  Check audit history for tampering
       clavis daemon / --daemon            Run SSH Agent socket daemon in background
       clavis                               Launch SwiftUI Key Manager GUI
     """

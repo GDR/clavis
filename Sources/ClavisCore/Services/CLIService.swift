@@ -14,6 +14,33 @@ public struct CLICommandResult: Equatable {
     }
 }
 
+public struct HistoryCheckArgs: Equatable {
+    public let days: Int
+    public let dbPath: String?
+
+    public init(days: Int = 7, dbPath: String? = nil) {
+        self.days = days
+        self.dbPath = dbPath
+    }
+}
+
+public enum HistoryCheckArgError: Error, Equatable, LocalizedError {
+    case invalidDays(String)
+    case missingArgument(String)
+    case unknownArgument(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidDays(let val):
+            return "Invalid value for --days: '\(val)' (must be an integer between 1 and 30)"
+        case .missingArgument(let flag):
+            return "Missing value for \(flag)"
+        case .unknownArgument(let arg):
+            return "Unknown argument: \(arg)"
+        }
+    }
+}
+
 public struct CLIService {
     public static func handle(
         args: [String],
@@ -269,8 +296,159 @@ public struct CLIService {
                 agentLifecycle: agentLifecycle
             )
 
+        case .history:
+            guard args.count >= 3 && args[2].lowercased() == "check" else {
+                return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.usage(for: .history))
+            }
+            let checkArgs: HistoryCheckArgs
+            do {
+                checkArgs = try parseHistoryCheckArgs(args)
+            } catch {
+                return CLICommandResult(exitCode: 1, output: "", error: error.localizedDescription)
+            }
+
+            let dbURL: URL
+            if let dbPath = checkArgs.dbPath {
+                dbURL = URL(fileURLWithPath: dbPath)
+            } else {
+                dbURL = AuditStore.defaultURL
+            }
+
+            guard FileManager.default.fileExists(atPath: dbURL.path) else {
+                return CLICommandResult(exitCode: 1, output: "", error: "Database file not found: \(dbURL.path)")
+            }
+
+            let store: AuditStore
+            do {
+                store = try AuditStore(url: dbURL, readOnly: true)
+            } catch {
+                return CLICommandResult(exitCode: 1, output: "", error: "Failed to open audit store: \(error.localizedDescription)")
+            }
+            defer { store.close() }
+
+            let reader = LogWitnessReader()
+            let witness = reader.read(days: checkArgs.days)
+
+            do {
+                let report = try AuditIntegrityChecker.check(
+                    store: store,
+                    witness: witness,
+                    now: Date(),
+                    days: checkArgs.days
+                )
+                let (output, exitCode) = formatHistoryCheckReport(report)
+                return CLICommandResult(exitCode: exitCode, output: output)
+            } catch {
+                return CLICommandResult(exitCode: 1, output: "", error: "Integrity check failed: \(error.localizedDescription)")
+            }
+
         case .dashDashHelp, .dashH, .help:
             return CLICommandResult(exitCode: 0, output: CLIMessages.help)
+        }
+    }
+
+    public static func parseHistoryCheckArgs(_ args: [String]) throws -> HistoryCheckArgs {
+        var tokens = args
+        if let idx = tokens.firstIndex(of: "history") {
+            guard idx + 1 < tokens.count, tokens[idx + 1] == "check" else {
+                throw HistoryCheckArgError.unknownArgument(tokens[idx])
+            }
+            tokens = Array(tokens.suffix(from: idx + 2))
+        } else if tokens.first == "check" {
+            tokens = Array(tokens.dropFirst())
+        }
+
+        var days = 7
+        var dbPath: String?
+
+        var i = 0
+        while i < tokens.count {
+            let token = tokens[i]
+            if token == "--days" {
+                guard i + 1 < tokens.count else {
+                    throw HistoryCheckArgError.missingArgument("--days")
+                }
+                let valStr = tokens[i + 1]
+                guard let val = Int(valStr), val >= 1 && val <= 30 else {
+                    throw HistoryCheckArgError.invalidDays(valStr)
+                }
+                days = val
+                i += 2
+            } else if token == "--db" {
+                guard i + 1 < tokens.count else {
+                    throw HistoryCheckArgError.missingArgument("--db")
+                }
+                dbPath = tokens[i + 1]
+                i += 2
+            } else {
+                throw HistoryCheckArgError.unknownArgument(token)
+            }
+        }
+
+        return HistoryCheckArgs(days: days, dbPath: dbPath)
+    }
+
+    public static func formatHistoryCheckReport(_ report: AuditIntegrityReport) -> (output: String, exitCode: Int32) {
+        let isoFormatter = ISO8601DateFormatter()
+        let checkedFromStr = isoFormatter.string(from: report.checkedFrom)
+        var lines: [String] = []
+
+        switch report.status {
+        case .ok:
+            lines.append("History integrity check: OK")
+            lines.append("Checked rows: \(report.checkedRows) (since \(checkedFromStr))")
+            lines.append("No problems detected.")
+            if !report.unwitnessedRows.isEmpty {
+                let unwitnessedPreview = report.unwitnessedRows.prefix(5).map(String.init).joined(separator: ", ")
+                let suffix = report.unwitnessedRows.count > 5 ? "..." : ""
+                lines.append("Warning: \(report.unwitnessedRows.count) unwitnessed row(s) in window (seq: \(unwitnessedPreview)\(suffix))")
+            }
+            if !report.gapsOutsideWindow.isEmpty {
+                let gapsSummary = report.gapsOutsideWindow.map { "\($0.lowerBound)...\($0.upperBound)" }.joined(separator: ", ")
+                lines.append("Notice: \(report.gapsOutsideWindow.count) gap(s) before log retention window: \(gapsSummary)")
+            }
+            return (lines.joined(separator: "\n"), 0)
+
+        case .problems:
+            lines.append("History integrity check: PROBLEMS DETECTED")
+            lines.append("Checked rows: \(report.checkedRows) (since \(checkedFromStr))")
+            lines.append("Missing rows: \(report.missingRows.count)")
+            lines.append("Inconsistent rows: \(report.inconsistentRows.count)")
+            lines.append("Tail truncated: \(report.truncatedTail ? "yes" : "no")")
+            lines.append("")
+            lines.append("Problems:")
+
+            var problemCount = 0
+            for item in report.missingRows {
+                if problemCount >= 20 { break }
+                let timeStr = item.loggedAt.map { isoFormatter.string(from: $0) } ?? "unknown time"
+                lines.append("  - Missing: seq \(item.seq) (witnessed at \(timeStr))")
+                problemCount += 1
+            }
+
+            for seq in report.inconsistentRows {
+                if problemCount >= 20 { break }
+                lines.append("  - Inconsistent: seq \(seq)")
+                problemCount += 1
+            }
+
+            if report.truncatedTail && problemCount < 20 {
+                lines.append("  - Truncated tail detected (max witnessed seq exceeds database)")
+                problemCount += 1
+            }
+
+            let totalProblems = report.missingRows.count + report.inconsistentRows.count + (report.truncatedTail ? 1 : 0)
+            if totalProblems > 20 {
+                lines.append("  ... and \(totalProblems - 20) more problem(s)")
+            }
+
+            return (lines.joined(separator: "\n"), 2)
+
+        case .unavailable(let reason):
+            lines.append("History integrity check: UNAVAILABLE (\(reason))")
+            lines.append("Checked from: \(checkedFromStr)")
+            lines.append("Unified log witness stream is unavailable.")
+            return (lines.joined(separator: "\n"), 1)
         }
     }
 

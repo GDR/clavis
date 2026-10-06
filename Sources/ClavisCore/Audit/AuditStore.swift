@@ -92,12 +92,14 @@ public final class AuditStore {
 
     private static let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    public init(url: URL = AuditStore.defaultURL) throws {
+    public init(url: URL = AuditStore.defaultURL, readOnly: Bool = false) throws {
         self.url = url
         let dir = url.deletingLastPathComponent()
-        try SecureFS.createDirectory(at: dir)
-        guard SecureFS.isDirectorySecure(at: dir) else {
-            throw AuditStoreError.insecureLocation
+        if !readOnly {
+            try SecureFS.createDirectory(at: dir)
+            guard SecureFS.isDirectorySecure(at: dir) else {
+                throw AuditStoreError.insecureLocation
+            }
         }
 
         var fileStat = stat()
@@ -117,11 +119,15 @@ public final class AuditStore {
         let resolvedURL = URL(fileURLWithPath: resolvedDirPath).appendingPathComponent(url.lastPathComponent)
 
         var rawDb: OpaquePointer?
+        let flags: Int32 = readOnly
+            ? (SQLITE_OPEN_READONLY | SQLITE_OPEN_NOFOLLOW | SQLITE_OPEN_FULLMUTEX)
+            : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOFOLLOW | SQLITE_OPEN_FULLMUTEX)
+
         let openResult = SecureFS.withUmask(0o077) {
             sqlite3_open_v2(
                 resolvedURL.path,
                 &rawDb,
-                SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOFOLLOW | SQLITE_OPEN_FULLMUTEX,
+                flags,
                 nil
             )
         }
@@ -134,11 +140,39 @@ public final class AuditStore {
         }
 
         self.db = dbHandle
-        chmod(resolvedURL.path, 0o600)
-        Self.enforceAuxiliaryPermissions(for: resolvedURL)
 
-        try executePragmas(on: dbHandle)
-        try migrate(on: dbHandle)
+        if !readOnly {
+            chmod(resolvedURL.path, 0o600)
+            Self.enforceAuxiliaryPermissions(for: resolvedURL)
+
+            try executePragmas(on: dbHandle)
+            try migrate(on: dbHandle)
+        } else {
+            _ = sqlite3_exec(dbHandle, "PRAGMA busy_timeout=2000;", nil, nil, nil)
+            do {
+                try checkSchemaVersion(on: dbHandle)
+            } catch {
+                sqlite3_close(dbHandle)
+                self.db = nil
+                throw error
+            }
+        }
+    }
+
+    private func checkSchemaVersion(on dbHandle: OpaquePointer) throws {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(dbHandle, "PRAGMA user_version;", -1, &stmt, nil) == SQLITE_OK else {
+            throw AuditStoreError.prepareFailed(sqlite3_errcode(dbHandle))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var currentVersion: Int32 = 0
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            currentVersion = sqlite3_column_int(stmt, 0)
+        }
+        if currentVersion > 2 {
+            throw AuditStoreError.schemaTooNew(currentVersion)
+        }
     }
 
     deinit {

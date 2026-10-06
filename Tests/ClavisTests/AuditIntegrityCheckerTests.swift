@@ -434,4 +434,83 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
 
         XCTAssertEqual(report.status, .unavailable("log show failed"))
     }
+
+    func test_007_T4_parseHistoryCheckArgs() throws {
+        // Defaults
+        let defaultArgs = try CLIService.parseHistoryCheckArgs(["history", "check"])
+        XCTAssertEqual(defaultArgs, HistoryCheckArgs(days: 7, dbPath: nil))
+
+        let fullArgv = try CLIService.parseHistoryCheckArgs(["clavis", "history", "check"])
+        XCTAssertEqual(fullArgv, HistoryCheckArgs(days: 7, dbPath: nil))
+
+        // Custom days
+        let customDays = try CLIService.parseHistoryCheckArgs(["history", "check", "--days", "14"])
+        XCTAssertEqual(customDays, HistoryCheckArgs(days: 14, dbPath: nil))
+
+        // Custom db
+        let customDb = try CLIService.parseHistoryCheckArgs(["history", "check", "--db", "/tmp/copy.db"])
+        XCTAssertEqual(customDb, HistoryCheckArgs(days: 7, dbPath: "/tmp/copy.db"))
+
+        // Both in either order
+        let both1 = try CLIService.parseHistoryCheckArgs(["clavis", "history", "check", "--days", "30", "--db", "/tmp/audit.db"])
+        XCTAssertEqual(both1, HistoryCheckArgs(days: 30, dbPath: "/tmp/audit.db"))
+
+        let both2 = try CLIService.parseHistoryCheckArgs(["history", "check", "--db", "/tmp/audit.db", "--days", "1"])
+        XCTAssertEqual(both2, HistoryCheckArgs(days: 1, dbPath: "/tmp/audit.db"))
+
+        // Errors: invalid days (> 30, <= 0, non-int)
+        XCTAssertThrowsError(try CLIService.parseHistoryCheckArgs(["history", "check", "--days", "31"]))
+        XCTAssertThrowsError(try CLIService.parseHistoryCheckArgs(["history", "check", "--days", "0"]))
+        XCTAssertThrowsError(try CLIService.parseHistoryCheckArgs(["history", "check", "--days", "-5"]))
+        XCTAssertThrowsError(try CLIService.parseHistoryCheckArgs(["history", "check", "--days", "seven"]))
+
+        // Errors: missing argument values
+        XCTAssertThrowsError(try CLIService.parseHistoryCheckArgs(["history", "check", "--days"]))
+        XCTAssertThrowsError(try CLIService.parseHistoryCheckArgs(["history", "check", "--db"]))
+
+        // Errors: unknown argument
+        XCTAssertThrowsError(try CLIService.parseHistoryCheckArgs(["history", "check", "--unknown"]))
+
+        // Test format report exit codes
+        let okReport = AuditIntegrityReport(status: .ok, checkedFrom: Date(), checkedRows: 10)
+        let (okOut, okCode) = CLIService.formatHistoryCheckReport(okReport)
+        XCTAssertEqual(okCode, 0)
+        XCTAssertTrue(okOut.contains("History integrity check: OK"))
+
+        let probReport = AuditIntegrityReport(
+            status: .problems,
+            missingRows: [(seq: 3, loggedAt: Date())],
+            inconsistentRows: [4],
+            truncatedTail: true,
+            checkedFrom: Date(),
+            checkedRows: 10
+        )
+        let (probOut, probCode) = CLIService.formatHistoryCheckReport(probReport)
+        XCTAssertEqual(probCode, 2)
+        XCTAssertTrue(probOut.contains("PROBLEMS DETECTED"))
+        XCTAssertTrue(probOut.contains("Missing: seq 3"))
+        XCTAssertTrue(probOut.contains("Inconsistent: seq 4"))
+        XCTAssertTrue(probOut.contains("Truncated tail"))
+
+        let unavailReport = AuditIntegrityReport(status: .unavailable("log show failed"), checkedFrom: Date())
+        let (unavailOut, unavailCode) = CLIService.formatHistoryCheckReport(unavailReport)
+        XCTAssertEqual(unavailCode, 1)
+        XCTAssertTrue(unavailOut.contains("UNAVAILABLE"))
+    }
+
+    func test_007_T4_readOnlyAuditStore() throws {
+        // Create store normally
+        let store = try AuditStore(url: dbURL)
+        let event = AuditEvent(type: .signature, result: .allowed)
+        try store.insert(event)
+        store.close()
+
+        // Open read-only
+        let roStore = try AuditStore(url: dbURL, readOnly: true)
+        defer { roStore.close() }
+
+        let records = try roStore.records(fromSeq: 1)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0].seq, 1)
+    }
 }
