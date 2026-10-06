@@ -13,6 +13,54 @@ public struct SessionBinding: Equatable, Sendable {
     }
 }
 
+public final class AgentConnectionState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _bindings: [SessionBinding] = []
+
+    public init() {}
+
+    public var bindings: [SessionBinding] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _bindings
+    }
+
+    /// Verifies and appends. Returns false (caller replies [5]) on bad signature,
+    /// unsupported key type, duplicate session id, or a non-forwarding bind after
+    /// one already exists (OpenSSH refuses rebinding an auth connection).
+    public func bind(_ b: SessionBinding, signature: Data) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if _bindings.contains(where: { $0.sessionID == b.sessionID }) {
+            return false
+        }
+
+        if !b.isForwarding && _bindings.contains(where: { !$0.isForwarding }) {
+            return false
+        }
+
+        guard SSHHostKeyVerifier.verify(hostKeyBlob: b.hostKeyBlob, signatureBlob: signature, message: b.sessionID) else {
+            return false
+        }
+
+        _bindings.append(b)
+        return true
+    }
+
+    public var hasForwarding: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _bindings.contains(where: { $0.isForwarding })
+    }
+
+    public var authBinding: SessionBinding? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _bindings.last(where: { !$0.isForwarding })
+    }
+}
+
 public enum SSHHostKeyVerifier {
     public static func verify(hostKeyBlob: Data, signatureBlob: Data, message: Data) -> Bool {
         var keyReader = DataReader(data: hostKeyBlob)

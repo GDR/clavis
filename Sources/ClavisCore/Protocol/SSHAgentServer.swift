@@ -892,6 +892,7 @@ public class SSHAgentServer {
     ) {
         defer { close(clientSocket) }
 
+        let connection = AgentConnectionState()
         var isFirstPacket = true
         var requestCount = 0
         let connectionStart = Date()
@@ -941,6 +942,7 @@ public class SSHAgentServer {
                 clientExecutablePath: clientExecutablePath,
                 clientStartTime: clientStartTime,
                 clientSocket: clientSocket,
+                connection: connection,
                 isTrustedControlPeer: { self.controlPeerValidator(clientSocket) }
             )
             guard !response.isEmpty else {
@@ -1015,6 +1017,7 @@ public class SSHAgentServer {
         clientExecutablePath: String? = nil,
         clientStartTime: UInt64? = nil,
         clientSocket: Int32? = nil,
+        connection: AgentConnectionState? = nil,
         isTrustedControlPeer: () -> Bool = { false }
     ) -> Data {
         guard !payload.isEmpty else { return Data([5]) } // SSH_AGENT_FAILURE (5)
@@ -1043,7 +1046,8 @@ public class SSHAgentServer {
                 clientPid: clientPid,
                 clientExecutablePath: clientExecutablePath,
                 clientStartTime: clientStartTime,
-                clientSocket: clientSocket
+                clientSocket: clientSocket,
+                connection: connection
             )
         case Self.invalidateKeyRequest:
             var reader = DataReader(data: Data(payload.dropFirst()))
@@ -1137,6 +1141,24 @@ public class SSHAgentServer {
             return handleGetAgentPolicy(
                 payload: Data(payload.dropFirst())
             )
+        case 27: // SSH_AGENTC_EXTENSION
+            guard role == .agent else { return Data([5]) }
+            var reader = DataReader(data: Data(payload.dropFirst()))
+            guard let extensionType = reader.readWireString(),
+                  extensionType == "session-bind@openssh.com",
+                  let hostKeyBlob = reader.readWireData(),
+                  let sessionID = reader.readWireData(),
+                  let signatureBlob = reader.readWireData(),
+                  let isForwarding = reader.readBool(),
+                  reader.isEOF else {
+                return Data([5])
+            }
+            guard let connection = connection else { return Data([5]) }
+            let binding = SessionBinding(hostKeyBlob: hostKeyBlob, sessionID: sessionID, isForwarding: isForwarding)
+            guard connection.bind(binding, signature: signatureBlob) else {
+                return Data([5])
+            }
+            return Data([6]) // SSH_AGENT_SUCCESS
         default:
             ClavisLogger.log("SSH_AGENT_REQ", "Unsupported SSH Agent request type \(msgType)")
             return Data([5]) // SSH_AGENT_FAILURE
@@ -1547,6 +1569,7 @@ public class SSHAgentServer {
         var keyLabel: String?
         var sessionID: String?
         var chain: [AuditProcess] = []
+        var host: String?
 
         func makeEvent() -> AuditEvent {
             AuditEvent(
@@ -1560,7 +1583,7 @@ public class SSHAgentServer {
                 sensitive: AuditSensitive(
                     keyLabel: keyLabel,
                     processChain: chain,
-                    host: nil
+                    host: host
                 )
             )
         }
@@ -1571,7 +1594,8 @@ public class SSHAgentServer {
         clientPid: pid_t? = nil,
         clientExecutablePath: String? = nil,
         clientStartTime: UInt64? = nil,
-        clientSocket: Int32? = nil
+        clientSocket: Int32? = nil,
+        connection: AgentConnectionState? = nil
     ) -> Data {
         var audit = PendingSignAudit()
         defer { auditRecorder.record(audit.makeEvent()) }
@@ -1633,6 +1657,35 @@ public class SSHAgentServer {
             switch agentSessions.session(forKeyFingerprint: matchingKey.fingerprint, peerPid: pid) {
             case .found(let session):
                 audit.sessionID = session.id
+                if connection?.hasForwarding == true {
+                    audit.result = .denied
+                    audit.reason = .forwardingRefused
+                    ClavisLogger.log("SECURITY_ALERT", "Agent key signature refused because connection has forwarding.")
+                    return Data([5])
+                }
+                if !session.policy.allowedHosts.isEmpty {
+                    guard let authBinding = connection?.authBinding else {
+                        audit.result = .denied
+                        audit.reason = .hostNotAllowed
+                        ClavisLogger.log("SECURITY_ALERT", "Agent key requires allowed host but connection has no host authentication binding.")
+                        return Data([5])
+                    }
+                    guard let matchingHost = session.policy.allowedHosts.first(where: { $0.hostKeyBlob == authBinding.hostKeyBlob }) else {
+                        audit.result = .denied
+                        audit.reason = .hostNotAllowed
+                        ClavisLogger.log("SECURITY_ALERT", "Agent key signing refused: host key not in allowed hosts list.")
+                        return Data([5])
+                    }
+                    var sessionIDPrefix = Data()
+                    sessionIDPrefix.appendWireData(authBinding.sessionID)
+                    guard dataToSign.starts(with: sessionIDPrefix) else {
+                        audit.result = .denied
+                        audit.reason = .hostNotAllowed
+                        ClavisLogger.log("SECURITY_ALERT", "Agent key signing refused: signature data does not start with session ID.")
+                        return Data([5])
+                    }
+                    audit.host = matchingHost.name
+                }
                 guard agentSessions.takeToken(id: session.id) else {
                     audit.result = .denied
                     audit.reason = .rateLimited
