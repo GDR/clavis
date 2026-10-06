@@ -86,6 +86,7 @@ public class SSHAgentServer {
     private let agentSessions: AgentSessionRegistry
     private let agentPolicies: AgentPolicyStoring
     private let authenticator: UserAuthenticating
+    private let notificationPoster: (String, [String: String]) -> Void
     private let controlPeerValidator: (Int32) -> Bool
     private let peerProcessValidator: (pid_t, String, UInt64) -> Bool
     private let backoffHandler: (useconds_t) -> Void
@@ -144,7 +145,15 @@ public class SSHAgentServer {
         auditRecorder: AuditRecording = AuditRecorder.shared,
         agentSessions: AgentSessionRegistry = .shared,
         agentPolicies: AgentPolicyStoring = KeychainAgentPolicyStore(),
-        authenticator: UserAuthenticating = LocalUserAuthenticator()
+        authenticator: UserAuthenticating = LocalUserAuthenticator(),
+        notificationPoster: @escaping (String, [String: String]) -> Void = { name, userInfo in
+            DistributedNotificationCenter.default().postNotificationName(
+                NSNotification.Name(name),
+                object: nil,
+                userInfo: userInfo,
+                deliverImmediately: true
+            )
+        }
     ) {
         self.role = role
         self.promptGate = promptGate
@@ -167,6 +176,7 @@ public class SSHAgentServer {
         self.agentSessions = agentSessions
         self.agentPolicies = agentPolicies
         self.authenticator = authenticator
+        self.notificationPoster = notificationPoster
         self._onPermanentListenerFailure = onPermanentListenerFailure
     }
 
@@ -1591,19 +1601,66 @@ public class SSHAgentServer {
             switch agentSessions.session(forKeyFingerprint: matchingKey.fingerprint, peerPid: pid) {
             case .found(let session):
                 audit.sessionID = session.id
-                do {
-                    let sigBlob = try session.grant.sign(dataToSign, using: keyManager)
-                    audit.result = .allowed
-                    audit.reason = .viaAgentSession
-                    var response = Data()
-                    response.append(14) // SSH2_AGENT_SIGN_RESPONSE
-                    response.appendWireData(sigBlob)
-                    return response
-                } catch {
-                    agentSessions.end(id: session.id, reason: .signingError)
-                    audit.result = .failed
-                    audit.reason = .signingError
-                    return Data([5])
+                switch session.policy.mode {
+                case .none:
+                    do {
+                        let sigBlob = try session.grant.sign(dataToSign, using: keyManager)
+                        audit.result = .allowed
+                        audit.reason = .viaAgentSession
+                        var response = Data()
+                        response.append(14) // SSH2_AGENT_SIGN_RESPONSE
+                        response.appendWireData(sigBlob)
+                        return response
+                    } catch {
+                        agentSessions.end(id: session.id, reason: .signingError)
+                        audit.result = .failed
+                        audit.reason = .signingError
+                        return Data([5])
+                    }
+                case .notify:
+                    do {
+                        let sigBlob = try session.grant.sign(dataToSign, using: keyManager)
+                        audit.result = .allowed
+                        audit.reason = .viaAgentSession
+                        notificationPoster(
+                            "com.clavis.agentSigned",
+                            ["sessionID": session.id, "fingerprint": session.keyFingerprint]
+                        )
+                        var response = Data()
+                        response.append(14) // SSH2_AGENT_SIGN_RESPONSE
+                        response.appendWireData(sigBlob)
+                        return response
+                    } catch {
+                        agentSessions.end(id: session.id, reason: .signingError)
+                        audit.result = .failed
+                        audit.reason = .signingError
+                        return Data([5])
+                    }
+                case .ask:
+                    let requester = SigningPromptGate.Requester(executablePath: processPath, pid: pid)
+                    do {
+                        let sigBlob = try promptGate.run(requester: requester, clientSocket: clientSocket) {
+                            try keyManager.signSSH(
+                                key: matchingKey,
+                                data: dataToSign,
+                                prompt: ClavisUIStrings.AgentSession.askPrompt,
+                                useCache: false,
+                                existingContext: nil,
+                                allowedPurposes: [.agent]
+                            )
+                        }
+                        audit.result = .allowed
+                        audit.reason = .viaPrompt
+                        var response = Data()
+                        response.append(14) // SSH2_AGENT_SIGN_RESPONSE
+                        response.appendWireData(sigBlob)
+                        return response
+                    } catch {
+                        let isCancelled = AuditEvent.isUserCancellation(error)
+                        audit.result = isCancelled ? .cancelled : .denied
+                        audit.reason = isCancelled ? .userCancelled : .authenticationFailed
+                        return Data([5])
+                    }
                 }
             case .noSession:
                 audit.result = .denied
