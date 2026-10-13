@@ -11,16 +11,71 @@ public enum LogWitnessReaderError: Error {
 
 public struct LogWitnessReader {
     public typealias RunCommand = ([String]) throws -> (status: Int32, stdout: Data)
+    public typealias PathValidator = (String) -> Bool
 
     private let run: RunCommand
-    private static let allowedBasenames: Set<String> = [
+    private let isAllowedPath: PathValidator
+
+    public static let allowedBasenames: Set<String> = [
         "clavis-agent",
         "clavis-cli",
         "Clavis"
     ]
 
-    public init(run: @escaping RunCommand = LogWitnessReader.runLog) {
+    public init(
+        run: @escaping RunCommand = LogWitnessReader.runLog,
+        pathValidator: @escaping PathValidator = LogWitnessReader.isCanonicalPath
+    ) {
         self.run = run
+        self.isAllowedPath = pathValidator
+    }
+
+    public static func isCanonicalPath(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        let basename = url.lastPathComponent
+        guard allowedBasenames.contains(basename) else { return false }
+
+        let normalized = url.standardized.path
+        let resolved = url.resolvingSymlinksInPath().path
+
+        for p in [normalized, resolved] {
+            if p.hasPrefix("/tmp/") ||
+               p.hasPrefix("/private/tmp/") ||
+               p.hasPrefix("/var/tmp/") ||
+               p.hasPrefix("/private/var/tmp/") {
+                return false
+            }
+        }
+
+        let canonicalPrefixes = [
+            "/Applications/Clavis.app/",
+            "/usr/local/bin/",
+            "/opt/homebrew/bin/",
+            "/run/current-system/sw/bin/"
+        ]
+
+        for p in [normalized, resolved] {
+            for prefix in canonicalPrefixes {
+                if p.hasPrefix(prefix) { return true }
+            }
+            if p.hasPrefix("/nix/store/") && (p.contains("/bin/") || p.contains("/Applications/Clavis.app/")) {
+                return true
+            }
+        }
+
+        let homeAppPrefix = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Applications/Clavis.app/").path
+        if normalized.hasPrefix(homeAppPrefix) || resolved.hasPrefix(homeAppPrefix) {
+            return true
+        }
+
+        #if DEBUG
+        if normalized.contains("/.build/") || resolved.contains("/.build/") {
+            return true
+        }
+        #endif
+
+        return false
     }
 
     public static func runLog(arguments: [String]) throws -> (status: Int32, stdout: Data) {
@@ -133,8 +188,7 @@ public struct LogWitnessReader {
             guard let processImagePath = json["processImagePath"] as? String else {
                 continue
             }
-            let basename = URL(fileURLWithPath: processImagePath).lastPathComponent
-            guard Self.allowedBasenames.contains(basename) else {
+            guard isAllowedPath(processImagePath) else {
                 continue
             }
 

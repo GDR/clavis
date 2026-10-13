@@ -99,9 +99,27 @@ public enum AuditIntegrityChecker {
             }
         }
 
-        // 4. D = DB rows with seq > pruned and seq >= min(W.seq)
+        // Active witness sequences to verify against the database:
+        // - all sequences where seq > pruned
+        // - OR any sequence where loggedAt is present and falls within the active check window
+        let activeWitnessSeqs = Set(witnessBySeq.compactMap { (seq, entries) -> Int64? in
+            if seq > pruned { return seq }
+            if entries.contains(where: { $0.loggedAt != nil && $0.loggedAt! >= checkedFrom }) {
+                return seq
+            }
+            return nil
+        }).sorted()
+
+        // 4. D = DB rows
         let minWitnessSeq = witnessEntries.map(\.seq).min()
-        let allRecords = try store.records(fromSeq: pruned + 1)
+        let minActiveSeq = activeWitnessSeqs.first
+        let minSeqToFetch: Int64
+        if let minActive = minActiveSeq {
+            minSeqToFetch = min(pruned + 1, minActive)
+        } else {
+            minSeqToFetch = pruned + 1
+        }
+        let allRecords = try store.records(fromSeq: minSeqToFetch)
         var dbBySeq: [Int64: AuditRecord] = [:]
         for r in allRecords {
             dbBySeq[r.seq] = r
@@ -115,10 +133,9 @@ public enum AuditIntegrityChecker {
         }
         let checkedRows = dRecords.count
 
-        // 5. For each w in W with w.seq > pruned: no row -> missing; row digest != w.digest -> inconsistent
+        // 5. For each w in activeWitnessSeqs: no row -> missing; row digest != w.digest -> inconsistent
         var missingRows: [(seq: Int64, loggedAt: Date?)] = []
-        let witnessSeqs = witnessBySeq.keys.filter { $0 > pruned }.sorted()
-        for seq in witnessSeqs {
+        for seq in activeWitnessSeqs {
             let entries = witnessBySeq[seq]!
             if let dbRow = dbBySeq[seq] {
                 let rowDigest = AuditWitness.digest(for: dbRow)
