@@ -356,10 +356,16 @@ final class SessionBindTests: ClavisBaseTestCase {
         )
         XCTAssertEqual(bindResp.first, 6)
 
-        // Sign with data starting with sessionID
-        var dataToSign = Data()
-        dataToSign.appendWireData(sessionIDA)
-        dataToSign.append(Data("userauth-payload".utf8))
+        // Sign with valid RFC 4252 data starting with sessionID
+        let dataToSign = SSHAgentServerTests.makeSSH2UserAuthRequest(
+            sessionID: sessionIDA,
+            user: "git",
+            service: "ssh-connection",
+            method: "publickey",
+            hasSig: true,
+            algo: "ssh-ed25519",
+            keyBlob: key.publicKeyBlob
+        )
         let signPayload = makeSignPayload(publicKeyBlob: key.publicKeyBlob, dataToSign: dataToSign)
 
         let signResp = server.processAgentRequest(
@@ -645,7 +651,7 @@ final class SessionBindTests: ClavisBaseTestCase {
         XCTAssertNil(signAudit?.sensitive.host)
     }
 
-    func test_006_T5_extensionOnPersonalSocketUnchanged() throws {
+    func test_F06_personalSocketAcceptsSessionBindOpcode27() throws {
         let hostA = Curve25519.Signing.PrivateKey()
         let sessionIDA = Data("session-host-pers".utf8)
         let (hostAKeyBlob, hostASig) = try makeHostKeyAndSig(priv: hostA, sessionID: sessionIDA)
@@ -672,6 +678,202 @@ final class SessionBindTests: ClavisBaseTestCase {
             clientStartTime: 1000,
             connection: connection
         )
-        XCTAssertEqual(resp.first, 5)
+        XCTAssertEqual(resp.first, 6, "Personal socket must accept session-bind@openssh.com")
+        XCTAssertEqual(connection.authBinding?.sessionID, sessionIDA)
+        XCTAssertEqual(connection.authBinding?.hostKeyBlob, hostAKeyBlob)
+        XCTAssertFalse(connection.hasForwarding)
+
+        // Bind forwarding on personal socket
+        let sessionIDFwd = Data("session-host-pers-fwd".utf8)
+        let (_, hostAFwdSig) = try makeHostKeyAndSig(priv: hostA, sessionID: sessionIDFwd)
+        let bindFwdPayload = makeSessionBindPayload(
+            hostKeyBlob: hostAKeyBlob,
+            sessionID: sessionIDFwd,
+            signatureBlob: hostAFwdSig,
+            isForwarding: true
+        )
+        let respFwd = personalServer.processAgentRequest(
+            payload: bindFwdPayload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            connection: connection
+        )
+        XCTAssertEqual(respFwd.first, 6)
+        XCTAssertTrue(connection.hasForwarding)
+    }
+
+    func test_F06_agentSocketRejectsForwardingUnconditionallyEvenWithEmptyAllowedHosts() throws {
+        let key = try manager.generateKey(label: "agent-fwd-unconditional", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let policyStore = InMemoryAgentPolicyStore()
+        let registry = AgentSessionRegistry(
+            processInfo: { _ in (startTime: 1000, parentPid: 1) },
+            auditRecorder: auditRecorder,
+            watchRootExit: false
+        )
+        let server = SSHAgentServer(
+            role: .agent,
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentSessions: registry,
+            agentPolicies: policyStore
+        )
+        let controlServer = SSHAgentServer(
+            role: .personal,
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentSessions: registry,
+            agentPolicies: policyStore
+        )
+
+        // Session registered with default policy (allowedHosts is empty)
+        let regResp = controlServer.processAgentRequest(
+            payload: makeRegisterPayload(keyLabel: key.label, toolName: "agent-tool", leaseMinutes: 60),
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(regResp.first, 6)
+
+        // Connection has forwarding
+        let hostA = Curve25519.Signing.PrivateKey()
+        let sessionIDA = Data("session-fwd-empty-hosts".utf8)
+        let (hostAKeyBlob, hostASig) = try makeHostKeyAndSig(priv: hostA, sessionID: sessionIDA)
+
+        let connection = AgentConnectionState()
+        let bindPayload = makeSessionBindPayload(
+            hostKeyBlob: hostAKeyBlob,
+            sessionID: sessionIDA,
+            signatureBlob: hostASig,
+            isForwarding: true
+        )
+        let bindResp = server.processAgentRequest(
+            payload: bindPayload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            connection: connection
+        )
+        XCTAssertEqual(bindResp.first, 6)
+        XCTAssertTrue(connection.hasForwarding)
+
+        // Even though allowedHosts is empty, agent socket rejects forwarding unconditionally
+        let dataToSign = Data("test-data".utf8)
+        let signPayload = makeSignPayload(publicKeyBlob: key.publicKeyBlob, dataToSign: dataToSign)
+
+        let signResp = server.processAgentRequest(
+            payload: signPayload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            connection: connection
+        )
+        XCTAssertEqual(signResp.first, 5, "Agent socket must reject signing when connection has forwarding, even with empty allowedHosts")
+
+        let signAudit = auditRecorder.events.last { $0.type == .signature }
+        XCTAssertEqual(signAudit?.result, .denied)
+        XCTAssertEqual(signAudit?.reason, .forwardingRefused)
+    }
+
+    func test_F06_agentSocketVerifiesRFC4252PacketStructureWhenAllowedHostsNonEmpty() throws {
+        let key = try manager.generateKey(label: "agent-rfc4252-verify", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let hostA = Curve25519.Signing.PrivateKey()
+        let sessionIDA = Data("session-host-rfc4252".utf8)
+        let (hostAKeyBlob, hostASig) = try makeHostKeyAndSig(priv: hostA, sessionID: sessionIDA)
+
+        let policyStore = InMemoryAgentPolicyStore()
+        let policy = AgentKeyPolicy(allowedHosts: [
+            AgentAllowedHost(name: "github.com", hostKeyBlob: hostAKeyBlob)
+        ])
+        try policyStore.save(policy, forFingerprint: key.fingerprint)
+
+        let registry = AgentSessionRegistry(
+            processInfo: { _ in (startTime: 1000, parentPid: 1) },
+            auditRecorder: auditRecorder,
+            watchRootExit: false
+        )
+        let server = SSHAgentServer(
+            role: .agent,
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentSessions: registry,
+            agentPolicies: policyStore
+        )
+        let controlServer = SSHAgentServer(
+            role: .personal,
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentSessions: registry,
+            agentPolicies: policyStore
+        )
+
+        let regResp = controlServer.processAgentRequest(
+            payload: makeRegisterPayload(keyLabel: key.label, toolName: "agent-tool", leaseMinutes: 60),
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(regResp.first, 6)
+
+        // Bind host A with sessionIDA
+        let connection = AgentConnectionState()
+        let bindPayload = makeSessionBindPayload(
+            hostKeyBlob: hostAKeyBlob,
+            sessionID: sessionIDA,
+            signatureBlob: hostASig,
+            isForwarding: false
+        )
+        let bindResp = server.processAgentRequest(
+            payload: bindPayload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            connection: connection
+        )
+        XCTAssertEqual(bindResp.first, 6)
+
+        // 1. dataToSign starts with sessionID prefix, but body is raw string (NOT RFC 4252)
+        var rawDataToSign = Data()
+        rawDataToSign.appendWireData(sessionIDA)
+        rawDataToSign.append(Data("raw-non-rfc4252-payload".utf8))
+        let rawSignPayload = makeSignPayload(publicKeyBlob: key.publicKeyBlob, dataToSign: rawDataToSign)
+
+        let rawSignResp = server.processAgentRequest(
+            payload: rawSignPayload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            connection: connection
+        )
+        XCTAssertEqual(rawSignResp.first, 5, "Non-RFC 4252 payload must be rejected when allowedHosts is non-empty")
+        let rawAudit = auditRecorder.events.last { $0.type == .signature }
+        XCTAssertEqual(rawAudit?.result, .denied)
+        XCTAssertEqual(rawAudit?.reason, .hostNotAllowed)
+
+        // 2. dataToSign is valid RFC 4252 userauth request
+        let validUserAuthData = SSHAgentServerTests.makeSSH2UserAuthRequest(
+            sessionID: sessionIDA,
+            user: "git",
+            service: "ssh-connection",
+            method: "publickey",
+            hasSig: true,
+            algo: "ssh-ed25519",
+            keyBlob: key.publicKeyBlob
+        )
+        let validSignPayload = makeSignPayload(publicKeyBlob: key.publicKeyBlob, dataToSign: validUserAuthData)
+
+        let validSignResp = server.processAgentRequest(
+            payload: validSignPayload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            connection: connection
+        )
+        XCTAssertEqual(validSignResp.first, 14, "Valid RFC 4252 payload matching sessionID and keyBlob must be allowed")
+        let validAudit = auditRecorder.events.last { $0.type == .signature }
+        XCTAssertEqual(validAudit?.result, .allowed)
+        XCTAssertEqual(validAudit?.sensitive.host, "github.com")
     }
 }

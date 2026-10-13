@@ -455,7 +455,39 @@ public enum ClavisUIStrings {
         public static var extend1h: String { localized("agent_session.extend_1h", "+1 hour") }
         public static var extend4h: String { localized("agent_session.extend_4h", "+4 hours") }
         public static var extendPrompt: String { localized("agent_session.extend_prompt", "Extend agent session") }
+        public static func extendAuthReason(keyLabel: String, tool: String, minutes: Int, requester: String) -> String {
+            let sanitizedTool = String(AuditEvent.sanitizedPath((tool as NSString).lastPathComponent).prefix(64))
+            return localizedFormat(
+                "agent_session.extend_auth_reason",
+                "extend agent session for \u{201c}%1$@\u{201d} with key \u{201c}%2$@\u{201d} by %3$d minutes (requested by %4$@)",
+                sanitizedTool,
+                keyLabel,
+                minutes,
+                requester
+            )
+        }
         public static var askPrompt: String { localized("agent_session.ask_prompt", "Approve agent signature") }
+        public static func askPrompt(keyLabel: String, tool: String, requester: String, host: String? = nil) -> String {
+            let sanitizedTool = String(AuditEvent.sanitizedPath((tool as NSString).lastPathComponent).prefix(64))
+            if let host, !host.isEmpty {
+                return localizedFormat(
+                    "agent_session.ask_prompt_with_host",
+                    "approve agent signature with \u{201c}%1$@\u{201d} for \u{201c}%2$@\u{201d} on %3$@ (requested by %4$@)",
+                    keyLabel,
+                    sanitizedTool,
+                    host,
+                    requester
+                )
+            } else {
+                return localizedFormat(
+                    "agent_session.ask_prompt_requester",
+                    "approve agent signature with \u{201c}%1$@\u{201d} for \u{201c}%2$@\u{201d} (requested by %3$@)",
+                    keyLabel,
+                    sanitizedTool,
+                    requester
+                )
+            }
+        }
         public static var revokeAll: String { localized("agent_session.revoke_all", "Revoke all agent sessions") }
         public static var notificationSignedTitle: String { localized("agent_session.notification_signed_title", "Agent signed") }
         public static var notificationRateLimitedTitle: String { localized("agent_session.notification_rate_limited_title", "Agent rate limited") }
@@ -480,6 +512,14 @@ public enum ClavisUIStrings {
         public static var savedFeedback: String { localized("agent_policy.saved_feedback", "Policy saved") }
         public static var globalMaxLease: String { localized("agent_policy.global_max_lease", "Maximum agent session length") }
         public static var changePrompt: String { localized("agent_policy.change_prompt", "Change agent session policy") }
+        public static func authReason(keyLabel: String, requester: String) -> String {
+            localizedFormat(
+                "agent_policy.auth_reason",
+                "change agent session policy for \u{201c}%1$@\u{201d} (requested by %2$@)",
+                keyLabel,
+                requester
+            )
+        }
     }
 
     public enum PinUnlock {
