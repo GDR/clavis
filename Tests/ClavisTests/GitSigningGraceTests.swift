@@ -66,29 +66,34 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
     func testGitSigningGrantLifecycle() throws {
         let label = "grant-test-\(UUID().uuidString)"
-        let grant = GitSigningGrant(keyLabel: label, duration: 0.2, maxOperations: 3)
+        let myPid = getpid()
+        guard let mySnap = SSHAgentServer.processParentSnapshot(pid: myPid) else {
+            return XCTFail("Failed to get process snapshot for test runner")
+        }
+        let approved = GitApprovedProcess(pid: myPid, startTime: mySnap.startTime, path: "/usr/bin/git")
+        let grant = GitSigningGrant(keyLabel: label, duration: 0.2, maxOperations: 3, approvedProcess: approved)
 
         XCTAssertTrue(grant.isValid)
         XCTAssertEqual(grant.remainingOperations, 3)
 
         // Consume operations
-        XCTAssertTrue(grant.consumeOperation(clientIdentity: "test-client"))
+        XCTAssertTrue(grant.consumeOperation(clientIdentity: "/usr/bin/git", peerProcess: approved))
         XCTAssertEqual(grant.remainingOperations, 2)
-        XCTAssertTrue(grant.consumeOperation(clientIdentity: "test-client"))
+        XCTAssertTrue(grant.consumeOperation(clientIdentity: "/usr/bin/git", peerProcess: approved))
         XCTAssertEqual(grant.remainingOperations, 1)
-        XCTAssertTrue(grant.consumeOperation(clientIdentity: "test-client"))
+        XCTAssertTrue(grant.consumeOperation(clientIdentity: "/usr/bin/git", peerProcess: approved))
         XCTAssertEqual(grant.remainingOperations, 0)
 
         // Exceeded operation limit
-        XCTAssertFalse(grant.consumeOperation(clientIdentity: "test-client"))
+        XCTAssertFalse(grant.consumeOperation(clientIdentity: "/usr/bin/git", peerProcess: approved))
         XCTAssertFalse(grant.isValid)
 
         // Expiry by time
-        let timeGrant = GitSigningGrant(keyLabel: label, duration: 0.05, maxOperations: 100)
+        let timeGrant = GitSigningGrant(keyLabel: label, duration: 0.05, maxOperations: 100, approvedProcess: approved)
         XCTAssertTrue(timeGrant.isValid)
         usleep(70_000)
         XCTAssertFalse(timeGrant.isValid)
-        XCTAssertFalse(timeGrant.consumeOperation(clientIdentity: "test-client"))
+        XCTAssertFalse(timeGrant.consumeOperation(clientIdentity: "/usr/bin/git", peerProcess: approved))
     }
 
 
@@ -117,24 +122,32 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         XCTAssertTrue(promptCalled)
         XCTAssertEqual(choice, .grantFiveMinutes)
 
+        let myPid = getpid()
+        guard let mySnap = SSHAgentServer.processParentSnapshot(pid: myPid) else {
+            return XCTFail("Failed to get process snapshot for test runner")
+        }
+        let approved = GitApprovedProcess(pid: myPid, startTime: mySnap.startTime, path: "/usr/bin/git")
+
         // Issue grant
         let grant = graceManager.recordGrant(
             keyLabel: label,
             clientIdentity: "/usr/bin/git",
             duration: 300,
             maxOperations: 50,
-            context: LAContext()
+            context: LAContext(),
+            approvedProcess: approved
         )
         XCTAssertNotNil(graceManager.getValidGrant(for: label))
         XCTAssertEqual(grant.remainingOperations, 50)
 
         // Step 3: Subsequent rebase commits consume grant
-        let result = graceManager.withGrant(for: label, clientIdentity: "/usr/bin/git") { _ in "signed" }
+        let result = graceManager.withGrant(for: label, clientIdentity: "/usr/bin/git", peerProcess: approved) { _ in "signed" }
         XCTAssertEqual(result, "signed")
         XCTAssertEqual(grant.remainingOperations, 49)
+        let untrustedPeer = GitApprovedProcess(pid: myPid + 9999, startTime: mySnap.startTime, path: "/tmp/fake-git")
         XCTAssertNil(
-            graceManager.withGrant(for: label, clientIdentity: "/tmp/fake-git") { _ in "signed" },
-            "A grant must not be transferable to another client identity"
+            graceManager.withGrant(for: label, clientIdentity: "/tmp/fake-git", peerProcess: untrustedPeer) { _ in "signed" },
+            "A grant must not be transferable to another client identity or unapproved process"
         )
 
         // Invalidation clears grant
@@ -1314,6 +1327,185 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
                 processPathLookup: pathLookup
             ),
             "Missing intermediate process snapshot must be refused"
+        )
+    }
+
+    func testGitSigningGrantRejectsMismatchedOrRecycledPID() {
+        let manager = GitSigningGraceManager(observeSystemEvents: false)
+        let label = "git-anchor-test-\(UUID().uuidString)"
+        let myPid = getpid()
+        guard let mySnap = SSHAgentServer.processParentSnapshot(pid: myPid) else {
+            return XCTFail("Failed to get process snapshot for test runner")
+        }
+        let approvedPid = myPid
+        let approvedStart = mySnap.startTime
+        let approvedPath = "/usr/bin/git"
+        let approvedProcess = GitApprovedProcess(pid: approvedPid, startTime: approvedStart, path: approvedPath)
+
+        let grant = manager.recordGrant(
+            keyLabel: label,
+            clientIdentity: approvedPath,
+            duration: 300,
+            maxOperations: 10,
+            context: LAContext(),
+            approvedProcess: approvedProcess
+        )
+
+        // Matching peer process must be accepted
+        XCTAssertTrue(
+            grant.consumeOperation(clientIdentity: approvedPath, peerProcess: approvedProcess),
+            "Peer matching approved process must be allowed"
+        )
+
+        // 1. Peer with different PID must be rejected, even if executable path is /usr/bin/git
+        let differentPidPeer = GitApprovedProcess(pid: myPid + 99999, startTime: approvedStart, path: approvedPath)
+        XCTAssertFalse(
+            grant.consumeOperation(clientIdentity: approvedPath, peerProcess: differentPidPeer),
+            "Peer with different PID must be rejected"
+        )
+
+        // 2. Peer with recycled PID (same PID, different start time) must be rejected
+        let recycledPidPeer = GitApprovedProcess(pid: approvedPid, startTime: approvedStart + 10, path: approvedPath)
+        XCTAssertFalse(
+            grant.consumeOperation(clientIdentity: approvedPath, peerProcess: recycledPidPeer),
+            "Recycled PID with different start time must be rejected"
+        )
+
+        // 3. Fallback to bare string comparison must be rejected (no peer process provided)
+        XCTAssertFalse(
+            grant.consumeOperation(clientIdentity: approvedPath, peerProcess: nil),
+            "Missing peerProcess must fail closed and reject bare string match"
+        )
+
+        // 4. Grant without approvedProcess must reject consumeOperation even if clientIdentity matches
+        let unanchoredGrant = manager.recordGrant(
+            keyLabel: "unanchored-\(UUID().uuidString)",
+            clientIdentity: approvedPath,
+            duration: 300,
+            maxOperations: 10,
+            context: LAContext(),
+            approvedProcess: nil
+        )
+        XCTAssertFalse(
+            unanchoredGrant.consumeOperation(clientIdentity: approvedPath, peerProcess: nil),
+            "Unanchored grant without approvedProcess must fail closed on bare string comparison"
+        )
+        XCTAssertFalse(
+            unanchoredGrant.consumeOperation(clientIdentity: approvedPath, peerProcess: approvedProcess),
+            "Unanchored grant must not allow client operations"
+        )
+    }
+
+    func testGitSigningGraceRejectsUntrustedExecutablePaths() {
+        // 1. Allowlist rejects untrusted signer helpers (basename matching like /tmp/ssh-keygen is rejected)
+        XCTAssertFalse(SSHAgentServer.isSignerHelper(path: "/tmp/ssh-keygen"), "/tmp/ssh-keygen must be rejected")
+        XCTAssertFalse(SSHAgentServer.isSignerHelper(path: "/tmp/git"), "/tmp/git must be rejected as helper")
+        XCTAssertFalse(SSHAgentServer.isSignerHelper(path: "/Users/test/.local/bin/ssh-keygen"), "Untrusted path must be rejected")
+
+        // Canonical/trusted signer helper paths
+        XCTAssertTrue(SSHAgentServer.isSignerHelper(path: "/usr/bin/ssh-keygen"))
+        XCTAssertTrue(SSHAgentServer.isSignerHelper(path: "/usr/local/bin/ssh-keygen"))
+        XCTAssertTrue(SSHAgentServer.isSignerHelper(path: "/opt/homebrew/bin/ssh-keygen"))
+        XCTAssertTrue(SSHAgentServer.isSignerHelper(path: "/run/current-system/sw/bin/ssh-keygen"))
+        XCTAssertTrue(SSHAgentServer.isSignerHelper(path: "/nix/store/s0m3h4sh-openssh-9.5/bin/ssh-keygen"))
+
+        // 2. grantAnchor rejects untrusted git paths (e.g. /tmp/git)
+        let mockProcesses: [pid_t: ProcessParentSnapshot] = [
+            100: ProcessParentSnapshot(startTime: 1000, parentPid: 1),
+            200: ProcessParentSnapshot(startTime: 2000, parentPid: 100)
+        ]
+        let mockPaths: [pid_t: String] = [
+            100: "/tmp/git",
+            200: "/usr/bin/ssh-keygen"
+        ]
+        let pInfo: (pid_t) -> ProcessParentSnapshot? = { mockProcesses[$0] }
+        let pLookup: (pid_t) -> String? = { mockPaths[$0] }
+
+        // Direct anchor on /tmp/git must be rejected
+        XCTAssertNil(
+            SSHAgentServer.grantAnchor(
+                peerPid: 100,
+                peerPath: "/tmp/git",
+                processInfo: pInfo,
+                processPathLookup: pLookup
+            ),
+            "Direct anchor on /tmp/git must be rejected"
+        )
+
+        // ssh-keygen child under /tmp/git parent must be rejected
+        XCTAssertNil(
+            SSHAgentServer.grantAnchor(
+                peerPid: 200,
+                peerPath: "/usr/bin/ssh-keygen",
+                processInfo: pInfo,
+                processPathLookup: pLookup
+            ),
+            "Signer helper under /tmp/git parent must be rejected"
+        )
+
+        // Direct anchor on canonical git paths must succeed
+        for trustedGit in [
+            "/usr/bin/git",
+            "/usr/local/bin/git",
+            "/opt/homebrew/bin/git",
+            "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+            "/run/current-system/sw/bin/git",
+            "/nix/store/s0m3h4sh-git-2.42.0/bin/git"
+        ] {
+            let anchor = SSHAgentServer.grantAnchor(
+                peerPid: 100,
+                peerPath: trustedGit,
+                processInfo: { _ in ProcessParentSnapshot(startTime: 1000, parentPid: 1) },
+                processPathLookup: { _ in trustedGit }
+            )
+            XCTAssertNotNil(anchor, "\(trustedGit) must be recognized as valid direct git anchor")
+            XCTAssertEqual(anchor?.pid, 100)
+            XCTAssertEqual(anchor?.startTime, 1000)
+        }
+
+        // 3. gitGrantCoversPeer rejects untrusted helper and untrusted intermediate git
+        let untrustedHelperPid: pid_t = 300
+        let untrustedGitPid: pid_t = 301
+        let canonicalGitPid: pid_t = 302
+        let coverProcesses: [pid_t: ProcessParentSnapshot] = [
+            untrustedHelperPid: ProcessParentSnapshot(startTime: 3000, parentPid: canonicalGitPid),
+            303: ProcessParentSnapshot(startTime: 3000, parentPid: untrustedGitPid),
+            untrustedGitPid: ProcessParentSnapshot(startTime: 2500, parentPid: canonicalGitPid),
+            canonicalGitPid: ProcessParentSnapshot(startTime: 2000, parentPid: 1)
+        ]
+        let coverPaths: [pid_t: String] = [
+            untrustedHelperPid: "/tmp/ssh-keygen",
+            303: "/usr/bin/ssh-keygen",
+            untrustedGitPid: "/tmp/git",
+            canonicalGitPid: "/usr/bin/git"
+        ]
+
+        // /tmp/ssh-keygen under /usr/bin/git -> rejected
+        XCTAssertFalse(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: untrustedHelperPid,
+                peerStartTime: 3000,
+                peerPath: "/tmp/ssh-keygen",
+                approvedPid: canonicalGitPid,
+                approvedStartTime: 2000,
+                processInfo: { coverProcesses[$0] },
+                processPathLookup: { coverPaths[$0] }
+            ),
+            "/tmp/ssh-keygen must be rejected by gitGrantCoversPeer"
+        )
+
+        // /usr/bin/ssh-keygen under /tmp/git -> rejected
+        XCTAssertFalse(
+            SSHAgentServer.gitGrantCoversPeer(
+                peerPid: 303,
+                peerStartTime: 3000,
+                peerPath: "/usr/bin/ssh-keygen",
+                approvedPid: canonicalGitPid,
+                approvedStartTime: 2000,
+                processInfo: { coverProcesses[$0] },
+                processPathLookup: { coverPaths[$0] }
+            ),
+            "Intermediate /tmp/git must be rejected by gitGrantCoversPeer"
         )
     }
 }

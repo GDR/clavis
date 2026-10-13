@@ -35,12 +35,12 @@ public enum SSHAgentServerError: LocalizedError, Equatable {
 }
 
 /// Process instance that a Git signing grant was approved for.
-struct GitApprovedProcess: Equatable, Sendable {
-    let pid: pid_t
-    let startTime: UInt64
-    let path: String?
+public struct GitApprovedProcess: Equatable, Sendable {
+    public let pid: pid_t
+    public let startTime: UInt64
+    public let path: String?
 
-    init(pid: pid_t, startTime: UInt64, path: String? = nil) {
+    public init(pid: pid_t, startTime: UInt64, path: String? = nil) {
         self.pid = pid
         self.startTime = startTime
         self.path = path
@@ -419,6 +419,42 @@ public class SSHAgentServer {
         )
     }
 
+    public static let trustedGitPaths: Set<String> = [
+        "/usr/bin/git",
+        "/usr/local/bin/git",
+        "/opt/homebrew/bin/git",
+        "/run/current-system/sw/bin/git",
+        "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+        "/Library/Developer/CommandLineTools/usr/bin/git"
+    ]
+
+    public static let trustedSignerHelperPaths: Set<String> = [
+        "/usr/bin/ssh-keygen",
+        "/usr/local/bin/ssh-keygen",
+        "/opt/homebrew/bin/ssh-keygen",
+        "/run/current-system/sw/bin/ssh-keygen"
+    ]
+
+    static func isTrustedGitExecutable(path: String) -> Bool {
+        let stdPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        if trustedGitPaths.contains(stdPath) { return true }
+        if (stdPath.hasPrefix("/Applications/Xcode") || stdPath.hasPrefix("/Library/Developer/CommandLineTools")) && stdPath.hasSuffix("/usr/bin/git") {
+            return true
+        }
+        if stdPath.hasPrefix("/nix/store/") && stdPath.hasSuffix("/bin/git") { return true }
+        #if DEBUG
+        if (path as NSString).lastPathComponent == "xctest" { return true }
+        #endif
+        return false
+    }
+
+    static func isTrustedSignerHelperExecutable(path: String) -> Bool {
+        let stdPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        if trustedSignerHelperPaths.contains(stdPath) { return true }
+        if stdPath.hasPrefix("/nix/store/") && stdPath.hasSuffix("/bin/ssh-keygen") { return true }
+        return false
+    }
+
     /// `true` when `peer` is the approved process instance or a live descendant of it
     /// via a git-only process chain ending in a recognized signer helper.
     /// The walk stops at pid 1, a cycle, or a missing snapshot. A sibling that merely
@@ -455,7 +491,7 @@ public class SSHAgentServer {
         }
 
         // Ancestor path walk: from peer's parent up to approvedPid.
-        // Every process on the ancestor path from peer up to approved git (exclusive) must have basename "git".
+        // Every process on the ancestor path from peer up to approved git (exclusive) must be a trusted git.
         var current = peerSnap.parentPid
         var seen = Set<pid_t>([peerPid])
         seen.reserveCapacity(8)
@@ -469,8 +505,7 @@ public class SSHAgentServer {
             }
 
             guard let path = processPathLookup(current) else { return false }
-            let base = (path as NSString).lastPathComponent
-            guard base == "git" else { return false }
+            guard isTrustedGitExecutable(path: path) else { return false }
 
             let parent = info.parentPid
             if parent <= 0 || parent == current {
@@ -517,6 +552,22 @@ public class SSHAgentServer {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gitPath)
         process.arguments = ["config", "--get", "gpg.ssh.program"]
+        var env = ProcessInfo.processInfo.environment
+        let sensitiveGitVars: Set<String> = [
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM",
+            "GIT_CONFIG_NOSYSTEM",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_COUNT",
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY"
+        ]
+        for key in sensitiveGitVars {
+            env.removeValue(forKey: key)
+        }
+        process.environment = env
         let stdoutPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = Pipe()
@@ -619,14 +670,14 @@ public class SSHAgentServer {
         path: String,
         resolvedGpgSSHProgram: () -> String? = { gpgSSHProgramResolver() }
     ) -> Bool {
-        let stdPath = URL(fileURLWithPath: path).standardizedFileURL.path
-        if stdPath == "/usr/bin/ssh-keygen" || (path as NSString).lastPathComponent == "ssh-keygen" {
+        if isTrustedSignerHelperExecutable(path: path) {
             return true
         }
         if let custom = resolvedGpgSSHProgram(), !custom.isEmpty {
             let expandedCustom = NSString(string: custom).expandingTildeInPath
             let stdCustom = URL(fileURLWithPath: expandedCustom).standardizedFileURL.path
-            if stdPath == stdCustom || (path as NSString).lastPathComponent == (expandedCustom as NSString).lastPathComponent {
+            let stdPath = URL(fileURLWithPath: path).standardizedFileURL.path
+            if stdPath == stdCustom {
                 return true
             }
         }
@@ -647,7 +698,7 @@ public class SSHAgentServer {
 
     /// Resolves the process anchor for a Git signing grant.
     /// If peer executable matches known signer helper (/usr/bin/ssh-keygen, resolved gpg.ssh.program)
-    /// and parent executable basename is git, anchors the grant on parent git (pid + start time).
+    /// and parent executable matches a trusted git binary, anchors the grant on parent git (pid + start time).
     /// Never anchors on shell, terminal, or launchd.
     static func grantAnchor(
         peerPid: pid_t,
@@ -665,8 +716,7 @@ public class SSHAgentServer {
             guard parentPid > 1 else { return nil }
             guard let parentSnap = processInfo(parentPid), parentSnap.startTime > 0 else { return nil }
             guard let parentPath = processPathLookup(parentPid) else { return nil }
-            let parentBase = (parentPath as NSString).lastPathComponent
-            if parentBase == "git" {
+            if isTrustedGitExecutable(path: parentPath) {
                 guard !isRefusedAnchor(pid: parentPid, path: parentPath) else { return nil }
                 // Walk up contiguous git ancestors to anchor on the root git process (e.g. git rebase)
                 var topGitPid = parentPid
@@ -680,8 +730,7 @@ public class SSHAgentServer {
                     guard ppid > 1, seen.insert(ppid).inserted else { break }
                     guard let pSnap = processInfo(ppid), pSnap.startTime > 0 else { break }
                     guard let pPath = processPathLookup(ppid) else { break }
-                    let pBase = (pPath as NSString).lastPathComponent
-                    guard pBase == "git", !isRefusedAnchor(pid: ppid, path: pPath) else { break }
+                    guard isTrustedGitExecutable(path: pPath), !isRefusedAnchor(pid: ppid, path: pPath) else { break }
                     topGitPid = ppid
                     topGitSnap = pSnap
                     topGitPath = pPath
@@ -693,14 +742,8 @@ public class SSHAgentServer {
             return nil
         }
 
-        // If peer executable basename is git (or test runner xctest in DEBUG), anchor on itself
-        let peerBase = (peerPath as NSString).lastPathComponent
-        #if DEBUG
-        let isDirectAnchor = (peerBase == "git" || peerBase == "xctest")
-        #else
-        let isDirectAnchor = (peerBase == "git")
-        #endif
-        if isDirectAnchor {
+        // If peer executable is trusted git (or test runner xctest in DEBUG), anchor on itself
+        if isTrustedGitExecutable(path: peerPath) {
             guard !isRefusedAnchor(pid: peerPid, path: peerPath) else { return nil }
             guard let peerSnap = processInfo(peerPid), peerSnap.startTime > 0 else { return nil }
             var topGitPid = peerPid
@@ -714,8 +757,7 @@ public class SSHAgentServer {
                 guard ppid > 1, seen.insert(ppid).inserted else { break }
                 guard let pSnap = processInfo(ppid), pSnap.startTime > 0 else { break }
                 guard let pPath = processPathLookup(ppid) else { break }
-                let pBase = (pPath as NSString).lastPathComponent
-                guard pBase == "git", !isRefusedAnchor(pid: ppid, path: pPath) else { break }
+                guard isTrustedGitExecutable(path: pPath), !isRefusedAnchor(pid: ppid, path: pPath) else { break }
                 topGitPid = ppid
                 topGitSnap = pSnap
                 topGitPath = pPath
