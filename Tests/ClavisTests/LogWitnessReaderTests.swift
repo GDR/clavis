@@ -141,4 +141,51 @@ final class LogWitnessReaderTests: ClavisBaseTestCase {
         XCTAssertEqual(entries.count, 1)
         XCTAssertEqual(entries[0].seq, 1)
     }
+
+    func test_F08_isCanonicalPathRejectsRelativeAndTempTraversal() {
+        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/tmp/../Applications/Clavis.app/Contents/MacOS/Clavis"))
+        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/private/tmp/../Applications/Clavis.app/Contents/MacOS/Clavis"))
+        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/var/tmp/../Applications/Clavis.app/Contents/MacOS/Clavis"))
+        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/private/var/tmp/../Applications/Clavis.app/Contents/MacOS/Clavis"))
+        XCTAssertFalse(LogWitnessReader.isCanonicalPath("../Applications/Clavis.app/Contents/MacOS/Clavis"))
+        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/Applications/Clavis.app/../Applications/Clavis.app/Contents/MacOS/Clavis"))
+        XCTAssertFalse(LogWitnessReader.isCanonicalPath("Applications/Clavis.app/Contents/MacOS/Clavis"))
+    }
+
+    func test_F08_isCanonicalPathCaseInsensitiveOnMacOS() {
+        XCTAssertTrue(LogWitnessReader.isCanonicalPath("/applications/clavis.app/Contents/MacOS/Clavis"))
+        XCTAssertTrue(LogWitnessReader.isCanonicalPath("/APPLICATIONS/CLAVIS.APP/Contents/MacOS/Clavis"))
+        XCTAssertTrue(LogWitnessReader.isCanonicalPath("/opt/Homebrew/bin/clavis-cli"))
+        XCTAssertTrue(LogWitnessReader.isCanonicalPath("/OPT/HOMEBREW/BIN/clavis-cli"))
+        XCTAssertTrue(LogWitnessReader.isCanonicalPath("/usr/local/BIN/clavis-agent"))
+    }
+
+    func test_F08_isCanonicalPathRequiresResolvedMatchesAllowedPrefix() {
+        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/Users/Shared/evil/clavis-cli"))
+        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/usr/bin/clavis-cli"))
+        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/tmp/clavis-cli"))
+        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/private/tmp/clavis-cli"))
+        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/etc/clavis-cli"))
+    }
+
+    func test_F08_readerFiltersTraversalAndAcceptsCaseInsensitiveFixture() {
+        let fixture = """
+        {"processImagePath":"/tmp/../Applications/Clavis.app/Contents/MacOS/Clavis","eventMessage":"w1 seq=1 eid=11111111-1111-1111-1111-111111111111 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef","timestamp":"2026-10-06 03:55:41.787123+0000"}
+        {"processImagePath":"/applications/clavis.app/Contents/MacOS/Clavis","eventMessage":"w1 seq=2 eid=22222222-2222-2222-2222-222222222222 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef","timestamp":"2026-10-06 03:55:42.000000+0000"}
+        {"processImagePath":"/opt/Homebrew/bin/clavis-cli","eventMessage":"w1 seq=3 eid=33333333-3333-3333-3333-333333333333 type=key_create result=allowed fp=- h=fedcba9876543210fedcba9876543210","timestamp":"2026-10-06 03:55:43.000000+0000"}
+        """
+
+        let reader = LogWitnessReader(run: { _ in
+            return (0, Data(fixture.utf8))
+        })
+
+        let result = reader.read(days: 7)
+        guard case .entries(let entries) = result else {
+            XCTFail("Expected .entries, got \(result)")
+            return
+        }
+
+        XCTAssertEqual(entries.count, 2)
+        XCTAssertEqual(entries.map(\.seq), [2, 3])
+    }
 }
