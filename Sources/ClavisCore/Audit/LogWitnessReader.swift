@@ -31,46 +31,78 @@ public struct LogWitnessReader {
     }
 
     public static func isCanonicalPath(_ path: String) -> Bool {
+        guard path.hasPrefix("/") else { return false }
+        guard !path.contains("..") else { return false }
+
+        let blockedPrefixes = [
+            "/tmp/",
+            "/private/tmp/",
+            "/var/tmp/",
+            "/private/var/tmp/"
+        ]
+
+        for blocked in blockedPrefixes {
+            if path.range(of: blocked, options: [.anchored, .caseInsensitive]) != nil {
+                return false
+            }
+        }
+
         let url = URL(fileURLWithPath: path)
         let basename = url.lastPathComponent
-        guard allowedBasenames.contains(basename) else { return false }
+        guard allowedBasenames.contains(where: { $0.caseInsensitiveCompare(basename) == .orderedSame }) else {
+            return false
+        }
 
         let normalized = url.standardized.path
         let resolved = url.resolvingSymlinksInPath().path
 
         for p in [normalized, resolved] {
-            if p.hasPrefix("/tmp/") ||
-               p.hasPrefix("/private/tmp/") ||
-               p.hasPrefix("/var/tmp/") ||
-               p.hasPrefix("/private/var/tmp/") {
-                return false
+            for blocked in blockedPrefixes {
+                if p.range(of: blocked, options: [.anchored, .caseInsensitive]) != nil {
+                    return false
+                }
             }
         }
 
+        guard matchesCanonicalPrefix(normalized) && matchesCanonicalPrefix(resolved) else {
+            return false
+        }
+
+        return true
+    }
+
+    private static func matchesCanonicalPrefix(_ p: String) -> Bool {
         let canonicalPrefixes = [
             "/Applications/Clavis.app/",
             "/usr/local/bin/",
             "/opt/homebrew/bin/",
+            "/opt/homebrew/Cellar/",
+            "/usr/local/Cellar/",
             "/run/current-system/sw/bin/"
         ]
 
-        for p in [normalized, resolved] {
-            for prefix in canonicalPrefixes {
-                if p.hasPrefix(prefix) { return true }
-            }
-            if p.hasPrefix("/nix/store/") && (p.contains("/bin/") || p.contains("/Applications/Clavis.app/")) {
+        for prefix in canonicalPrefixes {
+            if p.range(of: prefix, options: [.anchored, .caseInsensitive]) != nil {
                 return true
             }
         }
 
-        let homeAppPrefix = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Applications/Clavis.app/").path
-        if normalized.hasPrefix(homeAppPrefix) || resolved.hasPrefix(homeAppPrefix) {
+        if p.range(of: "/nix/store/", options: [.anchored, .caseInsensitive]) != nil {
+            if p.range(of: "/bin/", options: .caseInsensitive) != nil ||
+               p.range(of: "/Applications/Clavis.app/", options: .caseInsensitive) != nil {
+                return true
+            }
+        }
+
+        let rawHomeApp = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Applications/Clavis.app").path
+        let homeAppPrefix = rawHomeApp.hasSuffix("/") ? rawHomeApp : rawHomeApp + "/"
+        if p.range(of: homeAppPrefix, options: [.anchored, .caseInsensitive]) != nil {
             return true
         }
 
         #if DEBUG
-        if normalized.contains("/.build/") || resolved.contains("/.build/") {
+        if p.range(of: "/.build/", options: .caseInsensitive) != nil {
             return true
         }
         #endif

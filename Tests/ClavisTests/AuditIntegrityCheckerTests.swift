@@ -573,4 +573,148 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         XCTAssertEqual(report.missingRows.count, 1)
         XCTAssertEqual(report.missingRows.first?.seq, 3)
     }
+
+    func test_F08_prunedThroughSeqInt64MaxDoesNotCrash() throws {
+        let store = try AuditStore(url: dbURL)
+        defer { store.close() }
+
+        let now = Date()
+        let event = AuditEvent(time: now, type: .signature, result: .allowed, keyFingerprint: "SHA256:key1")
+        let seq = try store.insert(event)
+        let record = (try store.records(fromSeq: seq)).first!
+        let digest = AuditWitness.digest(for: record)
+        let witness = AuditWitnessEntry(
+            seq: seq,
+            eventID: event.id,
+            type: event.type.rawValue,
+            result: event.result.rawValue,
+            fingerprint: event.keyFingerprint,
+            digest: digest,
+            loggedAt: event.time
+        )
+
+        // Set pruned_through_seq to Int64.max to test integer overflow boundary condition
+        try executeSQL("INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '\(Int64.max)');")
+
+        // Must not trap / crash with SIGTRAP on integer overflow
+        let report = try AuditIntegrityChecker.check(
+            store: store,
+            witness: .entries([witness]),
+            now: now.addingTimeInterval(100),
+            days: 7
+        )
+
+        XCTAssertEqual(report.status, AuditIntegrityReport.Status.ok)
+        XCTAssertFalse(report.truncatedTail)
+        XCTAssertTrue(report.missingRows.isEmpty)
+    }
+
+    func test_F08_negativePrunedThroughSeqDoesNotGenerateSpuriousGaps() throws {
+        let store = try AuditStore(url: dbURL)
+        defer { store.close() }
+
+        let now = Date()
+        let event = AuditEvent(time: now, type: .signature, result: .allowed, keyFingerprint: "SHA256:key1")
+        let seq = try store.insert(event)
+        let record = (try store.records(fromSeq: seq)).first!
+        let digest = AuditWitness.digest(for: record)
+        let witness = AuditWitnessEntry(
+            seq: seq,
+            eventID: event.id,
+            type: event.type.rawValue,
+            result: event.result.rawValue,
+            fingerprint: event.keyFingerprint,
+            digest: digest,
+            loggedAt: event.time
+        )
+
+        // Set negative pruned_through_seq
+        try executeSQL("INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '-1');")
+
+        let report = try AuditIntegrityChecker.check(
+            store: store,
+            witness: .entries([witness]),
+            now: now.addingTimeInterval(100),
+            days: 7
+        )
+
+        XCTAssertEqual(report.status, AuditIntegrityReport.Status.ok)
+        XCTAssertTrue(report.gapsOutsideWindow.isEmpty, "Spurious gaps generated: \(report.gapsOutsideWindow)")
+    }
+
+    func test_F08_legitimatePruningDoesNotTriggerTruncatedTail() throws {
+        let store = try AuditStore(url: dbURL)
+        defer { store.close() }
+
+        let now = Date()
+        let pastTime = now.addingTimeInterval(-800_000)
+        let event = AuditEvent(time: pastTime, type: .signature, result: .allowed, keyFingerprint: "SHA256:key1")
+        let seq = try store.insert(event)
+        let record = (try store.records(fromSeq: seq)).first!
+        let digest = AuditWitness.digest(for: record)
+        let witness = AuditWitnessEntry(
+            seq: seq,
+            eventID: event.id,
+            type: event.type.rawValue,
+            result: event.result.rawValue,
+            fingerprint: event.keyFingerprint,
+            digest: digest,
+            loggedAt: pastTime
+        )
+
+        // Legitimate pruning deletes row 1 and advances pruned_through_seq
+        try executeSQL("DELETE FROM events WHERE seq = 1;")
+        try executeSQL("INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '1');")
+
+        let report = try AuditIntegrityChecker.check(
+            store: store,
+            witness: .entries([witness]),
+            now: now,
+            days: 7
+        )
+
+        // Should be .ok, truncatedTail should be false because seq 1 <= pruned
+        XCTAssertEqual(report.status, AuditIntegrityReport.Status.ok)
+        XCTAssertFalse(report.truncatedTail)
+        XCTAssertTrue(report.missingRows.isEmpty)
+    }
+
+    func test_F08_gapsOutsideWindowExpectedSeqDoesNotStartBelowOne() throws {
+        let store = try AuditStore(url: dbURL)
+        defer { store.close() }
+
+        let now = Date()
+        for i in 1...5 {
+            let event = AuditEvent(time: now.addingTimeInterval(Double(i) * 10), type: .signature, result: .allowed, keyFingerprint: "SHA256:key\(i)")
+            _ = try store.insert(event)
+        }
+        try executeSQL("DELETE FROM events WHERE seq < 5;")
+
+        let record = (try store.records(fromSeq: 5)).first!
+        let digest = AuditWitness.digest(for: record)
+        let witness = AuditWitnessEntry(
+            seq: 5,
+            eventID: record.event.id,
+            type: record.event.type.rawValue,
+            result: record.event.result.rawValue,
+            fingerprint: record.event.keyFingerprint,
+            digest: digest,
+            loggedAt: record.event.time
+        )
+
+        // Set negative pruned_through_seq
+        try executeSQL("INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '-5');")
+
+        let report = try AuditIntegrityChecker.check(
+            store: store,
+            witness: .entries([witness]),
+            now: now.addingTimeInterval(100),
+            days: 7
+        )
+
+        XCTAssertFalse(report.gapsOutsideWindow.isEmpty)
+        for gap in report.gapsOutsideWindow {
+            XCTAssertGreaterThanOrEqual(gap.lowerBound, 1, "Gap lower bound cannot start below 1: \(gap)")
+        }
+    }
 }

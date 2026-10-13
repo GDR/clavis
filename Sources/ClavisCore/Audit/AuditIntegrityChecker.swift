@@ -83,8 +83,9 @@ public enum AuditIntegrityChecker {
             )
         }
 
-        // 2. pruned = Int64(meta("pruned_through_seq") ?? "0")
-        let pruned = Int64(try store.meta("pruned_through_seq") ?? "0") ?? 0
+        // 2. pruned = max(0, Int64(meta("pruned_through_seq") ?? "0"))
+        let pruned = max(0, Int64(try store.meta("pruned_through_seq") ?? "0") ?? 0)
+        let nextSeqAfterPrune = (pruned < Int64.max) ? pruned + 1 : Int64.max
 
         // 3. W = witness entries by seq (if duplicates: keep all; differing digests for one seq -> inconsistent)
         var witnessBySeq: [Int64: [AuditWitnessEntry]] = [:]
@@ -115,9 +116,9 @@ public enum AuditIntegrityChecker {
         let minActiveSeq = activeWitnessSeqs.first
         let minSeqToFetch: Int64
         if let minActive = minActiveSeq {
-            minSeqToFetch = min(pruned + 1, minActive)
+            minSeqToFetch = min(nextSeqAfterPrune, minActive)
         } else {
-            minSeqToFetch = pruned + 1
+            minSeqToFetch = nextSeqAfterPrune
         }
         let allRecords = try store.records(fromSeq: minSeqToFetch)
         var dbBySeq: [Int64: AuditRecord] = [:]
@@ -159,21 +160,21 @@ public enum AuditIntegrityChecker {
         }
         unwitnessedRows.sort()
 
-        // 7. truncatedTail = (W.max.seq > D.max.seq); listed rows also appear in missing
+        // 7. truncatedTail = (W.max.seq > max(D.max.seq, pruned)); listed rows also appear in missing
         let maxWitnessSeq = witnessEntries.map(\.seq).max() ?? 0
         let maxDBSeq = allRecords.map(\.seq).max() ?? 0
-        let truncatedTail = !witnessEntries.isEmpty && (maxWitnessSeq > maxDBSeq)
+        let truncatedTail = !witnessEntries.isEmpty && (maxWitnessSeq > max(maxDBSeq, pruned))
 
         // 8. Gaps in DB seq before min(W.seq) and > pruned -> gapsOutsideWindow
         var gapsOutsideWindow: [ClosedRange<Int64>] = []
-        if let minWSeq = minWitnessSeq, minWSeq > pruned + 1 {
+        if let minWSeq = minWitnessSeq, minWSeq > nextSeqAfterPrune {
             let olderRecords = allRecords.filter { $0.seq < minWSeq && $0.seq > pruned }.sorted(by: { $0.seq < $1.seq })
-            var expectedSeq = pruned + 1
+            var expectedSeq = max(1, nextSeqAfterPrune)
             for r in olderRecords {
                 if r.seq > expectedSeq {
                     gapsOutsideWindow.append(expectedSeq...(r.seq - 1))
                 }
-                expectedSeq = r.seq + 1
+                expectedSeq = (r.seq < Int64.max) ? r.seq + 1 : Int64.max
             }
             if minWSeq > expectedSeq {
                 gapsOutsideWindow.append(expectedSeq...(minWSeq - 1))
