@@ -905,6 +905,35 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 2.0)
         XCTAssertNil(resolved)
     }
+
+    func testResolveGpgSSHProgramSanitizesGitEnvironmentVariables() throws {
+        let scriptPath = try createStubGitScript(
+            named: "git-env-test.sh",
+            content: """
+            #!/bin/sh
+            if [ -n "$GIT_CONFIG_GLOBAL" ] || [ -n "$GIT_CONFIG_SYSTEM" ] || [ -n "$GIT_CONFIG_NOSYSTEM" ] || [ -n "$GIT_CONFIG_PARAMETERS" ]; then
+                printf "UNSANITIZED\\n"
+                exit 0
+            fi
+            printf "/usr/bin/ssh-keygen\\n"
+            exit 0
+            """
+        )
+
+        setenv("GIT_CONFIG_GLOBAL", "/tmp/malicious_global.gitconfig", 1)
+        setenv("GIT_CONFIG_SYSTEM", "/tmp/malicious_system.gitconfig", 1)
+        setenv("GIT_CONFIG_NOSYSTEM", "1", 1)
+        setenv("GIT_CONFIG_PARAMETERS", "'user.name=attacker'", 1)
+        defer {
+            unsetenv("GIT_CONFIG_GLOBAL")
+            unsetenv("GIT_CONFIG_SYSTEM")
+            unsetenv("GIT_CONFIG_NOSYSTEM")
+            unsetenv("GIT_CONFIG_PARAMETERS")
+        }
+
+        let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 2.0)
+        XCTAssertEqual(resolved, "/usr/bin/ssh-keygen", "resolveGpgSSHProgram must sanitize GIT_CONFIG_* environment variables")
+    }
 }
 
 private final class HookAuthenticator: UserAuthenticating {

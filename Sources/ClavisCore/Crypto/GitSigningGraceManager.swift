@@ -22,13 +22,14 @@ public final class GitSigningGrant: @unchecked Sendable {
     internal let clientIdentity: String
     /// Set for grants issued to a live peer. Descendants of this process may use the
     /// grant; other processes that share `clientIdentity` may not.
-    internal let approvedProcess: GitApprovedProcess?
+    public let approvedProcess: GitApprovedProcess?
 
     public init(
         keyLabel: String,
         duration: TimeInterval = 300.0,
         maxOperations: Int = 200,
-        clientIdentity: String = "test-client"
+        clientIdentity: String = "test-client",
+        approvedProcess: GitApprovedProcess? = nil
     ) {
         self.keyLabel = keyLabel
         self.grantedAt = Date()
@@ -37,7 +38,7 @@ public final class GitSigningGrant: @unchecked Sendable {
         self._remainingOperations = maxOperations
         self.authorizedContext = nil
         self.clientIdentity = clientIdentity
-        self.approvedProcess = nil
+        self.approvedProcess = approvedProcess
     }
 
     internal init(
@@ -90,21 +91,24 @@ public final class GitSigningGrant: @unchecked Sendable {
         return true
     }
 
-    /// Identity-string grants keep the legacy exact match. A process-bound grant
-    /// admits only the approved pid (same start time) and its descendants.
+    /// Grants are strictly process-bound to an approved process anchor (pid + startTime).
+    /// Bare string fallback is removed to prevent same-user process impersonation.
     private func allowsClient(clientIdentity: String, peerProcess: GitApprovedProcess?) -> Bool {
-        if let approvedProcess {
-            guard let peerProcess else { return false }
-            let covered = SSHAgentServer.gitGrantCoversPeer(peer: peerProcess, approved: approvedProcess)
-            if !covered {
-                ClavisLogger.log(
-                    "SECURITY_ALERT",
-                    "Rejected Git signing grant for '\(keyLabel)': peer PID \(peerProcess.pid) is outside the approved process tree."
-                )
-            }
-            return covered
+        guard let approvedProcess, let peerProcess else {
+            ClavisLogger.log(
+                "SECURITY_ALERT",
+                "Rejected Git signing grant for '\(keyLabel)': grant requires an approved process anchor and peer process."
+            )
+            return false
         }
-        return self.clientIdentity == clientIdentity
+        let covered = SSHAgentServer.gitGrantCoversPeer(peer: peerProcess, approved: approvedProcess)
+        if !covered {
+            ClavisLogger.log(
+                "SECURITY_ALERT",
+                "Rejected Git signing grant for '\(keyLabel)': peer PID \(peerProcess.pid) is outside the approved process tree."
+            )
+        }
+        return covered
     }
 
     internal func withAuthorizedContext<Result>(
