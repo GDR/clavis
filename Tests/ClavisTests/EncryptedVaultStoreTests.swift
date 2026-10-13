@@ -639,6 +639,35 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
         let elapsed = Date().timeIntervalSince(start)
         XCTAssertGreaterThanOrEqual(elapsed, 0.2)
     }
+
+    func testEnsureMasterKeyLockedThrowsWhenSecureEnclaveUnavailableAndNoSoftwareOverride() throws {
+        EncryptedVaultStore.forceSoftwareMasterKeyForTesting = false
+        EncryptedVaultStore.isSecureEnclaveAvailableOverride = false
+        defer {
+            EncryptedVaultStore.forceSoftwareMasterKeyForTesting = true
+            EncryptedVaultStore.isSecureEnclaveAvailableOverride = nil
+        }
+
+        XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKeyLocked()) { error in
+            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .secureEnclaveRequired)
+        }
+    }
+
+    func testWritingSoftwarePrivateKeysToVaultProhibitedUnlessTestingOverrideEnabled() throws {
+        EncryptedVaultStore.forceSoftwareMasterKeyForTesting = false
+        EncryptedVaultStore.forceAllowSoftwareKeysForTesting = false
+        defer {
+            EncryptedVaultStore.forceSoftwareMasterKeyForTesting = true
+            EncryptedVaultStore.forceAllowSoftwareKeysForTesting = false
+        }
+
+        let swRecord = makeRecord(label: "sw-key-prohibited")
+        XCTAssertThrowsError(try EncryptedVaultStore.shared.saveRecord(swRecord)) { error in
+            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .softwareKeyStorageProhibited)
+        }
+        XCTAssertFalse(EncryptedVaultStore.shared.containsRecord(label: "sw-key-prohibited"))
+    }
 }
+
 
 

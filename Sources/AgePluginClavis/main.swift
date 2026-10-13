@@ -221,6 +221,9 @@ public struct AgePluginClavis {
         inputProvider: (() -> String?)? = nil,
         outputHandler: (String) -> Void = { print($0) },
         fetchKeys: () throws -> [Ed25519KeyInfo] = { try KeychainManager.shared.listKeys() },
+        parentPidProvider: () -> pid_t = { Darwin.getppid() },
+        parentPathLookup: (pid_t) -> String? = { SSHAgentServer.getProcessPath(pid: $0) },
+        auditRecorder: AuditRecording = AuditRecorder.shared,
         unwrapKey: (String, String, Data, String) throws -> Data = { label, prompt, wrappedKey, epkB64 in
             ClavisLogger.promptDebug("clavis-code", "AgePlugin: requesting unwrap key '\(label)' with prompt \"\(prompt)\"")
             return try KeychainManager.shared.unwrapAgeFileKey(label: label, prompt: prompt, wrappedKey: wrappedKey, epkB64: epkB64)
@@ -330,6 +333,9 @@ public struct AgePluginClavis {
                         identities: identities,
                         outputHandler: outputHandler,
                         fetchKeys: fetchKeys,
+                        parentPidProvider: parentPidProvider,
+                        parentPathLookup: parentPathLookup,
+                        auditRecorder: auditRecorder,
                         unwrapKey: unwrapKey
                     )
                     outputHandler("-> ok")
@@ -367,6 +373,9 @@ public struct AgePluginClavis {
         identities: [String],
         outputHandler: (String) -> Void,
         fetchKeys: () throws -> [Ed25519KeyInfo],
+        parentPidProvider: () -> pid_t,
+        parentPathLookup: (pid_t) -> String?,
+        auditRecorder: AuditRecording,
         unwrapKey: (String, String, Data, String) throws -> Data
     ) {
         guard !stanzas.isEmpty else { return }
@@ -420,20 +429,53 @@ public struct AgePluginClavis {
                     return
                 }
                 unwrapAttempts += 1
+                let ppid = parentPidProvider()
+                let parentPath = parentPathLookup(ppid) ?? "unknown"
+                let processName = URL(fileURLWithPath: parentPath).lastPathComponent
+                let clientDesc = "\(processName) (PID \(ppid))"
+                let prompt = "Touch ID to unwrap age file key using '\(keyInfo.label)' for \(clientDesc)"
+
                 do {
                     var fileKey = try unwrapKey(
                         keyInfo.label,
-                        "Touch ID to unwrap age file key using '\(keyInfo.label)'",
+                        prompt,
                         stanza.wrappedKey,
                         stanza.epkB64
                     )
                     defer { wipeData(&fileKey) }
+
+                    auditRecorder.record(
+                        AuditEvent(
+                            type: .signature,
+                            result: .allowed,
+                            reason: .viaPrompt,
+                            keyFingerprint: keyInfo.fingerprint,
+                            keyKind: .personal,
+                            sensitive: AuditSensitive(
+                                keyLabel: keyInfo.label,
+                                processChain: AuditProcessChain.build(pid: ppid, executablePath: parentPath)
+                            )
+                        )
+                    )
 
                     outputHandler("-> file-key \(stanza.index)")
                     formatBase64(fileKey, outputHandler: outputHandler)
                     unwrapped = true
                     break
                 } catch {
+                    auditRecorder.record(
+                        AuditEvent(
+                            type: .signature,
+                            result: isAuthenticationCancellation(error) ? .cancelled : .denied,
+                            reason: isAuthenticationCancellation(error) ? .userCancelled : .authenticationFailed,
+                            keyFingerprint: keyInfo.fingerprint,
+                            keyKind: .personal,
+                            sensitive: AuditSensitive(
+                                keyLabel: keyInfo.label,
+                                processChain: AuditProcessChain.build(pid: ppid, executablePath: parentPath)
+                            )
+                        )
+                    )
                     if isAuthenticationCancellation(error) {
                         outputHandler("-> error identity User cancelled authentication")
                         return

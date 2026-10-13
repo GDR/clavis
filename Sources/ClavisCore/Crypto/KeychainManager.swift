@@ -102,13 +102,17 @@ public class KeychainManager {
                 var recordData = try record.encode()
                 defer { Self.wipeData(&recordData) }
                 try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
-                do {
-                    try EncryptedVaultStore.shared.saveRecord(record)
-                } catch {
-                    ClavisLogger.log("VAULT_WARNING", "Failed to backup private record to shadow vault: \(error.localizedDescription)")
-                    try? privateKeyStore.remove(label: label)
-                    throw error
+                #if DEBUG
+                if EncryptedVaultStore.allowSoftwareKeysForTesting {
+                    do {
+                        try EncryptedVaultStore.shared.saveRecord(record)
+                    } catch {
+                        ClavisLogger.log("VAULT_WARNING", "Failed to backup private record to shadow vault: \(error.localizedDescription)")
+                        try? privateKeyStore.remove(label: label)
+                        throw error
+                    }
                 }
+                #endif
                 pubKeyData = privateKey.publicKey.x963Representation
             }
 
@@ -257,13 +261,17 @@ public class KeychainManager {
         var recordData = try record.encode()
         defer { Self.wipeData(&recordData) }
         try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
-        do {
-            try EncryptedVaultStore.shared.saveRecord(record)
-        } catch {
-            ClavisLogger.log("VAULT_WARNING", "Failed to backup private record to shadow vault: \(error.localizedDescription)")
-            try? privateKeyStore.remove(label: label)
-            throw error
+        #if DEBUG
+        if EncryptedVaultStore.allowSoftwareKeysForTesting {
+            do {
+                try EncryptedVaultStore.shared.saveRecord(record)
+            } catch {
+                ClavisLogger.log("VAULT_WARNING", "Failed to backup private record to shadow vault: \(error.localizedDescription)")
+                try? privateKeyStore.remove(label: label)
+                throw error
+            }
         }
+        #endif
 
         let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)
         do {
@@ -610,7 +618,15 @@ public class KeychainManager {
         ClavisLogger.log("KEYCHAIN_RESTORE", logMessage)
         if var bytes = try? restoredRecord.encode() {
             defer { Self.wipeData(&bytes) }
-            try? privateKeyStore.save(label: label, data: bytes, accessControlFlags: [.userPresence])
+            do {
+                try privateKeyStore.save(label: label, data: bytes, accessControlFlags: [.userPresence])
+            } catch let error as PrivateKeyStoreError {
+                if case .protectionUnavailable = error {
+                    throw error
+                }
+            } catch {
+                // Non-fatal if keychain restore write fails for other reasons
+            }
         }
         return restoredRecord
     }

@@ -21,13 +21,37 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     public static var customPinStore: MasterKeyPinStoring? = nil
     public static var masterKeyLockTimeout: TimeInterval = 10.0
     private static var inMemoryPinStoreForTesting: MasterKeyPinStoring = InMemoryMasterKeyPinStore()
-    static var forceSoftwareMasterKeyForTesting: Bool = false
+    public static var forceSoftwareMasterKeyForTesting: Bool = false
+    #if DEBUG
+    public static var isSecureEnclaveAvailableOverride: Bool? = nil
+    public static var forceAllowSoftwareKeysForTesting: Bool = false
+    #endif
+
+    public static var isSecureEnclaveAvailable: Bool {
+        #if DEBUG
+        if let override = isSecureEnclaveAvailableOverride {
+            return override
+        }
+        #endif
+        return SecureEnclave.isAvailable
+    }
+
+    public static var allowSoftwareKeysForTesting: Bool {
+        #if DEBUG
+        return forceAllowSoftwareKeysForTesting || forceSoftwareMasterKeyForTesting
+        #else
+        return false
+        #endif
+    }
 
     public static func resetForTesting() {
         customPinStore = nil
         masterKeyLockTimeout = 10.0
         #if DEBUG
         inMemoryPinStoreForTesting = InMemoryMasterKeyPinStore()
+        forceSoftwareMasterKeyForTesting = false
+        forceAllowSoftwareKeysForTesting = false
+        isSecureEnclaveAvailableOverride = nil
         #endif
     }
 
@@ -66,6 +90,7 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         case incompleteMasterKey
         case masterKeyTampered
         case masterKeyPinMissing
+        case softwareKeyStorageProhibited
 
         public var errorDescription: String? {
             switch self {
@@ -79,6 +104,8 @@ public final class EncryptedVaultStore: @unchecked Sendable {
                 return "The recovery vault master key has been tampered with or its Keychain pin is invalid. If this was intentional or the pin was modified, run 'clavis vault repair --replace-pin'."
             case .masterKeyPinMissing:
                 return "The recovery vault master key pin is missing from Keychain. Run 'clavis vault repair' to restore it."
+            case .softwareKeyStorageProhibited:
+                return "Software private keys cannot be stored in the recovery vault."
             }
         }
     }
@@ -187,7 +214,7 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     }
 
     public func ensureMasterKey() throws -> P256.KeyAgreement.PublicKey {
-        guard PlatformSupport.hasSecureEnclave || Self.allowSoftwareMasterKeyForTesting else {
+        guard Self.isSecureEnclaveAvailable || Self.allowSoftwareMasterKeyForTesting else {
             throw VaultError.secureEnclaveRequired
         }
         try SecureFS.createDirectory(at: vaultDirectoryURL)
@@ -205,9 +232,25 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             return pubKey
         }
 
+        return try ensureMasterKeyLocked()
+    }
+
+    @discardableResult
+    public func ensureMasterKeyLocked() throws -> P256.KeyAgreement.PublicKey {
         // Lock order: in-process lock first, then advisory file lock.
         lock.lock()
         defer { lock.unlock() }
+
+        guard Self.isSecureEnclaveAvailable || Self.allowSoftwareMasterKeyForTesting else {
+            throw VaultError.secureEnclaveRequired
+        }
+        try SecureFS.createDirectory(at: vaultDirectoryURL)
+        guard SecureFS.isDirectorySecure(at: vaultDirectoryURL) else {
+            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Insecure vault directory permissions"])
+        }
+
+        let pubURL = vaultDirectoryURL.appendingPathComponent("master.pub")
+        let keyURL = vaultDirectoryURL.appendingPathComponent("master.key")
 
         // Double-check after acquiring in-process lock.
         if FileManager.default.fileExists(atPath: pubURL.path) && FileManager.default.fileExists(atPath: keyURL.path) {
@@ -451,11 +494,17 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     public func saveRecord(_ record: StoredPrivateKeyRecord) throws {
         lock.lock()
         defer { lock.unlock() }
+        guard record.storageType == .secureEnclave || Self.allowSoftwareKeysForTesting else {
+            throw VaultError.softwareKeyStorageProhibited
+        }
         try writeRecordLocked(record)
     }
 
     /// Caller must hold `lock`.
     private func writeRecordLocked(_ record: StoredPrivateKeyRecord) throws {
+        guard record.storageType == .secureEnclave || Self.allowSoftwareKeysForTesting else {
+            throw VaultError.softwareKeyStorageProhibited
+        }
         let masterPubKey = try ensureMasterKey()
         let recordBytes = try record.encode()
 
@@ -508,7 +557,7 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     }
 
     public func loadRecord(label: String, context: LAContext? = nil) throws -> StoredPrivateKeyRecord? {
-        guard PlatformSupport.hasSecureEnclave || Self.allowSoftwareMasterKeyForTesting else {
+        guard Self.isSecureEnclaveAvailable || Self.allowSoftwareMasterKeyForTesting else {
             throw VaultError.secureEnclaveRequired
         }
         lock.lock()

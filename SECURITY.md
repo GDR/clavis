@@ -14,13 +14,14 @@ Only the latest release receives security fixes.
 
 ## What Clavis protects
 
-- Private keys are stored in the Login Keychain or Secure Enclave and are not written to disk in
-  plaintext.
-- Every SSH-agent signature asks for fresh user authentication (Touch ID / Apple Watch /
-  password) and shows the requesting program.
-- Git signing sessions (5 minutes / 200 signatures) are an opt-in convenience bound to the
-  requesting process identity. They are not an isolation boundary against code running under the
-  same `git` process, such as repository hooks.
+- Private keys are stored in the Login Keychain or Secure Enclave:
+  - Hardware keys (`.secureEnclave`) are generated inside the Apple Secure Enclave with user presence access control (`.privateKeyUsage, .userPresence`), and only their opaque hardware references are backed up to the recovery vault (`~/.config/clavis/vault`).
+  - Software keys (`Ed25519` and software `P-256`) are stored in the Login Keychain under `SecAccessControl` requiring user presence (`kSecAccessControlUserPresence`), and are not backed up to disk or the recovery vault in release builds.
+  - Key generation and import fail closed if Keychain access control protection is unavailable (`errSecMissingEntitlement` / `-34018`), refusing to persist keys without proper entitlements.
+  - The recovery vault master key requires hardware Secure Enclave support; software master keys are never created or loaded in release builds.
+  - Key deletion strictly requires user-presence authentication before private or public key records are removed.
+- Every SSH-agent signature and age file key unwrapping asks for fresh user authentication (Touch ID / Apple Watch / password) and shows the requesting process attribution.
+- Git signing sessions (5 minutes / 200 signatures) are an opt-in convenience bound to the requesting process identity. They are not an isolation boundary against code running under the same `git` process, such as repository hooks.
 
 ## Known Limitations
 
