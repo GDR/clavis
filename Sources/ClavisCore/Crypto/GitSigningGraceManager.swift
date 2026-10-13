@@ -23,6 +23,9 @@ public final class GitSigningGrant: @unchecked Sendable {
     /// Set for grants issued to a live peer. Descendants of this process may use the
     /// grant; other processes that share `clientIdentity` may not.
     public let approvedProcess: GitApprovedProcess?
+    internal private(set) var secureBuffer: SecureBuffer?
+    private var hardwareSigner: (@Sendable (Data) throws -> Data)?
+    private let keyAlgorithm: KeyAlgorithm?
 
     public init(
         keyLabel: String,
@@ -39,6 +42,9 @@ public final class GitSigningGrant: @unchecked Sendable {
         self.authorizedContext = nil
         self.clientIdentity = clientIdentity
         self.approvedProcess = approvedProcess
+        self.secureBuffer = nil
+        self.hardwareSigner = nil
+        self.keyAlgorithm = nil
     }
 
     internal init(
@@ -46,8 +52,11 @@ public final class GitSigningGrant: @unchecked Sendable {
         duration: TimeInterval = 300.0,
         maxOperations: Int = 200,
         clientIdentity: String,
-        authorizedContext: LAContext,
-        approvedProcess: GitApprovedProcess? = nil
+        authorizedContext: LAContext?,
+        approvedProcess: GitApprovedProcess? = nil,
+        secureBuffer: SecureBuffer? = nil,
+        hardwareSigner: (@Sendable (Data) throws -> Data)? = nil,
+        keyAlgorithm: KeyAlgorithm? = nil
     ) {
         self.keyLabel = keyLabel
         self.grantedAt = Date()
@@ -57,6 +66,9 @@ public final class GitSigningGrant: @unchecked Sendable {
         self.clientIdentity = clientIdentity
         self.authorizedContext = authorizedContext
         self.approvedProcess = approvedProcess
+        self.secureBuffer = secureBuffer
+        self.hardwareSigner = hardwareSigner
+        self.keyAlgorithm = keyAlgorithm
     }
 
     public var remainingOperations: Int {
@@ -70,6 +82,71 @@ public final class GitSigningGrant: @unchecked Sendable {
         defer { lock.unlock() }
         guard _remainingOperations > 0 else { return false }
         return DispatchTime.now() < deadline
+    }
+
+    public var isBufferWiped: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if let secureBuffer {
+            return secureBuffer.isWiped
+        }
+        return true
+    }
+
+    public func sign(_ data: Data, using keyManager: KeychainManager? = nil, role: AgentSocketRole? = nil) throws -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard _remainingOperations > 0, DispatchTime.now() < deadline else {
+            throw AgentSessionGrantError.grantInvalidated
+        }
+
+        if let hardwareSigner {
+            return try hardwareSigner(data)
+        }
+
+        if let buffer = secureBuffer {
+            guard !buffer.isWiped else {
+                throw AgentSessionGrantError.grantInvalidated
+            }
+            switch keyAlgorithm ?? .ed25519 {
+            case .ed25519:
+                guard let sig = try buffer.withUnsafeBytes({ raw -> Data in
+                    let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: raw)
+                    return try privateKey.signature(for: data)
+                }) else {
+                    throw AgentSessionGrantError.grantInvalidated
+                }
+                var sigBlob = Data()
+                sigBlob.appendWireString("ssh-ed25519")
+                sigBlob.appendWireData(sig)
+                return sigBlob
+
+            case .ecdsaP256:
+                guard let ecdsaSig = try buffer.withUnsafeBytes({ raw -> P256.Signing.ECDSASignature in
+                    let privateKey = try P256.Signing.PrivateKey(rawRepresentation: raw)
+                    return try privateKey.signature(for: data)
+                }) else {
+                    throw AgentSessionGrantError.grantInvalidated
+                }
+                return KeychainManager.formatECDSASignatureBlob(ecdsaSig)
+            }
+        }
+
+        guard let ctx = authorizedContext, let keyManager = keyManager else {
+            throw AgentSessionGrantError.grantInvalidated
+        }
+        guard let keyInfo = try keyManager.fetchKeyInfo(label: keyLabel) else {
+            throw AgentSessionGrantError.grantInvalidated
+        }
+        return try keyManager.signSSH(
+            key: keyInfo,
+            data: data,
+            prompt: "",
+            useCache: false,
+            existingContext: ctx,
+            allowedPurposes: role?.allowedPurposes ?? AgentSocketRole.personal.allowedPurposes
+        )
     }
 
     public var remainingSeconds: Int {
@@ -125,9 +202,16 @@ public final class GitSigningGrant: @unchecked Sendable {
         _remainingOperations = 0
         let ctx = authorizedContext
         authorizedContext = nil
+        secureBuffer?.wipe()
+        secureBuffer = nil
+        hardwareSigner = nil
         lock.unlock()
 
         ctx?.invalidate()
+    }
+
+    deinit {
+        invalidate()
     }
 }
 
@@ -335,7 +419,7 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         for keyLabel: String,
         clientIdentity: String,
         peerProcess: GitApprovedProcess? = nil,
-        operation: (LAContext) throws -> Result
+        operation: (GitSigningGrant) throws -> Result
     ) rethrows -> Result? {
         lock.lock()
         defer { lock.unlock() }
@@ -351,13 +435,7 @@ public final class GitSigningGraceManager: @unchecked Sendable {
             }
             return nil
         }
-        guard let result = try grant.withAuthorizedContext(operation) else {
-            grant.invalidate()
-            activeGrant = nil
-            expirationTimer?.schedule(deadline: .distantFuture)
-            broadcastUpdate(grant: nil)
-            return nil
-        }
+        let result = try operation(grant)
         broadcastUpdate(grant: grant)
         return result
     }
@@ -388,7 +466,10 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         duration: TimeInterval = 300.0,
         maxOperations: Int = 200,
         context: LAContext,
-        approvedProcess: GitApprovedProcess? = nil
+        approvedProcess: GitApprovedProcess? = nil,
+        secureBuffer: SecureBuffer? = nil,
+        hardwareSigner: (@Sendable (Data) throws -> Data)? = nil,
+        keyAlgorithm: KeyAlgorithm? = nil
     ) -> GitSigningGrant {
         lock.lock()
         defer { lock.unlock() }
@@ -400,7 +481,10 @@ public final class GitSigningGraceManager: @unchecked Sendable {
             maxOperations: maxOperations,
             clientIdentity: clientIdentity,
             authorizedContext: context,
-            approvedProcess: approvedProcess
+            approvedProcess: approvedProcess,
+            secureBuffer: secureBuffer,
+            hardwareSigner: hardwareSigner,
+            keyAlgorithm: keyAlgorithm
         )
         activeGrant = grant
         expirationTimer?.schedule(deadline: grant.deadline)

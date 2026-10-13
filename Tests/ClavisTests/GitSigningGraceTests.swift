@@ -834,8 +834,21 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
     }
 
     func testFailedSignatureUnderNewGrantInvalidatesGrant() throws {
-        let store = LoadFailingPrivateKeyStore(failOnLoadNumber: 3)
-        let manager = KeychainManager(authenticator: CountingAuthenticator(), privateKeyStore: store)
+        var bufferCount = 0
+        let manager = KeychainManager(
+            authenticator: CountingAuthenticator(),
+            privateKeyStore: InMemoryPrivateKeyStore(),
+            secureBufferFactory: { data in
+                bufferCount += 1
+                if bufferCount == 2 {
+                    // Buffer allocated for the grant; wipe it immediately to simulate a grant signing failure
+                    let buf = SecureBuffer(consuming: &data)
+                    buf?.wipe()
+                    return buf
+                }
+                return SecureBuffer(consuming: &data)
+            }
+        )
         let server = SSHAgentServer(keyManager: manager)
         let label = "grant-fail-\(UUID().uuidString)"
         let keyInfo = try manager.generateKey(label: label, keyPurpose: .general)
@@ -1507,6 +1520,60 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             ),
             "Intermediate /tmp/git must be rejected by gitGrantCoversPeer"
         )
+    }
+
+    func test_F02_gitSigningGrantSignsWithoutKeychainReReadAndZeroizesBufferOnInvalidate() throws {
+        let store = InteractionCheckingPrivateKeyStore()
+        let manager = KeychainManager(
+            authenticator: AllowingAuthenticator(),
+            privateKeyStore: store,
+            sessionCache: makeSessionCache(),
+            secureBufferFactory: { SecureBuffer(consuming: &$0) },
+            agentGrantRevoker: { _ in },
+            auditRecorder: InMemoryAuditRecorder()
+        )
+
+        let key = try manager.generateKey(
+            label: "git-grant-f02-key",
+            storageType: .keychain,
+            biometricPolicy: .userPresence,
+            keyPurpose: .gitSigningOnly
+        )
+
+        let anchor = GitApprovedProcess(pid: 1234, startTime: 100, path: "/usr/bin/git")
+        let grant = try manager.authorizeGitSigningGrant(
+            key: key,
+            prompt: "Authorize Git signing",
+            clientIdentity: "/usr/bin/git",
+            approvedProcess: anchor
+        )
+
+        XCTAssertEqual(store.loadCallCount, 1, "Initial authorization loads record once")
+        XCTAssertFalse(grant.isBufferWiped, "Buffer is active before invalidation")
+
+        let hash256 = Data(repeating: 0x42, count: 32)
+        let payload = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: hash256)
+        let dataToSign = payload.serialize()
+
+        // Sign using grant
+        let sigBlob = try grant.sign(dataToSign, using: manager)
+        var reader = DataReader(data: sigBlob)
+        XCTAssertEqual(reader.readWireString(), "ssh-ed25519")
+        guard let rawSig = reader.readWireData() else {
+            XCTFail("Missing signature in wire blob")
+            return
+        }
+        let pubKey = try Curve25519.Signing.PublicKey(rawRepresentation: key.publicKeyBlob.subdata(in: 19..<51))
+        XCTAssertTrue(pubKey.isValidSignature(rawSig, for: dataToSign))
+
+        // Ensure store was not re-read
+        XCTAssertEqual(store.loadCallCount, 1, "Grant signing must use grant-scoped SecureBuffer without re-reading store")
+
+        // Invalidate grant
+        grant.invalidate()
+        XCTAssertTrue(grant.isBufferWiped, "Buffer must be zeroized on invalidate()")
+        XCTAssertFalse(grant.isValid, "Grant must be invalid")
+        XCTAssertThrowsError(try grant.sign(dataToSign, using: manager))
     }
 }
 
