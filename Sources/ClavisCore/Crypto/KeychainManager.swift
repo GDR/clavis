@@ -853,9 +853,7 @@ public class KeychainManager {
         if let existing = existingContext {
             context = existing
         } else {
-            let laPolicy: LAPolicy = (key.biometricPolicy == .biometryCurrentSet)
-                ? .deviceOwnerAuthenticationWithBiometrics
-                : .deviceOwnerAuthentication
+            let laPolicy: LAPolicy = key.effectiveBiometricPolicy.laPolicy
             ClavisLogger.promptDebug("clavis-code", "KeychainManager: prompting for SSH signature '\(key.label)' (storage: \(key.storageType.rawValue), policy: \(key.biometricPolicy?.rawValue ?? "default")): \"\(prompt)\"")
             context = try authenticator.authenticate(reason: prompt, policy: laPolicy)
         }

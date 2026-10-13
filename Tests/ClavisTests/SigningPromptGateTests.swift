@@ -424,6 +424,84 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
         XCTAssertNoThrow(try gate.run { ran = true })
         XCTAssertTrue(ran, "Failures in runExclusive must not trigger denial tracking or cooldown")
     }
+
+    func testAgentPolicyAndExtendSessionDropWhenSocketDisconnected() throws {
+        // Create an already-closed socket descriptor
+        let deadSock = socket(AF_UNIX, SOCK_STREAM, 0)
+        close(deadSock)
+
+        let countingAuth = CountingAuthenticator()
+        let audit = InMemoryAuditRecorder()
+        let keyMgr = makeKeyManager(authenticator: countingAuth, auditRecorder: audit)
+        let key = try keyMgr.generateKey(label: "gate-drop-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+
+        let policyStore = InMemoryAgentPolicyStore()
+        let registry = AgentSessionRegistry(
+            processInfo: { _ in (startTime: 1000, parentPid: 1) },
+            auditRecorder: audit,
+            watchRootExit: false
+        )
+
+        let server = SSHAgentServer(
+            role: .personal,
+            keyManager: keyMgr,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: audit,
+            agentSessions: registry,
+            agentPolicies: policyStore
+        )
+
+        // Register session
+        var regPayload = Data([SSHAgentServer.registerAgentSessionRequest])
+        regPayload.appendWireString(key.label)
+        regPayload.appendWireString("gate-tool")
+        regPayload.appendWireUInt32(30)
+        let regResp = server.processAgentRequest(
+            payload: regPayload,
+            clientPid: 1234,
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(regResp.first, 6)
+        let sessionID = registry.summaries()[0].id
+
+        let authCountBefore = countingAuth.authenticationCount
+
+        // 1. setAgentPolicy with dead socket
+        let newPolicy = AgentKeyPolicy(mode: .ask)
+        let policyData = try JSONEncoder().encode(newPolicy)
+        var setPolicyPayload = Data([SSHAgentServer.setAgentPolicyRequest])
+        setPolicyPayload.appendWireString(key.fingerprint)
+        setPolicyPayload.appendWireString(String(data: policyData, encoding: .utf8)!)
+
+        let setResp = server.processAgentRequest(
+            payload: setPolicyPayload,
+            clientPid: 1234,
+            clientExecutablePath: "/usr/bin/ssh",
+            clientStartTime: 1000,
+            clientSocket: deadSock,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(setResp, Data([5]))
+        XCTAssertEqual(countingAuth.authenticationCount, authCountBefore, "setAgentPolicy must not prompt on dead socket")
+
+        // 2. extendAgentSession with dead socket
+        var extendPayload = Data([SSHAgentServer.extendAgentSessionRequest])
+        extendPayload.appendWireString(sessionID)
+        extendPayload.appendWireUInt32(30)
+
+        let extendResp = server.processAgentRequest(
+            payload: extendPayload,
+            clientPid: 1234,
+            clientExecutablePath: "/usr/bin/ssh",
+            clientStartTime: 1000,
+            clientSocket: deadSock,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(extendResp, Data([5]))
+        XCTAssertEqual(countingAuth.authenticationCount, authCountBefore, "extendAgentSession must not prompt on dead socket")
+    }
 }
 
 

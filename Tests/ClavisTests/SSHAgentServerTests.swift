@@ -957,6 +957,325 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 2.0)
         XCTAssertEqual(resolved, "/usr/bin/ssh-keygen", "resolveGpgSSHProgram must sanitize GIT_CONFIG environment variable")
     }
+
+    static func makeSSH2UserAuthRequest(
+        sessionID: Data,
+        user: String = "git",
+        service: String = "ssh-connection",
+        method: String = "publickey",
+        hasSig: Bool = true,
+        algo: String = "ssh-ed25519",
+        keyBlob: Data
+    ) -> Data {
+        var data = Data()
+        data.appendWireData(sessionID)
+        data.append(50) // SSH2_MSG_USERAUTH_REQUEST
+        data.appendWireString(user)
+        data.appendWireString(service)
+        data.appendWireString(method)
+        data.append(hasSig ? 1 : 0)
+        data.appendWireString(algo)
+        data.appendWireData(keyBlob)
+        return data
+    }
+
+    func test_F04_gitCommitSigningReasonIncludesRequester() {
+        let reason = SSHAgentServer.gitCommitSigningReason(keyLabel: "DeployKey", requester: "/usr/bin/git (PID 4242)")
+        XCTAssertTrue(reason.contains("(requested by /usr/bin/git (PID 4242))"), "gitCommitSigningReason must include requester description")
+        XCTAssertTrue(reason.contains("DeployKey"))
+    }
+
+    func test_F04_gitCommitSigningPromptPresentedOnlyForVerifiedSignerHelper() throws {
+        let countingAuth = CountingAuthenticator()
+        let audit = InMemoryAuditRecorder()
+        let keyMgr = makeKeyManager(authenticator: countingAuth, auditRecorder: audit)
+        let gitOnlyKey = try keyMgr.generateKey(label: "git-only-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .gitSigningOnly)
+        let generalKey = try keyMgr.generateKey(label: "general-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .general)
+
+        let server = SSHAgentServer(
+            role: .personal,
+            keyManager: keyMgr,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: audit
+        )
+
+        let validGitPayload = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: Data(repeating: 0x55, count: 32)).serialize()
+
+        // 1. Unverified peer with .gitSigningOnly key receives SSH_AGENT_FAILURE (5) and audit denied
+        var signGitOnly = Data([13])
+        signGitOnly.appendWireData(gitOnlyKey.publicKeyBlob)
+        signGitOnly.appendWireData(validGitPayload)
+        signGitOnly.appendWireUInt32(0)
+
+        let respUnverifiedGitOnly = server.processAgentRequest(
+            payload: signGitOnly,
+            clientPid: 9999,
+            clientExecutablePath: "/bin/cat",
+            clientStartTime: 1000
+        )
+        XCTAssertEqual(respUnverifiedGitOnly, Data([5]), "Unverified peer requesting SSHSIG on gitSigningOnly key must fail")
+        let gitOnlyDeniedAudit = audit.events.last { e in
+            e.sensitive.keyLabel == gitOnlyKey.label && e.type == .signature
+        }
+        XCTAssertNotNil(gitOnlyDeniedAudit)
+        XCTAssertEqual(gitOnlyDeniedAudit?.result, .denied)
+        XCTAssertEqual(gitOnlyDeniedAudit?.reason, .wrongKeyKind)
+
+        // 2. Unverified peer with .general key receives generic data signing prompt (not gitCommitSigning)
+        var signGeneral = Data([13])
+        signGeneral.appendWireData(generalKey.publicKeyBlob)
+        signGeneral.appendWireData(validGitPayload)
+        signGeneral.appendWireUInt32(0)
+
+        let respUnverifiedGeneral = server.processAgentRequest(
+            payload: signGeneral,
+            clientPid: 9999,
+            clientExecutablePath: "/bin/cat",
+            clientStartTime: 1000
+        )
+        XCTAssertEqual(respUnverifiedGeneral.first, 14, "Unverified peer requesting SSHSIG on general key should succeed with data prompt")
+        XCTAssertNotNil(countingAuth.lastReason)
+        XCTAssertFalse(countingAuth.lastReason!.contains("sign a Git commit"), "Unverified peer must NOT receive git commit prompt: \(countingAuth.lastReason!)")
+        XCTAssertTrue(countingAuth.lastReason!.contains("sign data requested by"), "Unverified peer must receive generic data prompt: \(countingAuth.lastReason!)")
+
+        // 3. Verified Git signer helper with .gitSigningOnly key receives gitCommitSigning prompt
+        let respVerifiedGitOnly = server.processAgentRequest(
+            payload: signGitOnly,
+            clientPid: 9999,
+            clientExecutablePath: "/usr/bin/ssh-keygen",
+            clientStartTime: 1000
+        )
+        XCTAssertEqual(respVerifiedGitOnly.first, 14, "Verified signer helper on gitSigningOnly key must succeed")
+        XCTAssertNotNil(countingAuth.lastReason)
+        XCTAssertTrue(countingAuth.lastReason!.contains("sign a Git commit"), "Verified signer helper must receive Git commit prompt: \(countingAuth.lastReason!)")
+    }
+
+    func test_F05_sshAuthenticationPromptPresentedOnlyForTrustedSSHBinaryAndRFC4252Payload() throws {
+        let keyBlob = Data("test-ed25519-public-key-blob".utf8)
+        let otherKeyBlob = Data("other-ed25519-public-key-blob".utf8)
+        let sessionID = Data("valid-session-id-123".utf8)
+
+        let validAuthData = SSHAgentServerTests.makeSSH2UserAuthRequest(
+            sessionID: sessionID,
+            user: "git",
+            service: "ssh-connection",
+            method: "publickey",
+            hasSig: true,
+            algo: "ssh-ed25519",
+            keyBlob: keyBlob
+        )
+
+        let reqDesc = "/usr/bin/ssh (PID 1234)"
+
+        // (a) Trusted ssh binary with valid RFC 4252 payload
+        let reasonDirect = SSHAgentServer.signatureReason(
+            keyLabel: "MyKey",
+            requester: reqDesc,
+            processPath: "/usr/bin/ssh",
+            dataToSign: validAuthData,
+            keyBlob: keyBlob,
+            hasForwarding: false
+        )
+        XCTAssertEqual(reasonDirect, ClavisUIStrings.Prompt.sshAuthentication(keyLabel: "MyKey", requester: reqDesc))
+
+        let reasonForwarded = SSHAgentServer.signatureReason(
+            keyLabel: "MyKey",
+            requester: reqDesc,
+            processPath: "/usr/bin/ssh",
+            dataToSign: validAuthData,
+            keyBlob: keyBlob,
+            hasForwarding: true
+        )
+        XCTAssertEqual(reasonForwarded, ClavisUIStrings.Prompt.sshAuthenticationFromForwardedAgent(keyLabel: "MyKey", requester: reqDesc))
+
+        // (b) Untrusted binary (e.g. /tmp/ssh or /bin/cat) with valid RFC 4252 payload
+        let reasonUntrustedPath = SSHAgentServer.signatureReason(
+            keyLabel: "MyKey",
+            requester: reqDesc,
+            processPath: "/tmp/ssh",
+            dataToSign: validAuthData,
+            keyBlob: keyBlob
+        )
+        XCTAssertEqual(reasonUntrustedPath, ClavisUIStrings.Prompt.dataSigning(keyLabel: "MyKey", requester: reqDesc))
+
+        // (c) Trusted ssh binary with non-RFC 4252 payload (e.g. random data)
+        let randomData = Data("random-bytes-not-rfc4252".utf8)
+        let reasonRandom = SSHAgentServer.signatureReason(
+            keyLabel: "MyKey",
+            requester: reqDesc,
+            processPath: "/usr/bin/ssh",
+            dataToSign: randomData,
+            keyBlob: keyBlob
+        )
+        XCTAssertEqual(reasonRandom, ClavisUIStrings.Prompt.dataSigning(keyLabel: "MyKey", requester: reqDesc))
+
+        // (d) Trusted ssh binary with RFC 4252 payload matching different keyBlob
+        let reasonKeyMismatch = SSHAgentServer.signatureReason(
+            keyLabel: "MyKey",
+            requester: reqDesc,
+            processPath: "/usr/bin/ssh",
+            dataToSign: validAuthData,
+            keyBlob: otherKeyBlob
+        )
+        XCTAssertEqual(reasonKeyMismatch, ClavisUIStrings.Prompt.dataSigning(keyLabel: "MyKey", requester: reqDesc))
+
+        // (e) Trusted ssh binary with RFC 4252 payload with invalid service
+        let invalidServiceData = SSHAgentServerTests.makeSSH2UserAuthRequest(
+            sessionID: sessionID,
+            service: "wrong-service",
+            keyBlob: keyBlob
+        )
+        let reasonWrongService = SSHAgentServer.signatureReason(
+            keyLabel: "MyKey",
+            requester: reqDesc,
+            processPath: "/usr/bin/ssh",
+            dataToSign: invalidServiceData,
+            keyBlob: keyBlob
+        )
+        XCTAssertEqual(reasonWrongService, ClavisUIStrings.Prompt.dataSigning(keyLabel: "MyKey", requester: reqDesc))
+    }
+
+    func test_F06_handleSetAgentPolicyAndExtendEnforceBiometricPolicyAndContext() throws {
+        let countingAuth = CountingAuthenticator()
+        let audit = InMemoryAuditRecorder()
+        let store = InMemoryPrivateKeyStore()
+        let keyMgr = makeKeyManager(authenticator: countingAuth, privateKeyStore: store, auditRecorder: audit)
+
+        let privateKey = Curve25519.Signing.PrivateKey()
+        var record = StoredPrivateKeyRecord(
+            label: "biometric-agent-key",
+            algorithm: .ed25519,
+            storageType: .keychain,
+            biometricPolicy: .biometryCurrentSet,
+            keyPurpose: .agent,
+            keyData: privateKey.rawRepresentation
+        )
+        defer { record.wipe() }
+        try store.save(label: "biometric-agent-key", data: try record.encode())
+        let blob = try KeychainManager.derivePublicKeyBlob(record: record)
+        let fingerprint = "SHA256:" + Data(SHA256.hash(data: blob)).base64EncodedString().replacingOccurrences(of: "=", with: "")
+        let key = Ed25519KeyInfo(
+            label: "biometric-agent-key",
+            publicKeyOpenSSH: "ssh-ed25519 \(blob.base64EncodedString()) biometric-agent-key",
+            publicKeyBlob: blob,
+            fingerprint: fingerprint,
+            createdAt: Date(),
+            algorithmName: "Ed25519",
+            storage: .keychain,
+            biometricPolicy: .biometryCurrentSet,
+            keyPurpose: .agent
+        )
+        try PublicKeyStore.saveChecked(key)
+        defer { PublicKeyStore.remove(label: "biometric-agent-key") }
+
+        let policyStore = InMemoryAgentPolicyStore()
+        let registry = AgentSessionRegistry(
+            processInfo: { _ in (startTime: 1000, parentPid: 1) },
+            auditRecorder: audit,
+            watchRootExit: false
+        )
+
+        let server = SSHAgentServer(
+            role: .personal,
+            keyManager: keyMgr,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: audit,
+            agentSessions: registry,
+            agentPolicies: policyStore,
+            authenticator: countingAuth
+        )
+
+        // 1. handleSetAgentPolicy enforces key's biometricPolicy.laPolicy (.deviceOwnerAuthenticationWithBiometrics)
+        // and contextual prompt
+        let newPolicy = AgentKeyPolicy(mode: .ask)
+        let policyData = try JSONEncoder().encode(newPolicy)
+        let policyJson = String(data: policyData, encoding: .utf8)!
+        var setPolicyPayload = Data([SSHAgentServer.setAgentPolicyRequest])
+        setPolicyPayload.appendWireString(key.fingerprint)
+        setPolicyPayload.appendWireString(policyJson)
+
+        let setResp = server.processAgentRequest(
+            payload: setPolicyPayload,
+            clientPid: 1234,
+            clientExecutablePath: "/usr/bin/ssh",
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(setResp, Data([6]))
+        XCTAssertEqual(countingAuth.lastPolicy, .deviceOwnerAuthenticationWithBiometrics)
+        XCTAssertNotNil(countingAuth.lastReason)
+        XCTAssertTrue(countingAuth.lastReason!.contains(key.label))
+        XCTAssertTrue(countingAuth.lastReason!.contains("1234"))
+
+        // 2. Register session
+        var regPayload = Data([SSHAgentServer.registerAgentSessionRequest])
+        regPayload.appendWireString(key.label)
+        regPayload.appendWireString("build-tool")
+        regPayload.appendWireUInt32(30)
+        let regResp = server.processAgentRequest(
+            payload: regPayload,
+            clientPid: 1234,
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(regResp.first, 6)
+
+        let summaries = registry.summaries()
+        XCTAssertEqual(summaries.count, 1)
+        let sessionID = summaries[0].id
+
+        // 3. handleExtendAgentSession enforces key's biometricPolicy.laPolicy and contextual prompt
+        var extendPayload = Data([SSHAgentServer.extendAgentSessionRequest])
+        extendPayload.appendWireString(sessionID)
+        extendPayload.appendWireUInt32(45)
+
+        let extendResp = server.processAgentRequest(
+            payload: extendPayload,
+            clientPid: 5678,
+            clientExecutablePath: "/usr/bin/ssh",
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(extendResp.first, 6)
+        XCTAssertEqual(countingAuth.lastPolicy, .deviceOwnerAuthenticationWithBiometrics)
+        XCTAssertNotNil(countingAuth.lastReason)
+        XCTAssertTrue(countingAuth.lastReason!.contains(key.label))
+        XCTAssertTrue(countingAuth.lastReason!.contains("build-tool"))
+        XCTAssertTrue(countingAuth.lastReason!.contains("45"))
+        XCTAssertTrue(countingAuth.lastReason!.contains("5678"))
+
+        // 4. .ask mode on agent socket enforces key's biometricPolicy.laPolicy and contextual prompt
+        let agentServer = SSHAgentServer(
+            role: .agent,
+            keyManager: keyMgr,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: audit,
+            agentSessions: registry,
+            agentPolicies: policyStore,
+            authenticator: countingAuth
+        )
+
+        var signPayload = Data([13])
+        signPayload.appendWireData(key.publicKeyBlob)
+        signPayload.appendWireData(Data("ask-mode-payload".utf8))
+        signPayload.appendWireUInt32(0)
+
+        let signResp = agentServer.processAgentRequest(
+            payload: signPayload,
+            clientPid: 1234,
+            clientExecutablePath: "/usr/bin/ssh",
+            clientStartTime: 1000
+        )
+        XCTAssertEqual(signResp.first, 14)
+        XCTAssertEqual(countingAuth.lastPolicy, .deviceOwnerAuthenticationWithBiometrics)
+        XCTAssertNotNil(countingAuth.lastReason)
+        XCTAssertTrue(countingAuth.lastReason!.contains(key.label))
+        XCTAssertTrue(countingAuth.lastReason!.contains("build-tool"))
+        XCTAssertTrue(countingAuth.lastReason!.contains("1234"))
+    }
 }
 
 private final class HookAuthenticator: UserAuthenticating {

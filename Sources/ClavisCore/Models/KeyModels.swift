@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import LocalAuthentication
 
 public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
     public var id: String { label }
@@ -149,6 +150,15 @@ public enum BiometricPolicy: String, CaseIterable, Identifiable, Codable {
     case biometryCurrentSet = "biometryCurrentSet"
 
     public var id: String { rawValue }
+
+    public var laPolicy: LAPolicy {
+        switch self {
+        case .userPresence:
+            return .deviceOwnerAuthentication
+        case .biometryCurrentSet:
+            return .deviceOwnerAuthenticationWithBiometrics
+        }
+    }
 
     public var title: String {
         switch self {

@@ -18,6 +18,8 @@ struct AllowingAuthenticator: UserAuthenticating {
 final class CountingAuthenticator: UserAuthenticating {
     private let lock = NSLock()
     private var count = 0
+    private var _lastReason: String?
+    private var _lastPolicy: LAPolicy?
 
     var authenticationCount: Int {
         lock.lock()
@@ -25,19 +27,33 @@ final class CountingAuthenticator: UserAuthenticating {
         return count
     }
 
+    var lastReason: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _lastReason
+    }
+
+    var lastPolicy: LAPolicy? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _lastPolicy
+    }
+
     func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) throws -> LAContext {
-        recordAuthentication()
+        recordAuthentication(reason: reason, policy: policy)
         return LAContext()
     }
 
     func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) async throws -> LAContext {
-        recordAuthentication()
+        recordAuthentication(reason: reason, policy: policy)
         return LAContext()
     }
 
-    private func recordAuthentication() {
+    private func recordAuthentication(reason: String, policy: LAPolicy) {
         lock.lock()
         count += 1
+        _lastReason = reason
+        _lastPolicy = policy
         lock.unlock()
     }
 }

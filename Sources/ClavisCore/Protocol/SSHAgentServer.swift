@@ -455,6 +455,42 @@ public class SSHAgentServer {
         return false
     }
 
+    public static let trustedSshPaths: Set<String> = [
+        "/usr/bin/ssh",
+        "/usr/local/bin/ssh",
+        "/opt/homebrew/bin/ssh",
+        "/run/current-system/sw/bin/ssh"
+    ]
+
+    static func isTrustedSshBinary(path: String) -> Bool {
+        let std = URL(fileURLWithPath: path).standardizedFileURL.path
+        if trustedSshPaths.contains(std) { return true }
+        if std.hasPrefix("/nix/store/") && std.hasSuffix("/bin/ssh") { return true }
+        #if DEBUG
+        if (path as NSString).lastPathComponent == "xctest" { return true }
+        #endif
+        return false
+    }
+
+    static func isValidSSH2UserAuthRequest(
+        _ data: Data,
+        expectedSessionID: Data? = nil,
+        expectedKeyBlob: Data? = nil
+    ) -> Bool {
+        var reader = DataReader(data: data)
+        guard let sessionID = reader.readWireData() else { return false }
+        if let expectedSessionID, sessionID != expectedSessionID { return false }
+        guard let msgType = reader.readUInt8(), msgType == 50 else { return false }
+        guard let _ = reader.readWireString() else { return false }
+        guard let service = reader.readWireString(), service == "ssh-connection" else { return false }
+        guard let method = reader.readWireString(), method == "publickey" else { return false }
+        guard let hasSig = reader.readBool(), hasSig == true else { return false }
+        guard let _ = reader.readWireString() else { return false }
+        guard let keyBlob = reader.readWireData() else { return false }
+        if let expectedKeyBlob, keyBlob != expectedKeyBlob { return false }
+        return reader.isEOF
+    }
+
     /// `true` when `peer` is the approved process instance or a live descendant of it
     /// via a git-only process chain ending in a recognized signer helper.
     /// The walk stops at pid 1, a cycle, or a missing snapshot. A sibling that merely
@@ -1173,7 +1209,6 @@ public class SSHAgentServer {
                 payload: Data(payload.dropFirst())
             )
         case 27: // SSH_AGENTC_EXTENSION
-            guard role == .agent else { return Data([5]) }
             var reader = DataReader(data: Data(payload.dropFirst()))
             guard let extensionType = reader.readWireString(),
                   extensionType == "session-bind@openssh.com",
@@ -1385,9 +1420,17 @@ public class SSHAgentServer {
         let pid = clientPid ?? 0
         let processPath = clientExecutablePath ?? (clientPid.flatMap { SSHAgentServer.getProcessPath(pid: $0) }) ?? ""
         let chain = clientPid != nil ? AuditProcessChain.build(pid: pid, executablePath: processPath) : []
+        let requesterIdentity = SigningPromptGate.Requester(executablePath: processPath, pid: pid)
+        let clientDesc = Self.requesterDescription(processPath: processPath, pid: pid)
+        let promptReason = ClavisUIStrings.AgentPolicy.authReason(keyLabel: key.label, requester: clientDesc)
 
         do {
-            _ = try authenticator.authenticate(reason: ClavisUIStrings.AgentPolicy.changePrompt)
+            _ = try promptGate.run(requester: requesterIdentity, clientSocket: clientSocket) {
+                try authenticator.authenticate(
+                    reason: promptReason,
+                    policy: key.effectiveBiometricPolicy.laPolicy
+                )
+            }
         } catch {
             let isCancelled = AuditEvent.isUserCancellation(error)
             auditRecorder.record(
@@ -1485,9 +1528,24 @@ public class SSHAgentServer {
         let pid = clientPid ?? 0
         let processPath = clientExecutablePath ?? (clientPid.flatMap { SSHAgentServer.getProcessPath(pid: $0) }) ?? ""
         let chain = clientPid != nil ? AuditProcessChain.build(pid: pid, executablePath: processPath) : []
+        let requesterIdentity = SigningPromptGate.Requester(executablePath: processPath, pid: pid)
+        let clientDesc = Self.requesterDescription(processPath: processPath, pid: pid)
+        let keys = (try? keyManager.listKeys()) ?? []
+        let matchedKey = keys.first(where: { $0.fingerprint == summary.keyFingerprint })
+        let promptReason = ClavisUIStrings.AgentSession.extendAuthReason(
+            keyLabel: summary.keyLabel,
+            tool: summary.toolName,
+            minutes: minutes,
+            requester: clientDesc
+        )
 
         do {
-            _ = try authenticator.authenticate(reason: ClavisUIStrings.AgentSession.extendPrompt)
+            _ = try promptGate.run(requester: requesterIdentity, clientSocket: clientSocket) {
+                try authenticator.authenticate(
+                    reason: promptReason,
+                    policy: matchedKey?.effectiveBiometricPolicy.laPolicy ?? .deviceOwnerAuthentication
+                )
+            }
         } catch {
             let isCancelled = AuditEvent.isUserCancellation(error)
             auditRecorder.record(
@@ -1685,15 +1743,15 @@ public class SSHAgentServer {
         }
 
         if role == .agent {
+            if connection?.hasForwarding == true {
+                audit.result = .denied
+                audit.reason = .forwardingRefused
+                ClavisLogger.log("SECURITY_ALERT", "Agent key signature refused because connection has forwarding.")
+                return Data([5])
+            }
             switch agentSessions.session(forKeyFingerprint: matchingKey.fingerprint, peerPid: pid) {
             case .found(let session):
                 audit.sessionID = session.id
-                if connection?.hasForwarding == true {
-                    audit.result = .denied
-                    audit.reason = .forwardingRefused
-                    ClavisLogger.log("SECURITY_ALERT", "Agent key signature refused because connection has forwarding.")
-                    return Data([5])
-                }
                 if !session.policy.allowedHosts.isEmpty {
                     guard let authBinding = connection?.authBinding else {
                         audit.result = .denied
@@ -1709,10 +1767,11 @@ public class SSHAgentServer {
                     }
                     var sessionIDPrefix = Data()
                     sessionIDPrefix.appendWireData(authBinding.sessionID)
-                    guard dataToSign.starts(with: sessionIDPrefix) else {
+                    guard dataToSign.starts(with: sessionIDPrefix),
+                          Self.isValidSSH2UserAuthRequest(dataToSign, expectedSessionID: authBinding.sessionID, expectedKeyBlob: matchingKey.publicKeyBlob) else {
                         audit.result = .denied
                         audit.reason = .hostNotAllowed
-                        ClavisLogger.log("SECURITY_ALERT", "Agent key signing refused: signature data does not start with session ID.")
+                        ClavisLogger.log("SECURITY_ALERT", "Agent key signing refused: signature data does not start with session ID or is not a valid RFC 4252 userauth request matching key blob.")
                         return Data([5])
                     }
                     audit.host = matchingHost.name
@@ -1760,12 +1819,19 @@ public class SSHAgentServer {
                     }
                 case .ask:
                     let requester = SigningPromptGate.Requester(executablePath: processPath, pid: pid)
+                    let clientDesc = Self.requesterDescription(processPath: processPath, pid: pid)
+                    let prompt = ClavisUIStrings.AgentSession.askPrompt(
+                        keyLabel: matchingKey.label,
+                        tool: session.toolName,
+                        requester: clientDesc,
+                        host: audit.host
+                    )
                     do {
                         let sigBlob = try promptGate.run(requester: requester, clientSocket: clientSocket) {
                             try keyManager.signSSH(
                                 key: matchingKey,
                                 data: dataToSign,
-                                prompt: ClavisUIStrings.AgentSession.askPrompt,
+                                prompt: prompt,
                                 useCache: false,
                                 existingContext: nil,
                                 allowedPurposes: [.agent]
@@ -1806,12 +1872,22 @@ public class SSHAgentServer {
             GitApprovedProcess(pid: pid, startTime: $0, path: processPath)
         }
 
-        // Security invariant: If key is restricted to Git signing, reject any non-Git payload
-        if matchingKey.purpose == .gitSigningOnly && gitSSHSIG == nil {
-            audit.result = .denied
-            audit.reason = .gitOnlyKeyNonGitPayload
-            ClavisLogger.log("SECURITY_ALERT", "Key '\(matchingKey.label)' is restricted to Git signing. Refusing non-Git signature request from \(clientDesc).")
-            return Data([5]) // SSH_AGENT_FAILURE
+        let isPeerGitHelper = Self.isSignerHelper(path: processPath) || Self.isTrustedGitExecutable(path: processPath)
+
+        // Security invariant: If key is restricted to Git signing, reject any non-Git payload or unverified peer
+        if matchingKey.purpose == .gitSigningOnly {
+            if gitSSHSIG == nil {
+                audit.result = .denied
+                audit.reason = .gitOnlyKeyNonGitPayload
+                ClavisLogger.log("SECURITY_ALERT", "Key '\(matchingKey.label)' is restricted to Git signing. Refusing non-Git signature request from \(clientDesc).")
+                return Data([5]) // SSH_AGENT_FAILURE
+            }
+            if !isPeerGitHelper {
+                audit.result = .denied
+                audit.reason = .wrongKeyKind
+                ClavisLogger.log("SECURITY_ALERT", "Key '\(matchingKey.label)' is restricted to Git signing. Refusing SSHSIG request from unverified peer \(clientDesc).")
+                return Data([5]) // SSH_AGENT_FAILURE
+            }
         }
 
         do {
@@ -1903,7 +1979,9 @@ public class SSHAgentServer {
 
                     case .singleShot:
                         ClavisLogger.log("GIT_GRACE", "User chose single-shot signing.")
-                        let prompt = Self.gitCommitSigningReason(keyLabel: matchingKey.label, requester: requester)
+                        let prompt = isPeerGitHelper
+                            ? Self.gitCommitSigningReason(keyLabel: matchingKey.label, requester: requester)
+                            : Self.dataSigningReason(keyLabel: matchingKey.label, requester: requester)
                         sigBlob = try promptedSign(
                             key: matchingKey,
                             data: dataToSign,
@@ -1915,7 +1993,9 @@ public class SSHAgentServer {
                     }
                 } else {
                     // Commit #1 (single commit / first in a potential sequence) -> standard Touch ID, no dialog
-                    let prompt = Self.gitCommitSigningReason(keyLabel: matchingKey.label, requester: requester)
+                    let prompt = isPeerGitHelper
+                        ? Self.gitCommitSigningReason(keyLabel: matchingKey.label, requester: requester)
+                        : Self.dataSigningReason(keyLabel: matchingKey.label, requester: requester)
                     sigBlob = try promptedSign(
                         key: matchingKey,
                         data: dataToSign,
@@ -1931,7 +2011,10 @@ public class SSHAgentServer {
                 let prompt = Self.signatureReason(
                     keyLabel: matchingKey.label,
                     requester: requester,
-                    processPath: processPath
+                    processPath: processPath,
+                    dataToSign: dataToSign,
+                    keyBlob: matchingKey.publicKeyBlob,
+                    hasForwarding: connection?.hasForwarding ?? false
                 )
                 ClavisLogger.log("SSH_AGENT_SIGN", "Initiating signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
                 sigBlob = try promptedSign(
@@ -1999,11 +2082,25 @@ public class SSHAgentServer {
         ClavisUIStrings.Prompt.sshAuthentication(keyLabel: keyLabel, requester: requester)
     }
 
-    /// Prompt for a payload that is neither a Git SSHSIG nor otherwise validated.
-    /// Any executable whose basename is `ssh` is treated as a possible forwarded-agent relay.
+    static func signatureReason(
+        keyLabel: String,
+        requester: String,
+        processPath: String,
+        dataToSign: Data,
+        keyBlob: Data? = nil,
+        hasForwarding: Bool = false
+    ) -> String {
+        if isTrustedSshBinary(path: processPath) && isValidSSH2UserAuthRequest(dataToSign, expectedKeyBlob: keyBlob) {
+            if hasForwarding {
+                return ClavisUIStrings.Prompt.sshAuthenticationFromForwardedAgent(keyLabel: keyLabel, requester: requester)
+            }
+            return ClavisUIStrings.Prompt.sshAuthentication(keyLabel: keyLabel, requester: requester)
+        }
+        return dataSigningReason(keyLabel: keyLabel, requester: requester)
+    }
+
     static func signatureReason(keyLabel: String, requester: String, processPath: String) -> String {
-        let url = URL(fileURLWithPath: processPath).standardizedFileURL
-        if url.lastPathComponent == "ssh" {
+        if isTrustedSshBinary(path: processPath) {
             return ClavisUIStrings.Prompt.sshAuthenticationFromForwardedAgent(keyLabel: keyLabel, requester: requester)
         }
         return dataSigningReason(keyLabel: keyLabel, requester: requester)
