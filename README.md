@@ -1,6 +1,6 @@
 # 🔑 Clavis
 
-**Clavis** is a native macOS Swift / SwiftUI application that securely manages Ed25519 private keys in macOS Keychain with Touch ID protection, acts as an SSH Agent daemon (`SSH_AUTH_SOCK`), signs Git commits (`gpg.format = ssh`), interfaces with `sops-nix` via `age-plugin-clavis`, and provides a Menu Bar status item + Key Management Window UI.
+**Clavis** is a native macOS Swift / SwiftUI application that securely manages Ed25519 private keys in macOS Keychain with Touch ID protection, acts as an SSH Agent daemon (`SSH_AUTH_SOCK`), signs Git commits (`gpg.format = ssh`), and provides a Menu Bar status item + Key Management Window UI.
 
 Clavis requires a Mac with Secure Enclave support (Apple silicon, an Intel Mac
 with a T2 chip, or a 2016–2017 MacBook Pro with Touch Bar and T1). It exits on
@@ -13,11 +13,9 @@ protects the recovery vault master key and can directly hold P-256 signing keys.
 
 - **Native macOS SwiftUI & AppKit**: Built directly using `CryptoKit`, `Security`, and `LocalAuthentication` frameworks.
 - **Unencrypted Public Key Listing**: `ssh-add -l` and `SSH2_AGENTC_REQUEST_IDENTITIES` respond instantly **without triggering Touch ID prompts**.
-- **Touch ID Gated Signing**: Every SSH-agent signature request requires fresh user authentication, and the prompt names the requesting process (executable name and PID). Prompts are shown one at a time, and repeated denials trigger a short cooldown. Note that with `ssh -A` the requesting process is the local `ssh` client relaying a remote request. Age decryption can reuse the configured session cache.
+- **Touch ID Gated Signing**: Every SSH-agent signature request requires fresh user authentication, and the prompt names the requesting process (executable name and PID). Prompts are shown one at a time, and repeated denials trigger a short cooldown. Note that with `ssh -A` the requesting process is the local `ssh` client relaying a remote request.
 - **Clamshell & Lid-Closed Fallback**: Supports Apple Watch double-click and macOS User Password fallback (`.deviceOwnerAuthentication`).
-- **In-Memory Session Cache & Auto-Lock**: Configurable cache TTL (Off, 5 min, 15 min, 1 hour) for scoped application and age operations. SSH-agent signing deliberately bypasses this cache. Cached material is purged when the screen locks, workspace sleeps, or upon clicking "Lock Now".
 - **Git Signing Sessions**: After repeated commits (rebase, cherry-pick) Clavis can offer a 5-minute / 200-signature session bound to the requesting `ssh-keygen` process, its parent `git` process and process group. This is a convenience, not an isolation boundary: code that runs under the same `git` process (for example repository hooks) can present the same identity while a session is active. Choose "Sign Once" when working in repositories you do not trust.
-- **`age-plugin-clavis` Integration**: CLI tool that translates Ed25519 keys to X25519 Montgomery keys for `age` and `sops-nix` secret decryption.
 - **Logs**: `~/.config/clavis/clavis.log` (3 x 1 MiB) holds general activity. Security-relevant events are recorded in the History window. Per-request protocol chatter (`SSH_AGENT_REQ`, identity listings, key listings) is off by default; set `CLAVIS_VERBOSE_LOG=1` for troubleshooting. Logs contain key labels and requesting executable paths and are `0600` in a `0700` directory.
 - **Flake Integration**: Ready for Nix Flakes on macOS (`nix build`, `nix develop`).
 
@@ -134,7 +132,6 @@ git commit -S -m "signed commit"
 
 ## 🛠 Project Structure
 
-- `Sources/ClavisCore`: Shared engine containing `KeychainManager`, `SSHAgentServer`, `SessionCacheManager`, and `Ed25519AgeConverter`.
+- `Sources/ClavisCore`: Shared engine containing `KeychainManager` and `SSHAgentServer`.
 - `Sources/Clavis`: Menu Bar status item (`MenuBarExtra`) and SwiftUI Key Management dashboard.
-- `Sources/AgePluginClavis`: CLI executable `age-plugin-clavis` adhering to `age-plugin` v1 specification.
 - `Tests/ClavisTests`: Unit test suite.

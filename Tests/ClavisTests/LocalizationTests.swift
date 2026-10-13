@@ -5,34 +5,18 @@ final class LocalizationTests: XCTestCase {
 
     func testInspectorLocalizedStrings() {
         XCTAssertFalse(ClavisUIStrings.Inspector.usedBySection.isEmpty)
-        XCTAssertEqual(ClavisUIStrings.Inspector.agePluginRegistered, "Registered CLI plugin")
-        XCTAssertEqual(ClavisUIStrings.Inspector.agePluginIncompatible("Ed25519"), "Incompatible (Ed25519 not supported by age)")
         XCTAssertEqual(ClavisUIStrings.Inspector.statusReady, "Ready")
         XCTAssertEqual(ClavisUIStrings.Inspector.statusUnsupported, "Unsupported")
-        XCTAssertEqual(ClavisUIStrings.Inspector.agenixWorkflow, "NixOS secret workflow")
-        XCTAssertEqual(ClavisUIStrings.Inspector.agenixHardwareIncompatible, "Hardware key incompatible with agenix")
-        XCTAssertEqual(ClavisUIStrings.Inspector.agenixAlgorithmIncompatible("ECDSA"), "Incompatible with ECDSA")
         XCTAssertEqual(ClavisUIStrings.Inspector.statusConfigured, "Configured")
         XCTAssertEqual(ClavisUIStrings.Inspector.statusIncompatible, "Incompatible")
 
         XCTAssertFalse(ClavisUIStrings.Inspector.securitySection.isEmpty)
         XCTAssertEqual(ClavisUIStrings.Inspector.storageHardwareEnclave, "Apple Secure Enclave (Hardware Chip)")
         XCTAssertEqual(ClavisUIStrings.Inspector.storageSoftwareKeychain, "macOS Login Keychain (Software)")
-        XCTAssertEqual(ClavisUIStrings.Inspector.sessionCacheHardwarePrompt, "Disabled (Prompt on each signature)")
-        XCTAssertEqual(ClavisUIStrings.Inspector.sessionCacheAlwaysPrompt, "Disabled (Always Prompt)")
-        XCTAssertEqual(ClavisUIStrings.Inspector.sessionCacheActiveTimeout("5 Minutes"), "Active (5 Minutes)")
-    }
-
-    func testSessionTimeoutLocalizedTitles() {
-        XCTAssertEqual(SessionTimeout.never.localizedTitle, "Off (Always Prompt)")
-        XCTAssertEqual(SessionTimeout.fiveMinutes.localizedTitle, "5 Minutes")
-        XCTAssertEqual(SessionTimeout.fifteenMinutes.localizedTitle, "15 Minutes")
-        XCTAssertEqual(SessionTimeout.oneHour.localizedTitle, "1 Hour")
     }
 
     func testFeedbackStrings() {
         XCTAssertEqual(ClavisUIStrings.Inspector.feedbackLockedKey("id_rsa"), "Locked 'id_rsa'")
-        XCTAssertEqual(ClavisUIStrings.Inspector.feedbackUnlockedKey("id_rsa"), "Unlocked 'id_rsa'")
     }
 
     func testKeyListLocalizedStrings() {
@@ -71,8 +55,6 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(ClavisUIStrings.AddKeyPopover.header, "ADD KEY")
         XCTAssertEqual(ClavisUIStrings.AddKeyPopover.newKeyTitle, "New Key…")
         XCTAssertEqual(ClavisUIStrings.AddKeyPopover.newKeySubtitle, "Generate a new cryptographic identity")
-        XCTAssertEqual(ClavisUIStrings.AddKeyPopover.importKeyTitle, "Import Key…")
-        XCTAssertEqual(ClavisUIStrings.AddKeyPopover.importKeySubtitle, "Store an existing private key securely")
     }
 
     func testCreateKeyStrings() {
@@ -85,20 +67,6 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(ClavisUIStrings.CreateKey.enclaveUnavailable, "Apple Secure Enclave is not available on this device.")
         XCTAssertEqual(ClavisUIStrings.CreateKey.tagSSH, "SSH")
         XCTAssertEqual(ClavisUIStrings.CreateKey.tagGitSigning, "Git Signing")
-        XCTAssertEqual(ClavisUIStrings.CreateKey.tagAge, "age / agenix")
-        XCTAssertEqual(ClavisUIStrings.CreateKey.tagAgeIncompatible, "Incompatible with age")
-    }
-
-    func testImportKeyStrings() {
-        XCTAssertEqual(ClavisUIStrings.ImportKey.title, "Import Existing Key")
-        XCTAssertEqual(ClavisUIStrings.ImportKey.nameLabel, "Key Name / Label")
-        XCTAssertEqual(ClavisUIStrings.ImportKey.seedLabel, "32-Byte Raw Seed (Hex)")
-        XCTAssertEqual(ClavisUIStrings.ImportKey.seedHint, "64 hex characters")
-        XCTAssertEqual(ClavisUIStrings.ImportKey.seedValid, "Valid Ed25519 Seed Detected")
-        XCTAssertEqual(ClavisUIStrings.ImportKey.seedWaiting, "Waiting for valid 64-char hex seed...")
-        XCTAssertEqual(ClavisUIStrings.ImportKey.storageTitle, "Destination: Login Keychain")
-        XCTAssertEqual(ClavisUIStrings.ImportKey.button, "Import Key")
-        XCTAssertEqual(ClavisUIStrings.ImportKey.errorInvalidInput, "Please enter a valid label and 64-character hex seed.")
     }
 
     func testBiometricPolicyAndKeyPurpose() {

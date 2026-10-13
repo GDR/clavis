@@ -1139,7 +1139,6 @@ public class SSHAgentServer {
             return response
         case Self.lockAllRequest:
             guard payload.count == 1 else { return Data([5]) }
-            SessionCacheManager.shared.clearCacheInternal(broadcast: false)
             GitSigningGraceManager.shared.invalidateAll(broadcast: false)
             agentSessions.endAll(reason: .lockAll)
             auditRecorder.record(

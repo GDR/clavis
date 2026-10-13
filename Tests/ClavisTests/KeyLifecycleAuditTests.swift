@@ -80,20 +80,4 @@ final class KeyLifecycleAuditTests: ClavisBaseTestCase {
         XCTAssertEqual(event.result, .info)
         XCTAssertEqual(event.reason, .lockNow)
     }
-
-    func test_002_T5_importRecordsKeyImport() throws {
-        let recorder = InMemoryAuditRecorder()
-        let keyManager = makeKeyManager(auditRecorder: recorder)
-
-        var seed = Data(repeating: 0x42, count: 32)
-        let keyInfo = try keyManager.importKey(label: "import-key", consuming: &seed)
-
-        XCTAssertEqual(recorder.events.count, 1)
-        let event = recorder.events[0]
-        XCTAssertEqual(event.type, .keyImport)
-        XCTAssertEqual(event.result, .allowed)
-        XCTAssertNil(event.reason)
-        XCTAssertEqual(event.keyFingerprint, keyInfo.fingerprint)
-        XCTAssertEqual(event.sensitive.keyLabel, "import-key")
-    }
 }

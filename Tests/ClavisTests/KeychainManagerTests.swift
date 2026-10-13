@@ -50,25 +50,6 @@ final class KeychainManagerTests: ClavisBaseTestCase {
         XCTAssertFalse(EncryptedVaultStore.shared.containsRecord(label: label))
     }
 
-    func testImportKeyFailsClosedWhenPrivateKeyStoreThrowsProtectionUnavailable() throws {
-        let store = FailingProtectionPrivateKeyStore()
-        let manager = makeKeyManager(privateKeyStore: store)
-        let label = "test-import-fail-closed-\(UUID().uuidString)"
-        var seed = Data(repeating: 0x42, count: 32)
-
-        XCTAssertThrowsError(try manager.importKey(label: label, consuming: &seed, algorithm: "Ed25519")) { error in
-            guard case PrivateKeyStoreError.protectionUnavailable(let status) = error else {
-                return XCTFail("Expected PrivateKeyStoreError.protectionUnavailable, got \(error)")
-            }
-            XCTAssertEqual(status, errSecMissingEntitlement)
-        }
-
-        XCTAssertEqual(store.saveCallCount, 1)
-        XCTAssertNil(try manager.fetchKeyInfo(label: label))
-        XCTAssertFalse(PublicKeyStore.loadAll().contains { $0.label == label })
-        XCTAssertFalse(EncryptedVaultStore.shared.containsRecord(label: label))
-    }
-
     func testDeleteKeyRequiresAuthenticationBeforeModifyingStores() throws {
         let inMemoryStore = InMemoryPrivateKeyStore()
         let audit = InMemoryAuditRecorder()

@@ -44,7 +44,6 @@ final class AppStateAgentSessionTests: ClavisBaseTestCase {
     func testRevokeAllAgentSessionsReturnsCount() throws {
         let appState = AppState(
             keyManager: manager,
-            sessionCache: makeSessionCache(),
             sshAgentServer: server,
             agentLifecycle: lifecycle
         )
@@ -63,7 +62,6 @@ final class AppStateAgentSessionTests: ClavisBaseTestCase {
     func testExtendAgentSessionReturnsNewExpiry() throws {
         let appState = AppState(
             keyManager: manager,
-            sessionCache: makeSessionCache(),
             sshAgentServer: server,
             agentLifecycle: lifecycle
         )
@@ -85,7 +83,6 @@ final class AppStateAgentSessionTests: ClavisBaseTestCase {
     func testNotificationsAndCoalescing() throws {
         let appState = AppState(
             keyManager: manager,
-            sessionCache: makeSessionCache(),
             sshAgentServer: server,
             agentLifecycle: lifecycle
         )

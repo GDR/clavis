@@ -191,11 +191,9 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replyFailure)
         defer { stub.stop() }
 
-        let cache = makeSessionCache()
         let manager = AgentLifecycleManager(socketPath: sockPath)
         let appState = AppState(
-            keyManager: makeKeyManager(sessionCache: cache),
-            sessionCache: cache,
+            keyManager: makeKeyManager(),
             sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-srv-fail.sock").path),
             agentLifecycle: manager
         )
@@ -233,11 +231,9 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replySuccess)
         defer { stub.stop() }
 
-        let cache = makeSessionCache()
         let manager = AgentLifecycleManager(socketPath: sockPath)
         let appState = AppState(
-            keyManager: makeKeyManager(sessionCache: cache),
-            sessionCache: cache,
+            keyManager: makeKeyManager(),
             sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-srv-ok.sock").path),
             agentLifecycle: manager
         )
@@ -255,11 +251,9 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replyFailure)
         defer { stub.stop() }
 
-        let cache = makeSessionCache()
         let manager = AgentLifecycleManager(socketPath: sockPath)
         let appState = AppState(
-            keyManager: makeKeyManager(sessionCache: cache),
-            sessionCache: cache,
+            keyManager: makeKeyManager(),
             sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-srv-locknow-fail.sock").path),
             agentLifecycle: manager
         )

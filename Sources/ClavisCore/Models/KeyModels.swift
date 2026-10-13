@@ -18,24 +18,8 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
         keyPurpose ?? .general
     }
 
-    public var isAgeCompatible: Bool {
-        purpose == .general && algorithm == "Ed25519" && storageType == .keychain
-    }
-
-    public var ageRecipient: String {
-        guard isAgeCompatible, publicKeyBlob.count >= 32 else { return "" }
-        let ed25519Pub = publicKeyBlob.suffix(32)
-        guard let x25519Pub = Ed25519AgeConverter.ed25519PublicKeyToX25519PublicKey(ed25519PubKey: Data(ed25519Pub)) else {
-            return ""
-        }
-        return Ed25519AgeConverter.ageRecipient(forPublicKey: x25519Pub)
-    }
-
     public var displayIdentifier: String {
-        if isAgeCompatible && !ageRecipient.isEmpty {
-            return ageRecipient
-        }
-        return publicKeyOpenSSH
+        publicKeyOpenSSH
     }
 
     public var cliSummary: String {
@@ -209,33 +193,6 @@ public enum KeyStorageType: String, CaseIterable, Identifiable, Codable {
     case secureEnclave = "Secure Enclave"
 
     public var id: String { rawValue }
-}
-
-public enum SessionTimeout: String, CaseIterable, Identifiable, Codable {
-    case never = "Off (Always Prompt)"
-    case fiveMinutes = "5 Minutes"
-    case fifteenMinutes = "15 Minutes"
-    case oneHour = "1 Hour"
-
-    public var id: String { rawValue }
-
-    public var timeInterval: TimeInterval? {
-        switch self {
-        case .never: return nil
-        case .fiveMinutes: return 300
-        case .fifteenMinutes: return 900
-        case .oneHour: return 3600
-        }
-    }
-
-    public var localizedTitle: String {
-        switch self {
-        case .never: return ClavisUIStrings.SessionTimeout.never
-        case .fiveMinutes: return ClavisUIStrings.SessionTimeout.fiveMinutes
-        case .fifteenMinutes: return ClavisUIStrings.SessionTimeout.fifteenMinutes
-        case .oneHour: return ClavisUIStrings.SessionTimeout.oneHour
-        }
-    }
 }
 
 public extension Data {

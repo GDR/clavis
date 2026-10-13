@@ -110,7 +110,6 @@ if let cliResult = CLIService.handle(args: CommandLine.arguments) {
 
         USAGE:
           clavis-cli generate <label> [--git-only] [--agent] Generate a new key pair in Keychain
-          clavis-cli import <label> [--stdin]    Import a 32-byte hex seed into Keychain
           clavis-cli list                     List all stored keys and OpenSSH public keys
           clavis-cli export-pub <label>       Print the OpenSSH public key for <label>
           clavis-cli delete <label>           Delete key pair from Keychain

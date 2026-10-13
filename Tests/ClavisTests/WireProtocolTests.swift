@@ -2,7 +2,6 @@ import XCTest
 import CryptoKit
 import LocalAuthentication
 @testable import ClavisCore
-@testable import AgePluginClavis
 @testable import Clavis
 
 final class WireProtocolTests: ClavisBaseTestCase {

@@ -151,7 +151,6 @@ public struct CreateKeySheet: View {
                                 HStack(spacing: 6) {
                                     WorkflowTag(name: ClavisUIStrings.CreateKey.tagSSH, isSupported: true)
                                     WorkflowTag(name: ClavisUIStrings.CreateKey.tagGitSigning, isSupported: true)
-                                    WorkflowTag(name: ClavisUIStrings.CreateKey.tagAge, isSupported: true)
                                 }
                                 .padding(.top, 4)
                             }
@@ -213,7 +212,6 @@ public struct CreateKeySheet: View {
                                 HStack(spacing: 6) {
                                     WorkflowTag(name: ClavisUIStrings.CreateKey.tagSSH, isSupported: true)
                                     WorkflowTag(name: ClavisUIStrings.CreateKey.tagGitSigning, isSupported: true)
-                                    WorkflowTag(name: ClavisUIStrings.CreateKey.tagAgeIncompatible, isSupported: false)
                                 }
                                 .padding(.top, 4)
                             }
