@@ -312,9 +312,9 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         var witnessList: [AuditWitnessEntry] = []
         let now = Date()
 
-        // Insert 15 rows: 1..10 in the past, 11..15 recent
+        // Insert 15 rows: 1..10 in the past (older than 7-day check window), 11..15 recent
         for i in 1...15 {
-            let eventTime = (i <= 10) ? now.addingTimeInterval(-100_000 + Double(i)) : now.addingTimeInterval(Double(i))
+            let eventTime = (i <= 10) ? now.addingTimeInterval(-800_000 + Double(i)) : now.addingTimeInterval(Double(i))
             let event = AuditEvent(
                 time: eventTime,
                 type: .signature,
@@ -348,7 +348,7 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         }
 
         // Prune rows older than cutoff (deletes rows 1..10, sets pruned_through_seq to 10)
-        let prunedCount = try store.prune(olderThan: now.addingTimeInterval(-50_000), maxRows: 100)
+        let prunedCount = try store.prune(olderThan: now.addingTimeInterval(-700_000), maxRows: 100)
         XCTAssertEqual(prunedCount, 10)
         XCTAssertEqual(try store.meta("pruned_through_seq"), "10")
 
@@ -512,5 +512,65 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         let records = try roStore.records(fromSeq: 1)
         XCTAssertEqual(records.count, 1)
         XCTAssertEqual(records[0].seq, 1)
+    }
+
+    func test_F08_prunedThroughSeqCannotHideMissingRowsWithinCheckWindow() throws {
+        let store = try AuditStore(url: dbURL)
+        defer { store.close() }
+
+        var witnessList: [AuditWitnessEntry] = []
+        let now = Date()
+
+        for i in 1...5 {
+            let event = AuditEvent(
+                time: now.addingTimeInterval(Double(i) * 10),
+                type: .signature,
+                result: .allowed,
+                keyFingerprint: "SHA256:key\(i)"
+            )
+            let seq = try store.insert(event, sensitiveFormat: 2, sensitiveBlob: Data())
+            let digest = AuditWitness.digest(
+                seq: seq,
+                eventID: event.id,
+                time: event.time,
+                type: event.type.rawValue,
+                result: event.result.rawValue,
+                reason: event.reason?.rawValue,
+                fingerprint: event.keyFingerprint,
+                kind: event.keyKind?.rawValue,
+                session: event.sessionID,
+                count: event.count,
+                sensitiveFormat: 2,
+                sensitiveBlob: Data()
+            )
+            witnessList.append(AuditWitnessEntry(
+                seq: seq,
+                eventID: event.id,
+                type: event.type.rawValue,
+                result: event.result.rawValue,
+                fingerprint: event.keyFingerprint,
+                digest: digest,
+                loggedAt: event.time
+            ))
+        }
+
+        // Delete row 3 from the database (simulating tampering)
+        try executeSQL("DELETE FROM events WHERE seq = 3;")
+
+        // Artificially update meta.pruned_through_seq to 3 to conceal the deletion
+        try executeSQL("INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '3');")
+
+        let report = try AuditIntegrityChecker.check(
+            store: store,
+            witness: .entries(witnessList),
+            now: now.addingTimeInterval(100),
+            days: 7
+        )
+
+        // The check must detect row 3 as missing because its witness timestamp falls within the 7-day check window,
+        // despite meta.pruned_through_seq claiming row 3 was pruned.
+        XCTAssertEqual(report.status, .problems)
+        XCTAssertEqual(report.missingRows.count, 1)
+        XCTAssertEqual(report.missingRows.first?.seq, 3)
     }
 }

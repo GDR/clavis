@@ -86,4 +86,59 @@ final class LogWitnessReaderTests: ClavisBaseTestCase {
         })
         XCTAssertEqual(emptyReader.read(days: 7), .unavailable("log show failed"))
     }
+
+    func test_F08_rejectsUntrustedProcessPaths() {
+        let fixture = """
+        {"processImagePath":"/tmp/clavis-cli","eventMessage":"w1 seq=1 eid=11111111-1111-1111-1111-111111111111 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef","timestamp":"2026-10-06 03:55:41.787123+0000"}
+        {"processImagePath":"/private/tmp/clavis-agent","eventMessage":"w1 seq=2 eid=22222222-2222-2222-2222-222222222222 type=key_create result=allowed fp=- h=fedcba9876543210fedcba9876543210","timestamp":"2026-10-06 03:55:42.123456+0000"}
+        {"processImagePath":"/var/tmp/Clavis","eventMessage":"w1 seq=3 eid=33333333-3333-3333-3333-333333333333 type=signature result=allowed fp=- h=11223344556677881122334455667788","timestamp":"2026-10-06 03:55:43.000000+0000"}
+        """
+
+        let reader = LogWitnessReader(run: { _ in
+            return (0, Data(fixture.utf8))
+        })
+
+        // All entries come from untrusted temporary paths; none should be accepted.
+        let result = reader.read(days: 7)
+        XCTAssertEqual(result, .unavailable("log show failed"))
+    }
+
+    func test_F08_acceptsCanonicalInstallPaths() {
+        let fixture = """
+        {"processImagePath":"/opt/homebrew/bin/clavis-cli","eventMessage":"w1 seq=1 eid=11111111-1111-1111-1111-111111111111 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef","timestamp":"2026-10-06 03:55:41.787123+0000"}
+        {"processImagePath":"/run/current-system/sw/bin/clavis-agent","eventMessage":"w1 seq=2 eid=22222222-2222-2222-2222-222222222222 type=key_create result=allowed fp=- h=fedcba9876543210fedcba9876543210","timestamp":"2026-10-06 03:55:42.123456+0000"}
+        {"processImagePath":"/nix/store/1234567890abcdef-clavis-0.1.1/bin/clavis-cli","eventMessage":"w1 seq=3 eid=33333333-3333-3333-3333-333333333333 type=signature result=allowed fp=- h=11223344556677881122334455667788","timestamp":"2026-10-06 03:55:43.000000+0000"}
+        """
+
+        let reader = LogWitnessReader(run: { _ in
+            return (0, Data(fixture.utf8))
+        })
+
+        let result = reader.read(days: 7)
+        guard case .entries(let entries) = result else {
+            XCTFail("Expected .entries, got \(result)")
+            return
+        }
+        XCTAssertEqual(entries.count, 3)
+        XCTAssertEqual(entries.map(\.seq), [1, 2, 3])
+    }
+
+    func test_F08_customPathValidator() {
+        let fixture = """
+        {"processImagePath":"/custom/path/clavis-cli","eventMessage":"w1 seq=1 eid=11111111-1111-1111-1111-111111111111 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef","timestamp":"2026-10-06 03:55:41.787123+0000"}
+        """
+
+        let reader = LogWitnessReader(
+            run: { _ in (0, Data(fixture.utf8)) },
+            pathValidator: { $0.hasPrefix("/custom/path/") }
+        )
+
+        let result = reader.read(days: 7)
+        guard case .entries(let entries) = result else {
+            XCTFail("Expected .entries, got \(result)")
+            return
+        }
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].seq, 1)
+    }
 }
