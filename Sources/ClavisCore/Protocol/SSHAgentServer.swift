@@ -553,18 +553,7 @@ public class SSHAgentServer {
         process.executableURL = URL(fileURLWithPath: gitPath)
         process.arguments = ["config", "--get", "gpg.ssh.program"]
         var env = ProcessInfo.processInfo.environment
-        let sensitiveGitVars: Set<String> = [
-            "GIT_CONFIG_GLOBAL",
-            "GIT_CONFIG_SYSTEM",
-            "GIT_CONFIG_NOSYSTEM",
-            "GIT_CONFIG_PARAMETERS",
-            "GIT_CONFIG_COUNT",
-            "GIT_DIR",
-            "GIT_WORK_TREE",
-            "GIT_INDEX_FILE",
-            "GIT_OBJECT_DIRECTORY"
-        ]
-        for key in sensitiveGitVars {
+        for key in Array(env.keys) where key.hasPrefix("GIT_") {
             env.removeValue(forKey: key)
         }
         process.environment = env
