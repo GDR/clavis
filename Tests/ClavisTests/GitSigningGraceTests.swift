@@ -2,7 +2,6 @@ import XCTest
 import CryptoKit
 import LocalAuthentication
 @testable import ClavisCore
-@testable import AgePluginClavis
 @testable import Clavis
 
 final class GitSigningGraceTests: ClavisBaseTestCase {
@@ -202,8 +201,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let store = InMemoryPrivateKeyStore()
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
-            privateKeyStore: store,
-            sessionCache: makeSessionCache()
+            privateKeyStore: store
         )
         let original = try manager.generateKey(
             label: "purpose-tamper-\(UUID().uuidString)",
@@ -215,7 +213,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             messageHash: Data(repeating: 0x42, count: 32)
         ).serialize()
 
-        // Prime the cache with the authoritative Git-only purpose.
+        // Authoritative Git-only signing
         _ = try manager.signSSH(key: original, data: gitPayload, prompt: "Git", useCache: true)
 
         let tampered = Ed25519KeyInfo(
@@ -258,32 +256,18 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         }
     }
 
-    func testGitOnlyKeyCannotBeUsedForAgeOrGenericSigning() throws {
+    func testGitOnlyKeyCannotBeUsedForNonGitSigning() throws {
         let manager = makeKeyManager()
         let key = try manager.generateKey(
             label: "git-only-operations-\(UUID().uuidString)",
             keyPurpose: .gitSigningOnly
         )
 
-        XCTAssertFalse(key.isAgeCompatible)
         XCTAssertThrowsError(
-            try manager.unwrapAgeFileKey(
-                label: key.label,
-                prompt: "Age",
-                wrappedKey: Data(),
-                epkB64: ""
-            )
-        ) { error in
-            guard case PrivateKeyRecordError.purposeNotAllowed = error else {
-                return XCTFail("Expected purposeNotAllowed, got \(error)")
-            }
-        }
-        XCTAssertThrowsError(
-            try manager.sign(
-                label: key.label,
-                data: Data("arbitrary".utf8),
-                prompt: "Generic",
-                useCache: true
+            try manager.signSSH(
+                key: key,
+                data: Data("arbitrary-non-git-challenge".utf8),
+                prompt: "Generic"
             )
         ) { error in
             guard case PrivateKeyRecordError.purposeNotAllowed = error else {
@@ -1527,7 +1511,6 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: store,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()

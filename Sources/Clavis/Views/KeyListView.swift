@@ -67,7 +67,6 @@ struct KeyListView: View {
                                         KeySidebarRowView(
                                             key: key,
                                             isSelected: (selectedKey?.id == key.id),
-                                            isUnlocked: appState.isKeyUnlocked(label: key.label),
                                             onSelect: {
                                                 selectedKeyId = key.id
                                             }
@@ -145,8 +144,6 @@ struct KeyListView: View {
             switch sheet {
             case .create:
                 CreateKeySheet(appState: appState)
-            case .importKey:
-                ImportKeySheet(appState: appState)
             }
         }
         .alert(
@@ -168,8 +165,6 @@ struct KeyListView: View {
             Group {
                 Button("") { appState.activeSheet = .create }
                     .keyboardShortcut("n", modifiers: .command)
-                Button("") { appState.activeSheet = .importKey }
-                    .keyboardShortcut("i", modifiers: [.command, .shift])
                 Button("") { WindowManager.shared.openSettings() }
                     .keyboardShortcut(",", modifiers: .command)
             }
@@ -205,21 +200,18 @@ struct KeyListView: View {
 private struct KeySidebarRowView: View {
     let key: Ed25519KeyInfo
     let isSelected: Bool
-    let isUnlocked: Bool
     let onSelect: () -> Void
 
     @State private var isHovered = false
 
     var body: some View {
         HStack(spacing: 10) {
-            // Status indicator: hardware shield for Secure Enclave, cache status dot for software
+            // Status indicator: hardware shield for Secure Enclave
             if key.isHardware {
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 11))
                     .foregroundColor(DesignTokens.accentGreen)
                     .frame(width: 8, height: 8)
-            } else {
-                StatusDot(isActive: isUnlocked)
             }
 
             // Key label & algorithm
@@ -228,7 +220,7 @@ private struct KeySidebarRowView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.primary)
                     .lineLimit(1)
-                Text(key.isAgeCompatible ? "\(key.algorithm) · agenix" : key.algorithm)
+                Text(key.algorithm)
                     .font(.system(size: 11))
                     .foregroundColor(isSelected ? Color.white.opacity(0.80) : DesignTokens.textSecondary)
                     .lineLimit(1)
@@ -305,7 +297,7 @@ private struct UnifiedGlassToolbarPill: View {
                 iconSize: 13,
                 iconColor: Color.white.opacity(0.90),
                 isActive: showingAddPopover,
-                help: ClavisUIStrings.KeyList.addOrImportKeyHelp,
+                help: ClavisUIStrings.CreateKey.title,
                 action: { showingAddPopover.toggle() }
             )
             .popover(isPresented: $showingAddPopover, arrowEdge: .top) {
@@ -313,21 +305,18 @@ private struct UnifiedGlassToolbarPill: View {
                     onNewKey: {
                         showingAddPopover = false
                         appState.activeSheet = .create
-                    },
-                    onImportKey: {
-                        showingAddPopover = false
-                        appState.activeSheet = .importKey
                     }
                 )
             }
 
             // Lock All
+            let hasActiveSessions = appState.activeGitGrace != nil || !appState.agentSessions.isEmpty
             ToolbarCapsuleButton(
                 icon: "lock.fill",
                 iconSize: 12,
-                iconColor: appState.cachedKeysCount > 0 ? DesignTokens.accentGreen : Color.white.opacity(0.40),
-                isDisabled: appState.cachedKeysCount == 0,
-                help: appState.cachedKeysCount > 0 ? ClavisUIStrings.KeyList.lockAllKeysHelp : ClavisUIStrings.KeyList.noUnlockedKeysHelp,
+                iconColor: hasActiveSessions ? DesignTokens.accentGreen : Color.white.opacity(0.40),
+                isDisabled: !hasActiveSessions,
+                help: hasActiveSessions ? ClavisUIStrings.KeyList.lockAllKeysHelp : ClavisUIStrings.KeyList.noUnlockedKeysHelp,
                 action: {
                     appState.lockNow()
                     statusMessage = ClavisUIStrings.KeyList.allCachedKeysLocked

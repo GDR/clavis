@@ -3,11 +3,9 @@ import ClavisCore
 
 public struct AddKeyPopoverView: View {
     public var onNewKey: () -> Void
-    public var onImportKey: () -> Void
 
-    public init(onNewKey: @escaping () -> Void, onImportKey: @escaping () -> Void) {
+    public init(onNewKey: @escaping () -> Void) {
         self.onNewKey = onNewKey
-        self.onImportKey = onImportKey
     }
 
     public var body: some View {
@@ -25,14 +23,6 @@ public struct AddKeyPopoverView: View {
                 shortcut: "⌘N",
                 subtitle: ClavisUIStrings.AddKeyPopover.newKeySubtitle,
                 action: onNewKey
-            )
-
-            AddKeyPopoverRow(
-                icon: "arrow.down",
-                title: ClavisUIStrings.AddKeyPopover.importKeyTitle,
-                shortcut: "⇧⌘I",
-                subtitle: ClavisUIStrings.AddKeyPopover.importKeySubtitle,
-                action: onImportKey
             )
         }
         .padding(6)

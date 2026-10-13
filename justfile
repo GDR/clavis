@@ -60,7 +60,6 @@ bundle config=config: (build config)
     cp "$build_dir/Clavis" "$contents/MacOS/Clavis"
     cp "$build_dir/clavis-agent" "$agent_bundle/Contents/MacOS/clavis-agent"
     cp "$build_dir/clavis-cli" "$contents/Helpers/clavis-cli"
-    cp "$build_dir/age-plugin-clavis" "$contents/Helpers/age-plugin-clavis"
 
     cp packaging/macos/Info.plist "$contents/Info.plist"
     cp packaging/macos/AgentInfo.plist "$agent_bundle/Contents/Info.plist"
@@ -221,9 +220,7 @@ sign config=config: (bundle config)
     for binary in "$build_dir/Clavis" \
                   "$build_dir/clavis-agent" \
                   "$build_dir/clavis-cli" \
-                  "$build_dir/age-plugin-clavis" \
-                  "$app_bundle/Contents/Helpers/clavis-cli" \
-                  "$app_bundle/Contents/Helpers/age-plugin-clavis"; do
+                  "$app_bundle/Contents/Helpers/clavis-cli"; do
         sign_and_verify "$binary" 0
     done
 
@@ -313,7 +310,6 @@ package config=config: (dmg config)
         Clavis \
         clavis-agent \
         clavis-cli \
-        age-plugin-clavis \
         Clavis_ClavisCore.bundle \
         Clavis.app
     shasum -a 256 "$archive" > "$archive.sha256"

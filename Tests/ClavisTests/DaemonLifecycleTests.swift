@@ -2,7 +2,6 @@ import XCTest
 import CryptoKit
 import LocalAuthentication
 @testable import ClavisCore
-@testable import AgePluginClavis
 @testable import Clavis
 
 final class DaemonLifecycleTests: ClavisBaseTestCase {
@@ -249,29 +248,14 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
 
     @MainActor
     func testAppStateInitializationAndDaemonFlag() {
-        let sessionCache = makeSessionCache()
         let appState = AppState(
-            keyManager: makeKeyManager(sessionCache: sessionCache),
-            sessionCache: sessionCache,
+            keyManager: makeKeyManager(),
             sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-state.sock").path)
         )
         XCTAssertNotNil(appState)
 
-        // Test setTimeout method syncs with SessionCacheManager
-        appState.setTimeout(.fiveMinutes)
-        XCTAssertEqual(sessionCache.currentTimeout, .fiveMinutes)
-        XCTAssertEqual(appState.selectedTimeout, .fiveMinutes)
-
-        appState.setTimeout(.never)
-        XCTAssertEqual(sessionCache.currentTimeout, .never)
-        XCTAssertEqual(appState.selectedTimeout, .never)
-
-        // Test lockNow clears cache and refreshes state
-        sessionCache.currentTimeout = .fiveMinutes
-        sessionCache.set(label: "test-lock", key: Curve25519.Signing.PrivateKey())
+        // Test lockNow refreshes state
         appState.lockNow()
-        XCTAssertEqual(sessionCache.cachedCount, 0)
-        XCTAssertEqual(appState.cachedKeysCount, 0)
 
         // Test clearError
         appState.clearError()
@@ -303,10 +287,6 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
 
     @MainActor
     func testAppTerminationClearsCachesStopsServerAndStopsAgent() throws {
-        let cache = makeSessionCache()
-        cache.currentTimeout = .fiveMinutes
-        cache.set(label: "termination-key", key: Curve25519.Signing.PrivateKey())
-
         let socketPath = testRootURL.appendingPathComponent("termination.sock").path
         let server = SSHAgentServer(socketPath: socketPath)
         try server.start()
@@ -314,8 +294,7 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         var agentStopCount = 0
         let lifecycle = AgentLifecycleManager(socketPath: socketPath)
         let appState = AppState(
-            keyManager: makeKeyManager(sessionCache: cache),
-            sessionCache: cache,
+            keyManager: makeKeyManager(),
             sshAgentServer: server,
             agentLifecycle: lifecycle,
             terminationAgentStop: {
@@ -326,7 +305,6 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
 
         appState.shutdownForTermination()
 
-        XCTAssertEqual(cache.cachedCount, 0)
         XCTAssertFalse(server.isSocketActive)
         XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
         XCTAssertEqual(agentStopCount, 1)
@@ -452,13 +430,11 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
 
     @MainActor
     func testAppStateIgnoresSpoofedGitGraceNotificationUserInfo() throws {
-        let cache = makeSessionCache()
         let socketPath = testRootURL.appendingPathComponent("spoof.sock").path
         let server = SSHAgentServer(socketPath: socketPath)
         let lifecycle = AgentLifecycleManager(socketPath: socketPath)
         let appState = AppState(
-            keyManager: makeKeyManager(sessionCache: cache),
-            sessionCache: cache,
+            keyManager: makeKeyManager(),
             sshAgentServer: server,
             agentLifecycle: lifecycle
         )

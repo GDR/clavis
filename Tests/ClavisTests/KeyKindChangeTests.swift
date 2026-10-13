@@ -14,24 +14,15 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
         }
     }
 
-    func test_005_AC5_changeKindRequiresUserPresence() async throws {
+    func test_005_AC5_changeKindRequiresUserPresence() throws {
         let auth = CountingAuthenticator()
-        let cache = makeSessionCache()
-        let keyManager = makeKeyManager(sessionCache: cache, authenticator: auth)
+        let keyManager = makeKeyManager(authenticator: auth)
 
         let key = try keyManager.generateKey(label: "presence-test", keyPurpose: .general)
 
-        // Unlock key into session cache
-        try await keyManager.unlock(label: key.label)
-        XCTAssertEqual(auth.authenticationCount, 1)
-        XCTAssertTrue(cache.isKeyUnlocked(label: key.label))
-
-        // Change kind must require fresh authentication even though key is in session cache
+        // Change kind must require user presence authentication
         try keyManager.changeKind(label: key.label, to: .agent)
-        XCTAssertEqual(auth.authenticationCount, 2, "changeKind must require fresh user presence authentication")
-
-        // Verifies the key was also revoked from the session cache
-        XCTAssertFalse(cache.isKeyUnlocked(label: key.label))
+        XCTAssertEqual(auth.authenticationCount, 1, "changeKind must require user presence authentication")
     }
 
     func test_005_AC5_changeKindAuthFailureLeavesKeyUnchanged() throws {
@@ -40,7 +31,6 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
         let initialManager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: keyStore,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { data in SecureBuffer(consuming: &data) },
             agentGrantRevoker: { _ in },
             auditRecorder: recorder
@@ -52,7 +42,6 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
         let failingManager = KeychainManager(
             authenticator: RejectingAuthenticator(),
             privateKeyStore: keyStore,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { data in SecureBuffer(consuming: &data) },
             agentGrantRevoker: { _ in },
             auditRecorder: recorder
@@ -88,7 +77,6 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
         let keyManager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: keyStore,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { data in SecureBuffer(consuming: &data) },
             agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()
@@ -171,7 +159,6 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
         let keyManager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: keyStore,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { data in SecureBuffer(consuming: &data) },
             agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()

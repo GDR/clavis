@@ -15,20 +15,6 @@ public struct KeyDetailInspectorView: View {
         self.onDelete = onDelete
     }
 
-    private var isUnlocked: Bool {
-        appState.isKeyUnlocked(label: key.label)
-    }
-
-    private var unlockStatusText: String {
-        if isUnlocked {
-            if let remaining = appState.remainingTimeFormatted(label: key.label) {
-                return ClavisUIStrings.Inspector.unlockedWithTime(remaining)
-            }
-            return ClavisUIStrings.Inspector.unlockedActive
-        }
-        return ClavisUIStrings.Inspector.lockedTouchIdRequired
-    }
-
     private var formattedDate: String {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
@@ -66,11 +52,6 @@ public struct KeyDetailInspectorView: View {
                                 Text(ClavisUIStrings.Inspector.hardwareIsolated)
                                     .font(.caption)
                                     .foregroundColor(DesignTokens.accentGreen)
-                            } else {
-                                StatusDot(isActive: isUnlocked)
-                                Text(unlockStatusText)
-                                    .font(.caption)
-                                    .foregroundColor(isUnlocked ? DesignTokens.accentGreen : DesignTokens.textSecondary)
                             }
                         }
                         .padding(.top, 2)
@@ -78,20 +59,7 @@ public struct KeyDetailInspectorView: View {
 
                     Spacer()
 
-                    // Lock revokes agent grants and clears any local cache. There is no unlock action.
-                    if !key.isHardware {
-                        Button(action: lockSelectedKey) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "lock.fill")
-                                Text(ClavisUIStrings.Inspector.lock)
-                            }
-                            .font(.caption)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                        }
-                        .buttonStyle(.bordered)
-                        .focusable(false)
-                    } else {
+                    if key.isHardware {
                         HStack(spacing: 4) {
                             Image(systemName: "hand.raised.fill")
                                 .font(.system(size: 10))
@@ -121,11 +89,6 @@ public struct KeyDetailInspectorView: View {
 
                     // Context Menu
                     Menu {
-                        if key.isAgeCompatible {
-                            Button(action: copyRecipient) {
-                                Label(ClavisUIStrings.Inspector.copyAgeRecipientMenu, systemImage: "doc.on.doc")
-                            }
-                        }
                         if key.purpose == .agent {
                             Button(action: copyDeployKey) {
                                 Label(ClavisUIStrings.KeyDetail.copyDeployKey, systemImage: "key.fill")
@@ -183,44 +146,6 @@ public struct KeyDetailInspectorView: View {
                         .foregroundColor(DesignTokens.textTertiary)
 
                     VStack(alignment: .leading, spacing: 12) {
-                        if key.isAgeCompatible {
-                            // age Recipient
-                            HStack(alignment: .top) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(key.ageRecipient)
-                                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                        .textSelection(.enabled)
-                                    Text(ClavisUIStrings.Inspector.ageRecipientDescription)
-                                        .font(.caption2)
-                                        .foregroundColor(DesignTokens.textSecondary)
-                                }
-                                Spacer()
-                                Button(ClavisUIStrings.Inspector.copyRecipientButton, action: copyRecipient)
-                                    .buttonStyle(.borderedProminent)
-                                    .tint(DesignTokens.accentBlue)
-                                    .controlSize(.small)
-                                    .focusable(false)
-                            }
-
-                            Divider().background(DesignTokens.cardBorder)
-                        } else {
-                            HStack(spacing: 8) {
-                                Image(systemName: "info.circle")
-                                    .foregroundColor(DesignTokens.textTertiary)
-                                Text(key.isHardware ? ClavisUIStrings.Inspector.hardwareAgeIncompatible : ClavisUIStrings.Inspector.algorithmAgeIncompatible(key.algorithm))
-                                    .font(.caption2)
-                                    .foregroundColor(DesignTokens.textSecondary)
-                            }
-                            .padding(8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.white.opacity(0.04))
-                            .cornerRadius(6)
-
-                            Divider().background(DesignTokens.cardBorder)
-                        }
-
                         // OpenSSH Key (Primary for GitHub / servers)
                         HStack(alignment: .top) {
                             VStack(alignment: .leading, spacing: 3) {
@@ -294,20 +219,6 @@ public struct KeyDetailInspectorView: View {
 
                     VStack(spacing: 8) {
                         IntegrationRow(
-                            name: "age-plugin-clavis",
-                            detail: key.isAgeCompatible ? ClavisUIStrings.Inspector.agePluginRegistered : ClavisUIStrings.Inspector.agePluginIncompatible(key.algorithm),
-                            status: key.isAgeCompatible ? ClavisUIStrings.Inspector.statusReady : ClavisUIStrings.Inspector.statusUnsupported,
-                            isActive: key.isAgeCompatible
-                        )
-                        Divider().background(DesignTokens.cardBorder)
-                        IntegrationRow(
-                            name: "agenix",
-                            detail: key.isAgeCompatible ? ClavisUIStrings.Inspector.agenixWorkflow : (key.isHardware ? ClavisUIStrings.Inspector.agenixHardwareIncompatible : ClavisUIStrings.Inspector.agenixAlgorithmIncompatible(key.algorithm)),
-                            status: key.isAgeCompatible ? ClavisUIStrings.Inspector.statusConfigured : ClavisUIStrings.Inspector.statusIncompatible,
-                            isActive: key.isAgeCompatible
-                        )
-                        Divider().background(DesignTokens.cardBorder)
-                        IntegrationRow(
                             name: "ssh-agent socket",
                             detail: "~/.ssh/clavis.sock",
                             status: appState.isSocketActive ? ClavisUIStrings.Inspector.statusActive : ClavisUIStrings.Inspector.statusOffline,
@@ -328,11 +239,6 @@ public struct KeyDetailInspectorView: View {
                         SecurityPropertyRow(
                             label: ClavisUIStrings.Inspector.storageLabel,
                             value: key.isHardware ? ClavisUIStrings.Inspector.storageHardwareEnclave : ClavisUIStrings.Inspector.storageSoftwareKeychain
-                        )
-                        Divider().background(DesignTokens.cardBorder)
-                        SecurityPropertyRow(
-                            label: ClavisUIStrings.Inspector.sessionCacheLabel,
-                            value: key.isHardware ? ClavisUIStrings.Inspector.sessionCacheHardwarePrompt : (appState.selectedTimeout == .never ? ClavisUIStrings.Inspector.sessionCacheAlwaysPrompt : ClavisUIStrings.Inspector.sessionCacheActiveTimeout(appState.selectedTimeout.localizedTitle))
                         )
                         Divider().background(DesignTokens.cardBorder)
                         SecurityPropertyRow(
@@ -360,13 +266,8 @@ public struct KeyDetailInspectorView: View {
                     AgentPolicyView(key: key, appState: appState)
                 }
 
-                // Session Cache Section
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(ClavisUIStrings.Inspector.sessionCacheSection)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(DesignTokens.textTertiary)
-
-                    if key.isHardware {
+                if key.isHardware {
+                    VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 12) {
                             Image(systemName: key.biometricPolicy == .biometryCurrentSet ? "touchid" : "lock.shield.fill")
                                 .font(.system(size: 20))
@@ -381,56 +282,6 @@ public struct KeyDetailInspectorView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             Spacer()
-                        }
-                        .padding(14)
-                        .glassCard(cornerRadius: 10)
-                    } else {
-                        VStack(spacing: 10) {
-                            // Timeout Picker Row
-                            HStack {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(ClavisUIStrings.Inspector.cacheTimeoutTitle)
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundColor(.primary)
-                                    Text(ClavisUIStrings.Inspector.cacheTimeoutSubtitle)
-                                        .font(.caption)
-                                        .foregroundColor(DesignTokens.textSecondary)
-                                }
-                                Spacer()
-                                Picker("", selection: Binding(
-                                    get: { appState.selectedTimeout },
-                                    set: { appState.setTimeout($0) }
-                                )) {
-                                    ForEach(SessionTimeout.allCases) { timeout in
-                                        Text(timeout.localizedTitle).tag(timeout)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .labelsHidden()
-                                .frame(width: 160)
-                            }
-
-                            Divider().background(DesignTokens.cardBorder)
-
-                            // Memory protection & auto-lock row
-                            HStack {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(ClavisUIStrings.Inspector.memoryProtectionTitle)
-                                        .font(.system(size: 12, weight: .medium))
-                                    Text(ClavisUIStrings.Inspector.memoryProtectionSubtitle)
-                                        .font(.caption2)
-                                        .foregroundColor(DesignTokens.textSecondary)
-                                }
-                                Spacer()
-                                Text(ClavisUIStrings.Inspector.statusActive)
-                                    .font(.caption2)
-                                    .fontWeight(.medium)
-                                    .foregroundColor(DesignTokens.accentGreen)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 3)
-                                    .background(DesignTokens.accentGreen.opacity(0.12))
-                                    .clipShape(Capsule())
-                            }
                         }
                         .padding(14)
                         .glassCard(cornerRadius: 10)
@@ -459,12 +310,6 @@ public struct KeyDetailInspectorView: View {
         showFeedback(ClavisUIStrings.Inspector.feedbackCopiedOpenSSH)
     }
 
-    private func copyRecipient() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(key.ageRecipient, forType: .string)
-        showFeedback(ClavisUIStrings.Inspector.feedbackCopiedRecipient)
-    }
-
     private func copyFingerprint() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(key.fingerprint, forType: .string)
@@ -475,16 +320,6 @@ public struct KeyDetailInspectorView: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(key.publicKeyOpenSSH, forType: .string)
         showFeedback(ClavisUIStrings.Inspector.feedbackCopiedOpenSSH)
-    }
-
-    private func lockSelectedKey() {
-        guard !key.isHardware else { return }
-        do {
-            try appState.lockKey(label: key.label)
-            showFeedback(ClavisUIStrings.Inspector.feedbackLockedKey(key.label))
-        } catch {
-            appState.errorMessage = error.localizedDescription
-        }
     }
 
     private func showFeedback(_ text: String) {

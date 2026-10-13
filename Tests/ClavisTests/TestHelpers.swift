@@ -2,7 +2,6 @@ import XCTest
 import CryptoKit
 import LocalAuthentication
 @testable import ClavisCore
-@testable import AgePluginClavis
 @testable import Clavis
 
 struct AllowingAuthenticator: UserAuthenticating {
@@ -162,15 +161,7 @@ class ClavisBaseTestCase: XCTestCase {
         try super.tearDownWithError()
     }
 
-    func makeSessionCache() -> SessionCacheManager {
-        let suiteName = "com.clavis.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        return SessionCacheManager(defaults: defaults, observeSystemEvents: false)
-    }
-
     func makeKeyManager(
-        sessionCache: SessionCacheManager? = nil,
         authenticator: UserAuthenticating = AllowingAuthenticator(),
         privateKeyStore: PrivateKeyStoring = InMemoryPrivateKeyStore(),
         auditRecorder: AuditRecording = InMemoryAuditRecorder(),
@@ -181,7 +172,6 @@ class ClavisBaseTestCase: XCTestCase {
         KeychainManager(
             authenticator: authenticator,
             privateKeyStore: privateKeyStore,
-            sessionCache: sessionCache ?? makeSessionCache(),
             secureBufferFactory: secureBufferFactory,
             agentGrantRevoker: { _ in },
             auditRecorder: auditRecorder

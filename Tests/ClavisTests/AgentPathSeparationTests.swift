@@ -137,45 +137,6 @@ final class AgentPathSeparationTests: ClavisBaseTestCase {
         XCTAssertEqual(lastEvent.reason, .wrongKeyKind)
     }
 
-    func test_005_C1_unlockRefusesAgentKey() async throws {
-        let cache = makeSessionCache()
-        cache.currentTimeout = .fifteenMinutes
-        let auth = CountingAuthenticator()
-        let keyManager = makeKeyManager(sessionCache: cache, authenticator: auth)
-
-        let agentKey = try keyManager.generateKey(label: "unlock-agent-key", keyPurpose: .agent)
-
-        // Preliminary check rejects before auth prompt
-        do {
-            try await keyManager.unlock(label: agentKey.label)
-            XCTFail("unlock should refuse agent key")
-        } catch {
-            XCTAssertEqual(error as? KeyPurposeError, .notAllowedOnThisPath(.agent))
-        }
-        XCTAssertEqual(auth.authenticationCount, 0)
-
-        // Tampered public index: authoritative record check rejects after auth
-        let tampered = Ed25519KeyInfo(
-            label: agentKey.label,
-            publicKeyOpenSSH: agentKey.publicKeyOpenSSH,
-            publicKeyBlob: agentKey.publicKeyBlob,
-            fingerprint: agentKey.fingerprint,
-            createdAt: agentKey.createdAt,
-            algorithmName: agentKey.algorithmName,
-            storage: agentKey.storage,
-            biometricPolicy: agentKey.biometricPolicy,
-            keyPurpose: .general
-        )
-        PublicKeyStore.save(tampered)
-
-        do {
-            try await keyManager.unlock(label: agentKey.label)
-            XCTFail("unlock should refuse agent key even with tampered index")
-        } catch {
-            XCTAssertEqual(error as? KeyPurposeError, .notAllowedOnThisPath(.agent))
-        }
-        XCTAssertEqual(cache.cachedCount, 0)
-    }
 
     func test_005_D2_gitGrantRefusesAgentKey() throws {
         let auth = CountingAuthenticator()

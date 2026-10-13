@@ -1,5 +1,5 @@
 {
-  description = "Clavis — Native macOS Swift/SwiftUI Ed25519 Keychain SSH Agent & age plugin with Touch ID";
+  description = "Clavis — Native macOS Swift/SwiftUI Ed25519 Keychain SSH Agent with Touch ID";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -38,7 +38,6 @@
               cp Clavis $out/bin/clavis
               cp clavis-agent $out/bin/clavis-agent
               cp clavis-cli $out/bin/clavis-cli
-              cp age-plugin-clavis $out/bin/age-plugin-clavis
               cp -R Clavis_ClavisCore.bundle $out/bin/Clavis_ClavisCore.bundle
 
               # Preserve the complete application bundle and its CI signature.
@@ -47,7 +46,7 @@
             '';
 
             meta = with pkgs.lib; {
-              description = "Native macOS Swift/SwiftUI Ed25519 Keychain SSH Agent & age plugin with Touch ID";
+              description = "Native macOS Swift/SwiftUI Ed25519 Keychain SSH Agent with Touch ID";
               homepage = "https://github.com/GDR/clavis";
               license = licenses.mit;
               platforms = [ "aarch64-darwin" ];
@@ -78,13 +77,6 @@
               exec "${packages.clavis}/bin/clavis-cli" "$@"
             '';
             name = "clavis-cli";
-          };
-
-          age-plugin = flake-utils.lib.mkApp {
-            drv = pkgs.writeShellScriptBin "age-plugin-clavis" ''
-              exec "${packages.clavis}/bin/age-plugin-clavis" "$@"
-            '';
-            name = "age-plugin-clavis";
           };
 
           default = apps.clavis;

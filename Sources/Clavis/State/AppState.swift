@@ -5,7 +5,6 @@ import UserNotifications
 
 public enum KeyManagerSheet: String, Identifiable {
     case create
-    case importKey
 
     public var id: String { rawValue }
 }
@@ -29,8 +28,6 @@ public class AppState: ObservableObject {
     @Published public var keys: [Ed25519KeyInfo] = []
     @Published public var isSocketActive: Bool = false
     @Published public var agentPID: pid_t? = nil
-    @Published public var selectedTimeout: SessionTimeout = .never
-    @Published public var cachedKeysCount: Int = 0
     @Published public var activeGitGrace: ActiveGitGraceInfo? = nil
     @Published public var agentSessions: [AgentSessionSummary] = []
     @Published public var errorMessage: String? = nil
@@ -44,20 +41,17 @@ public class AppState: ObservableObject {
     internal var onAgentNotificationPosted: ((_ title: String, _ body: String) -> Void)?
 
     private let keyManager: KeychainManager
-    private let sessionCache: SessionCacheManager
     private let sshAgentServer: SSHAgentServer
     private let agentLifecycle: AgentLifecycleManager
     private let terminationAgentStop: () -> Bool
 
     init(
         keyManager: KeychainManager = .shared,
-        sessionCache: SessionCacheManager = .shared,
         sshAgentServer: SSHAgentServer = .shared,
         agentLifecycle: AgentLifecycleManager = .shared,
         terminationAgentStop: (() -> Bool)? = nil
     ) {
         self.keyManager = keyManager
-        self.sessionCache = sessionCache
         self.sshAgentServer = sshAgentServer
         self.agentLifecycle = agentLifecycle
         self.terminationAgentStop = terminationAgentStop ?? { agentLifecycle.stopAgent() }
@@ -156,8 +150,6 @@ public class AppState: ObservableObject {
             keys = try keyManager.listKeys()
             isSocketActive = agentLifecycle.isAgentRunning || sshAgentServer.isSocketActive
             agentPID = agentLifecycle.agentPID
-            cachedKeysCount = sessionCache.cachedCount
-            selectedTimeout = sessionCache.currentTimeout
             launchAtLogin = LaunchAtLoginManager.shared.isEnabled
             errorMessage = nil
             updateGitGraceState()
@@ -234,12 +226,10 @@ public class AppState: ObservableObject {
     /// Performs the security-sensitive shutdown sequence shared by every GUI
     /// termination path (menu action, Cmd+Q, Dock, logout, or system shutdown).
     public func shutdownForTermination() {
-        sessionCache.clearCache()
         GitSigningGraceManager.shared.invalidateAll()
         sshAgentServer.stop()
         _ = terminationAgentStop()
         activeGitGrace = nil
-        cachedKeysCount = 0
         isSocketActive = false
         agentPID = nil
     }
@@ -258,27 +248,9 @@ public class AppState: ObservableObject {
         launchAtLogin = enabled
     }
 
-    public func setTimeout(_ timeout: SessionTimeout) {
-        sessionCache.currentTimeout = timeout
-        selectedTimeout = timeout
-        refresh()
-    }
-
     public func lockNow() {
-        sessionCache.clearCache()
-        cachedKeysCount = sessionCache.cachedCount
         endGitSigningSession()
         PanelLockController.shared.lock(reason: .lockNow)
-    }
-
-    public func isKeyUnlocked(label: String) -> Bool {
-        sessionCache.isKeyUnlocked(label: label)
-    }
-
-    public func remainingTimeFormatted(label: String) -> String? {
-        guard let remaining = sessionCache.remainingTime(label: label) else { return nil }
-        let mins = max(1, Int(ceil(remaining / 60)))
-        return ClavisUIStrings.Common.minRemaining(mins)
     }
 
     public func generateKey(
@@ -293,24 +265,6 @@ public class AppState: ObservableObject {
             algorithm: algorithm,
             storageType: storageType,
             biometricPolicy: biometricPolicy,
-            keyPurpose: keyPurpose
-        )
-        refresh()
-        return info
-    }
-
-    public func importKey(
-        label: String,
-        consuming seedData: inout Data,
-        algorithm: String = "Ed25519",
-        storageType: KeyStorageType = .keychain,
-        keyPurpose: KeyPurpose = .general
-    ) throws -> Ed25519KeyInfo {
-        let info = try keyManager.importKey(
-            label: label,
-            consuming: &seedData,
-            algorithm: algorithm,
-            storageType: storageType,
             keyPurpose: keyPurpose
         )
         refresh()

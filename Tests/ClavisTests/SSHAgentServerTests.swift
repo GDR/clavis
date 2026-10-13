@@ -3,7 +3,6 @@ import CryptoKit
 import LocalAuthentication
 import Darwin
 @testable import ClavisCore
-@testable import AgePluginClavis
 @testable import Clavis
 
 final class SSHAgentServerTests: ClavisBaseTestCase {
@@ -322,10 +321,8 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
 
 
     func testSSHSigningCanRequirePerRequestAuthentication() throws {
-        let cache = makeSessionCache()
-        cache.currentTimeout = .oneHour
         let authenticator = CountingAuthenticator()
-        let keyManager = makeKeyManager(sessionCache: cache, authenticator: authenticator)
+        let keyManager = makeKeyManager(authenticator: authenticator)
         let label = "ssh-single-shot-\(UUID().uuidString)"
         defer { try? keyManager.deleteKey(label: label) }
         let keyInfo = try keyManager.generateKey(label: label)
@@ -345,7 +342,6 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         )
 
         XCTAssertEqual(authenticator.authenticationCount, 2)
-        XCTAssertEqual(cache.cachedCount, 0)
     }
 
 
@@ -662,8 +658,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             peerProcessChanged = true
         })
 
-        let cache = makeSessionCache()
-        let keyManager = makeKeyManager(sessionCache: cache, authenticator: authenticator)
+        let keyManager = makeKeyManager(authenticator: authenticator)
         let label = "toctou-key-\(UUID().uuidString)"
         defer { try? keyManager.deleteKey(label: label) }
         let keyInfo = try keyManager.generateKey(label: label)

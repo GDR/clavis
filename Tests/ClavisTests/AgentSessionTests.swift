@@ -45,7 +45,6 @@ final class AgentSessionTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: store,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()
@@ -94,7 +93,6 @@ final class AgentSessionTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: store,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()
@@ -127,7 +125,6 @@ final class AgentSessionTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: store,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()
@@ -185,7 +182,6 @@ final class AgentSessionTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: store,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()
@@ -273,7 +269,6 @@ final class AgentSessionTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: store,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()

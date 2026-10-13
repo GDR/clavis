@@ -10,7 +10,6 @@ public enum MenuBarSection: Hashable, CaseIterable {
     case gitBanner
     case identities
     case newKey
-    case importKey
     case openKeyManager
     case agentLifecycle
     case history
@@ -40,7 +39,6 @@ public enum MenuBarSections {
                 .gitBanner,
                 .identities,
                 .newKey,
-                .importKey,
                 .openKeyManager,
                 .agentLifecycle,
                 .history,
@@ -64,7 +62,7 @@ struct MenuBarView: View {
     @State private var copiedLabel: String? = nil
 
     private var sessionCount: Int {
-        appState.cachedKeysCount + (appState.activeGitGrace != nil ? 1 : 0) + appState.agentSessions.count
+        (appState.activeGitGrace != nil ? 1 : 0) + appState.agentSessions.count
     }
 
     private var hasSessions: Bool {
@@ -353,16 +351,6 @@ struct MenuBarView: View {
                         shortcut: "⌘N"
                     ) {
                         WindowManager.shared.openKeyManager(sheet: .create)
-                    }
-                }
-
-                if visibleSections.contains(.importKey) {
-                    MenuBarActionItem(
-                        title: ClavisUIStrings.MenuBar.importKey,
-                        icon: "square.and.arrow.down",
-                        shortcut: "⇧⌘I"
-                    ) {
-                        WindowManager.shared.openKeyManager(sheet: .importKey)
                     }
                 }
 

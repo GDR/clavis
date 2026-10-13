@@ -2,7 +2,6 @@ import XCTest
 import CryptoKit
 import LocalAuthentication
 @testable import ClavisCore
-@testable import AgePluginClavis
 @testable import Clavis
 
 final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
@@ -27,56 +26,6 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         }
     }
 
-
-    func testUnlockKeepsAlwaysPromptPolicy() async throws {
-        let cache = makeSessionCache()
-        cache.currentTimeout = .never
-        let keyManager = makeKeyManager(sessionCache: cache)
-        let label = "always-prompt-\(UUID().uuidString)"
-        defer { try? keyManager.deleteKey(label: label) }
-        try keyManager.generateKey(label: label)
-
-        do {
-            try await keyManager.unlock(label: label)
-            XCTFail("Unlock should fail while session caching is disabled")
-        } catch {
-            XCTAssertEqual(error as? SessionCacheError, .disabled)
-        }
-
-        XCTAssertEqual(cache.currentTimeout, .never)
-        XCTAssertEqual(cache.cachedCount, 0)
-    }
-
-
-    func testUnlockHardwareKeyThrowsNotCacheable() async throws {
-        let cache = makeSessionCache()
-        cache.currentTimeout = .fifteenMinutes
-        let keyManager = makeKeyManager(sessionCache: cache)
-        let label = "hw-test-\(UUID().uuidString)"
-        defer { try? keyManager.deleteKey(label: label) }
-
-        let hwKeyInfo = Ed25519KeyInfo(
-            label: label,
-            publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA... \(label)",
-            publicKeyBlob: Data([1, 2, 3]),
-            fingerprint: "SHA256:fake-hw",
-            createdAt: Date(),
-            algorithmName: "ECDSA P-256",
-            storage: .secureEnclave
-        )
-        PublicKeyStore.save(hwKeyInfo)
-
-        do {
-            try await keyManager.unlock(label: label)
-            XCTFail("Unlock must fail for hardware keys")
-        } catch {
-            XCTAssertEqual(error as? SessionCacheError, .hardwareNotCacheable)
-        }
-
-        XCTAssertFalse(cache.isKeyUnlocked(label: label))
-        XCTAssertNil(cache.remainingTime(label: label))
-        XCTAssertEqual(cache.cachedCount, 0)
-    }
 
 
     func testBiometricPolicyAccessControlAndSerialization() throws {
@@ -113,42 +62,6 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         )
         XCTAssertNil(legacyKey.biometricPolicy)
         XCTAssertEqual(legacyKey.effectiveBiometricPolicy, .userPresence)
-    }
-
-    func testKeyManagerConsumesImportedSeed() throws {
-        let keyManager = makeKeyManager()
-        let label = "consumed_seed_\(UUID().uuidString)"
-        defer { try? keyManager.deleteKey(label: label) }
-        var seed = Data(repeating: 0x5a, count: 32)
-
-        _ = try keyManager.importKey(label: label, consuming: &seed)
-
-        XCTAssertTrue(seed.isEmpty)
-        XCTAssertNotNil(try keyManager.fetchKeyInfo(label: label))
-    }
-
-
-    func testImportedSeedHonorsGitSigningOnlyPurpose() throws {
-        let keyManager = makeKeyManager()
-        let label = "imported_git_only_\(UUID().uuidString)"
-        defer { try? keyManager.deleteKey(label: label) }
-        var seed = Data(repeating: 0x3c, count: 32)
-
-        let info = try keyManager.importKey(label: label, consuming: &seed, keyPurpose: .gitSigningOnly)
-
-        XCTAssertEqual(info.purpose, .gitSigningOnly)
-        XCTAssertEqual(try keyManager.fetchKeyInfo(label: label)?.purpose, .gitSigningOnly)
-
-        let server = SSHAgentServer(keyManager: keyManager)
-        XCTAssertNil(server.handleRequestIdentities().range(of: info.publicKeyBlob),
-                     "An imported git-only key must not be advertised for SSH login")
-
-        var signRequest = Data()
-        signRequest.appendWireData(info.publicKeyBlob)
-        signRequest.appendWireData(Data("ssh-userauth-challenge".utf8))
-        var flags: UInt32 = 0
-        Swift.withUnsafeBytes(of: &flags) { signRequest.append(contentsOf: $0) }
-        XCTAssertEqual(server.handleSignRequest(payload: signRequest, clientPid: getpid()), Data([5]))
     }
 
 
@@ -197,16 +110,6 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             )
         )
 
-        var seed = Data(repeating: 0x42, count: 32)
-        XCTAssertThrowsError(
-            try keyManager.importKey(
-                label: "unsupported-import-\(UUID().uuidString)",
-                consuming: &seed,
-                algorithm: "ECDSA P-256",
-                storageType: .keychain
-            )
-        )
-        XCTAssertTrue(seed.isEmpty)
     }
 
 
@@ -296,8 +199,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let keyStore = InMemoryPrivateKeyStore()
         let keyManager = KeychainManager(
             authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore,
-            sessionCache: makeSessionCache()
+            privateKeyStore: keyStore
         )
 
         let label = "tamper-algo-\(UUID().uuidString)"
@@ -330,11 +232,9 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
     func testTamperedStorageTypeInKeysJsonRefusesSigningAndNeverFallsBack() throws {
         let keyStore = InMemoryPrivateKeyStore()
-        let cache = makeSessionCache()
         let keyManager = KeychainManager(
             authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore,
-            sessionCache: cache
+            privateKeyStore: keyStore
         )
 
         let label = "tamper-storage-\(UUID().uuidString)"
@@ -374,19 +274,14 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             XCTAssertEqual(expected, KeyStorageType.keychain.rawValue)
             XCTAssertEqual(actual, KeyStorageType.secureEnclave.rawValue)
         }
-
-        // Cache count must remain zero
-        XCTAssertEqual(cache.cachedCount, 0)
     }
 
 
     func testDowngradedBiometricPolicyInKeysJsonRefusesSigning() throws {
         let keyStore = InMemoryPrivateKeyStore()
-        let cache = makeSessionCache()
         let keyManager = KeychainManager(
             authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore,
-            sessionCache: cache
+            privateKeyStore: keyStore
         )
 
         let label = "tamper-policy-\(UUID().uuidString)"
@@ -422,14 +317,12 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             XCTAssertEqual(expected, BiometricPolicy.userPresence.rawValue)
             XCTAssertEqual(actual, BiometricPolicy.biometryCurrentSet.rawValue)
         }
-        XCTAssertEqual(cache.cachedCount, 0)
     }
 
     func testStrengthenedBiometricPolicyInKeysJsonAlsoFailsClosed() throws {
         let keyManager = KeychainManager(
             authenticator: AllowingAuthenticator(),
-            privateKeyStore: InMemoryPrivateKeyStore(),
-            sessionCache: makeSessionCache()
+            privateKeyStore: InMemoryPrivateKeyStore()
         )
         let original = try keyManager.generateKey(
             label: "tamper-policy-up-\(UUID().uuidString)",
@@ -462,8 +355,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let keyStore = InMemoryPrivateKeyStore()
         let keyManager = KeychainManager(
             authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore,
-            sessionCache: makeSessionCache()
+            privateKeyStore: keyStore
         )
 
         let label = "tamper-pubblob-\(UUID().uuidString)"
@@ -491,61 +383,6 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
                 return XCTFail("Expected publicKeyMismatch, got \(error)")
             }
         }
-    }
-
-
-    func testTamperedStorageInKeysJsonRefusesUnlock() async throws {
-        let keyStore = InMemoryPrivateKeyStore()
-        let cache = makeSessionCache()
-        let keyManager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore,
-            sessionCache: cache
-        )
-
-        let label = "tamper-unlock-\(UUID().uuidString)"
-        // Record in Keychain is Secure Enclave
-        let record = StoredPrivateKeyRecord(
-            version: 1,
-            label: label,
-            algorithm: .ecdsaP256,
-            storageType: .secureEnclave,
-            biometricPolicy: .userPresence,
-            keyPurpose: .general,
-            keyData: Data(repeating: 0x55, count: 64)
-        )
-        let recordData = try record.encode()
-        try keyStore.save(label: label, data: recordData)
-
-        // keys.json tampered to claim software Login Keychain
-        let tamperedKey = Ed25519KeyInfo(
-            label: label,
-            publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA... \(label)",
-            publicKeyBlob: Data([1, 2, 3]),
-            fingerprint: "SHA256:fake",
-            createdAt: Date(),
-            algorithmName: "ECDSA P-256",
-            storage: .keychain
-        )
-        PublicKeyStore.save(tamperedKey)
-
-        // The Keychain record disagrees with the tampered index, and there is no matching vault
-        // copy, so unlock must fail closed before the hardware key can enter the session cache.
-        do {
-            try await keyManager.unlock(label: label)
-            XCTFail("Unlock must fail for hardware keys even when keys.json claims software")
-        } catch let error as PrivateKeyRecordError {
-            guard case .storageMismatch(let expected, let actual) = error else {
-                return XCTFail("Expected storageMismatch, got \(error)")
-            }
-            XCTAssertEqual(expected, KeyStorageType.keychain.rawValue)
-            XCTAssertEqual(actual, KeyStorageType.secureEnclave.rawValue)
-        } catch {
-            XCTFail("Expected storageMismatch, got \(error)")
-        }
-
-        XCTAssertFalse(cache.isKeyUnlocked(label: label))
-        XCTAssertEqual(cache.cachedCount, 0)
     }
 
 
@@ -815,7 +652,6 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: keyStore,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in }
         )
@@ -831,13 +667,16 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
         // Subsequent sign operation must transparently recover key from EncryptedVaultStore
         let payload = Data("audit-message".utf8)
-        let signature = try manager.sign(label: label, data: payload, prompt: "Sign with restored key")
-        XCTAssertFalse(signature.isEmpty)
+        let sigBlob = try manager.signSSH(key: keyInfo, data: payload, prompt: "Sign with restored key")
+        XCTAssertFalse(sigBlob.isEmpty)
 
         // Verify key was restored back to Keychain
         XCTAssertTrue(keyStore.contains(label: label))
 
         // Verify signature against public key
+        var reader = DataReader(data: sigBlob)
+        XCTAssertEqual(reader.readWireString(), "ssh-ed25519")
+        let signature = try XCTUnwrap(reader.readWireData())
         let ed25519PubKey = try Curve25519.Signing.PublicKey(rawRepresentation: keyInfo.publicKeyBlob.subdata(in: 19..<51))
         XCTAssertTrue(ed25519PubKey.isValidSignature(signature, for: payload))
 
@@ -852,7 +691,6 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: keyStore,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in }
         )
@@ -866,8 +704,8 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
         // Subsequent sign operation must recover key from EncryptedVaultStore
         let payload = Data("corrupted-key-test".utf8)
-        let signature = try manager.sign(label: label, data: payload, prompt: "Sign with restored key")
-        XCTAssertFalse(signature.isEmpty)
+        let sigBlob = try manager.signSSH(key: keyInfo, data: payload, prompt: "Sign with restored key")
+        XCTAssertFalse(sigBlob.isEmpty)
 
         // Verify key was restored in Keychain
         let restoredData = try keyStore.load(label: label, context: LAContext(), prompt: "")
@@ -875,6 +713,9 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let record = try StoredPrivateKeyRecord.decode(from: restoredData!)
         XCTAssertEqual(record.label, label)
 
+        var reader = DataReader(data: sigBlob)
+        XCTAssertEqual(reader.readWireString(), "ssh-ed25519")
+        let signature = try XCTUnwrap(reader.readWireData())
         let ed25519PubKey = try Curve25519.Signing.PublicKey(rawRepresentation: keyInfo.publicKeyBlob.subdata(in: 19..<51))
         XCTAssertTrue(ed25519PubKey.isValidSignature(signature, for: payload))
 
@@ -887,7 +728,6 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: keyStore,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in }
         )
@@ -912,7 +752,10 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let foreignPublic = foreignKey.publicKey
 
         let payload = Data("planted-keychain-record".utf8)
-        let signature = try manager.sign(label: label, data: payload, prompt: "Sign with vault copy")
+        let sigBlob = try manager.signSSH(key: keyInfo, data: payload, prompt: "Sign with vault copy")
+        var reader = DataReader(data: sigBlob)
+        XCTAssertEqual(reader.readWireString(), "ssh-ed25519")
+        let signature = try XCTUnwrap(reader.readWireData())
         XCTAssertTrue(originalPublic.isValidSignature(signature, for: payload))
         XCTAssertFalse(foreignPublic.isValidSignature(signature, for: payload))
 
@@ -938,7 +781,10 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         XCTAssertTrue(EncryptedVaultStore.shared.containsRecord(label: label))
         XCTAssertEqual(try manager.fetchKeyInfo(label: label)?.publicKeyBlob, keyInfo.publicKeyBlob)
 
-        let restoredSignature = try manager.sign(label: label, data: payload, prompt: "Sign after planted item was removed")
+        let restoredSigBlob = try manager.signSSH(key: keyInfo, data: payload, prompt: "Sign after planted item was removed")
+        var restoredReader = DataReader(data: restoredSigBlob)
+        XCTAssertEqual(restoredReader.readWireString(), "ssh-ed25519")
+        let restoredSignature = try XCTUnwrap(restoredReader.readWireData())
         XCTAssertTrue(originalPublic.isValidSignature(restoredSignature, for: payload))
         XCTAssertFalse(foreignPublic.isValidSignature(restoredSignature, for: payload))
     }
@@ -975,7 +821,6 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: keyStore,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in }
         )
@@ -1015,7 +860,6 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: keyStore,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in throw revocationFailure }
         )
@@ -1052,7 +896,6 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: keyStore,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in }
         )
@@ -1085,7 +928,6 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: keyStore,
-            sessionCache: makeSessionCache(),
             secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in }
         )
@@ -1110,7 +952,10 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         tamperedRecord.wipe()
 
         let payload = Data("restore-alert-payload".utf8)
-        let signature = try manager.sign(label: label, data: payload, prompt: "Sign with restored key")
+        let sigBlob = try manager.signSSH(key: keyInfo, data: payload, prompt: "Sign with restored key")
+        var reader = DataReader(data: sigBlob)
+        XCTAssertEqual(reader.readWireString(), "ssh-ed25519")
+        let signature = try XCTUnwrap(reader.readWireData())
         XCTAssertTrue(originalPublic.isValidSignature(signature, for: payload))
 
         let logURL = ClavisLogger.logFileURL
