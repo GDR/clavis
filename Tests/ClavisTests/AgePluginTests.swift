@@ -549,4 +549,58 @@ final class AgePluginTests: ClavisBaseTestCase {
         XCTAssertEqual(requestedKeys, ["key1"], "When identities is empty, decryption failure must not cycle through all keys in keychain")
         XCTAssertTrue(outputs.contains("-> error identity Failed to unwrap stanza 0"))
     }
+
+    func testAgePluginIncludesParentProcessAttributionInPromptAndRecordsAudit() throws {
+        let keyInfo = Ed25519KeyInfo(
+            label: "age-attr-key",
+            publicKeyOpenSSH: "ssh-ed25519 AAA age-attr-key",
+            publicKeyBlob: Data([1, 2, 3]),
+            fingerprint: "SHA256:auditfingerprint",
+            createdAt: Date(),
+            algorithmName: "Ed25519",
+            storage: .keychain
+        )
+
+        let mockAudit = InMemoryAuditRecorder()
+        var capturedPrompt: String?
+        var outputs: [String] = []
+
+        let unwrapInputs = [
+            "-> add-identity age-attr-key",
+            "-> recipient-stanza 0 clavis ZmFrZS1lcGs=",
+            "ZmFrZS13cmFwcGVk",
+            "-> unwrap-file-key",
+            "-> done"
+        ]
+        var inputIdx = 0
+
+        AgePluginClavis.handleIdentityV1(
+            inputProvider: {
+                guard inputIdx < unwrapInputs.count else { return nil }
+                defer { inputIdx += 1 }
+                return unwrapInputs[inputIdx]
+            },
+            outputHandler: { outputs.append($0) },
+            fetchKeys: { [keyInfo] },
+            parentPidProvider: { 4242 },
+            parentPathLookup: { _ in "/usr/local/bin/sops" },
+            auditRecorder: mockAudit,
+            unwrapKey: { label, prompt, wrappedKey, epkB64 in
+                capturedPrompt = prompt
+                return Data(repeating: 0x77, count: 32)
+            }
+        )
+
+        XCTAssertNotNil(capturedPrompt)
+        XCTAssertTrue(capturedPrompt?.contains("sops (PID 4242)") == true, "Prompt should contain parent process attribution: \(String(describing: capturedPrompt))")
+
+        let lastEvent = mockAudit.events.last
+        XCTAssertNotNil(lastEvent)
+        XCTAssertEqual(lastEvent?.type, .signature)
+        XCTAssertEqual(lastEvent?.result, .allowed)
+        XCTAssertEqual(lastEvent?.keyFingerprint, "SHA256:auditfingerprint")
+        XCTAssertEqual(lastEvent?.sensitive.keyLabel, "age-attr-key")
+        XCTAssertEqual(lastEvent?.sensitive.processChain.first?.pid, 4242)
+        XCTAssertEqual(lastEvent?.sensitive.processChain.first?.executablePath, "/usr/local/bin/sops")
+    }
 }

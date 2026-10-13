@@ -143,6 +143,14 @@ sign config=config: (bundle config)
         exit 1
     fi
 
+    entitlements_file="Entitlements.plist"
+    if [ "$identity" = "-" ]; then
+        # For unprovisioned ad-hoc signing, use empty entitlements so local builds run without provisioning profiles
+        entitlements_file=$(mktemp -t clavis-entitlements.XXXXXX.plist)
+        echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.plist"><plist version="1.0"><dict></dict></plist>' > "$entitlements_file"
+        trap 'rm -f "$entitlements_file"' EXIT
+    fi
+
     echo "🔐 Signing binaries with identity: '$identity' ($timestamp_flag)..."
 
     sign_and_verify() {
@@ -163,7 +171,7 @@ sign config=config: (bundle config)
             --identifier "Clavis" \
             --options runtime \
             "$timestamp_flag" \
-            --entitlements "$entitlements" \
+            --entitlements "$entitlements_file" \
             "$target"
 
         if [ "$is_deep" = "1" ]; then
@@ -174,9 +182,16 @@ sign config=config: (bundle config)
 
         local signed_ent sign_details
         signed_ent="$(/usr/bin/codesign -d --entitlements - "$target" 2>&1 || true)"
-        if echo "$signed_ent" | grep -Eq "keychain-access-groups|com.apple.security.application-groups"; then
-            echo "❌ Provisioning-dependent entitlement unexpectedly present in $target." >&2
-            exit 1
+        if [ "$identity" = "-" ]; then
+            if echo "$signed_ent" | grep -Eq "keychain-access-groups|com.apple.security.application-groups"; then
+                echo "❌ Provisioning-dependent entitlement unexpectedly present in $target." >&2
+                exit 1
+            fi
+        else
+            if ! echo "$signed_ent" | grep -Eq "keychain-access-groups"; then
+                echo "❌ Expected keychain-access-groups entitlement in release signed $target." >&2
+                exit 1
+            fi
         fi
 
         sign_details="$(/usr/bin/codesign --display --verbose=4 "$target" 2>&1)"

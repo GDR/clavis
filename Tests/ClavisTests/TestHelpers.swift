@@ -156,6 +156,7 @@ class ClavisBaseTestCase: XCTestCase {
     func makeKeyManager(
         sessionCache: SessionCacheManager? = nil,
         authenticator: UserAuthenticating = AllowingAuthenticator(),
+        privateKeyStore: PrivateKeyStoring = InMemoryPrivateKeyStore(),
         auditRecorder: AuditRecording = InMemoryAuditRecorder(),
         secureBufferFactory: @escaping (inout Data) -> SecureBuffer? = { data in
             SecureBuffer(consuming: &data)
@@ -163,7 +164,7 @@ class ClavisBaseTestCase: XCTestCase {
     ) -> KeychainManager {
         KeychainManager(
             authenticator: authenticator,
-            privateKeyStore: InMemoryPrivateKeyStore(),
+            privateKeyStore: privateKeyStore,
             sessionCache: sessionCache ?? makeSessionCache(),
             secureBufferFactory: secureBufferFactory,
             agentGrantRevoker: { _ in },
