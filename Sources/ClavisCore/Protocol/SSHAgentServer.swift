@@ -1824,15 +1824,8 @@ public class SSHAgentServer {
                     for: matchingKey.label,
                     clientIdentity: clientIdentity,
                     peerProcess: peerProcess,
-                    operation: { context in
-                        try keyManager.signSSH(
-                            key: matchingKey,
-                            data: dataToSign,
-                            prompt: "",
-                            useCache: false,
-                            existingContext: context,
-                            allowedPurposes: role.allowedPurposes
-                        )
+                    operation: { (grant: GitSigningGrant) in
+                        try grant.sign(dataToSign, using: keyManager, role: role)
                     }
                 ) {
                     // Fast-path: Active 5-minute grant
@@ -1891,15 +1884,8 @@ public class SSHAgentServer {
                                 for: matchingKey.label,
                                 clientIdentity: clientIdentity,
                                 peerProcess: peerProcess,
-                                operation: { context in
-                                    try keyManager.signSSH(
-                                        key: matchingKey,
-                                        data: dataToSign,
-                                        prompt: "",
-                                        useCache: false,
-                                        existingContext: context,
-                                        allowedPurposes: role.allowedPurposes
-                                    )
+                                operation: { (grant: GitSigningGrant) in
+                                    try grant.sign(dataToSign, using: keyManager, role: role)
                                 }
                             ) else {
                                 grant.invalidate()

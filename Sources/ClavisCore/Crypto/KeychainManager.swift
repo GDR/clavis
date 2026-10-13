@@ -1044,14 +1044,46 @@ public class KeychainManager {
 
         try validateAuthenticatedRecord(record, against: key, context: context)
 
-        return GitSigningGraceManager.shared.recordGrant(
-            keyLabel: key.label,
-            clientIdentity: clientIdentity,
-            duration: duration,
-            maxOperations: maxOperations,
-            context: context,
-            approvedProcess: approvedProcess
-        )
+        context.interactionNotAllowed = true
+
+        if record.storageType == .secureEnclave {
+            let seKey = try SecureEnclave.P256.Signing.PrivateKey(
+                dataRepresentation: record.keyData,
+                authenticationContext: context
+            )
+            let hardwareSigner: @Sendable (Data) throws -> Data = { dataToSign in
+                let ecdsaSig = try seKey.signature(for: dataToSign)
+                return KeychainManager.formatECDSASignatureBlob(ecdsaSig)
+            }
+            return GitSigningGraceManager.shared.recordGrant(
+                keyLabel: key.label,
+                clientIdentity: clientIdentity,
+                duration: duration,
+                maxOperations: maxOperations,
+                context: context,
+                approvedProcess: approvedProcess,
+                secureBuffer: nil,
+                hardwareSigner: hardwareSigner,
+                keyAlgorithm: record.algorithm
+            )
+        } else {
+            var keyBytes = record.keyData
+            guard let buffer = secureBufferFactory(&keyBytes) else {
+                context.invalidate()
+                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for Git signing grant '\(key.label)'"])
+            }
+            return GitSigningGraceManager.shared.recordGrant(
+                keyLabel: key.label,
+                clientIdentity: clientIdentity,
+                duration: duration,
+                maxOperations: maxOperations,
+                context: context,
+                approvedProcess: approvedProcess,
+                secureBuffer: buffer,
+                hardwareSigner: nil,
+                keyAlgorithm: record.algorithm
+            )
+        }
     }
 
     /// Authorizes an agent session via Touch ID, returning an active grant.
@@ -1109,7 +1141,34 @@ public class KeychainManager {
 
         context.interactionNotAllowed = true
 
-        return AgentSessionGrant(key: key, context: context)
+        if record.storageType == .secureEnclave {
+            let seKey = try SecureEnclave.P256.Signing.PrivateKey(
+                dataRepresentation: record.keyData,
+                authenticationContext: context
+            )
+            let hardwareSigner: @Sendable (Data) throws -> Data = { dataToSign in
+                let ecdsaSig = try seKey.signature(for: dataToSign)
+                return KeychainManager.formatECDSASignatureBlob(ecdsaSig)
+            }
+            return AgentSessionGrant(
+                key: key,
+                context: context,
+                secureBuffer: nil,
+                hardwareSigner: hardwareSigner
+            )
+        } else {
+            var keyBytes = record.keyData
+            guard let buffer = secureBufferFactory(&keyBytes) else {
+                context.invalidate()
+                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for agent grant '\(key.label)'"])
+            }
+            return AgentSessionGrant(
+                key: key,
+                context: context,
+                secureBuffer: buffer,
+                hardwareSigner: nil
+            )
+        }
     }
 
     public static func formatECDSASignatureBlob(_ ecdsaSig: P256.Signing.ECDSASignature) -> Data {
