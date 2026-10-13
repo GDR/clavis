@@ -28,22 +28,18 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
     func test_005_AC5_changeKindAuthFailureLeavesKeyUnchanged() throws {
         let recorder = InMemoryAuditRecorder()
         let keyStore = InMemoryPrivateKeyStore()
-        let initialManager = KeychainManager(
+        let initialManager = makeKeyManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: keyStore,
-            secureBufferFactory: { data in SecureBuffer(consuming: &data) },
-            agentGrantRevoker: { _ in },
             auditRecorder: recorder
         )
 
         let key = try initialManager.generateKey(label: "auth-fail-test", keyPurpose: .general)
 
         // Create manager with rejecting authenticator
-        let failingManager = KeychainManager(
+        let failingManager = makeKeyManager(
             authenticator: RejectingAuthenticator(),
             privateKeyStore: keyStore,
-            secureBufferFactory: { data in SecureBuffer(consuming: &data) },
-            agentGrantRevoker: { _ in },
             auditRecorder: recorder
         )
 
@@ -51,7 +47,7 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
 
         // Index remains unchanged
         let fetchedKey = try initialManager.fetchKeyInfo(label: key.label)
-        XCTAssertEqual(fetchedKey?.purpose, .general)
+        XCTAssertEqual(fetchedKey?.keyPurpose, .general)
 
         // Record in store remains unchanged
         guard let rawData = try keyStore.load(label: key.label, context: LAContext(), prompt: "") else {
@@ -59,7 +55,7 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
             return
         }
         let record = try StoredPrivateKeyRecord.decode(from: rawData)
-        XCTAssertEqual(record.purpose, .general)
+        XCTAssertEqual(record.keyPurpose, .general)
 
         // Audit log records denied / authenticationFailed
         let changeEvents = recorder.events.filter { $0.type == .keyKindChange }
@@ -74,16 +70,14 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
 
     func test_005_T4_changeKindUpdatesRecordAndIndex() throws {
         let keyStore = InMemoryPrivateKeyStore()
-        let keyManager = KeychainManager(
+        let keyManager = makeKeyManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: keyStore,
-            secureBufferFactory: { data in SecureBuffer(consuming: &data) },
-            agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()
         )
 
         let key = try keyManager.generateKey(label: "roundtrip-test", keyPurpose: .general)
-        XCTAssertEqual(key.purpose, .general)
+        XCTAssertEqual(key.keyPurpose, .general)
 
         // Change .general -> .agent
         try keyManager.changeKind(label: key.label, to: .agent)
@@ -91,7 +85,7 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
         // Check index
         let keysAfterFirst = try keyManager.listKeys()
         let matchingFirst = keysAfterFirst.first { $0.label == key.label }
-        XCTAssertEqual(matchingFirst?.purpose, .agent)
+        XCTAssertEqual(matchingFirst?.keyPurpose, .agent)
 
         // Check decoded record
         guard let rawDataFirst = try keyStore.load(label: key.label, context: LAContext(), prompt: "") else {
@@ -99,7 +93,7 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
             return
         }
         let recordFirst = try StoredPrivateKeyRecord.decode(from: rawDataFirst)
-        XCTAssertEqual(recordFirst.purpose, .agent)
+        XCTAssertEqual(recordFirst.keyPurpose, .agent)
 
         // Change .agent -> .general
         try keyManager.changeKind(label: key.label, to: .general)
@@ -107,7 +101,7 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
         // Check index
         let keysAfterSecond = try keyManager.listKeys()
         let matchingSecond = keysAfterSecond.first { $0.label == key.label }
-        XCTAssertEqual(matchingSecond?.purpose, .general)
+        XCTAssertEqual(matchingSecond?.keyPurpose, .general)
 
         // Check decoded record
         guard let rawDataSecond = try keyStore.load(label: key.label, context: LAContext(), prompt: "") else {
@@ -115,7 +109,7 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
             return
         }
         let recordSecond = try StoredPrivateKeyRecord.decode(from: rawDataSecond)
-        XCTAssertEqual(recordSecond.purpose, .general)
+        XCTAssertEqual(recordSecond.keyPurpose, .general)
     }
 
     func test_005_T4_gitOnlyCannotChangeKind() throws {
@@ -156,11 +150,9 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
 
     func test_005_T4_indexWriteFailureRollsBackRecord() throws {
         let keyStore = InMemoryPrivateKeyStore()
-        let keyManager = KeychainManager(
+        let keyManager = makeKeyManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: keyStore,
-            secureBufferFactory: { data in SecureBuffer(consuming: &data) },
-            agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()
         )
 
@@ -173,7 +165,7 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
 
         // Index remains .general
         let fetchedKey = try keyManager.fetchKeyInfo(label: key.label)
-        XCTAssertEqual(fetchedKey?.purpose, .general)
+        XCTAssertEqual(fetchedKey?.keyPurpose, .general)
 
         // Keychain record was rolled back to .general
         guard let rawData = try keyStore.load(label: key.label, context: LAContext(), prompt: "") else {
@@ -181,10 +173,10 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
             return
         }
         let record = try StoredPrivateKeyRecord.decode(from: rawData)
-        XCTAssertEqual(record.purpose, .general, "Keychain record should be rolled back to general")
+        XCTAssertEqual(record.keyPurpose, .general, "Keychain record should be rolled back to general")
 
         // Vault record was rolled back to .general
         let vaultRecord = try EncryptedVaultStore.shared.loadRecord(label: key.label)
-        XCTAssertEqual(vaultRecord?.purpose, .general, "Vault record should be rolled back to general")
+        XCTAssertEqual(vaultRecord?.keyPurpose, .general, "Vault record should be rolled back to general")
     }
 }

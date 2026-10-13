@@ -220,7 +220,7 @@ final class AgentKeyPolicyTests: ClavisBaseTestCase {
         let auditRecorder = InMemoryAuditRecorder()
         let authenticator = CountingAuthenticator()
         let manager = makeKeyManager(authenticator: AllowingAuthenticator(), auditRecorder: auditRecorder)
-        let key = try manager.generateKey(label: "agent-presence-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-presence-key", biometricPolicy: .userPresence, keyPurpose: .agent)
 
         let policyStore = InMemoryAgentPolicyStore()
         let server = SSHAgentServer(
@@ -260,7 +260,7 @@ final class AgentKeyPolicyTests: ClavisBaseTestCase {
         let auditRecorder = InMemoryAuditRecorder()
         let authenticator = CountingAuthenticator()
         let manager = makeKeyManager(authenticator: AllowingAuthenticator(), auditRecorder: auditRecorder)
-        let key = try manager.generateKey(label: "agent-invalid-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-invalid-key", biometricPolicy: .userPresence, keyPurpose: .agent)
 
         let policyStore = InMemoryAgentPolicyStore()
         let server = SSHAgentServer(
@@ -303,7 +303,7 @@ final class AgentKeyPolicyTests: ClavisBaseTestCase {
         let auditRecorder = InMemoryAuditRecorder()
         let authenticator = CountingAuthenticator()
         let manager = makeKeyManager(authenticator: AllowingAuthenticator(), auditRecorder: auditRecorder)
-        let personalKey = try manager.generateKey(label: "personal-key-for-policy", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .general)
+        let personalKey = try manager.generateKey(label: "personal-key-for-policy", biometricPolicy: .userPresence, keyPurpose: .general)
 
         let policyStore = InMemoryAgentPolicyStore()
         let server = SSHAgentServer(
@@ -333,7 +333,7 @@ final class AgentKeyPolicyTests: ClavisBaseTestCase {
     func test_006_T1_corruptPolicyRefusesSessionStart() throws {
         let auditRecorder = InMemoryAuditRecorder()
         let manager = makeKeyManager(authenticator: AllowingAuthenticator(), auditRecorder: auditRecorder)
-        let key = try manager.generateKey(label: "agent-corrupt-policy-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-corrupt-policy-key", biometricPolicy: .userPresence, keyPurpose: .agent)
 
         let policyStore = InMemoryAgentPolicyStore()
         policyStore.corruptFingerprints.insert(key.fingerprint)
@@ -364,7 +364,7 @@ final class AgentKeyPolicyTests: ClavisBaseTestCase {
     func test_006_T1_getAgentPolicyRoundTrip() throws {
         let auditRecorder = InMemoryAuditRecorder()
         let manager = makeKeyManager(authenticator: AllowingAuthenticator(), auditRecorder: auditRecorder)
-        let key = try manager.generateKey(label: "agent-get-policy-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-get-policy-key", biometricPolicy: .userPresence, keyPurpose: .agent)
 
         let policyStore = InMemoryAgentPolicyStore()
         let customPolicy = AgentKeyPolicy(mode: .ask, leaseMinutes: 240, burst: 50, refillPerMinute: 10)

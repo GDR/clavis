@@ -69,7 +69,7 @@ final class TokenBucketTests: ClavisBaseTestCase {
     }
 
     func test_006_AC6_overflowDeniesAndAlerts() throws {
-        let key = try manager.generateKey(label: "agent-ratelimit-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-ratelimit-key", biometricPolicy: .userPresence, keyPurpose: .agent)
         let policyStore = InMemoryAgentPolicyStore()
         let policy = AgentKeyPolicy(burst: 2, refillPerMinute: 6)
         try policyStore.save(policy, forFingerprint: key.fingerprint)

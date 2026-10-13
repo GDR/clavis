@@ -238,12 +238,12 @@ public struct KeyDetailInspectorView: View {
                     VStack(spacing: 8) {
                         SecurityPropertyRow(
                             label: ClavisUIStrings.Inspector.storageLabel,
-                            value: key.isHardware ? ClavisUIStrings.Inspector.storageHardwareEnclave : ClavisUIStrings.Inspector.storageSoftwareKeychain
+                            value: ClavisUIStrings.Inspector.storageHardwareEnclave
                         )
                         Divider().background(DesignTokens.cardBorder)
                         SecurityPropertyRow(
                             label: ClavisUIStrings.Inspector.authenticationLabel,
-                            value: key.isHardware ? (key.biometricPolicy == .biometryCurrentSet ? ClavisUIStrings.Inspector.authTouchIdOnlyStrict : ClavisUIStrings.Inspector.authUserPresence) : ClavisUIStrings.Inspector.authTouchIdProtectedSeed
+                            value: key.biometricPolicy == .biometryCurrentSet ? ClavisUIStrings.Inspector.authTouchIdOnlyStrict : ClavisUIStrings.Inspector.authUserPresence
                         )
                         Divider().background(DesignTokens.cardBorder)
                         SecurityPropertyRow(label: ClavisUIStrings.Inspector.created, value: formattedDate)

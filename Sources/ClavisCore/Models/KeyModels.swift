@@ -31,27 +31,19 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
     }
 
     public var algorithm: String {
-        if let name = algorithmName {
-            return name
-        }
-        if publicKeyOpenSSH.hasPrefix("ecdsa-sha2-") {
-            return "ECDSA P-256"
-        } else if publicKeyOpenSSH.hasPrefix("ssh-rsa") {
-            return "RSA 4096"
-        }
-        return "Ed25519"
+        algorithmName ?? "ECDSA P-256"
     }
 
     public var storageType: KeyStorageType {
-        storage ?? .keychain
+        storage ?? .secureEnclave
     }
 
     public var isHardware: Bool {
-        storageType == .secureEnclave
+        true
     }
 
     public var badgeTitle: String {
-        isHardware ? ClavisUIStrings.Badges.hardware : ClavisUIStrings.Badges.software
+        ClavisUIStrings.Badges.hardware
     }
 
     public var effectiveBiometricPolicy: BiometricPolicy {
@@ -173,15 +165,12 @@ public enum BiometricPolicy: String, CaseIterable, Identifiable, Codable {
 }
 
 public enum KeyAlgorithm: String, CaseIterable, Identifiable, Codable {
-    case ed25519 = "Ed25519"
     case ecdsaP256 = "ECDSA P-256"
 
     public var id: String { rawValue }
 
     public var description: String {
         switch self {
-        case .ed25519:
-            return "Deterministic Edwards-curve (Fast, approximately 128-bit security)"
         case .ecdsaP256:
             return "NIST P-256 curve (Hardware & Secure Enclave ready)"
         }
@@ -189,7 +178,6 @@ public enum KeyAlgorithm: String, CaseIterable, Identifiable, Codable {
 }
 
 public enum KeyStorageType: String, CaseIterable, Identifiable, Codable {
-    case keychain = "Login Keychain"
     case secureEnclave = "Secure Enclave"
 
     public var id: String { rawValue }

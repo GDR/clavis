@@ -19,14 +19,12 @@ public struct StatusDot: View {
 public struct KeyBadge: View {
     public let isHardware: Bool
 
-    public init(isHardware: Bool) {
+    public init(isHardware: Bool = true) {
         self.isHardware = isHardware
     }
 
     private var tintColor: Color {
-        isHardware
-            ? Color(red: 0.30, green: 0.85, blue: 0.55)
-            : Color(red: 0.38, green: 0.68, blue: 1.0)
+        Color(red: 0.30, green: 0.85, blue: 0.55)
     }
 
     public var body: some View {
@@ -36,7 +34,7 @@ public struct KeyBadge: View {
                 .frame(width: 4.5, height: 4.5)
                 .shadow(color: tintColor.opacity(0.8), radius: 2.5)
 
-            Text(isHardware ? ClavisUIStrings.Badges.hardware : ClavisUIStrings.Badges.software)
+            Text(ClavisUIStrings.Badges.hardware)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(Color.white.opacity(0.92))
         }

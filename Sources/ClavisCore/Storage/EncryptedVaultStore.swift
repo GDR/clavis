@@ -19,11 +19,14 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         }
     }
     public static var customPinStore: MasterKeyPinStoring? = nil
+    public static var customKeyAgreementProvider: SecureEnclaveKeyAgreementProviding? = nil
     public static var masterKeyLockTimeout: TimeInterval = 10.0
     private static var inMemoryPinStoreForTesting: MasterKeyPinStoring = InMemoryMasterKeyPinStore()
+    @available(*, deprecated)
     public static var forceSoftwareMasterKeyForTesting: Bool = false
     #if DEBUG
     public static var isSecureEnclaveAvailableOverride: Bool? = nil
+    @available(*, deprecated)
     public static var forceAllowSoftwareKeysForTesting: Bool = false
     #endif
 
@@ -33,33 +36,23 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             return override
         }
         #endif
+        if customKeyAgreementProvider != nil {
+            return true
+        }
         return SecureEnclave.isAvailable
     }
 
     public static var allowSoftwareKeysForTesting: Bool {
-        #if DEBUG
-        return forceAllowSoftwareKeysForTesting || forceSoftwareMasterKeyForTesting
-        #else
-        return false
-        #endif
+        false
     }
 
     public static func resetForTesting() {
         customPinStore = nil
+        customKeyAgreementProvider = nil
         masterKeyLockTimeout = 10.0
         #if DEBUG
         inMemoryPinStoreForTesting = InMemoryMasterKeyPinStore()
-        forceSoftwareMasterKeyForTesting = false
-        forceAllowSoftwareKeysForTesting = false
         isSecureEnclaveAvailableOverride = nil
-        #endif
-    }
-
-    private static var allowSoftwareMasterKeyForTesting: Bool {
-        #if DEBUG
-        return forceSoftwareMasterKeyForTesting
-        #else
-        return false
         #endif
     }
 
@@ -67,21 +60,28 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     /// that already hold `lock` to call `ensureMasterKey` without self-deadlock).
     private let lock = NSRecursiveLock()
     private let defaultPinStore: MasterKeyPinStoring
+    private let defaultKeyAgreementProvider: SecureEnclaveKeyAgreementProviding
 
-    public init(pinStore: MasterKeyPinStoring = KeychainMasterKeyPinStore()) {
+    public init(
+        pinStore: MasterKeyPinStoring = KeychainMasterKeyPinStore(),
+        keyAgreementProvider: SecureEnclaveKeyAgreementProviding = ProductionSecureEnclaveKeyAgreementProvider()
+    ) {
         self.defaultPinStore = pinStore
+        self.defaultKeyAgreementProvider = keyAgreementProvider
     }
 
     var activePinStore: MasterKeyPinStoring {
         if let custom = Self.customPinStore {
             return custom
         }
-        #if DEBUG
-        if Self.allowSoftwareMasterKeyForTesting {
+        if Self.customKeyAgreementProvider != nil {
             return Self.inMemoryPinStoreForTesting
         }
-        #endif
         return defaultPinStore
+    }
+
+    var activeKeyAgreementProvider: SecureEnclaveKeyAgreementProviding {
+        Self.customKeyAgreementProvider ?? defaultKeyAgreementProvider
     }
 
     public enum VaultError: LocalizedError, Equatable {
@@ -130,16 +130,11 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         return FileManager.default.fileExists(atPath: fileURL.path)
     }
 
-    private enum MasterPrivateKey {
-        case secureEnclave(SecureEnclave.P256.KeyAgreement.PrivateKey)
-        case software(P256.KeyAgreement.PrivateKey)
-    }
-
-    /// Authenticates the master key on disk against the Keychain pin and validates that
-    /// the public key derived from `master.key` matches `master.pub`.
-    private func authenticateExistingMasterKey(
+    /// Reads and verifies master key files on disk (both exist, format is 0x01, derived pub matches master.pub).
+    /// Does not check pinStore so repair can inspect and fix missing/mismatched pins.
+    private func readAndVerifyMasterKeyFiles(
         context: LAContext? = nil
-    ) throws -> (publicKey: P256.KeyAgreement.PublicKey, privateKey: MasterPrivateKey) {
+    ) throws -> (publicKey: P256.KeyAgreement.PublicKey, keyBytes: Data) {
         let pubURL = vaultDirectoryURL.appendingPathComponent("master.pub")
         let keyURL = vaultDirectoryURL.appendingPathComponent("master.key")
 
@@ -159,48 +154,39 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         guard let keyType = privateData.first else {
             throw VaultError.incompleteMasterKey
         }
-        guard keyType == 0x01 || (keyType == 0x02 && Self.allowSoftwareMasterKeyForTesting) else {
+        guard keyType == 0x01 else {
             throw keyType == 0x02 ? VaultError.softwareMasterKeyUnsupported : VaultError.incompleteMasterKey
         }
 
         let keyBytes = Data(privateData.dropFirst())
         let derivedPubKey: P256.KeyAgreement.PublicKey
-        let masterPrivate: MasterPrivateKey
 
-        if keyType == 0x01 {
-            let seKey: SecureEnclave.P256.KeyAgreement.PrivateKey
-            do {
-                if let context {
-                    seKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(
-                        dataRepresentation: keyBytes,
-                        authenticationContext: context
-                    )
-                } else {
-                    seKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(
-                        dataRepresentation: keyBytes
-                    )
-                }
-            } catch {
-                throw VaultError.masterKeyTampered
-            }
-            derivedPubKey = seKey.publicKey
-            masterPrivate = .secureEnclave(seKey)
-        } else {
-            let swKey: P256.KeyAgreement.PrivateKey
-            do {
-                swKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: keyBytes)
-            } catch {
-                throw VaultError.masterKeyTampered
-            }
-            derivedPubKey = swKey.publicKey
-            masterPrivate = .software(swKey)
+        do {
+            derivedPubKey = try activeKeyAgreementProvider.derivePublicKey(
+                dataRepresentation: keyBytes,
+                context: context
+            )
+        } catch {
+            throw VaultError.masterKeyTampered
         }
 
         guard derivedPubKey.rawRepresentation == pubData else {
             throw VaultError.masterKeyTampered
         }
 
+        return (derivedPubKey, keyBytes)
+    }
+
+    /// Authenticates the master key on disk against the Keychain pin and validates that
+    /// the public key derived from `master.key` matches `master.pub`.
+    private func authenticateExistingMasterKey(
+        context: LAContext? = nil
+    ) throws -> (publicKey: P256.KeyAgreement.PublicKey, keyBytes: Data) {
+        let (derivedPubKey, keyBytes) = try readAndVerifyMasterKeyFiles(context: context)
+
         // Verify pin in Keychain / pinStore
+        let pubURL = vaultDirectoryURL.appendingPathComponent("master.pub")
+        let pubData = try Data(contentsOf: pubURL)
         guard let storedPin = try activePinStore.loadPin() else {
             // Missing pin with existing master files fails closed; never silently re-pin.
             throw VaultError.masterKeyPinMissing
@@ -210,11 +196,11 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             throw VaultError.masterKeyTampered
         }
 
-        return (derivedPubKey, masterPrivate)
+        return (derivedPubKey, keyBytes)
     }
 
     public func ensureMasterKey() throws -> P256.KeyAgreement.PublicKey {
-        guard Self.isSecureEnclaveAvailable || Self.allowSoftwareMasterKeyForTesting else {
+        guard Self.isSecureEnclaveAvailable else {
             throw VaultError.secureEnclaveRequired
         }
         try SecureFS.createDirectory(at: vaultDirectoryURL)
@@ -241,7 +227,7 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        guard Self.isSecureEnclaveAvailable || Self.allowSoftwareMasterKeyForTesting else {
+        guard Self.isSecureEnclaveAvailable else {
             throw VaultError.secureEnclaveRequired
         }
         try SecureFS.createDirectory(at: vaultDirectoryURL)
@@ -317,139 +303,56 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             close(lockFd)
         }
 
-        let useSE = !Self.allowSoftwareMasterKeyForTesting
+        let accessControl = try PrivateKeyAccessControl.make(flags: [.privateKeyUsage, .userPresence])
+        let (dataRepresentation, pubKey) = try activeKeyAgreementProvider.generateMasterKey(accessControl: accessControl)
+        let pubData = pubKey.rawRepresentation
+        let pin = Data(SHA256.hash(data: pubData))
+        try activePinStore.savePin(pin)
 
-        if useSE {
-            let accessControl = try PrivateKeyAccessControl.make(flags: [.privateKeyUsage, .userPresence])
-            let seKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(
-                compactRepresentable: false,
-                accessControl: accessControl
-            )
-            let pubData = seKey.publicKey.rawRepresentation
-            let pin = Data(SHA256.hash(data: pubData))
-            try activePinStore.savePin(pin)
+        do {
+            try SecureFS.withUmask(0o077) {
+                var keyFileBytes = Data([0x01])
+                keyFileBytes.append(dataRepresentation)
+                try keyFileBytes.write(to: keyURL, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
 
-            do {
-                try SecureFS.withUmask(0o077) {
-                    var keyFileBytes = Data([0x01])
-                    keyFileBytes.append(seKey.dataRepresentation)
-                    try keyFileBytes.write(to: keyURL, options: .atomic)
-                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
-
-                    try pubData.write(to: pubURL, options: .atomic)
-                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
-                }
-            } catch {
-                try? activePinStore.removePin()
-                try? FileManager.default.removeItem(at: keyURL)
-                try? FileManager.default.removeItem(at: pubURL)
-                throw error
+                try pubData.write(to: pubURL, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
             }
-            return seKey.publicKey
-        } else {
-            let swKey = P256.KeyAgreement.PrivateKey()
-            let pubData = swKey.publicKey.rawRepresentation
-            let pin = Data(SHA256.hash(data: pubData))
-            try activePinStore.savePin(pin)
-
-            do {
-                try SecureFS.withUmask(0o077) {
-                    var keyFileBytes = Data([0x02])
-                    keyFileBytes.append(swKey.rawRepresentation)
-                    try keyFileBytes.write(to: keyURL, options: .atomic)
-                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
-
-                    try pubData.write(to: pubURL, options: .atomic)
-                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
-                }
-            } catch {
-                try? activePinStore.removePin()
-                try? FileManager.default.removeItem(at: keyURL)
-                try? FileManager.default.removeItem(at: pubURL)
-                throw error
-            }
-            return swKey.publicKey
+        } catch {
+            try? activePinStore.removePin()
+            try? FileManager.default.removeItem(at: keyURL)
+            try? FileManager.default.removeItem(at: pubURL)
+            throw error
         }
+        return pubKey
     }
 
     /// Verifies that `master.key` and `master.pub` exist on disk, public key parses,
     /// and that the private key derives a public key matching `master.pub`.
-    /// For SE keys (0x01), performs an ECDH key agreement with a fresh ephemeral key under `userPresence`.
-    /// For software keys (0x02), verifies the raw representation matches.
+    /// Performs an ECDH key agreement with a fresh ephemeral key under userPresence.
     public func verifyMasterKey(
         context: LAContext? = nil
     ) throws -> (publicKey: P256.KeyAgreement.PublicKey, fingerprint: String) {
         lock.lock()
         defer { lock.unlock() }
 
-        let pubURL = vaultDirectoryURL.appendingPathComponent("master.pub")
-        let keyURL = vaultDirectoryURL.appendingPathComponent("master.key")
+        let (derivedPubKey, keyBytes) = try readAndVerifyMasterKeyFiles(context: context)
 
-        let hasPublicKey = FileManager.default.fileExists(atPath: pubURL.path)
-        let hasPrivateKey = FileManager.default.fileExists(atPath: keyURL.path)
-
-        guard hasPublicKey && hasPrivateKey else {
-            throw VaultError.incompleteMasterKey
-        }
-
-        let pubData = try Data(contentsOf: pubURL)
-        guard let parsedPubKey = try? P256.KeyAgreement.PublicKey(rawRepresentation: pubData) else {
+        // Perform ECDH with a fresh ephemeral key under userPresence
+        do {
+            let ephemeral = P256.KeyAgreement.PrivateKey()
+            _ = try activeKeyAgreementProvider.sharedSecret(
+                dataRepresentation: keyBytes,
+                with: ephemeral.publicKey,
+                context: context
+            )
+        } catch {
             throw VaultError.masterKeyTampered
         }
 
-        let privateData = try Data(contentsOf: keyURL)
-        guard let keyType = privateData.first else {
-            throw VaultError.incompleteMasterKey
-        }
-        guard keyType == 0x01 || (keyType == 0x02 && Self.allowSoftwareMasterKeyForTesting) else {
-            throw keyType == 0x02 ? VaultError.softwareMasterKeyUnsupported : VaultError.incompleteMasterKey
-        }
-
-        let keyBytes = Data(privateData.dropFirst())
-        let derivedPubKey: P256.KeyAgreement.PublicKey
-
-        if keyType == 0x01 {
-            let seKey: SecureEnclave.P256.KeyAgreement.PrivateKey
-            do {
-                if let context {
-                    seKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(
-                        dataRepresentation: keyBytes,
-                        authenticationContext: context
-                    )
-                } else {
-                    seKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(
-                        dataRepresentation: keyBytes
-                    )
-                }
-            } catch {
-                throw VaultError.masterKeyTampered
-            }
-
-            // Perform Secure Enclave ECDH with a fresh ephemeral key under userPresence
-            do {
-                let ephemeral = P256.KeyAgreement.PrivateKey()
-                _ = try seKey.sharedSecretFromKeyAgreement(with: ephemeral.publicKey)
-            } catch {
-                throw VaultError.masterKeyTampered
-            }
-
-            derivedPubKey = seKey.publicKey
-        } else {
-            let swKey: P256.KeyAgreement.PrivateKey
-            do {
-                swKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: keyBytes)
-            } catch {
-                throw VaultError.masterKeyTampered
-            }
-            derivedPubKey = swKey.publicKey
-        }
-
-        guard derivedPubKey.rawRepresentation == pubData else {
-            throw VaultError.masterKeyTampered
-        }
-
-        let fingerprint = Self.fingerprint(forPin: Data(SHA256.hash(data: pubData)))
-        return (parsedPubKey, fingerprint)
+        let fingerprint = Self.fingerprint(forPin: Data(SHA256.hash(data: derivedPubKey.rawRepresentation)))
+        return (derivedPubKey, fingerprint)
     }
 
     /// Renders a master key pin (SHA-256 of `master.pub`) as `SHA256:<base64 without padding>`.
@@ -492,9 +395,12 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     }
 
     public func saveRecord(_ record: StoredPrivateKeyRecord) throws {
+        guard Self.isSecureEnclaveAvailable else {
+            throw VaultError.secureEnclaveRequired
+        }
         lock.lock()
         defer { lock.unlock() }
-        guard record.storageType == .secureEnclave || Self.allowSoftwareKeysForTesting else {
+        guard record.storageType == .secureEnclave else {
             throw VaultError.softwareKeyStorageProhibited
         }
         try writeRecordLocked(record)
@@ -502,7 +408,7 @@ public final class EncryptedVaultStore: @unchecked Sendable {
 
     /// Caller must hold `lock`.
     private func writeRecordLocked(_ record: StoredPrivateKeyRecord) throws {
-        guard record.storageType == .secureEnclave || Self.allowSoftwareKeysForTesting else {
+        guard record.storageType == .secureEnclave else {
             throw VaultError.softwareKeyStorageProhibited
         }
         let masterPubKey = try ensureMasterKey()
@@ -557,7 +463,7 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     }
 
     public func loadRecord(label: String, context: LAContext? = nil) throws -> StoredPrivateKeyRecord? {
-        guard Self.isSecureEnclaveAvailable || Self.allowSoftwareMasterKeyForTesting else {
+        guard Self.isSecureEnclaveAvailable else {
             throw VaultError.secureEnclaveRequired
         }
         lock.lock()
@@ -596,15 +502,13 @@ public final class EncryptedVaultStore: @unchecked Sendable {
 
         let ephemeralPubKey = try P256.KeyAgreement.PublicKey(rawRepresentation: epkData)
 
-        let (_, masterPrivateKey) = try authenticateExistingMasterKey(context: context)
+        let (_, keyBytes) = try authenticateExistingMasterKey(context: context)
 
-        let sharedSecret: SharedSecret
-        switch masterPrivateKey {
-        case .secureEnclave(let seKey):
-            sharedSecret = try seKey.sharedSecretFromKeyAgreement(with: ephemeralPubKey)
-        case .software(let swKey):
-            sharedSecret = try swKey.sharedSecretFromKeyAgreement(with: ephemeralPubKey)
-        }
+        let sharedSecret = try activeKeyAgreementProvider.sharedSecret(
+            dataRepresentation: keyBytes,
+            with: ephemeralPubKey,
+            context: context
+        )
 
         let symmetricKey = sharedSecret.hkdfDerivedSymmetricKey(
             using: SHA256.self,

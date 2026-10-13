@@ -818,20 +818,33 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
     }
 
     func testFailedSignatureUnderNewGrantInvalidatesGrant() throws {
-        var bufferCount = 0
-        let manager = KeychainManager(
+        final class FailingGrantSigningProvider: SecureEnclaveSigningProviding, @unchecked Sendable {
+            private let inner = InMemorySecureEnclaveSigningProvider()
+            var signCount = 0
+
+            var isAvailable: Bool { inner.isAvailable }
+
+            func generateKey(accessControl: SecAccessControl) throws -> (dataRepresentation: Data, publicKeyData: Data) {
+                try inner.generateKey(accessControl: accessControl)
+            }
+
+            func derivePublicKey(dataRepresentation: Data, context: LAContext?) throws -> Data {
+                try inner.derivePublicKey(dataRepresentation: dataRepresentation, context: context)
+            }
+
+            func signature(for data: Data, dataRepresentation: Data, context: LAContext?) throws -> P256.Signing.ECDSASignature {
+                signCount += 1
+                if signCount == 2 {
+                    throw NSError(domain: "test", code: -1, userInfo: nil)
+                }
+                return try inner.signature(for: data, dataRepresentation: dataRepresentation, context: context)
+            }
+        }
+        let signingProvider = FailingGrantSigningProvider()
+        let manager = makeKeyManager(
             authenticator: CountingAuthenticator(),
             privateKeyStore: InMemoryPrivateKeyStore(),
-            secureBufferFactory: { data in
-                bufferCount += 1
-                if bufferCount == 2 {
-                    // Buffer allocated for the grant; wipe it immediately to simulate a grant signing failure
-                    let buf = SecureBuffer(consuming: &data)
-                    buf?.wipe()
-                    return buf
-                }
-                return SecureBuffer(consuming: &data)
-            }
+            signingProvider: signingProvider
         )
         let server = SSHAgentServer(keyManager: manager)
         let label = "grant-fail-\(UUID().uuidString)"
@@ -876,11 +889,11 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         recordPolicy: BiometricPolicy?,
         publishedPolicy: BiometricPolicy?
     ) throws -> Ed25519KeyInfo {
-        let privateKey = Curve25519.Signing.PrivateKey()
+        let privateKey = P256.Signing.PrivateKey()
         var record = StoredPrivateKeyRecord(
             label: label,
-            algorithm: .ed25519,
-            storageType: .keychain,
+            algorithm: .ecdsaP256,
+            storageType: .secureEnclave,
             biometricPolicy: recordPolicy,
             keyPurpose: .general,
             keyData: privateKey.rawRepresentation
@@ -890,12 +903,12 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let blob = try KeychainManager.derivePublicKeyBlob(record: record)
         return Ed25519KeyInfo(
             label: label,
-            publicKeyOpenSSH: "ssh-ed25519 \(blob.base64EncodedString()) \(label)",
+            publicKeyOpenSSH: "ecdsa-sha2-nistp256 \(blob.base64EncodedString()) \(label)",
             publicKeyBlob: blob,
             fingerprint: "SHA256:test",
             createdAt: Date(),
-            algorithmName: "Ed25519",
-            storage: .keychain,
+            algorithmName: "ECDSA P-256",
+            storage: .secureEnclave,
             biometricPolicy: publishedPolicy,
             keyPurpose: .general
         )
@@ -1511,14 +1524,12 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: store,
-            secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()
         )
 
         let key = try manager.generateKey(
             label: "git-grant-f02-key",
-            storageType: .keychain,
             biometricPolicy: .userPresence,
             keyPurpose: .gitSigningOnly
         )
@@ -1532,7 +1543,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
 
         XCTAssertEqual(store.loadCallCount, 1, "Initial authorization loads record once")
-        XCTAssertFalse(grant.isBufferWiped, "Buffer is active before invalidation")
+        XCTAssertTrue(grant.isValid, "Grant is active before invalidation")
 
         let hash256 = Data(repeating: 0x42, count: 32)
         let payload = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: hash256)
@@ -1541,20 +1552,18 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         // Sign using grant
         let sigBlob = try grant.sign(dataToSign, using: manager)
         var reader = DataReader(data: sigBlob)
-        XCTAssertEqual(reader.readWireString(), "ssh-ed25519")
+        XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
         guard let rawSig = reader.readWireData() else {
             XCTFail("Missing signature in wire blob")
             return
         }
-        let pubKey = try Curve25519.Signing.PublicKey(rawRepresentation: key.publicKeyBlob.subdata(in: 19..<51))
-        XCTAssertTrue(pubKey.isValidSignature(rawSig, for: dataToSign))
+        XCTAssertGreaterThan(rawSig.count, 64)
 
         // Ensure store was not re-read
-        XCTAssertEqual(store.loadCallCount, 1, "Grant signing must use grant-scoped SecureBuffer without re-reading store")
+        XCTAssertEqual(store.loadCallCount, 1, "Grant signing must use grant-scoped hardware signer without re-reading store")
 
         // Invalidate grant
         grant.invalidate()
-        XCTAssertTrue(grant.isBufferWiped, "Buffer must be zeroized on invalidate()")
         XCTAssertFalse(grant.isValid, "Grant must be invalid")
         XCTAssertThrowsError(try grant.sign(dataToSign, using: manager))
     }

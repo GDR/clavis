@@ -433,7 +433,7 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
         let countingAuth = CountingAuthenticator()
         let audit = InMemoryAuditRecorder()
         let keyMgr = makeKeyManager(authenticator: countingAuth, auditRecorder: audit)
-        let key = try keyMgr.generateKey(label: "gate-drop-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try keyMgr.generateKey(label: "gate-drop-key", biometricPolicy: .userPresence, keyPurpose: .agent)
 
         let policyStore = InMemoryAgentPolicyStore()
         let registry = AgentSessionRegistry(

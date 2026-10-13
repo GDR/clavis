@@ -216,7 +216,7 @@ final class SessionBindTests: ClavisBaseTestCase {
     }
 
     func test_006_AC5_signToUnlistedHostIsDenied() throws {
-        let key = try manager.generateKey(label: "agent-host-key-1", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-host-key-1", biometricPolicy: .userPresence, keyPurpose: .agent)
         let hostA = Curve25519.Signing.PrivateKey()
         let hostB = Curve25519.Signing.PrivateKey()
         let sessionIDA = Data("session-host-a".utf8)
@@ -297,7 +297,7 @@ final class SessionBindTests: ClavisBaseTestCase {
     }
 
     func test_006_AC5_signToListedHostIsAllowed() throws {
-        let key = try manager.generateKey(label: "agent-host-key-2", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-host-key-2", biometricPolicy: .userPresence, keyPurpose: .agent)
         let hostA = Curve25519.Signing.PrivateKey()
         let sessionIDA = Data("session-host-a".utf8)
         let (hostAKeyBlob, hostASig) = try makeHostKeyAndSig(priv: hostA, sessionID: sessionIDA)
@@ -383,7 +383,7 @@ final class SessionBindTests: ClavisBaseTestCase {
     }
 
     func test_006_AC5_unboundConnectionDeniedWhenHostsSet() throws {
-        let key = try manager.generateKey(label: "agent-host-key-3", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-host-key-3", biometricPolicy: .userPresence, keyPurpose: .agent)
         let hostA = Curve25519.Signing.PrivateKey()
         let sessionIDA = Data("session-host-a".utf8)
         let (hostAKeyBlob, _) = try makeHostKeyAndSig(priv: hostA, sessionID: sessionIDA)
@@ -446,7 +446,7 @@ final class SessionBindTests: ClavisBaseTestCase {
     }
 
     func test_006_AC5_sessionIdMismatchDenied() throws {
-        let key = try manager.generateKey(label: "agent-host-key-4", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-host-key-4", biometricPolicy: .userPresence, keyPurpose: .agent)
         let hostA = Curve25519.Signing.PrivateKey()
         let sessionIDA = Data("session-host-a".utf8)
         let sessionIDB = Data("session-host-b-mismatch".utf8)
@@ -526,7 +526,7 @@ final class SessionBindTests: ClavisBaseTestCase {
     }
 
     func test_006_T5_forwardingBindingRefusesSigning() throws {
-        let key = try manager.generateKey(label: "agent-host-key-5", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-host-key-5", biometricPolicy: .userPresence, keyPurpose: .agent)
         let hostA = Curve25519.Signing.PrivateKey()
         let sessionIDA = Data("session-host-fwd".utf8)
         let (hostAKeyBlob, hostASig) = try makeHostKeyAndSig(priv: hostA, sessionID: sessionIDA)
@@ -598,7 +598,7 @@ final class SessionBindTests: ClavisBaseTestCase {
     }
 
     func test_006_T5_emptyHostListAllowsUnbound() throws {
-        let key = try manager.generateKey(label: "agent-host-key-6", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-host-key-6", biometricPolicy: .userPresence, keyPurpose: .agent)
         let policyStore = InMemoryAgentPolicyStore()
         let registry = AgentSessionRegistry(
             processInfo: { _ in (startTime: 1000, parentPid: 1) },
@@ -703,7 +703,7 @@ final class SessionBindTests: ClavisBaseTestCase {
     }
 
     func test_F06_agentSocketRejectsForwardingUnconditionallyEvenWithEmptyAllowedHosts() throws {
-        let key = try manager.generateKey(label: "agent-fwd-unconditional", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-fwd-unconditional", biometricPolicy: .userPresence, keyPurpose: .agent)
         let policyStore = InMemoryAgentPolicyStore()
         let registry = AgentSessionRegistry(
             processInfo: { _ in (startTime: 1000, parentPid: 1) },
@@ -777,7 +777,7 @@ final class SessionBindTests: ClavisBaseTestCase {
     }
 
     func test_F06_agentSocketVerifiesRFC4252PacketStructureWhenAllowedHostsNonEmpty() throws {
-        let key = try manager.generateKey(label: "agent-rfc4252-verify", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-rfc4252-verify", biometricPolicy: .userPresence, keyPurpose: .agent)
         let hostA = Curve25519.Signing.PrivateKey()
         let sessionIDA = Data("session-host-rfc4252".utf8)
         let (hostAKeyBlob, hostASig) = try makeHostKeyAndSig(priv: hostA, sessionID: sessionIDA)
