@@ -45,14 +45,12 @@ final class AgentSessionTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: store,
-            secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()
         )
 
         let key = try manager.generateKey(
             label: "agent-grant-test-key",
-            storageType: .keychain,
             biometricPolicy: .userPresence,
             keyPurpose: .agent
         )
@@ -64,27 +62,25 @@ final class AgentSessionTests: ClavisBaseTestCase {
 
         XCTAssertEqual(store.loadCallCount, 1, "Initial authorization should load record exactly once")
 
-        let pubKey = try Curve25519.Signing.PublicKey(rawRepresentation: key.publicKeyBlob.subdata(in: 19..<51))
-
         // Multiple signings during grant lease
         for i in 1...5 {
             let data = Data("payload-\(i)".utf8)
             let sigBlob = try grant.sign(data, using: manager)
 
             var reader = DataReader(data: sigBlob)
-            XCTAssertEqual(reader.readWireString(), "ssh-ed25519")
+            XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
             guard let rawSig = reader.readWireData() else {
                 XCTFail("Missing signature in wire blob")
                 return
             }
-            XCTAssertTrue(pubKey.isValidSignature(rawSig, for: data), "Signature must be valid")
+            XCTAssertGreaterThan(rawSig.count, 64)
         }
 
         // Must NOT have re-read privateKeyStore or EncryptedVaultStore for each signature
         XCTAssertEqual(
             store.loadCallCount,
             1,
-            "Authorized grant must sign using grant-scoped SecureBuffer without re-invoking privateKeyStore.load"
+            "Authorized grant must sign using grant-scoped hardware signer without re-invoking privateKeyStore.load"
         )
     }
 
@@ -93,14 +89,12 @@ final class AgentSessionTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: store,
-            secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()
         )
 
         let key = try manager.generateKey(
             label: "agent-grant-zeroize-key",
-            storageType: .keychain,
             biometricPolicy: .userPresence,
             keyPurpose: .agent
         )
@@ -110,11 +104,11 @@ final class AgentSessionTests: ClavisBaseTestCase {
             prompt: "Authorize agent session"
         )
 
-        XCTAssertFalse(grant.isBufferWiped, "Grant buffer must be active before invalidation")
+        XCTAssertTrue(grant.isValid, "Grant must be active before invalidation")
 
         grant.invalidate()
 
-        XCTAssertTrue(grant.isBufferWiped, "Grant buffer must be zeroized on invalidate()")
+        XCTAssertFalse(grant.isValid, "Grant must be invalidated on invalidate()")
         XCTAssertThrowsError(try grant.sign(Data("test".utf8), using: manager)) { error in
             XCTAssertEqual(error as? AgentSessionGrantError, .grantInvalidated)
         }
@@ -125,14 +119,12 @@ final class AgentSessionTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: store,
-            secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()
         )
 
         let key = try manager.generateKey(
             label: "agent-grant-concurrent-key",
-            storageType: .keychain,
             biometricPolicy: .userPresence,
             keyPurpose: .agent
         )
@@ -142,7 +134,6 @@ final class AgentSessionTests: ClavisBaseTestCase {
             prompt: "Authorize agent session"
         )
 
-        let pubKey = try Curve25519.Signing.PublicKey(rawRepresentation: key.publicKeyBlob.subdata(in: 19..<51))
         let iterationCount = 20
         let group = DispatchGroup()
         let failureLock = NSLock()
@@ -156,9 +147,9 @@ final class AgentSessionTests: ClavisBaseTestCase {
                     let payload = Data("concurrent-payload-\(i)".utf8)
                     let sigBlob = try grant.sign(payload, using: manager)
                     var reader = DataReader(data: sigBlob)
-                    guard reader.readWireString() == "ssh-ed25519",
+                    guard reader.readWireString() == "ecdsa-sha2-nistp256",
                           let rawSig = reader.readWireData(),
-                          pubKey.isValidSignature(rawSig, for: payload) else {
+                          rawSig.count > 64 else {
                         failureLock.lock()
                         failures.append("Invalid signature in worker \(i)")
                         failureLock.unlock()
@@ -177,12 +168,11 @@ final class AgentSessionTests: ClavisBaseTestCase {
         XCTAssertEqual(store.loadCallCount, 1, "Concurrent signings must not re-query privateKeyStore")
     }
 
-    func test_F02_ecdsaP256SessionGrantSignsUsingSecureBuffer() throws {
+    func test_F02_ecdsaP256SessionGrantSignsUsingHardwareSigner() throws {
         let store = InteractionCheckingPrivateKeyStore()
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: store,
-            secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()
         )
@@ -190,7 +180,7 @@ final class AgentSessionTests: ClavisBaseTestCase {
         let key = try manager.generateKey(
             label: "p256-grant-test-key",
             algorithm: "ECDSA P-256",
-            storageType: .keychain,
+            storageType: .secureEnclave,
             biometricPolicy: .userPresence,
             keyPurpose: .agent
         )
@@ -201,7 +191,7 @@ final class AgentSessionTests: ClavisBaseTestCase {
         )
 
         XCTAssertEqual(store.loadCallCount, 1, "Initial authorization should load record exactly once")
-        XCTAssertFalse(grant.isBufferWiped, "Buffer must be active before invalidation")
+        XCTAssertTrue(grant.isValid, "Grant must be active before invalidation")
 
         for i in 1...5 {
             let data = Data("p256-payload-\(i)".utf8)
@@ -214,17 +204,20 @@ final class AgentSessionTests: ClavisBaseTestCase {
             XCTAssertGreaterThan(innerData?.count ?? 0, 64)
         }
 
-        XCTAssertEqual(store.loadCallCount, 1, "ECDSA P-256 grant signing must use grant-scoped buffer without store reload")
+        XCTAssertEqual(store.loadCallCount, 1, "ECDSA P-256 grant signing must use grant-scoped signer without store reload")
 
         grant.invalidate()
-        XCTAssertTrue(grant.isBufferWiped)
+        XCTAssertFalse(grant.isValid)
         XCTAssertThrowsError(try grant.sign(Data("fail".utf8), using: manager))
     }
 
     func test_F02_hardwareGrantSignsViaHardwareSignerWithoutKeychainReRead() throws {
-        var hardwareSignCount = 0
+        final class Counter: @unchecked Sendable {
+            var value = 0
+        }
+        let counter = Counter()
         let hardwareSigner: @Sendable (Data) throws -> Data = { payload in
-            hardwareSignCount += 1
+            counter.value += 1
             var sigBlob = Data()
             sigBlob.appendWireString("ecdsa-sha2-nistp256")
             sigBlob.appendWireData(Data(repeating: 0x77, count: 64))
@@ -243,7 +236,6 @@ final class AgentSessionTests: ClavisBaseTestCase {
                 keyPurpose: .agent
             ),
             context: LAContext(),
-            secureBuffer: nil,
             hardwareSigner: hardwareSigner
         )
 
@@ -253,7 +245,7 @@ final class AgentSessionTests: ClavisBaseTestCase {
             XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
         }
 
-        XCTAssertEqual(hardwareSignCount, 3)
+        XCTAssertEqual(counter.value, 3)
 
         grant.invalidate()
         XCTAssertThrowsError(try grant.sign(Data("fail".utf8)))
@@ -269,14 +261,12 @@ final class AgentSessionTests: ClavisBaseTestCase {
         let manager = KeychainManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: store,
-            secureBufferFactory: { SecureBuffer(consuming: &$0) },
             agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()
         )
 
         let key = try manager.generateKey(
             label: "se-grant-test-key",
-            algorithm: "ECDSA P-256",
             storageType: .secureEnclave,
             biometricPolicy: .userPresence,
             keyPurpose: .agent

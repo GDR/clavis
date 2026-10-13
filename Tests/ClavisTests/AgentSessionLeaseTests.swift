@@ -65,7 +65,7 @@ final class AgentSessionLeaseTests: ClavisBaseTestCase {
     }
 
     func test_006_AC4_extendRequiresUserPresenceAndMovesExpiry() throws {
-        let key = try manager.generateKey(label: "agent-extend-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-extend-key", biometricPolicy: .userPresence, keyPurpose: .agent)
         let authenticator = CountingAuthenticator()
         let policyStore = InMemoryAgentPolicyStore()
         let registry = AgentSessionRegistry(
@@ -163,7 +163,7 @@ final class AgentSessionLeaseTests: ClavisBaseTestCase {
     }
 
     func test_006_C1_requestedLeaseIsCapped() throws {
-        let key = try manager.generateKey(label: "agent-cap-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-cap-key", biometricPolicy: .userPresence, keyPurpose: .agent)
         let policyStore = InMemoryAgentPolicyStore(
             global: AgentGlobalPolicy(version: 1, maxLeaseMinutes: 300)
         )
@@ -201,7 +201,7 @@ final class AgentSessionLeaseTests: ClavisBaseTestCase {
     }
 
     func test_006_T2_policyLeaseIsDefault() throws {
-        let key = try manager.generateKey(label: "agent-default-lease-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-default-lease-key", biometricPolicy: .userPresence, keyPurpose: .agent)
         let policyStore = InMemoryAgentPolicyStore()
         let customPolicy = AgentKeyPolicy(leaseMinutes: 180)
         try policyStore.save(customPolicy, forFingerprint: key.fingerprint)

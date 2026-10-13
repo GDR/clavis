@@ -48,7 +48,7 @@ final class AppStateAgentSessionTests: ClavisBaseTestCase {
             agentLifecycle: lifecycle
         )
 
-        let key = try manager.generateKey(label: "agent-revoke-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-revoke-key", biometricPolicy: .userPresence, keyPurpose: .agent)
         _ = try lifecycle.registerAgentSession(keyLabel: key.label, toolName: "tool-1", leaseMinutes: 10)
         _ = try lifecycle.registerAgentSession(keyLabel: key.label, toolName: "tool-2", leaseMinutes: 10)
         XCTAssertEqual(lifecycle.listAgentSessions().count, 2)
@@ -66,7 +66,7 @@ final class AppStateAgentSessionTests: ClavisBaseTestCase {
             agentLifecycle: lifecycle
         )
 
-        let key = try manager.generateKey(label: "agent-extend-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-extend-key", biometricPolicy: .userPresence, keyPurpose: .agent)
         let session = try lifecycle.registerAgentSession(keyLabel: key.label, toolName: "tool-extend", leaseMinutes: 10)
 
         let extended = appState.extendAgentSession(id: session.id, minutes: 30)
@@ -92,7 +92,7 @@ final class AppStateAgentSessionTests: ClavisBaseTestCase {
             postedNotifications.append((title: title, body: body))
         }
 
-        let key = try manager.generateKey(label: "notif-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "notif-key", biometricPolicy: .userPresence, keyPurpose: .agent)
         let session1 = try lifecycle.registerAgentSession(keyLabel: key.label, toolName: "agent-1", leaseMinutes: 10)
         let session2 = try lifecycle.registerAgentSession(keyLabel: key.label, toolName: "agent-2", leaseMinutes: 10)
 

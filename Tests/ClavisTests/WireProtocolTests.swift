@@ -6,15 +6,16 @@ import LocalAuthentication
 
 final class WireProtocolTests: ClavisBaseTestCase {
 
-    func testEd25519KeyInfoAndWireSerialization() throws {
-        let privateKey = Curve25519.Signing.PrivateKey()
-        let keyInfo = try makeKeyManager().makeKeyInfo(label: "test-github-key", privateKey: privateKey)
+    func testP256KeyInfoAndWireSerialization() throws {
+        let keyManager = makeKeyManager()
+        let keyInfo = try keyManager.generateKey(label: "test-github-key")
 
         XCTAssertEqual(keyInfo.label, "test-github-key")
-        XCTAssertTrue(keyInfo.publicKeyOpenSSH.hasPrefix("ssh-ed25519 "))
+        XCTAssertTrue(keyInfo.publicKeyOpenSSH.hasPrefix("ecdsa-sha2-nistp256 "))
         XCTAssertTrue(keyInfo.publicKeyOpenSSH.hasSuffix(" test-github-key"))
         XCTAssertTrue(keyInfo.fingerprint.hasPrefix("SHA256:"))
-        XCTAssertEqual(keyInfo.publicKeyBlob.count, 51) // 4 (len) + 11 (ssh-ed25519) + 4 (len) + 32 (pubkey)
+        XCTAssertEqual(keyInfo.algorithmName, "ECDSA P-256")
+        XCTAssertEqual(keyInfo.storage, .secureEnclave)
     }
 
 

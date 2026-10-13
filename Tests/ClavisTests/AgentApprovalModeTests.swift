@@ -29,7 +29,7 @@ final class AgentApprovalModeTests: ClavisBaseTestCase {
     }
 
     func test_006_AC1_notifyModeSignsAndPosts() throws {
-        let key = try manager.generateKey(label: "agent-notify-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try manager.generateKey(label: "agent-notify-key", biometricPolicy: .userPresence, keyPurpose: .agent)
         let policyStore = InMemoryAgentPolicyStore()
         try policyStore.save(AgentKeyPolicy(mode: .notify), forFingerprint: key.fingerprint)
 
@@ -95,7 +95,7 @@ final class AgentApprovalModeTests: ClavisBaseTestCase {
     func test_006_AC2_askModePromptsEverySignature() throws {
         let countingAuthenticator = CountingAuthenticator()
         let customManager = makeKeyManager(authenticator: countingAuthenticator, auditRecorder: auditRecorder)
-        let key = try customManager.generateKey(label: "agent-ask-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try customManager.generateKey(label: "agent-ask-key", biometricPolicy: .userPresence, keyPurpose: .agent)
 
         let policyStore = InMemoryAgentPolicyStore()
         try policyStore.save(AgentKeyPolicy(mode: .ask), forFingerprint: key.fingerprint)
@@ -166,7 +166,7 @@ final class AgentApprovalModeTests: ClavisBaseTestCase {
 
     func test_006_AC2_askModeCancelDenies() throws {
         let customManager = makeKeyManager(authenticator: CancellingAuthenticator(), auditRecorder: auditRecorder)
-        let key = try customManager.generateKey(label: "agent-ask-cancel-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try customManager.generateKey(label: "agent-ask-cancel-key", biometricPolicy: .userPresence, keyPurpose: .agent)
 
         let policyStore = InMemoryAgentPolicyStore()
         try policyStore.save(AgentKeyPolicy(mode: .ask), forFingerprint: key.fingerprint)
@@ -215,7 +215,7 @@ final class AgentApprovalModeTests: ClavisBaseTestCase {
     func test_006_D2_policyChangeDoesNotAffectLiveSession() throws {
         let countingAuthenticator = CountingAuthenticator()
         let customManager = makeKeyManager(authenticator: countingAuthenticator, auditRecorder: auditRecorder)
-        let key = try customManager.generateKey(label: "agent-freeze-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .agent)
+        let key = try customManager.generateKey(label: "agent-freeze-key", biometricPolicy: .userPresence, keyPurpose: .agent)
 
         let policyStore = InMemoryAgentPolicyStore()
         // Policy starts as .none

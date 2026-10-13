@@ -8,37 +8,40 @@ public class KeychainManager {
     public static let privateServiceName = "com.clavis.private-record.v2"
     public static let publicServiceName = "com.clavis.ed25519.pub"
     public static let shared = KeychainManager()
+    public static var customSigningProvider: SecureEnclaveSigningProviding? = nil
 
     private let authenticator: UserAuthenticating
     private let privateKeyStore: PrivateKeyStoring
-    private let secureBufferFactory: (inout Data) -> SecureBuffer?
     private let agentGrantRevoker: (String) throws -> Void
     private let auditRecorder: AuditRecording
+    private let instanceSigningProvider: SecureEnclaveSigningProviding?
 
-    init(
+    public var activeSigningProvider: SecureEnclaveSigningProviding {
+        instanceSigningProvider ?? Self.customSigningProvider ?? ProductionSecureEnclaveSigningProvider()
+    }
+
+    public init(
         authenticator: UserAuthenticating = LocalUserAuthenticator(),
         privateKeyStore: PrivateKeyStoring = KeychainPrivateKeyStore(),
-        secureBufferFactory: @escaping (inout Data) -> SecureBuffer? = { data in
-            SecureBuffer(consuming: &data)
-        },
         agentGrantRevoker: @escaping (String) throws -> Void = { label in
             try AgentLifecycleManager.shared.invalidateAgentGrant(label: label)
         },
-        auditRecorder: AuditRecording = AuditRecorder.shared
+        auditRecorder: AuditRecording = AuditRecorder.shared,
+        signingProvider: SecureEnclaveSigningProviding? = nil
     ) {
         self.authenticator = authenticator
         self.privateKeyStore = privateKeyStore
-        self.secureBufferFactory = secureBufferFactory
         self.agentGrantRevoker = agentGrantRevoker
         self.auditRecorder = auditRecorder
+        self.instanceSigningProvider = signingProvider
     }
 
     // Generate new Key and save private seed (guarded by Touch ID) and public metadata (unencrypted)
     @discardableResult
     public func generateKey(
         label: String,
-        algorithm: String = "Ed25519",
-        storageType: KeyStorageType = .keychain,
+        algorithm: String = "ECDSA P-256",
+        storageType: KeyStorageType = .secureEnclave,
         biometricPolicy: BiometricPolicy? = nil,
         keyPurpose: KeyPurpose = .general
     ) throws -> Ed25519KeyInfo {
@@ -49,114 +52,67 @@ public class KeychainManager {
         }
         _ = try EncryptedVaultStore.shared.ensureMasterKey()
 
-        if algorithm == "ECDSA P-256" {
-            let pubKeyData: Data
-            let effectivePolicy: BiometricPolicy?
-            if storageType == .secureEnclave {
-                guard SecureEnclave.isAvailable else {
-                    throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Apple Secure Enclave is not available on this device."])
-                }
-                let policy = biometricPolicy ?? .userPresence
-                effectivePolicy = policy
-                let accessControl = try PrivateKeyAccessControl.make(flags: policy.accessControlFlags)
-                let seKey = try SecureEnclave.P256.Signing.PrivateKey(accessControl: accessControl)
-
-                var record = StoredPrivateKeyRecord(
-                    label: label,
-                    algorithm: .ecdsaP256,
-                    storageType: .secureEnclave,
-                    biometricPolicy: policy,
-                    keyPurpose: keyPurpose,
-                    keyData: seKey.dataRepresentation
-                )
-                defer { record.wipe() }
-                var recordData = try record.encode()
-                defer { Self.wipeData(&recordData) }
-                // The serialized value is an opaque Secure Enclave reference.
-                // The hardware key keeps its own biometric policy above; user
-                // presence here only protects the handle from other processes.
-                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
-                do {
-                    try EncryptedVaultStore.shared.saveRecord(record)
-                } catch {
-                    ClavisLogger.log("VAULT_WARNING", "Failed to backup private record to shadow vault: \(error.localizedDescription)")
-                    try? privateKeyStore.remove(label: label)
-                    throw error
-                }
-                pubKeyData = seKey.publicKey.x963Representation
-            } else {
-                effectivePolicy = nil
-                let privateKey = P256.Signing.PrivateKey()
-                var record = StoredPrivateKeyRecord(
-                    label: label,
-                    algorithm: .ecdsaP256,
-                    storageType: .keychain,
-                    biometricPolicy: nil,
-                    keyPurpose: keyPurpose,
-                    keyData: privateKey.rawRepresentation
-                )
-                defer { record.wipe() }
-                var recordData = try record.encode()
-                defer { Self.wipeData(&recordData) }
-                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
-                #if DEBUG
-                if EncryptedVaultStore.allowSoftwareKeysForTesting {
-                    do {
-                        try EncryptedVaultStore.shared.saveRecord(record)
-                    } catch {
-                        ClavisLogger.log("VAULT_WARNING", "Failed to backup private record to shadow vault: \(error.localizedDescription)")
-                        try? privateKeyStore.remove(label: label)
-                        throw error
-                    }
-                }
-                #endif
-                pubKeyData = privateKey.publicKey.x963Representation
-            }
-
-            let keyType = "ecdsa-sha2-nistp256"
-            let curveId = "nistp256"
-
-            var blob = Data()
-            blob.appendWireString(keyType)
-            blob.appendWireString(curveId)
-            blob.appendWireData(pubKeyData)
-
-            let b64 = blob.base64EncodedString()
-            let openSSH = "\(keyType) \(b64) \(label)"
-            let fingerprint = "SHA256:" + Data(SHA256.hash(data: blob)).base64EncodedString().replacingOccurrences(of: "=", with: "")
-
-            let keyInfo = Ed25519KeyInfo(
-                label: label,
-                publicKeyOpenSSH: openSSH,
-                publicKeyBlob: blob,
-                fingerprint: fingerprint,
-                createdAt: Date(),
-                algorithmName: algorithm,
-                storage: storageType,
-                biometricPolicy: effectivePolicy,
-                keyPurpose: keyPurpose
-            )
-            do {
-                try PublicKeyStore.saveChecked(keyInfo)
-            } catch {
-                try? privateKeyStore.remove(label: label)
-                EncryptedVaultStore.shared.removeRecord(label: label)
-                throw error
-            }
-            auditRecorder.record(
-                AuditEvent(
-                    type: .keyCreate,
-                    result: .allowed,
-                    keyFingerprint: keyInfo.fingerprint,
-                    keyKind: .personal,
-                    sensitive: AuditSensitive(keyLabel: keyInfo.label, processChain: [], host: nil)
-                )
-            )
-            return keyInfo
+        guard activeSigningProvider.isAvailable else {
+            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Apple Secure Enclave is not available on this device."])
         }
 
-        let privateKey = Curve25519.Signing.PrivateKey()
-        let keyInfo = try storeKey(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)
+        let policy = biometricPolicy ?? .userPresence
+        let accessControl = try PrivateKeyAccessControl.make(flags: policy.accessControlFlags)
+        let (dataRepresentation, pubKeyData) = try activeSigningProvider.generateKey(accessControl: accessControl)
+
+        var record = StoredPrivateKeyRecord(
+            label: label,
+            algorithm: .ecdsaP256,
+            storageType: .secureEnclave,
+            biometricPolicy: policy,
+            keyPurpose: keyPurpose,
+            keyData: dataRepresentation
+        )
+        defer { record.wipe() }
+        var recordData = try record.encode()
+        defer { Self.wipeData(&recordData) }
+        // The serialized value is an opaque Secure Enclave reference.
+        // The hardware key keeps its own biometric policy above; user
+        // presence here only protects the handle from other processes.
+        try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
+        do {
+            try EncryptedVaultStore.shared.saveRecord(record)
+        } catch {
+            ClavisLogger.log("VAULT_WARNING", "Failed to backup private record to shadow vault: \(error.localizedDescription)")
+            try? privateKeyStore.remove(label: label)
+            throw error
+        }
+
+        let keyType = "ecdsa-sha2-nistp256"
+        let curveId = "nistp256"
+
+        var blob = Data()
+        blob.appendWireString(keyType)
+        blob.appendWireString(curveId)
+        blob.appendWireData(pubKeyData)
+
+        let b64 = blob.base64EncodedString()
+        let openSSH = "\(keyType) \(b64) \(label)"
+        let fingerprint = "SHA256:" + Data(SHA256.hash(data: blob)).base64EncodedString().replacingOccurrences(of: "=", with: "")
+
+        let keyInfo = Ed25519KeyInfo(
+            label: label,
+            publicKeyOpenSSH: openSSH,
+            publicKeyBlob: blob,
+            fingerprint: fingerprint,
+            createdAt: Date(),
+            algorithmName: algorithm,
+            storage: storageType,
+            biometricPolicy: policy,
+            keyPurpose: keyPurpose
+        )
+        do {
+            try PublicKeyStore.saveChecked(keyInfo)
+        } catch {
+            try? privateKeyStore.remove(label: label)
+            EncryptedVaultStore.shared.removeRecord(label: label)
+            throw error
+        }
         auditRecorder.record(
             AuditEvent(
                 type: .keyCreate,
@@ -170,8 +126,8 @@ public class KeychainManager {
     }
 
     private func validateGenerationConfiguration(algorithm: String, storageType: KeyStorageType) throws {
-        let isSupported = algorithm == "ECDSA P-256" ||
-            (algorithm == "Ed25519" && storageType == .keychain)
+        let isSupported = (algorithm == "ECDSA P-256" || algorithm == KeyAlgorithm.ecdsaP256.rawValue) &&
+            storageType == .secureEnclave
         guard isSupported else {
             throw NSError(
                 domain: "Clavis",
@@ -179,58 +135,6 @@ public class KeychainManager {
                 userInfo: [NSLocalizedDescriptionKey: "Unsupported key algorithm or storage combination: \(algorithm) / \(storageType.rawValue)."]
             )
         }
-    }
-
-    private func storeKey(
-        label: String,
-        privateKey: Curve25519.Signing.PrivateKey,
-        algorithm: String = "Ed25519",
-        storageType: KeyStorageType = .keychain,
-        keyPurpose: KeyPurpose = .general
-    ) throws -> Ed25519KeyInfo {
-        ClavisLogger.log("KEYCHAIN_WRITE", "Storing private seed for '\(label)'...")
-        var rawSeed = privateKey.rawRepresentation
-        defer {
-            rawSeed.withUnsafeMutableBytes { ptr in
-                if let baseAddress = ptr.baseAddress {
-                    SecureMemory.zero(baseAddress, byteCount: ptr.count)
-                }
-            }
-        }
-
-        var record = StoredPrivateKeyRecord(
-            label: label,
-            algorithm: .ed25519,
-            storageType: .keychain,
-            biometricPolicy: nil,
-            keyPurpose: keyPurpose,
-            keyData: rawSeed
-        )
-        defer { record.wipe() }
-        var recordData = try record.encode()
-        defer { Self.wipeData(&recordData) }
-        try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
-        #if DEBUG
-        if EncryptedVaultStore.allowSoftwareKeysForTesting {
-            do {
-                try EncryptedVaultStore.shared.saveRecord(record)
-            } catch {
-                ClavisLogger.log("VAULT_WARNING", "Failed to backup private record to shadow vault: \(error.localizedDescription)")
-                try? privateKeyStore.remove(label: label)
-                throw error
-            }
-        }
-        #endif
-
-        let keyInfo = try makeKeyInfo(label: label, privateKey: privateKey, algorithm: algorithm, storageType: storageType, keyPurpose: keyPurpose)
-        do {
-            try PublicKeyStore.saveChecked(keyInfo)
-        } catch {
-            try? privateKeyStore.remove(label: label)
-            EncryptedVaultStore.shared.removeRecord(label: label)
-            throw error
-        }
-        return keyInfo
     }
 
     // List all public key metadata WITHOUT triggering Touch ID or Keychain prompts
@@ -328,42 +232,22 @@ public class KeychainManager {
     // MARK: - Authenticated Private Key Records & Verification
 
     // Derives the OpenSSH wire format public key blob directly from an authenticated private record.
-    public static func derivePublicKeyBlob(record: StoredPrivateKeyRecord, context: LAContext? = nil) throws -> Data {
-        switch record.algorithm {
-        case .ed25519:
-            guard record.keyData.count == 32 else {
-                throw PrivateKeyRecordError.corruptedRecord("Invalid Ed25519 seed length: \(record.keyData.count) bytes (expected 32)")
-            }
-            let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: record.keyData)
-            let pubKeyData = privateKey.publicKey.rawRepresentation
-            var blob = Data()
-            blob.appendWireString("ssh-ed25519")
-            blob.appendWireData(pubKeyData)
-            return blob
-
-        case .ecdsaP256:
-            let pubKeyData: Data
-            if record.storageType == .secureEnclave {
-                let authContext = context ?? LAContext()
-                let seKey = try SecureEnclave.P256.Signing.PrivateKey(
-                    dataRepresentation: record.keyData,
-                    authenticationContext: authContext
-                )
-                pubKeyData = seKey.publicKey.x963Representation
-            } else {
-                guard record.keyData.count == 32 else {
-                    throw PrivateKeyRecordError.corruptedRecord("Invalid P-256 scalar length: \(record.keyData.count) bytes (expected 32)")
-                }
-                let privateKey = try P256.Signing.PrivateKey(rawRepresentation: record.keyData)
-                pubKeyData = privateKey.publicKey.x963Representation
-            }
-
-            var blob = Data()
-            blob.appendWireString("ecdsa-sha2-nistp256")
-            blob.appendWireString("nistp256")
-            blob.appendWireData(pubKeyData)
-            return blob
+    public static func derivePublicKeyBlob(
+        record: StoredPrivateKeyRecord,
+        context: LAContext? = nil,
+        provider: SecureEnclaveSigningProviding? = nil
+    ) throws -> Data {
+        guard record.algorithm == .ecdsaP256 && record.storageType == .secureEnclave else {
+            throw PrivateKeyRecordError.corruptedRecord("Unsupported key algorithm or storage type")
         }
+        let activeProvider = provider ?? customSigningProvider ?? ProductionSecureEnclaveSigningProvider()
+        let pubKeyData = try activeProvider.derivePublicKey(dataRepresentation: record.keyData, context: context)
+
+        var blob = Data()
+        blob.appendWireString("ecdsa-sha2-nistp256")
+        blob.appendWireString("nistp256")
+        blob.appendWireData(pubKeyData)
+        return blob
     }
 
     private func validateAuthenticatedRecord(
@@ -404,7 +288,7 @@ public class KeychainManager {
             )
         }
 
-        let derivedPublicBlob = try Self.derivePublicKeyBlob(record: record, context: context)
+        let derivedPublicBlob = try Self.derivePublicKeyBlob(record: record, context: context, provider: activeSigningProvider)
         guard derivedPublicBlob == key.publicKeyBlob else {
             ClavisLogger.log("SECURITY_ALERT", "Public key mismatch for '\(key.label)'! Possible metadata tampering.")
             throw PrivateKeyRecordError.publicKeyMismatch
@@ -438,7 +322,7 @@ public class KeychainManager {
         }
 
         if let index = try? fetchKeyInfo(label: label) {
-            guard let derived = try? Self.derivePublicKeyBlob(record: record, context: context) else {
+            guard let derived = try? Self.derivePublicKeyBlob(record: record, context: context, provider: activeSigningProvider) else {
                 return false
             }
             if derived != index.publicKeyBlob {
@@ -460,7 +344,7 @@ public class KeychainManager {
         }
         defer { vaultRecord.wipe() }
         guard vaultRecord.label == label,
-              let keychainBlob = try? Self.derivePublicKeyBlob(record: record, context: context),
+              let keychainBlob = try? Self.derivePublicKeyBlob(record: record, context: context, provider: activeSigningProvider),
               let vaultBlob = try? Self.derivePublicKeyBlob(record: vaultRecord, context: context) else {
             return false
         }
@@ -595,7 +479,6 @@ public class KeychainManager {
         data.removeAll(keepingCapacity: false)
     }
 
-    // Private scoped execution over the Ed25519 seed bytes held in a locked SecureBuffer.
     // Helper to format an integer as an SSH mpint (RFC 4251 section 5)
     public static func encodeSSHMPint(_ bytes: Data) -> Data {
         var d = bytes
@@ -686,48 +569,11 @@ public class KeychainManager {
         }
 
         // 3. Execute signature based strictly on authoritative record attributes
-        switch record.algorithm {
-        case .ecdsaP256:
-            let ecdsaSig: P256.Signing.ECDSASignature
-            if record.storageType == .secureEnclave {
-                let seKey = try SecureEnclave.P256.Signing.PrivateKey(
-                    dataRepresentation: record.keyData,
-                    authenticationContext: context
-                )
-                ecdsaSig = try seKey.signature(for: data)
-            } else {
-                var scalarData = record.keyData
-                guard let buf = secureBufferFactory(&scalarData) else {
-                    throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(key.label)'"])
-                }
-                defer { buf.wipe() }
-                ecdsaSig = try buf.withUnsafeBytes { raw in
-                    let signingKey = try P256.Signing.PrivateKey(rawRepresentation: raw)
-                    return try signingKey.signature(for: data)
-                }!
-            }
-            return Self.formatECDSASignatureBlob(ecdsaSig)
-
-        case .ed25519:
-            guard record.storageType == .keychain else {
-                throw PrivateKeyRecordError.storageMismatch(expected: KeyStorageType.keychain.rawValue, actual: record.storageType.rawValue)
-            }
-
-            var seedData = record.keyData
-            guard let secureBuffer = secureBufferFactory(&seedData) else {
-                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for key '\(key.label)'"])
-            }
-            defer { secureBuffer.wipe() }
-            let signature = try secureBuffer.withUnsafeBytes { seedBytes in
-                let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: seedBytes)
-                return try privateKey.signature(for: data)
-            }!
-
-            var sigBlob = Data()
-            sigBlob.appendWireString("ssh-ed25519")
-            sigBlob.appendWireData(signature)
-            return sigBlob
+        guard record.algorithm == .ecdsaP256 && record.storageType == .secureEnclave else {
+            throw PrivateKeyRecordError.storageMismatch(expected: KeyStorageType.secureEnclave.rawValue, actual: record.storageType.rawValue)
         }
+        let ecdsaSig = try activeSigningProvider.signature(for: data, dataRepresentation: record.keyData, context: context)
+        return Self.formatECDSASignatureBlob(ecdsaSig)
     }
 
     /// Authorizes a 5-minute Git signing grant via Touch ID, returning an active grant.
@@ -799,44 +645,26 @@ public class KeychainManager {
 
         context.interactionNotAllowed = true
 
-        if record.storageType == .secureEnclave {
-            let seKey = try SecureEnclave.P256.Signing.PrivateKey(
-                dataRepresentation: record.keyData,
-                authenticationContext: context
-            )
-            let hardwareSigner: @Sendable (Data) throws -> Data = { dataToSign in
-                let ecdsaSig = try seKey.signature(for: dataToSign)
-                return KeychainManager.formatECDSASignatureBlob(ecdsaSig)
-            }
-            return GitSigningGraceManager.shared.recordGrant(
-                keyLabel: key.label,
-                clientIdentity: clientIdentity,
-                duration: duration,
-                maxOperations: maxOperations,
-                context: context,
-                approvedProcess: approvedProcess,
-                secureBuffer: nil,
-                hardwareSigner: hardwareSigner,
-                keyAlgorithm: record.algorithm
-            )
-        } else {
-            var keyBytes = record.keyData
-            guard let buffer = secureBufferFactory(&keyBytes) else {
-                context.invalidate()
-                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for Git signing grant '\(key.label)'"])
-            }
-            return GitSigningGraceManager.shared.recordGrant(
-                keyLabel: key.label,
-                clientIdentity: clientIdentity,
-                duration: duration,
-                maxOperations: maxOperations,
-                context: context,
-                approvedProcess: approvedProcess,
-                secureBuffer: buffer,
-                hardwareSigner: nil,
-                keyAlgorithm: record.algorithm
-            )
+        guard record.storageType == .secureEnclave else {
+            context.invalidate()
+            throw PrivateKeyRecordError.storageMismatch(expected: KeyStorageType.secureEnclave.rawValue, actual: record.storageType.rawValue)
         }
+
+        let provider = activeSigningProvider
+        let keyData = record.keyData
+        let hardwareSigner: @Sendable (Data) throws -> Data = { dataToSign in
+            let ecdsaSig = try provider.signature(for: dataToSign, dataRepresentation: keyData, context: context)
+            return KeychainManager.formatECDSASignatureBlob(ecdsaSig)
+        }
+        return GitSigningGraceManager.shared.recordGrant(
+            keyLabel: key.label,
+            clientIdentity: clientIdentity,
+            duration: duration,
+            maxOperations: maxOperations,
+            context: context,
+            approvedProcess: approvedProcess,
+            hardwareSigner: hardwareSigner
+        )
     }
 
     /// Authorizes an agent session via Touch ID, returning an active grant.
@@ -894,34 +722,22 @@ public class KeychainManager {
 
         context.interactionNotAllowed = true
 
-        if record.storageType == .secureEnclave {
-            let seKey = try SecureEnclave.P256.Signing.PrivateKey(
-                dataRepresentation: record.keyData,
-                authenticationContext: context
-            )
-            let hardwareSigner: @Sendable (Data) throws -> Data = { dataToSign in
-                let ecdsaSig = try seKey.signature(for: dataToSign)
-                return KeychainManager.formatECDSASignatureBlob(ecdsaSig)
-            }
-            return AgentSessionGrant(
-                key: key,
-                context: context,
-                secureBuffer: nil,
-                hardwareSigner: hardwareSigner
-            )
-        } else {
-            var keyBytes = record.keyData
-            guard let buffer = secureBufferFactory(&keyBytes) else {
-                context.invalidate()
-                throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate secure buffer for agent grant '\(key.label)'"])
-            }
-            return AgentSessionGrant(
-                key: key,
-                context: context,
-                secureBuffer: buffer,
-                hardwareSigner: nil
-            )
+        guard record.storageType == .secureEnclave else {
+            context.invalidate()
+            throw KeyPurposeError.notAllowedOnThisPath(record.purpose)
         }
+
+        let provider = activeSigningProvider
+        let keyData = record.keyData
+        let hardwareSigner: @Sendable (Data) throws -> Data = { dataToSign in
+            let ecdsaSig = try provider.signature(for: dataToSign, dataRepresentation: keyData, context: context)
+            return KeychainManager.formatECDSASignatureBlob(ecdsaSig)
+        }
+        return AgentSessionGrant(
+            key: key,
+            context: context,
+            hardwareSigner: hardwareSigner
+        )
     }
 
     public static func formatECDSASignatureBlob(_ ecdsaSig: P256.Signing.ECDSASignature) -> Data {
@@ -1093,36 +909,7 @@ public class KeychainManager {
         ClavisLogger.log("KEY_CHANGE_KIND", "Changed purpose of '\(label)' from '\(currentPurpose.rawValue)' to '\(newPurpose.rawValue)'.")
     }
 
-    // Convert Curve25519.Signing.PrivateKey to OpenSSH public key format & wire representation
-    public func makeKeyInfo(
-        label: String,
-        privateKey: Curve25519.Signing.PrivateKey,
-        algorithm: String = "Ed25519",
-        storageType: KeyStorageType = .keychain,
-        keyPurpose: KeyPurpose = .general
-    ) throws -> Ed25519KeyInfo {
-        let pubKeyData = privateKey.publicKey.rawRepresentation
-        let keyType = "ssh-ed25519"
 
-        var blob = Data()
-        blob.appendWireString(keyType)
-        blob.appendWireData(pubKeyData)
-
-        let b64 = blob.base64EncodedString()
-        let openSSH = "\(keyType) \(b64) \(label)"
-
-        let fingerprint = "SHA256:" + Data(SHA256.hash(data: blob)).base64EncodedString().replacingOccurrences(of: "=", with: "")
-        return Ed25519KeyInfo(
-            label: label,
-            publicKeyOpenSSH: openSSH,
-            publicKeyBlob: blob,
-            fingerprint: fingerprint,
-            createdAt: Date(),
-            algorithmName: algorithm,
-            storage: storageType,
-            keyPurpose: keyPurpose
-        )
-    }
 
 
 

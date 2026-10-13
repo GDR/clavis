@@ -984,8 +984,8 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         let countingAuth = CountingAuthenticator()
         let audit = InMemoryAuditRecorder()
         let keyMgr = makeKeyManager(authenticator: countingAuth, auditRecorder: audit)
-        let gitOnlyKey = try keyMgr.generateKey(label: "git-only-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .gitSigningOnly)
-        let generalKey = try keyMgr.generateKey(label: "general-key", storageType: .keychain, biometricPolicy: .userPresence, keyPurpose: .general)
+        let gitOnlyKey = try keyMgr.generateKey(label: "git-only-key", biometricPolicy: .userPresence, keyPurpose: .gitSigningOnly)
+        let generalKey = try keyMgr.generateKey(label: "general-key", biometricPolicy: .userPresence, keyPurpose: .general)
 
         let server = SSHAgentServer(
             role: .personal,
@@ -1137,31 +1137,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         let store = InMemoryPrivateKeyStore()
         let keyMgr = makeKeyManager(authenticator: countingAuth, privateKeyStore: store, auditRecorder: audit)
 
-        let privateKey = Curve25519.Signing.PrivateKey()
-        var record = StoredPrivateKeyRecord(
-            label: "biometric-agent-key",
-            algorithm: .ed25519,
-            storageType: .keychain,
-            biometricPolicy: .biometryCurrentSet,
-            keyPurpose: .agent,
-            keyData: privateKey.rawRepresentation
-        )
-        defer { record.wipe() }
-        try store.save(label: "biometric-agent-key", data: try record.encode())
-        let blob = try KeychainManager.derivePublicKeyBlob(record: record)
-        let fingerprint = "SHA256:" + Data(SHA256.hash(data: blob)).base64EncodedString().replacingOccurrences(of: "=", with: "")
-        let key = Ed25519KeyInfo(
-            label: "biometric-agent-key",
-            publicKeyOpenSSH: "ssh-ed25519 \(blob.base64EncodedString()) biometric-agent-key",
-            publicKeyBlob: blob,
-            fingerprint: fingerprint,
-            createdAt: Date(),
-            algorithmName: "Ed25519",
-            storage: .keychain,
-            biometricPolicy: .biometryCurrentSet,
-            keyPurpose: .agent
-        )
-        try PublicKeyStore.saveChecked(key)
+        let key = try keyMgr.generateKey(label: "biometric-agent-key", biometricPolicy: .biometryCurrentSet, keyPurpose: .agent)
         defer { PublicKeyStore.remove(label: "biometric-agent-key") }
 
         let policyStore = InMemoryAgentPolicyStore()

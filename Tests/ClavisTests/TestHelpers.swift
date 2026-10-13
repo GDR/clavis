@@ -141,7 +141,8 @@ class ClavisBaseTestCase: XCTestCase {
         PublicKeyStore.disableKeychainMirrorForTesting = true
         PublicKeyStore.resetForTesting()
         EncryptedVaultStore.customVaultDirectoryURL = testRootURL.appendingPathComponent("vault", isDirectory: true)
-        EncryptedVaultStore.forceSoftwareMasterKeyForTesting = true
+        EncryptedVaultStore.customKeyAgreementProvider = InMemorySecureEnclaveKeyAgreementProvider()
+        KeychainManager.customSigningProvider = InMemorySecureEnclaveSigningProvider()
         ClavisLogger.customLogFileURL = testRootURL.appendingPathComponent("clavis.log")
         ClavisLogger.customMaximumLogFileSize = nil
         ClavisLogger.customVerbose = nil
@@ -151,7 +152,8 @@ class ClavisBaseTestCase: XCTestCase {
         PublicKeyStore.resetForTesting()
         PublicKeyStore.disableKeychainMirrorForTesting = true
         EncryptedVaultStore.customVaultDirectoryURL = nil
-        EncryptedVaultStore.forceSoftwareMasterKeyForTesting = false
+        EncryptedVaultStore.customKeyAgreementProvider = nil
+        KeychainManager.customSigningProvider = nil
         ClavisLogger.customLogFileURL = nil
         ClavisLogger.customMaximumLogFileSize = nil
         ClavisLogger.customVerbose = nil
@@ -165,16 +167,14 @@ class ClavisBaseTestCase: XCTestCase {
         authenticator: UserAuthenticating = AllowingAuthenticator(),
         privateKeyStore: PrivateKeyStoring = InMemoryPrivateKeyStore(),
         auditRecorder: AuditRecording = InMemoryAuditRecorder(),
-        secureBufferFactory: @escaping (inout Data) -> SecureBuffer? = { data in
-            SecureBuffer(consuming: &data)
-        }
+        signingProvider: SecureEnclaveSigningProviding? = nil
     ) -> KeychainManager {
         KeychainManager(
             authenticator: authenticator,
             privateKeyStore: privateKeyStore,
-            secureBufferFactory: secureBufferFactory,
             agentGrantRevoker: { _ in },
-            auditRecorder: auditRecorder
+            auditRecorder: auditRecorder,
+            signingProvider: signingProvider
         )
     }
 

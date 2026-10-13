@@ -37,7 +37,7 @@ final class KeychainManagerTests: ClavisBaseTestCase {
         let manager = makeKeyManager(privateKeyStore: store)
         let label = "test-fail-closed-\(UUID().uuidString)"
 
-        XCTAssertThrowsError(try manager.generateKey(label: label, algorithm: "Ed25519")) { error in
+        XCTAssertThrowsError(try manager.generateKey(label: label)) { error in
             guard case PrivateKeyStoreError.protectionUnavailable(let status) = error else {
                 return XCTFail("Expected PrivateKeyStoreError.protectionUnavailable, got \(error)")
             }
@@ -56,7 +56,7 @@ final class KeychainManagerTests: ClavisBaseTestCase {
         let allowingManager = makeKeyManager(authenticator: AllowingAuthenticator(), privateKeyStore: inMemoryStore, auditRecorder: audit)
         let label = "test-del-auth-\(UUID().uuidString)"
 
-        let keyInfo = try allowingManager.generateKey(label: label, algorithm: "Ed25519")
+        let keyInfo = try allowingManager.generateKey(label: label)
         XCTAssertNotNil(try allowingManager.fetchKeyInfo(label: label))
         XCTAssertTrue(inMemoryStore.contains(label: label))
 

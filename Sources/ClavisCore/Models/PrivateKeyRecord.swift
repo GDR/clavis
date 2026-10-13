@@ -99,8 +99,8 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
 
         var output = Self.binaryMagic
         output.append(UInt8(version))
-        output.append(algorithm == .ed25519 ? 1 : 2)
-        output.append(storageType == .keychain ? 1 : 2)
+        output.append(2) // .ecdsaP256
+        output.append(2) // .secureEnclave
         switch purpose {
         case .general:
             output.append(1)
@@ -160,15 +160,13 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
 
         let algorithm: KeyAlgorithm
         switch algorithmByte {
-        case 1: algorithm = .ed25519
         case 2: algorithm = .ecdsaP256
-        default: throw PrivateKeyRecordError.corruptedRecord("Unknown algorithm identifier")
+        default: throw PrivateKeyRecordError.corruptedRecord("Unsupported or unknown algorithm identifier: \(algorithmByte)")
         }
         let storage: KeyStorageType
         switch storageByte {
-        case 1: storage = .keychain
         case 2: storage = .secureEnclave
-        default: throw PrivateKeyRecordError.corruptedRecord("Unknown storage identifier")
+        default: throw PrivateKeyRecordError.corruptedRecord("Unsupported or unknown storage identifier: \(storageByte)")
         }
         let purpose: KeyPurpose
         switch purposeByte {

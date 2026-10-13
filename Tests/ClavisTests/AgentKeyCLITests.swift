@@ -59,30 +59,30 @@ final class AgentKeyCLITests: XCTestCase {
             publicKeyBlob: Data(),
             fingerprint: "SHA256:generalFingerprint",
             createdAt: Date(),
-            algorithmName: "Ed25519",
-            storage: .keychain,
+            algorithmName: "ECDSA P-256",
+            storage: .secureEnclave,
             biometricPolicy: nil,
             keyPurpose: .general
         )
         let k2 = Ed25519KeyInfo(
             label: "commit-signer",
-            publicKeyOpenSSH: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGit commit-signer",
+            publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBB Commit commit-signer",
             publicKeyBlob: Data(),
             fingerprint: "SHA256:gitFingerprint",
             createdAt: Date(),
-            algorithmName: "Ed25519",
-            storage: .keychain,
+            algorithmName: "ECDSA P-256",
+            storage: .secureEnclave,
             biometricPolicy: nil,
             keyPurpose: .gitSigningOnly
         )
         let k3 = Ed25519KeyInfo(
             label: "agent-claude",
-            publicKeyOpenSSH: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAgent agent-claude",
+            publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBB Agent agent-claude",
             publicKeyBlob: Data(),
             fingerprint: "SHA256:agentFingerprint",
             createdAt: Date(),
-            algorithmName: "Ed25519",
-            storage: .keychain,
+            algorithmName: "ECDSA P-256",
+            storage: .secureEnclave,
             biometricPolicy: nil,
             keyPurpose: .agent
         )

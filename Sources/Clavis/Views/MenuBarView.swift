@@ -481,9 +481,9 @@ private struct MenuBarIdentityRow: View {
         HStack(spacing: 10) {
             ZStack {
                 Circle()
-                    .fill(key.isHardware ? Color.green : Color.blue)
+                    .fill(Color.green)
                     .frame(width: 26, height: 26)
-                Image(systemName: key.isHardware ? "lock.shield.fill" : "key.fill")
+                Image(systemName: "lock.shield.fill")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.white)
             }

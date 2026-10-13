@@ -8,8 +8,8 @@ final class KeyPurposeAgentTests: ClavisBaseTestCase {
         let keyData = Data(repeating: 0x42, count: 32)
         let record = StoredPrivateKeyRecord(
             label: "test-agent-key",
-            algorithm: .ed25519,
-            storageType: .keychain,
+            algorithm: .ecdsaP256,
+            storageType: .secureEnclave,
             biometricPolicy: .userPresence,
             keyPurpose: .agent,
             keyData: keyData,
@@ -33,8 +33,8 @@ final class KeyPurposeAgentTests: ClavisBaseTestCase {
         let keyData = Data(repeating: 0x24, count: 32)
         let generalRecord = StoredPrivateKeyRecord(
             label: "general-key",
-            algorithm: .ed25519,
-            storageType: .keychain,
+            algorithm: .ecdsaP256,
+            storageType: .secureEnclave,
             biometricPolicy: nil,
             keyPurpose: .general,
             keyData: keyData,
@@ -47,8 +47,8 @@ final class KeyPurposeAgentTests: ClavisBaseTestCase {
 
         let gitOnlyRecord = StoredPrivateKeyRecord(
             label: "git-key",
-            algorithm: .ed25519,
-            storageType: .keychain,
+            algorithm: .ecdsaP256,
+            storageType: .secureEnclave,
             biometricPolicy: nil,
             keyPurpose: .gitSigningOnly,
             keyData: keyData,
@@ -64,8 +64,8 @@ final class KeyPurposeAgentTests: ClavisBaseTestCase {
         {
             "version": 1,
             "label": "legacy-key",
-            "algorithm": "Ed25519",
-            "storageType": "Login Keychain",
+            "algorithm": "ECDSA P-256",
+            "storageType": "Secure Enclave",
             "keyData": "\(keyData.base64EncodedString())"
         }
         """.data(using: .utf8)!
@@ -77,8 +77,8 @@ final class KeyPurposeAgentTests: ClavisBaseTestCase {
         let keyData = Data(repeating: 0x11, count: 32)
         let record = StoredPrivateKeyRecord(
             label: "key-unknown-purpose",
-            algorithm: .ed25519,
-            storageType: .keychain,
+            algorithm: .ecdsaP256,
+            storageType: .secureEnclave,
             biometricPolicy: nil,
             keyPurpose: .general,
             keyData: keyData,

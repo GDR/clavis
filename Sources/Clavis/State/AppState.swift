@@ -255,8 +255,8 @@ public class AppState: ObservableObject {
 
     public func generateKey(
         label: String,
-        algorithm: String = "Ed25519",
-        storageType: KeyStorageType = .keychain,
+        algorithm: String = "ECDSA P-256",
+        storageType: KeyStorageType = .secureEnclave,
         biometricPolicy: BiometricPolicy? = nil,
         keyPurpose: KeyPurpose = .general
     ) throws -> Ed25519KeyInfo {

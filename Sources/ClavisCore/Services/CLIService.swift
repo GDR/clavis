@@ -66,10 +66,10 @@ public struct CLIService {
             } catch {
                 return CLICommandResult(exitCode: 1, output: "", error: error.localizedDescription)
             }
-            let isEnclave = args.contains("--enclave") || args.contains("--secure-enclave")
-            let storage: KeyStorageType = isEnclave ? .secureEnclave : .keychain
-            let algorithm = isEnclave ? "ECDSA P-256" : "Ed25519"
-            let policy: BiometricPolicy? = isEnclave ? .biometryCurrentSet : nil
+            let isCurrentSet = args.contains("--biometry-current-set") || args.contains("--enclave") || args.contains("--secure-enclave")
+            let storage: KeyStorageType = .secureEnclave
+            let algorithm = "ECDSA P-256"
+            let policy: BiometricPolicy? = isCurrentSet ? .biometryCurrentSet : .userPresence
             do {
                 let info = try keyManager.generateKey(
                     label: label,

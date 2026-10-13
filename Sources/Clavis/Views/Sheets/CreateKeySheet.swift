@@ -3,59 +3,32 @@ import ClavisCore
 import CryptoKit
 
 public enum KeyTypePreset: String, CaseIterable, Identifiable {
-    case software = "software"
     case hardware = "hardware"
 
     public var id: String { rawValue }
 
     public var title: String {
-        switch self {
-        case .software:
-            return ClavisUIStrings.CreateKey.softwareTitle
-        case .hardware:
-            return ClavisUIStrings.CreateKey.hardwareTitle
-        }
+        ClavisUIStrings.CreateKey.hardwareTitle
     }
 
     public var badge: String {
-        switch self {
-        case .software:
-            return ClavisUIStrings.CreateKey.softwareBadge
-        case .hardware:
-            return ClavisUIStrings.CreateKey.hardwareBadge
-        }
+        ClavisUIStrings.CreateKey.hardwareBadge
     }
 
     public var subtitle: String {
-        switch self {
-        case .software:
-            return ClavisUIStrings.CreateKey.softwareSubtitle
-        case .hardware:
-            return ClavisUIStrings.CreateKey.hardwareSubtitle
-        }
+        ClavisUIStrings.CreateKey.hardwareSubtitle
     }
 
     public var icon: String {
-        switch self {
-        case .software:
-            return "key.fill"
-        case .hardware:
-            return "cpu"
-        }
+        "cpu"
     }
 
     public var storageType: KeyStorageType {
-        switch self {
-        case .software: return .keychain
-        case .hardware: return .secureEnclave
-        }
+        .secureEnclave
     }
 
     public var algorithm: KeyAlgorithm {
-        switch self {
-        case .software: return .ed25519
-        case .hardware: return .ecdsaP256
-        }
+        .ecdsaP256
     }
 }
 
@@ -64,7 +37,7 @@ public struct CreateKeySheet: View {
     @ObservedObject var appState: AppState
 
     @State private var keyName: String = ""
-    @State private var selectedPreset: KeyTypePreset = .software
+    @State private var selectedPreset: KeyTypePreset = .hardware
     @State private var selectedBiometricPolicy: BiometricPolicy = .userPresence
     @State private var selectedPurpose: KeyPurpose = .general
     @State private var isCreating = false
@@ -110,203 +83,129 @@ public struct CreateKeySheet: View {
                     .textFieldStyle(.roundedBorder)
             }
 
-            // Mutually Exclusive Presets (Software vs Hardware)
+            // Key Architecture (Secure Enclave)
             VStack(alignment: .leading, spacing: 8) {
                 Text(ClavisUIStrings.CreateKey.typeLabel)
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(DesignTokens.textSecondary)
 
-                VStack(spacing: 10) {
-                    // Software Option
-                    Button(action: {
-                        selectedPreset = .software
-                    }) {
-                        HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: KeyTypePreset.software.icon)
-                                .font(.system(size: 20))
-                                .foregroundColor(selectedPreset == .software ? DesignTokens.accentBlue : .secondary)
-                                .frame(width: 24, height: 24)
+                let isEnclaveAvailable = SecureEnclave.isAvailable
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: KeyTypePreset.hardware.icon)
+                        .font(.system(size: 20))
+                        .foregroundColor(DesignTokens.accentGreen)
+                        .frame(width: 24, height: 24)
 
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(spacing: 6) {
-                                    Text(KeyTypePreset.software.title)
-                                        .font(.subheadline)
-                                        .fontWeight(.semibold)
-                                        .foregroundColor(.primary)
-                                    Text(KeyTypePreset.software.badge)
-                                        .font(.system(size: 9, weight: .bold))
-                                        .padding(.horizontal, 4)
-                                        .padding(.vertical, 1)
-                                        .background(Color.white.opacity(0.10))
-                                        .foregroundColor(DesignTokens.textSecondary)
-                                        .cornerRadius(3)
-                                }
-
-                                Text(KeyTypePreset.software.subtitle)
-                                    .font(.caption2)
-                                    .foregroundColor(DesignTokens.textSecondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-
-                                HStack(spacing: 6) {
-                                    WorkflowTag(name: ClavisUIStrings.CreateKey.tagSSH, isSupported: true)
-                                    WorkflowTag(name: ClavisUIStrings.CreateKey.tagGitSigning, isSupported: true)
-                                }
-                                .padding(.top, 4)
-                            }
-
-                            Spacer()
-
-                            if selectedPreset == .software {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(DesignTokens.accentBlue)
-                                    .font(.title3)
-                            }
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(KeyTypePreset.hardware.title)
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.primary)
+                            Text(KeyTypePreset.hardware.badge)
+                                .font(.system(size: 9, weight: .bold))
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(DesignTokens.accentGreen.opacity(0.20))
+                                .foregroundColor(DesignTokens.accentGreen)
+                                .cornerRadius(3)
                         }
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10)
-                                .fill(selectedPreset == .software ? DesignTokens.accentBlue.opacity(0.10) : Color(nsColor: .controlBackgroundColor).opacity(0.5))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10)
-                                .stroke(selectedPreset == .software ? DesignTokens.accentBlue : DesignTokens.cardBorder, lineWidth: selectedPreset == .software ? 1.5 : 1)
-                        )
+
+                        Text(isEnclaveAvailable ? KeyTypePreset.hardware.subtitle : ClavisUIStrings.CreateKey.enclaveUnavailable)
+                            .font(.caption2)
+                            .foregroundColor(DesignTokens.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        HStack(spacing: 6) {
+                            WorkflowTag(name: ClavisUIStrings.CreateKey.tagSSH, isSupported: true)
+                            WorkflowTag(name: ClavisUIStrings.CreateKey.tagGitSigning, isSupported: true)
+                        }
+                        .padding(.top, 4)
                     }
-                    .buttonStyle(.plain)
 
-                    // Hardware Option
-                    let isEnclaveAvailable = SecureEnclave.isAvailable
-                    Button(action: {
-                        if isEnclaveAvailable {
-                            selectedPreset = .hardware
-                        }
-                    }) {
-                        HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: KeyTypePreset.hardware.icon)
-                                .font(.system(size: 20))
-                                .foregroundColor(selectedPreset == .hardware ? DesignTokens.accentGreen : .secondary)
-                                .frame(width: 24, height: 24)
+                    Spacer()
 
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(spacing: 6) {
-                                    Text(KeyTypePreset.hardware.title)
-                                        .font(.subheadline)
-                                        .fontWeight(.semibold)
-                                        .foregroundColor(.primary)
-                                    Text(KeyTypePreset.hardware.badge)
-                                        .font(.system(size: 9, weight: .bold))
-                                        .padding(.horizontal, 4)
-                                        .padding(.vertical, 1)
-                                        .background(DesignTokens.accentGreen.opacity(0.20))
-                                        .foregroundColor(DesignTokens.accentGreen)
-                                        .cornerRadius(3)
-                                }
-
-                                Text(isEnclaveAvailable ? KeyTypePreset.hardware.subtitle : ClavisUIStrings.CreateKey.enclaveUnavailable)
-                                    .font(.caption2)
-                                    .foregroundColor(DesignTokens.textSecondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-
-                                HStack(spacing: 6) {
-                                    WorkflowTag(name: ClavisUIStrings.CreateKey.tagSSH, isSupported: true)
-                                    WorkflowTag(name: ClavisUIStrings.CreateKey.tagGitSigning, isSupported: true)
-                                }
-                                .padding(.top, 4)
-                            }
-
-                            Spacer()
-
-                            if selectedPreset == .hardware {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(DesignTokens.accentGreen)
-                                    .font(.title3)
-                            }
-                        }
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10)
-                                .fill(selectedPreset == .hardware ? DesignTokens.accentGreen.opacity(0.10) : Color(nsColor: .controlBackgroundColor).opacity(0.5))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10)
-                                .stroke(selectedPreset == .hardware ? DesignTokens.accentGreen : DesignTokens.cardBorder, lineWidth: selectedPreset == .hardware ? 1.5 : 1)
-                        )
-                        .opacity(isEnclaveAvailable ? 1.0 : 0.45)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!isEnclaveAvailable)
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(DesignTokens.accentGreen)
+                        .font(.title3)
                 }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(DesignTokens.accentGreen.opacity(0.10))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(DesignTokens.accentGreen, lineWidth: 1.5)
+                )
             }
 
-            // Biometric Policy Selection (Hardware keys only)
-            if selectedPreset == .hardware {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(ClavisUIStrings.CreateKey.biometricPolicyLabel)
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundColor(DesignTokens.textSecondary)
+            // Biometric Policy Selection
+            VStack(alignment: .leading, spacing: 6) {
+                Text(ClavisUIStrings.CreateKey.biometricPolicyLabel)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(DesignTokens.textSecondary)
 
-                    HStack(spacing: 10) {
-                        ForEach(BiometricPolicy.allCases) { policy in
-                            Button(action: {
-                                selectedBiometricPolicy = policy
-                            }) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack {
-                                        Image(systemName: policy == .biometryCurrentSet ? "touchid" : "person.badge.key.fill")
-                                            .foregroundColor(selectedBiometricPolicy == policy ? DesignTokens.accentGreen : .secondary)
-                                        Spacer()
-                                        if selectedBiometricPolicy == policy {
-                                            Image(systemName: "checkmark.circle.fill")
-                                                .foregroundColor(DesignTokens.accentGreen)
-                                                .font(.caption)
-                                        }
+                HStack(spacing: 10) {
+                    ForEach(BiometricPolicy.allCases) { policy in
+                        Button(action: {
+                            selectedBiometricPolicy = policy
+                        }) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Image(systemName: policy == .biometryCurrentSet ? "touchid" : "person.badge.key.fill")
+                                        .foregroundColor(selectedBiometricPolicy == policy ? DesignTokens.accentGreen : .secondary)
+                                    Spacer()
+                                    if selectedBiometricPolicy == policy {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(DesignTokens.accentGreen)
+                                            .font(.caption)
                                     }
-                                    Text(policy.title)
-                                        .font(.subheadline)
-                                        .fontWeight(.medium)
-                                    Text(policy.subtitle)
-                                        .font(.caption2)
-                                        .foregroundColor(DesignTokens.textSecondary)
-                                        .lineLimit(2)
                                 }
-                                .padding(10)
-                                .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(selectedBiometricPolicy == policy ? DesignTokens.accentGreen.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(selectedBiometricPolicy == policy ? DesignTokens.accentGreen : DesignTokens.cardBorder, lineWidth: 1)
-                                )
+                                Text(policy.title)
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                Text(policy.subtitle)
+                                    .font(.caption2)
+                                    .foregroundColor(DesignTokens.textSecondary)
+                                    .lineLimit(2)
                             }
-                            .buttonStyle(.plain)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(selectedBiometricPolicy == policy ? DesignTokens.accentGreen.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(selectedBiometricPolicy == policy ? DesignTokens.accentGreen : DesignTokens.cardBorder, lineWidth: 1)
+                            )
                         }
+                        .buttonStyle(.plain)
                     }
+                }
 
-                    if selectedBiometricPolicy == .biometryCurrentSet {
-                        HStack(spacing: 6) {
-                            Image(systemName: "exclamationmark.shield.fill")
-                                .foregroundColor(DesignTokens.accentOrange)
-                                .font(.caption2)
-                            Text(ClavisUIStrings.CreateKey.biometricWarning)
-                                .font(.caption2)
-                                .foregroundColor(DesignTokens.textSecondary)
-                        }
-                        .padding(.horizontal, 4)
-                        .padding(.top, 2)
+                if selectedBiometricPolicy == .biometryCurrentSet {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.shield.fill")
+                            .foregroundColor(DesignTokens.accentOrange)
+                            .font(.caption2)
+                        Text(ClavisUIStrings.CreateKey.biometricWarning)
+                            .font(.caption2)
+                            .foregroundColor(DesignTokens.textSecondary)
                     }
+                    .padding(.horizontal, 4)
+                    .padding(.top, 2)
                 }
             }
 
             // Key Purpose (Domain Isolation)
             KeyPurposePicker(
                 selection: $selectedPurpose,
-                accent: selectedPreset == .hardware ? DesignTokens.accentGreen : DesignTokens.accentBlue
+                accent: DesignTokens.accentGreen
             )
 
             // Footer / Actions
@@ -322,7 +221,7 @@ public struct CreateKeySheet: View {
                     createKey()
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(selectedPreset == .hardware ? DesignTokens.accentGreen : DesignTokens.accentBlue)
+                .tint(DesignTokens.accentGreen)
                 .keyboardShortcut(.defaultAction)
                 .disabled(keyName.trimmingCharacters(in: .whitespaces).isEmpty || isCreating)
             }

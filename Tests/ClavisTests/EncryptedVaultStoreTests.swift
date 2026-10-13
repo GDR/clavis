@@ -13,8 +13,8 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
         StoredPrivateKeyRecord(
             version: 1,
             label: label,
-            algorithm: .ed25519,
-            storageType: .keychain,
+            algorithm: .ecdsaP256,
+            storageType: .secureEnclave,
             biometricPolicy: nil,
             keyPurpose: .general,
             keyData: Data(repeating: 0x42, count: 32)
@@ -591,7 +591,7 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
         let pubURL = vaultDir.appendingPathComponent("master.pub")
         let keyURL = vaultDir.appendingPathComponent("master.key")
         try SecureFS.withUmask(0o077) {
-            var keyFileBytes = Data([0x02])
+            var keyFileBytes = Data([0x01])
             keyFileBytes.append(swKey.rawRepresentation)
             try keyFileBytes.write(to: keyURL, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
@@ -653,19 +653,17 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
         }
     }
 
-    func testWritingSoftwarePrivateKeysToVaultProhibitedUnlessTestingOverrideEnabled() throws {
-        EncryptedVaultStore.forceSoftwareMasterKeyForTesting = false
-        EncryptedVaultStore.forceAllowSoftwareKeysForTesting = false
-        defer {
-            EncryptedVaultStore.forceSoftwareMasterKeyForTesting = true
-            EncryptedVaultStore.forceAllowSoftwareKeysForTesting = false
-        }
+    func testSoftwareMasterKeyUnsupportedThrows() throws {
+        try FileManager.default.createDirectory(at: EncryptedVaultStore.shared.vaultDirectoryURL, withIntermediateDirectories: true)
+        let keyURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.key")
+        let pubURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.pub")
+        let swKey = P256.KeyAgreement.PrivateKey()
+        try (Data([0x02]) + swKey.rawRepresentation).write(to: keyURL)
+        try swKey.publicKey.rawRepresentation.write(to: pubURL)
 
-        let swRecord = makeRecord(label: "sw-key-prohibited")
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.saveRecord(swRecord)) { error in
-            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .softwareKeyStorageProhibited)
+        XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKey()) { error in
+            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .softwareMasterKeyUnsupported)
         }
-        XCTAssertFalse(EncryptedVaultStore.shared.containsRecord(label: "sw-key-prohibited"))
     }
 }
 

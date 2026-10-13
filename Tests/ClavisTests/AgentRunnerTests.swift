@@ -8,7 +8,7 @@ final class AgentRunnerTests: XCTestCase {
             publicKeyOpenSSH: "ssh-ed25519 AAA",
             publicKeyBlob: Data(),
             fingerprint: "SHA256:\(label)",
-            algorithmName: "Ed25519",
+            algorithmName: "ECDSA P-256",
             keyPurpose: purpose
         )
     }
