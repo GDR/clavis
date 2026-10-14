@@ -168,3 +168,41 @@ public enum SSHHostKeyVerifier {
         return d
     }
 }
+
+public enum SessionBind {
+    public static func isValidSSH2UserAuthRequest(
+        _ data: Data,
+        expectedSessionID: Data? = nil,
+        expectedKeyBlob: Data? = nil
+    ) -> Bool {
+        var reader = DataReader(data: data)
+        guard let sessionID = reader.readWireData() else { return false }
+        if let expectedSessionID, sessionID != expectedSessionID { return false }
+        guard let msgType = reader.readUInt8(), msgType == 50 else { return false }
+        guard let _ = reader.readWireString() else { return false }
+        guard let service = reader.readWireString(), service == "ssh-connection" else { return false }
+        guard let method = reader.readWireString(), method == "publickey" else { return false }
+        guard let hasSig = reader.readBool(), hasSig == true else { return false }
+        guard let _ = reader.readWireString() else { return false }
+        guard let keyBlob = reader.readWireData() else { return false }
+        if let expectedKeyBlob, keyBlob != expectedKeyBlob { return false }
+        return reader.isEOF
+    }
+
+    public static func extractHostKeyFromUserAuthRequest(_ data: Data) -> Data? {
+        var reader = DataReader(data: data)
+        guard let _ = reader.readWireData(),
+              let msgType = reader.readUInt8(), msgType == 50,
+              let _ = reader.readWireString(),
+              let service = reader.readWireString(), service == "ssh-connection",
+              let method = reader.readWireString(), method == "publickey-hostbound-v00@openssh.com",
+              let hasSig = reader.readBool(), hasSig == true,
+              let _ = reader.readWireString(),
+              let _ = reader.readWireData(),
+              let hostKeyBlob = reader.readWireData(),
+              reader.isEOF else {
+            return nil
+        }
+        return hostKeyBlob
+    }
+}
