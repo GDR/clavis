@@ -626,12 +626,27 @@ public final class SigningPolicyEvaluator {
     }
 
     public static func requesterDescription(processPath: String, pid: pid_t) -> String {
-        let trimmed = processPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleaned = AuditEvent.sanitizedPath(trimmed, maxLength: nil)
+        let sanitized = AuditEvent.sanitizedPath(processPath, maxLength: nil)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var collapsed = String.UnicodeScalarView()
+        var previousWasWhitespace = false
+        for scalar in sanitized.unicodeScalars {
+            if CharacterSet.whitespacesAndNewlines.contains(scalar) || scalar.properties.isWhitespace {
+                if !previousWasWhitespace {
+                    collapsed.append(" ")
+                    previousWasWhitespace = true
+                }
+            } else {
+                collapsed.append(scalar)
+                previousWasWhitespace = false
+            }
+        }
+        let cleaned = String(collapsed)
         let maxPathScalars = 80
         let bounded: String
         if cleaned.count > maxPathScalars {
-            bounded = "…" + String(cleaned.suffix(maxPathScalars - 1))
+            // Preserve both leading root directory context and trailing binary name to prevent padding/truncation spoofing.
+            bounded = "\(cleaned.prefix(32))…\(cleaned.suffix(maxPathScalars - 33))"
         } else {
             bounded = cleaned
         }

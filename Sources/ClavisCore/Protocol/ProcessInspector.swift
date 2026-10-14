@@ -59,13 +59,89 @@ public enum ProcessInspector {
         "/run/current-system/sw/bin/ssh-keygen"
     ]
 
+    public static func isValidNixStoreBinary(standardizedPath: String, binaryName: String) -> Bool {
+        isValidNixStoreBinary(standardizedPath: standardizedPath, binaryName: binaryName, storeRoot: "/nix/store")
+    }
+
+    internal static func isValidNixStoreBinary(standardizedPath: String, binaryName: String, storeRoot: String) -> Bool {
+        let normalizedRoot = storeRoot.hasSuffix("/") ? String(storeRoot.dropLast()) : storeRoot
+        let prefix = normalizedRoot + "/"
+        guard standardizedPath.hasPrefix(prefix) else { return false }
+
+        let relative = standardizedPath.dropFirst(prefix.count)
+        let parts = relative.split(separator: "/", omittingEmptySubsequences: false)
+        // Relative to storeRoot, must be `<store-entry>/bin/<binaryName>`
+        guard parts.count == 3,
+              parts[1] == "bin",
+              parts[2] == Substring(binaryName) else {
+            return false
+        }
+
+        let storeEntry = parts[0]
+        // Nix store entries have format `<32-char-hash>-<name>` (at least 34 chars).
+        guard storeEntry.count >= 34 else { return false }
+        let dashIndex = storeEntry.index(storeEntry.startIndex, offsetBy: 32)
+        guard storeEntry[dashIndex] == "-" else { return false }
+
+        let hashPrefix = storeEntry[..<dashIndex]
+        guard hashPrefix.unicodeScalars.allSatisfy({
+            ($0.value >= 0x30 && $0.value <= 0x39) ||
+            ($0.value >= 0x61 && $0.value <= 0x7A) ||
+            ($0.value >= 0x41 && $0.value <= 0x5A)
+        }) else {
+            return false
+        }
+
+        let namePart = storeEntry[storeEntry.index(after: dashIndex)...]
+        guard !namePart.isEmpty, namePart != "." && namePart != "..",
+              namePart.unicodeScalars.allSatisfy({
+                  ($0.value >= 0x30 && $0.value <= 0x39) ||
+                  ($0.value >= 0x61 && $0.value <= 0x7A) ||
+                  ($0.value >= 0x41 && $0.value <= 0x5A) ||
+                  $0 == "+" || $0 == "-" || $0 == "." || $0 == "_" || $0 == "?" || $0 == "="
+              }) else {
+            return false
+        }
+
+        let euid = geteuid()
+        var lst = stat()
+        if lstat(standardizedPath, &lst) == 0 {
+            guard lst.st_uid == 0 || lst.st_uid == euid else { return false }
+            if (lst.st_mode & S_IFMT) == S_IFLNK {
+                let resolved = URL(fileURLWithPath: standardizedPath).resolvingSymlinksInPath().path
+                guard resolved.hasPrefix(prefix) else { return false }
+            }
+            var st = stat()
+            guard stat(standardizedPath, &st) == 0 else { return false }
+            guard (st.st_mode & S_IFMT) == S_IFREG else { return false }
+            guard (st.st_mode & 0o022) == 0 else { return false }
+            guard st.st_uid == 0 || st.st_uid == euid else { return false }
+        } else if errno != ENOENT {
+            return false
+        }
+
+        let storeDirPath = "\(normalizedRoot)/\(storeEntry)"
+        var dirSt = stat()
+        if stat(storeDirPath, &dirSt) == 0 {
+            guard (dirSt.st_mode & 0o022) == 0 else { return false }
+            guard dirSt.st_uid == 0 || dirSt.st_uid == euid else { return false }
+        }
+
+        return true
+    }
+
+    private static func containsParentTraversal(_ path: String) -> Bool {
+        path.split(separator: "/", omittingEmptySubsequences: false).contains("..")
+    }
+
     public static func isTrustedGitExecutable(path: String) -> Bool {
+        guard !containsParentTraversal(path) else { return false }
         let stdPath = URL(fileURLWithPath: path).standardizedFileURL.path
         if trustedGitPaths.contains(stdPath) { return true }
         if (stdPath.hasPrefix("/Applications/Xcode") || stdPath.hasPrefix("/Library/Developer/CommandLineTools")) && stdPath.hasSuffix("/usr/bin/git") {
             return true
         }
-        if stdPath.hasPrefix("/nix/store/") && stdPath.hasSuffix("/bin/git") { return true }
+        if isValidNixStoreBinary(standardizedPath: stdPath, binaryName: "git") { return true }
         #if DEBUG
         if (path as NSString).lastPathComponent == "xctest" { return true }
         #endif
@@ -77,10 +153,15 @@ public enum ProcessInspector {
     }
 
     public static func isTrustedSignerHelperExecutable(path: String) -> Bool {
+        guard !containsParentTraversal(path) else { return false }
         let stdPath = URL(fileURLWithPath: path).standardizedFileURL.path
         if trustedSignerHelperPaths.contains(stdPath) { return true }
-        if stdPath.hasPrefix("/nix/store/") && stdPath.hasSuffix("/bin/ssh-keygen") { return true }
+        if isValidNixStoreBinary(standardizedPath: stdPath, binaryName: "ssh-keygen") { return true }
         return false
+    }
+
+    public static func isTrustedSshKeygen(path: String) -> Bool {
+        isTrustedSignerHelperExecutable(path: path)
     }
 
     public static func isSSHKeygenExecutablePath(_ path: String) -> Bool {
@@ -95,9 +176,10 @@ public enum ProcessInspector {
     ]
 
     public static func isTrustedSshBinary(path: String) -> Bool {
+        guard !containsParentTraversal(path) else { return false }
         let std = URL(fileURLWithPath: path).standardizedFileURL.path
         if trustedSshPaths.contains(std) { return true }
-        if std.hasPrefix("/nix/store/") && std.hasSuffix("/bin/ssh") { return true }
+        if isValidNixStoreBinary(standardizedPath: std, binaryName: "ssh") { return true }
         #if DEBUG
         if (path as NSString).lastPathComponent == "xctest" { return true }
         #endif

@@ -170,13 +170,19 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
         let formatHostile = "/tmp/bin\u{200B}\u{200E}\u{FEFF}"
         let describedFormat = SSHAgentServer.requesterDescription(processPath: formatHostile, pid: 1)
         XCTAssertEqual(describedFormat, "/tmp/bin (PID 1)")
-        // Bounded length with visible ellipsis on path truncation, keeping the tail.
+        // Bounded length with visible middle ellipsis on path truncation, keeping both prefix and tail.
         let long = "/tmp/" + String(repeating: "a", count: 500)
         let describedLong = SSHAgentServer.requesterDescription(processPath: long, pid: 1)
         XCTAssertLessThanOrEqual(describedLong.count, 80 + " (PID 1)".count)
-        XCTAssertTrue(describedLong.hasPrefix("…"))
-        XCTAssertTrue(describedLong.hasSuffix(String(repeating: "a", count: 79) + " (PID 1)"))
+        XCTAssertTrue(describedLong.hasPrefix("/tmp/" + String(repeating: "a", count: 27)))
+        XCTAssertTrue(describedLong.contains("…"))
+        XCTAssertTrue(describedLong.hasSuffix(String(repeating: "a", count: 47) + " (PID 1)"))
         XCTAssertEqual(SSHAgentServer.requesterDescription(processPath: "/", pid: 3), "/ (PID 3)")
+
+        // Whitespace padding is collapsed into a single space so leading directory cannot be pushed off-screen.
+        let paddedSpoof = "/Users/attacker/evil" + String(repeating: " ", count: 80) + "/usr/bin/ssh"
+        let describedPadded = SSHAgentServer.requesterDescription(processPath: paddedSpoof, pid: 99)
+        XCTAssertEqual(describedPadded, "/Users/attacker/evil /usr/bin/ssh (PID 99)")
     }
 
     func testNoisyRequesterLocksOutWhileCleanRequesterContinues() {

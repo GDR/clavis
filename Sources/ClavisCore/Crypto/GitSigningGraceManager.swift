@@ -71,6 +71,7 @@ public final class GitSigningGrant: @unchecked Sendable {
     public var isValid: Bool {
         lock.lock()
         defer { lock.unlock() }
+        guard !SystemEventMonitor.isSessionLockedOrOffConsole() else { return false }
         guard _remainingOperations > 0 else { return false }
         return DispatchTime.now() < deadline
     }
@@ -78,6 +79,15 @@ public final class GitSigningGrant: @unchecked Sendable {
     public func sign(_ data: Data, using keyManager: KeychainManager? = nil, role: AgentSocketRole? = nil) throws -> Data {
         lock.lock()
         defer { lock.unlock() }
+
+        if SystemEventMonitor.isSessionLockedOrOffConsole() {
+            _remainingOperations = 0
+            let ctx = authorizedContext
+            authorizedContext = nil
+            hardwareSigner = nil
+            ctx?.invalidate()
+            throw AgentSessionGrantError.grantInvalidated
+        }
 
         guard _remainingOperations > 0, DispatchTime.now() < deadline else {
             throw AgentSessionGrantError.grantInvalidated
@@ -115,6 +125,14 @@ public final class GitSigningGrant: @unchecked Sendable {
     ) -> Bool {
         lock.lock()
         defer { lock.unlock() }
+        if SystemEventMonitor.isSessionLockedOrOffConsole() {
+            _remainingOperations = 0
+            let ctx = authorizedContext
+            authorizedContext = nil
+            hardwareSigner = nil
+            ctx?.invalidate()
+            return false
+        }
         guard allowsClient(clientIdentity: clientIdentity, peerProcess: peerProcess) else { return false }
         guard _remainingOperations > 0 else { return false }
         guard DispatchTime.now() < deadline else { return false }
@@ -470,6 +488,10 @@ public final class GitSigningGraceManager: @unchecked Sendable {
     public func hasRecentGitSignature(for keyLabel: String, clientIdentity: String = "", windowSeconds: TimeInterval = 30.0) -> Bool {
         lock.lock()
         defer { lock.unlock() }
+        if SystemEventMonitor.isSessionLockedOrOffConsole() {
+            recentSignatures.removeAll()
+            return false
+        }
         guard let date = recentSignatures[recentSignatureKey(label: keyLabel, clientIdentity: clientIdentity)] else { return false }
         return Date().timeIntervalSince(date) <= windowSeconds
     }

@@ -678,14 +678,14 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
     func testGrantAnchorAcceptsGitAndXCTestInDebug() {
         let gitPid: pid_t = 100
-        let gitPath = "/nix/store/abc-git-2.40.0/bin/git"
+        let gitPath = "/nix/store/0123456789abcdef0123456789abcdef-git-2.40.0/bin/git"
         let gitAnchor = ProcessInspector.grantAnchor(
             peerPid: gitPid,
             peerPath: gitPath,
             processInfo: { _ in ProcessParentSnapshot(startTime: 1000, parentPid: 1) },
             processPathLookup: { _ in gitPath }
         )
-        XCTAssertNotNil(gitAnchor, "grantAnchor must accept git with arbitrary Nix store path")
+        XCTAssertNotNil(gitAnchor, "grantAnchor must accept git with valid Nix store path")
         XCTAssertEqual(gitAnchor?.pid, gitPid)
 
         let xctestPid: pid_t = 200
@@ -1022,7 +1022,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
 
         XCTAssertFalse(capturedPromptDesc.isEmpty, "Modal prompt must have been presented")
-        XCTAssertTrue(capturedPromptDesc.hasPrefix("…"), "Long path must be prefixed with ellipsis")
+        XCTAssertTrue(capturedPromptDesc.hasPrefix("/usr/local/"), "Long path must preserve leading prefix")
+        XCTAssertTrue(capturedPromptDesc.contains("…"), "Long path must contain middle ellipsis")
         XCTAssertTrue(capturedPromptDesc.contains("/git (PID \(getpid()))"), "Long path must preserve the tail")
         let pidSuffix = " (PID \(getpid()))"
         XCTAssertLessThanOrEqual(capturedPromptDesc.count, 80 + pidSuffix.count, "promptDesc must be bounded to ~80 chars plus PID")
@@ -1160,7 +1161,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             launchdPid: "/sbin/launchd",
             shellPid: "/bin/zsh",
             approvedGitPid: "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
-            childGitPid: "/nix/store/s0m3h4sh-git-2.42.0/bin/git",
+            childGitPid: "/nix/store/s0m3h4sh0123456789abcdef01234567-git-2.42.0/bin/git",
             shHookPid: "/bin/sh",
             shScriptPid: "/bin/bash",
             gitUnderScriptPid: "/usr/bin/git",
@@ -1417,7 +1418,12 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         XCTAssertTrue(ProcessInspector.isSignerHelper(path: "/usr/local/bin/ssh-keygen"))
         XCTAssertTrue(ProcessInspector.isSignerHelper(path: "/opt/homebrew/bin/ssh-keygen"))
         XCTAssertTrue(ProcessInspector.isSignerHelper(path: "/run/current-system/sw/bin/ssh-keygen"))
-        XCTAssertTrue(ProcessInspector.isSignerHelper(path: "/nix/store/s0m3h4sh-openssh-9.5/bin/ssh-keygen"))
+        XCTAssertTrue(ProcessInspector.isSignerHelper(path: "/nix/store/s0m3h4sh0123456789abcdef01234567-openssh-9.5/bin/ssh-keygen"))
+        XCTAssertFalse(ProcessInspector.isSignerHelper(path: "/nix/store/evil/sub/bin/ssh-keygen"))
+        XCTAssertFalse(ProcessInspector.isSignerHelper(path: "/nix/store/../../tmp/bin/ssh-keygen"))
+        XCTAssertFalse(ProcessInspector.isTrustedSshBinary(path: "/nix/store/evil/sub/bin/ssh"))
+        XCTAssertFalse(ProcessInspector.isTrustedSshBinary(path: "/nix/store/short-openssh/bin/ssh"))
+        XCTAssertTrue(ProcessInspector.isTrustedSshBinary(path: "/nix/store/s0m3h4sh0123456789abcdef01234567-openssh-9.5/bin/ssh"))
 
         // 2. grantAnchor rejects untrusted git paths (e.g. /tmp/git)
         let mockProcesses: [pid_t: ProcessParentSnapshot] = [
@@ -1460,7 +1466,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             "/opt/homebrew/bin/git",
             "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
             "/run/current-system/sw/bin/git",
-            "/nix/store/s0m3h4sh-git-2.42.0/bin/git"
+            "/nix/store/s0m3h4sh0123456789abcdef01234567-git-2.42.0/bin/git"
         ] {
             let anchor = ProcessInspector.grantAnchor(
                 peerPid: 100,
