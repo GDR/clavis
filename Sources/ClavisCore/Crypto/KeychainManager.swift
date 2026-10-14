@@ -352,8 +352,6 @@ public class KeychainManager {
     }
 
     // Loads an authenticated record from Keychain.
-    // If a legacy record is encountered, migrates it transparently using expected metadata,
-    // saves the versioned StoredPrivateKeyRecord back to Keychain, and returns it.
     private func loadAuthenticatedRecord(
         label: String,
         context: LAContext,
@@ -370,59 +368,53 @@ public class KeychainManager {
         }
         defer { Self.wipeData(&rawData) }
 
+        var record: StoredPrivateKeyRecord
         do {
-            var record = try StoredPrivateKeyRecord.decode(from: rawData)
-            if let expectedKeyInfo {
+            record = try StoredPrivateKeyRecord.decode(from: rawData)
+        } catch {
+            ClavisLogger.log(
+                "SECURITY_ALERT",
+                "Keychain record corrupted for '\(label)': \(error.localizedDescription). Attempting restore from encrypted shadow vault."
+            )
+            return try restoreRecordFromVault(
+                label: label,
+                context: context,
+                expectedKeyInfo: expectedKeyInfo,
+                logMessage: "Restored corrupted Keychain record for '\(label)' from encrypted shadow vault."
+            )
+        }
+
+        if let expectedKeyInfo {
+            do {
+                try validateAuthenticatedRecord(record, against: expectedKeyInfo, context: context)
+                return record
+            } catch let validationError {
+                record.wipe()
+                if let keyPurposeError = validationError as? KeyPurposeError {
+                    throw keyPurposeError
+                }
+                ClavisLogger.log(
+                    "SECURITY_ALERT",
+                    "Keychain record validation failed for '\(label)': \(validationError.localizedDescription). Attempting restore from encrypted shadow vault."
+                )
                 do {
-                    try validateAuthenticatedRecord(record, against: expectedKeyInfo, context: context)
-                    return record
-                } catch let validationError {
-                    record.wipe()
-                    if let keyPurposeError = validationError as? KeyPurposeError {
-                        throw keyPurposeError
-                    }
-                    ClavisLogger.log(
-                        "SECURITY_ALERT",
-                        "Keychain record validation failed for '\(label)': \(validationError.localizedDescription). Attempting restore from encrypted shadow vault."
+                    return try restoreRecordFromVault(
+                        label: label,
+                        context: context,
+                        expectedKeyInfo: expectedKeyInfo,
+                        logMessage: "Restored mismatched Keychain record for '\(label)' from encrypted shadow vault."
                     )
-                    do {
-                        return try restoreRecordFromVault(
-                            label: label,
-                            context: context,
-                            expectedKeyInfo: expectedKeyInfo,
-                            logMessage: "Restored mismatched Keychain record for '\(label)' from encrypted shadow vault."
-                        )
-                    } catch {
-                        throw validationError
-                    }
+                } catch {
+                    throw validationError
                 }
             }
-            guard record.label == label else {
-                let actual = record.label
-                record.wipe()
-                throw PrivateKeyRecordError.labelMismatch(expected: label, actual: actual)
-            }
-            return record
-        } catch let error as KeyPurposeError {
-            throw error
-        } catch let error as PrivateKeyRecordError {
-            throw error
-        } catch {
-            do {
-                return try restoreRecordFromVault(
-                    label: label,
-                    context: context,
-                    expectedKeyInfo: expectedKeyInfo,
-                    logMessage: "Restored corrupted Keychain record for '\(label)' from encrypted shadow vault."
-                )
-            } catch let error as KeyPurposeError {
-                throw error
-            } catch let error as PrivateKeyRecordError {
-                throw error
-            } catch {
-                throw PrivateKeyRecordError.corruptedRecord("Malformed private-key record: \(error.localizedDescription)")
-            }
         }
+        guard record.label == label else {
+            let actual = record.label
+            record.wipe()
+            throw PrivateKeyRecordError.labelMismatch(expected: label, actual: actual)
+        }
+        return record
     }
 
     private func restoreRecordFromVault(

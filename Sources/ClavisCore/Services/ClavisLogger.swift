@@ -102,7 +102,6 @@ public struct ClavisLogger {
         case sshAgentLimit = "SSH_AGENT_LIMIT"
         case agentDaemon = "AGENT_DAEMON"
         case keychainWrite = "KEYCHAIN_WRITE"
-        case keychainMigrate = "KEYCHAIN_MIGRATE"
         case fetchKey = "FETCH_KEY"
         case fetchKeySuccess = "FETCH_KEY_SUCCESS"
         case keyList = "KEY_LIST"
