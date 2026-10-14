@@ -15,7 +15,8 @@ final class AgentLifecycleManagerTests: ClavisBaseTestCase {
             agentPIDProvider: { 99999 },
             processNameProvider: { _ in "clavis-agent" },
             isAlive: { _ in true },
-            sigtermTimeout: 0.05
+            sigtermTimeout: 0.005,
+            sigkillTimeout: 0.02
         )
 
         let stopped = manager.stopAgent()
@@ -37,7 +38,8 @@ final class AgentLifecycleManagerTests: ClavisBaseTestCase {
             agentPIDProvider: { 99999 },
             processNameProvider: { _ in "clavis-agent" },
             isAlive: { _ in true },
-            sigtermTimeout: 0.05
+            sigtermTimeout: 0.005,
+            sigkillTimeout: 0.02
         )
 
         XCTAssertThrowsError(try manager.sendLockAllToAgent()) { error in
@@ -66,7 +68,8 @@ final class AgentLifecycleManagerTests: ClavisBaseTestCase {
             agentPIDProvider: { 99999 },
             processNameProvider: { _ in "clavis-agent" },
             isAlive: { _ in false },
-            sigtermTimeout: 0.05
+            sigtermTimeout: 0.005,
+            sigkillTimeout: 0.02
         )
 
         let stopped = manager.stopAgent()
@@ -89,7 +92,8 @@ final class AgentLifecycleManagerTests: ClavisBaseTestCase {
                 // Alive during SIGTERM wait, then dies after SIGKILL
                 return queryCount <= 3
             },
-            sigtermTimeout: 0.05
+            sigtermTimeout: 0.005,
+            sigkillTimeout: 0.02
         )
 
         let stopped = manager.stopAgent()
@@ -107,7 +111,8 @@ final class AgentLifecycleManagerTests: ClavisBaseTestCase {
             agentPIDProvider: { 99999 },
             processNameProvider: { _ in "other-process" },
             isAlive: { _ in true },
-            sigtermTimeout: 0.05
+            sigtermTimeout: 0.005,
+            sigkillTimeout: 0.02
         )
 
         let stopped = manager.stopAgent()

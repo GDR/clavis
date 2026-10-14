@@ -32,6 +32,8 @@ public final class AgentLifecycleManager: @unchecked Sendable {
     private let isAlive: (pid_t) -> Bool
     private let isTrustedServerPeer: (Int32) -> Bool
     private let sigtermTimeout: TimeInterval
+    private let sigkillTimeout: TimeInterval
+    private let controlTimeout: TimeInterval
 
     public init(
         socketPath: String = SSHAgentServer.defaultSocketPath,
@@ -39,7 +41,9 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         processNameProvider: ((pid_t) -> String?)? = nil,
         isAlive: ((pid_t) -> Bool)? = nil,
         isTrustedServerPeer: ((Int32) -> Bool)? = nil,
-        sigtermTimeout: TimeInterval = 2.0
+        sigtermTimeout: TimeInterval = 2.0,
+        sigkillTimeout: TimeInterval = 0.5,
+        controlTimeout: TimeInterval = 3.0
     ) {
         self.socketPath = socketPath
         self.agentPIDProvider = agentPIDProvider ?? {
@@ -52,6 +56,8 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         self.isAlive = isAlive ?? { Self.isProcessAlive(pid: $0) }
         self.isTrustedServerPeer = isTrustedServerPeer ?? { ClavisCodeTrust.isTrustedPeer(socket: $0) }
         self.sigtermTimeout = sigtermTimeout
+        self.sigkillTimeout = sigkillTimeout
+        self.controlTimeout = controlTimeout
     }
 
     /// Checks whether a process is alive and not a zombie.
@@ -228,7 +234,8 @@ public final class AgentLifecycleManager: @unchecked Sendable {
 
     /// Sends a control packet over the UNIX domain socket and reads the response body.
     /// Sets socket timeouts and SO_NOSIGPIPE to prevent deadlocks and SIGPIPE crashes.
-    internal func sendControlRequest(_ payload: Data, timeout: TimeInterval = 3) throws -> Data {
+    internal func sendControlRequest(_ payload: Data, timeout: TimeInterval? = nil) throws -> Data {
+        let timeout = timeout ?? controlTimeout
         let sock = socket(AF_UNIX, SOCK_STREAM, 0)
         guard sock >= 0 else {
             throw AgentLifecycleError.agentControlFailed("socket creation failed (errno \(errno))")
@@ -575,27 +582,29 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         kill(pid, SIGTERM)
 
         // Wait for process to exit and release socket
+        let termPoll = useconds_t(max(1_000, min(50_000, Int(sigtermTimeout * 1_000_000))))
         let deadline = Date().addingTimeInterval(sigtermTimeout)
         while Date() < deadline {
             if !isAlive(pid) {
                 break
             }
-            usleep(50_000)
+            usleep(termPoll)
         }
 
         // Force kill if still alive and verified as clavis-agent
         if isAlive(pid), processNameProvider(pid) == "clavis-agent" {
+            let killPoll = useconds_t(max(1_000, min(50_000, Int(sigkillTimeout * 250_000))))
             ClavisLogger.log("AGENT_LIFECYCLE", "Forcefully killing agent daemon PID \(pid)")
             kill(pid, SIGKILL)
-            usleep(50_000)
+            usleep(killPoll)
 
-            // Poll for up to ~500 ms for process to exit after SIGKILL
-            let killDeadline = Date().addingTimeInterval(0.5)
+            // Poll for up to sigkillTimeout (default ~500 ms) for process to exit after SIGKILL
+            let killDeadline = Date().addingTimeInterval(sigkillTimeout)
             while Date() < killDeadline {
                 if !isAlive(pid) {
                     break
                 }
-                usleep(50_000)
+                usleep(killPoll)
             }
         }
 
