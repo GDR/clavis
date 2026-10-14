@@ -2,7 +2,6 @@ import Foundation
 import Security
 import CryptoKit
 import LocalAuthentication
-import AppKit
 
 public class KeychainManager {
     public static let privateServiceName = "com.clavis.private-record.v2"
@@ -15,6 +14,8 @@ public class KeychainManager {
     private let agentGrantRevoker: (String) throws -> Void
     private let auditRecorder: AuditRecording
     private let instanceSigningProvider: SecureEnclaveSigningProviding?
+    private let gitSigningGraceManager: GitSigningGraceManager
+    public let signerRegistry: KeySignerRegistry
 
     public var activeSigningProvider: SecureEnclaveSigningProviding {
         instanceSigningProvider ?? Self.customSigningProvider ?? ProductionSecureEnclaveSigningProvider()
@@ -27,13 +28,17 @@ public class KeychainManager {
             try AgentLifecycleManager.shared.invalidateAgentGrant(label: label)
         },
         auditRecorder: AuditRecording = AuditRecorder.shared,
-        signingProvider: SecureEnclaveSigningProviding? = nil
+        signingProvider: SecureEnclaveSigningProviding? = nil,
+        gitSigningGraceManager: GitSigningGraceManager = .shared,
+        signerRegistry: KeySignerRegistry = .shared
     ) {
         self.authenticator = authenticator
         self.privateKeyStore = privateKeyStore
         self.agentGrantRevoker = agentGrantRevoker
         self.auditRecorder = auditRecorder
         self.instanceSigningProvider = signingProvider
+        self.gitSigningGraceManager = gitSigningGraceManager
+        self.signerRegistry = signerRegistry
     }
 
     // Generate new Key and save private seed (guarded by Touch ID) and public metadata (unencrypted)
@@ -44,29 +49,34 @@ public class KeychainManager {
         storageType: KeyStorageType = .secureEnclave,
         biometricPolicy: BiometricPolicy? = nil,
         keyPurpose: KeyPurpose = .general
-    ) throws -> Ed25519KeyInfo {
+    ) throws -> SSHKeyInfo {
         try validateLabel(label)
         try validateGenerationConfiguration(algorithm: algorithm, storageType: storageType)
+        let signer = try signerRegistry.signer(forAlgorithmName: algorithm)
         if try fetchKeyInfo(label: label) != nil || privateKeyStore.contains(label: label) {
-            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Key with label '\(label)' already exists. Delete it first before generating a new key with this label."])
+            throw KeychainManagerError.keyAlreadyExists(label: label)
         }
         _ = try EncryptedVaultStore.shared.ensureMasterKey()
 
         guard activeSigningProvider.isAvailable else {
-            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Apple Secure Enclave is not available on this device."])
+            throw KeychainManagerError.secureEnclaveUnavailable
         }
 
         let policy = biometricPolicy ?? .userPresence
         let accessControl = try PrivateKeyAccessControl.make(flags: policy.accessControlFlags)
-        let (dataRepresentation, pubKeyData) = try activeSigningProvider.generateKey(accessControl: accessControl)
+        let keyPair = try signer.generateKeyPair(
+            label: label,
+            accessControl: accessControl,
+            provider: activeSigningProvider
+        )
 
         var record = StoredPrivateKeyRecord(
             label: label,
-            algorithm: .ecdsaP256,
-            storageType: .secureEnclave,
+            algorithm: signer.algorithm,
+            storageType: storageType,
             biometricPolicy: policy,
             keyPurpose: keyPurpose,
-            keyData: dataRepresentation
+            keyData: keyPair.keyData
         )
         defer { record.wipe() }
         var recordData = try record.encode()
@@ -83,19 +93,11 @@ public class KeychainManager {
             throw error
         }
 
-        let keyType = "ecdsa-sha2-nistp256"
-        let curveId = "nistp256"
-
-        var blob = Data()
-        blob.appendWireString(keyType)
-        blob.appendWireString(curveId)
-        blob.appendWireData(pubKeyData)
-
-        let b64 = blob.base64EncodedString()
-        let openSSH = "\(keyType) \(b64) \(label)"
+        let blob = keyPair.publicKeyBlob
+        let openSSH = signer.formatOpenSSHPublicKey(publicKeyBlob: blob, label: label)
         let fingerprint = "SHA256:" + Data(SHA256.hash(data: blob)).base64EncodedString().replacingOccurrences(of: "=", with: "")
 
-        let keyInfo = Ed25519KeyInfo(
+        let keyInfo = SSHKeyInfo(
             label: label,
             publicKeyOpenSSH: openSSH,
             publicKeyBlob: blob,
@@ -126,24 +128,22 @@ public class KeychainManager {
     }
 
     private func validateGenerationConfiguration(algorithm: String, storageType: KeyStorageType) throws {
-        let isSupported = (algorithm == "ECDSA P-256" || algorithm == KeyAlgorithm.ecdsaP256.rawValue) &&
-            storageType == .secureEnclave
-        guard isSupported else {
-            throw NSError(
-                domain: "Clavis",
-                code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "Unsupported key algorithm or storage combination: \(algorithm) / \(storageType.rawValue)."]
+        guard storageType == .secureEnclave else {
+            throw KeychainManagerError.unsupportedConfiguration(
+                algorithm: algorithm,
+                storageType: storageType.rawValue
             )
         }
+        _ = try signerRegistry.signer(forAlgorithmName: algorithm)
     }
 
     // List all public key metadata WITHOUT triggering Touch ID or Keychain prompts
-    public func listKeys() throws -> [Ed25519KeyInfo] {
+    public func listKeys() throws -> [SSHKeyInfo] {
         ClavisLogger.log("KEY_LIST", "Fetching key list from local store...")
         return PublicKeyStore.loadAll()
     }
 
-    public func fetchKeyInfo(label: String) throws -> Ed25519KeyInfo? {
+    public func fetchKeyInfo(label: String) throws -> SSHKeyInfo? {
         return PublicKeyStore.loadAll().first(where: { $0.label == label })
     }
 
@@ -232,27 +232,27 @@ public class KeychainManager {
     // MARK: - Authenticated Private Key Records & Verification
 
     // Derives the OpenSSH wire format public key blob directly from an authenticated private record.
+    public func derivePublicKeyBlob(
+        record: StoredPrivateKeyRecord,
+        context: LAContext? = nil
+    ) throws -> Data {
+        let signer = try signerRegistry.signer(for: record.algorithm)
+        return try signer.derivePublicKeyBlob(record: record, context: context, provider: activeSigningProvider)
+    }
+
     public static func derivePublicKeyBlob(
         record: StoredPrivateKeyRecord,
         context: LAContext? = nil,
         provider: SecureEnclaveSigningProviding? = nil
     ) throws -> Data {
-        guard record.algorithm == .ecdsaP256 && record.storageType == .secureEnclave else {
-            throw PrivateKeyRecordError.corruptedRecord("Unsupported key algorithm or storage type")
-        }
         let activeProvider = provider ?? customSigningProvider ?? ProductionSecureEnclaveSigningProvider()
-        let pubKeyData = try activeProvider.derivePublicKey(dataRepresentation: record.keyData, context: context)
-
-        var blob = Data()
-        blob.appendWireString("ecdsa-sha2-nistp256")
-        blob.appendWireString("nistp256")
-        blob.appendWireData(pubKeyData)
-        return blob
+        let signer = try KeySignerRegistry.shared.signer(for: record.algorithm)
+        return try signer.derivePublicKeyBlob(record: record, context: context, provider: activeProvider)
     }
 
     private func validateAuthenticatedRecord(
         _ record: StoredPrivateKeyRecord,
-        against key: Ed25519KeyInfo,
+        against key: SSHKeyInfo,
         context: LAContext
     ) throws {
         guard record.label == key.label else {
@@ -288,11 +288,8 @@ public class KeychainManager {
             )
         }
 
-        let derivedPublicBlob = try Self.derivePublicKeyBlob(record: record, context: context, provider: activeSigningProvider)
-        guard derivedPublicBlob == key.publicKeyBlob else {
-            ClavisLogger.log("SECURITY_ALERT", "Public key mismatch for '\(key.label)'! Possible metadata tampering.")
-            throw PrivateKeyRecordError.publicKeyMismatch
-        }
+        let signer = try signerRegistry.signer(for: record.algorithm)
+        try signer.verifyPublicKey(record: record, against: key, context: context, provider: activeSigningProvider)
     }
 
     /// True only when deleting the vault record removes the same key the user authenticated.
@@ -322,7 +319,7 @@ public class KeychainManager {
         }
 
         if let index = try? fetchKeyInfo(label: label) {
-            guard let derived = try? Self.derivePublicKeyBlob(record: record, context: context, provider: activeSigningProvider) else {
+            guard let derived = try? derivePublicKeyBlob(record: record, context: context) else {
                 return false
             }
             if derived != index.publicKeyBlob {
@@ -344,8 +341,8 @@ public class KeychainManager {
         }
         defer { vaultRecord.wipe() }
         guard vaultRecord.label == label,
-              let keychainBlob = try? Self.derivePublicKeyBlob(record: record, context: context, provider: activeSigningProvider),
-              let vaultBlob = try? Self.derivePublicKeyBlob(record: vaultRecord, context: context) else {
+              let keychainBlob = try? derivePublicKeyBlob(record: record, context: context),
+              let vaultBlob = try? derivePublicKeyBlob(record: vaultRecord, context: context) else {
             return false
         }
         return keychainBlob == vaultBlob
@@ -356,7 +353,7 @@ public class KeychainManager {
         label: String,
         context: LAContext,
         prompt: String,
-        expectedKeyInfo: Ed25519KeyInfo?
+        expectedKeyInfo: SSHKeyInfo?
     ) throws -> StoredPrivateKeyRecord {
         guard var rawData = try privateKeyStore.load(label: label, context: context, prompt: prompt) else {
             return try restoreRecordFromVault(
@@ -420,11 +417,11 @@ public class KeychainManager {
     private func restoreRecordFromVault(
         label: String,
         context: LAContext,
-        expectedKeyInfo: Ed25519KeyInfo?,
+        expectedKeyInfo: SSHKeyInfo?,
         logMessage: String
     ) throws -> StoredPrivateKeyRecord {
         guard var restoredRecord = try EncryptedVaultStore.shared.loadRecord(label: label, context: context) else {
-            throw NSError(domain: "Clavis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Private key not found for '\(label)'"])
+            throw KeychainManagerError.privateKeyNotFound(label: label)
         }
 
         do {
@@ -471,30 +468,92 @@ public class KeychainManager {
         data.removeAll(keepingCapacity: false)
     }
 
-    // Helper to format an integer as an SSH mpint (RFC 4251 section 5)
-    public static func encodeSSHMPint(_ bytes: Data) -> Data {
-        var d = bytes
-        while d.count > 1 && d.first == 0 {
-            d.removeFirst()
-        }
-        var res = Data()
-        if let first = d.first, first & 0x80 != 0 {
-            var withZero = Data([0x00])
-            withZero.append(d)
-            var len = UInt32(withZero.count).bigEndian
-            Swift.withUnsafeBytes(of: &len) { res.append(contentsOf: $0) }
-            res.append(withZero)
+    private func withVerifiedPrivateKeyRecord<T>(
+        for key: SSHKeyInfo,
+        prompt: String,
+        existingContext: LAContext? = nil,
+        invalidateContextOnMismatch: Bool = true,
+        auditOnAuthFailure: Bool = false,
+        auditKeyKind: AuditKeyKind? = nil,
+        auditSessionID: String? = nil,
+        _ body: (LAContext, StoredPrivateKeyRecord) throws -> T
+    ) throws -> T {
+        let laPolicy = key.effectiveBiometricPolicy.laPolicy
+        let authContext: LAContext
+        if let existingContext {
+            authContext = existingContext
         } else {
-            var len = UInt32(d.count).bigEndian
-            Swift.withUnsafeBytes(of: &len) { res.append(contentsOf: $0) }
-            res.append(d)
+            do {
+                authContext = try authenticator.authenticate(reason: prompt, policy: laPolicy)
+            } catch {
+                if auditOnAuthFailure {
+                    auditRecorder.record(
+                        AuditEvent(
+                            type: .keyKindChange,
+                            result: .denied,
+                            reason: .authenticationFailed,
+                            keyFingerprint: key.fingerprint,
+                            keyKind: auditKeyKind,
+                            sessionID: auditSessionID,
+                            sensitive: AuditSensitive(keyLabel: key.label, processChain: [], host: nil)
+                        )
+                    )
+                }
+                throw error
+            }
         }
-        return res
+
+        var record: StoredPrivateKeyRecord
+        do {
+            record = try loadAuthenticatedRecord(
+                label: key.label,
+                context: authContext,
+                prompt: prompt,
+                expectedKeyInfo: key
+            )
+        } catch {
+            // loadAuthenticatedRecord rejects a public-index policy that is weaker than the
+            // record. Invalidate that context here so it cannot be reused for a grant.
+            if invalidateContextOnMismatch {
+                if laPolicy != .deviceOwnerAuthenticationWithBiometrics,
+                   case PrivateKeyRecordError.metadataMismatch(let field, _, _) = error,
+                   field == "biometricPolicy" {
+                    authContext.invalidate()
+                }
+                if error is KeyPurposeError {
+                    authContext.invalidate()
+                }
+            }
+            throw error
+        }
+        defer { record.wipe() }
+
+        let recordPolicy = record.biometricPolicy ?? .userPresence
+        if invalidateContextOnMismatch && recordPolicy == .biometryCurrentSet && laPolicy != .deviceOwnerAuthenticationWithBiometrics {
+            authContext.invalidate()
+            ClavisLogger.log("SECURITY_ALERT", "Refusing operation for '\(key.label)': record requires biometryCurrentSet but the authentication context was not evaluated with biometrics.")
+            throw PrivateKeyRecordError.metadataMismatch(
+                field: "biometricPolicy",
+                expected: BiometricPolicy.userPresence.rawValue,
+                actual: recordPolicy.rawValue
+            )
+        }
+
+        try validateAuthenticatedRecord(record, against: key, context: authContext)
+        return try body(authContext, record)
+    }
+
+    private func encodeP256SSHSignature(_ rawSignature: Data) throws -> Data {
+        try Self.encodeP256SSHSignature(rawSignature)
+    }
+
+    private static func encodeP256SSHSignature(_ rawSignature: Data) throws -> Data {
+        try ECDSAP256KeySigner.shared.formatSSHSignatureBlob(rawSignature: rawSignature)
     }
 
     // Sign challenge data for SSH Agent returning wire format signature blob
     public func signSSH(
-        key: Ed25519KeyInfo,
+        key: SSHKeyInfo,
         data: Data,
         prompt: String,
         useCache: Bool = true
@@ -510,7 +569,7 @@ public class KeychainManager {
     }
 
     internal func signSSH(
-        key: Ed25519KeyInfo,
+        key: SSHKeyInfo,
         data: Data,
         prompt: String,
         useCache: Bool,
@@ -529,49 +588,38 @@ public class KeychainManager {
             )
         }
 
-        let context: LAContext
-        if let existing = existingContext {
-            context = existing
-        } else {
-            let laPolicy: LAPolicy = key.effectiveBiometricPolicy.laPolicy
+        if existingContext == nil {
             ClavisLogger.promptDebug("clavis-code", "KeychainManager: prompting for SSH signature '\(key.label)' (storage: \(key.storageType.rawValue), policy: \(key.biometricPolicy?.rawValue ?? "default")): \"\(prompt)\"")
-            context = try authenticator.authenticate(reason: prompt, policy: laPolicy)
         }
 
-        // 1. Load authoritative record from Keychain
-        var record = try loadAuthenticatedRecord(
-            label: key.label,
-            context: context,
+        return try withVerifiedPrivateKeyRecord(
+            for: key,
             prompt: prompt,
-            expectedKeyInfo: key
-        )
-        defer { record.wipe() }
-
-        guard allowedPurposes.contains(record.purpose) else {
-            throw KeyPurposeError.notAllowedOnThisPath(record.purpose)
+            existingContext: existingContext,
+            invalidateContextOnMismatch: false,
+            auditOnAuthFailure: false
+        ) { context, record in
+            guard allowedPurposes.contains(record.purpose) else {
+                throw KeyPurposeError.notAllowedOnThisPath(record.purpose)
+            }
+            if record.purpose == .gitSigningOnly && !isGitSigningRequest {
+                throw PrivateKeyRecordError.purposeNotAllowed(
+                    purpose: record.purpose.rawValue,
+                    operation: "non-Git SSH signing"
+                )
+            }
+            guard record.storageType == .secureEnclave else {
+                throw PrivateKeyRecordError.storageMismatch(expected: KeyStorageType.secureEnclave.rawValue, actual: record.storageType.rawValue)
+            }
+            let signer = try self.signerRegistry.signer(for: record.algorithm)
+            return try signer.signSSH(data: data, keyData: record.keyData, context: context, provider: self.activeSigningProvider)
         }
-
-        // 2. Validate every policy field against the authenticated record.
-        try validateAuthenticatedRecord(record, against: key, context: context)
-        if record.purpose == .gitSigningOnly && !isGitSigningRequest {
-            throw PrivateKeyRecordError.purposeNotAllowed(
-                purpose: record.purpose.rawValue,
-                operation: "non-Git SSH signing"
-            )
-        }
-
-        // 3. Execute signature based strictly on authoritative record attributes
-        guard record.algorithm == .ecdsaP256 && record.storageType == .secureEnclave else {
-            throw PrivateKeyRecordError.storageMismatch(expected: KeyStorageType.secureEnclave.rawValue, actual: record.storageType.rawValue)
-        }
-        let ecdsaSig = try activeSigningProvider.signature(for: data, dataRepresentation: record.keyData, context: context)
-        return Self.formatECDSASignatureBlob(ecdsaSig)
     }
 
     /// Authorizes a 5-minute Git signing grant via Touch ID, returning an active grant.
     @discardableResult
     internal func authorizeGitSigningGrant(
-        key: Ed25519KeyInfo,
+        key: SSHKeyInfo,
         prompt: String,
         clientIdentity: String,
         duration: TimeInterval = 300.0,
@@ -582,169 +630,88 @@ public class KeychainManager {
             throw KeyPurposeError.notAllowedOnThisPath(.agent)
         }
 
-        // Match signSSH: strict biometric keys must not accept a password fallback.
-        // The returned context is reused for later signatures, so a weaker policy here
-        // would quietly downgrade every signature under the grant.
-        let laPolicy: LAPolicy = (key.biometricPolicy == .biometryCurrentSet)
-            ? .deviceOwnerAuthenticationWithBiometrics
-            : .deviceOwnerAuthentication
-        let context = try authenticator.authenticate(reason: prompt, policy: laPolicy)
-        var record: StoredPrivateKeyRecord
-        do {
-            record = try loadAuthenticatedRecord(
-                label: key.label,
+        return try withVerifiedPrivateKeyRecord(
+            for: key,
+            prompt: prompt,
+            auditOnAuthFailure: false
+        ) { context, record in
+            guard record.purpose != .agent else {
+                context.invalidate()
+                throw KeyPurposeError.notAllowedOnThisPath(.agent)
+            }
+
+            context.interactionNotAllowed = true
+
+            guard record.storageType == .secureEnclave else {
+                context.invalidate()
+                throw PrivateKeyRecordError.storageMismatch(expected: KeyStorageType.secureEnclave.rawValue, actual: record.storageType.rawValue)
+            }
+
+            let provider = self.activeSigningProvider
+            let keyData = record.keyData
+            let signer = try self.signerRegistry.signer(for: record.algorithm)
+            let hardwareSigner: @Sendable (Data) throws -> Data = { dataToSign in
+                try signer.signSSH(data: dataToSign, keyData: keyData, context: context, provider: provider)
+            }
+            return self.gitSigningGraceManager.recordGrant(
+                keyLabel: key.label,
+                clientIdentity: clientIdentity,
+                duration: duration,
+                maxOperations: maxOperations,
                 context: context,
-                prompt: prompt,
-                expectedKeyInfo: key
-            )
-        } catch {
-            // loadAuthenticatedRecord rejects a public-index policy that is weaker than the
-            // record. Invalidate that context here so it cannot be reused for a grant.
-            if laPolicy != .deviceOwnerAuthenticationWithBiometrics,
-               case PrivateKeyRecordError.metadataMismatch(let field, _, _) = error,
-               field == "biometricPolicy" {
-                context.invalidate()
-            }
-            if error is KeyPurposeError {
-                context.invalidate()
-            }
-            throw error
-        }
-        defer { record.wipe() }
-
-        guard record.purpose != .agent else {
-            context.invalidate()
-            throw KeyPurposeError.notAllowedOnThisPath(.agent)
-        }
-
-        try validateAuthenticatedRecord(record, against: key, context: context)
-
-        // the public index chose the LocalAuthentication policy above and is not authenticated.
-        // If the Keychain record requires the current biometric set, refuse a context
-        // that was evaluated with a weaker policy and do not record the grant.
-        let recordPolicy = record.biometricPolicy ?? .userPresence
-        if recordPolicy == .biometryCurrentSet && laPolicy != .deviceOwnerAuthenticationWithBiometrics {
-            context.invalidate()
-            ClavisLogger.log("SECURITY_ALERT", "Refusing Git signing grant for '\(key.label)': record requires biometryCurrentSet but the authentication context was not evaluated with biometrics.")
-            throw PrivateKeyRecordError.metadataMismatch(
-                field: "biometricPolicy",
-                expected: BiometricPolicy.userPresence.rawValue,
-                actual: recordPolicy.rawValue
+                approvedProcess: approvedProcess,
+                hardwareSigner: hardwareSigner
             )
         }
-
-        try validateAuthenticatedRecord(record, against: key, context: context)
-
-        context.interactionNotAllowed = true
-
-        guard record.storageType == .secureEnclave else {
-            context.invalidate()
-            throw PrivateKeyRecordError.storageMismatch(expected: KeyStorageType.secureEnclave.rawValue, actual: record.storageType.rawValue)
-        }
-
-        let provider = activeSigningProvider
-        let keyData = record.keyData
-        let hardwareSigner: @Sendable (Data) throws -> Data = { dataToSign in
-            let ecdsaSig = try provider.signature(for: dataToSign, dataRepresentation: keyData, context: context)
-            return KeychainManager.formatECDSASignatureBlob(ecdsaSig)
-        }
-        return GitSigningGraceManager.shared.recordGrant(
-            keyLabel: key.label,
-            clientIdentity: clientIdentity,
-            duration: duration,
-            maxOperations: maxOperations,
-            context: context,
-            approvedProcess: approvedProcess,
-            hardwareSigner: hardwareSigner
-        )
     }
 
     /// Authorizes an agent session via Touch ID, returning an active grant.
     internal func authorizeAgentSession(
-        key: Ed25519KeyInfo,
+        key: SSHKeyInfo,
         prompt: String
     ) throws -> AgentSessionGrant {
         guard key.purpose == .agent else {
             throw KeyPurposeError.notAllowedOnThisPath(key.purpose)
         }
 
-        let laPolicy: LAPolicy = (key.biometricPolicy == .biometryCurrentSet)
-            ? .deviceOwnerAuthenticationWithBiometrics
-            : .deviceOwnerAuthentication
         ClavisLogger.promptDebug("clavis-code", "KeychainManager: prompting for agent session authorization '\(key.label)': \"\(prompt)\"")
-        let context = try authenticator.authenticate(reason: prompt, policy: laPolicy)
-        var record: StoredPrivateKeyRecord
-        do {
-            record = try loadAuthenticatedRecord(
-                label: key.label,
+        return try withVerifiedPrivateKeyRecord(
+            for: key,
+            prompt: prompt,
+            auditOnAuthFailure: false
+        ) { context, record in
+            guard record.purpose == .agent else {
+                context.invalidate()
+                throw KeyPurposeError.notAllowedOnThisPath(record.purpose)
+            }
+
+            context.interactionNotAllowed = true
+
+            guard record.storageType == .secureEnclave else {
+                context.invalidate()
+                throw KeyPurposeError.notAllowedOnThisPath(record.purpose)
+            }
+
+            let provider = self.activeSigningProvider
+            let keyData = record.keyData
+            let signer = try self.signerRegistry.signer(for: record.algorithm)
+            let hardwareSigner: @Sendable (Data) throws -> Data = { dataToSign in
+                try signer.signSSH(data: dataToSign, keyData: keyData, context: context, provider: provider)
+            }
+            return AgentSessionGrant(
+                key: key,
                 context: context,
-                prompt: prompt,
-                expectedKeyInfo: key
-            )
-        } catch {
-            if laPolicy != .deviceOwnerAuthenticationWithBiometrics,
-               case PrivateKeyRecordError.metadataMismatch(let field, _, _) = error,
-               field == "biometricPolicy" {
-                context.invalidate()
-            }
-            if error is KeyPurposeError {
-                context.invalidate()
-            }
-            throw error
-        }
-        defer { record.wipe() }
-
-        guard record.purpose == .agent else {
-            context.invalidate()
-            throw KeyPurposeError.notAllowedOnThisPath(record.purpose)
-        }
-
-        let recordPolicy = record.biometricPolicy ?? .userPresence
-        if recordPolicy == .biometryCurrentSet && laPolicy != .deviceOwnerAuthenticationWithBiometrics {
-            context.invalidate()
-            ClavisLogger.log("SECURITY_ALERT", "Refusing agent session for '\(key.label)': record requires biometryCurrentSet but the authentication context was not evaluated with biometrics.")
-            throw PrivateKeyRecordError.metadataMismatch(
-                field: "biometricPolicy",
-                expected: BiometricPolicy.userPresence.rawValue,
-                actual: recordPolicy.rawValue
+                hardwareSigner: hardwareSigner
             )
         }
+    }
 
-        try validateAuthenticatedRecord(record, against: key, context: context)
-
-        context.interactionNotAllowed = true
-
-        guard record.storageType == .secureEnclave else {
-            context.invalidate()
-            throw KeyPurposeError.notAllowedOnThisPath(record.purpose)
-        }
-
-        let provider = activeSigningProvider
-        let keyData = record.keyData
-        let hardwareSigner: @Sendable (Data) throws -> Data = { dataToSign in
-            let ecdsaSig = try provider.signature(for: dataToSign, dataRepresentation: keyData, context: context)
-            return KeychainManager.formatECDSASignatureBlob(ecdsaSig)
-        }
-        return AgentSessionGrant(
-            key: key,
-            context: context,
-            hardwareSigner: hardwareSigner
-        )
+    public static func encodeSSHMPint(_ bytes: Data) -> Data {
+        Data.encodeSSHMPint(bytes)
     }
 
     public static func formatECDSASignatureBlob(_ ecdsaSig: P256.Signing.ECDSASignature) -> Data {
-        let rawSig = ecdsaSig.rawRepresentation
-        let r = rawSig.prefix(32)
-        let s = rawSig.suffix(32)
-
-        var innerBlob = Data()
-        innerBlob.append(KeychainManager.encodeSSHMPint(r))
-        innerBlob.append(KeychainManager.encodeSSHMPint(s))
-
-        var sigBlob = Data()
-        sigBlob.appendWireString("ecdsa-sha2-nistp256")
-        sigBlob.appendWireData(innerBlob)
-        return sigBlob
+        (try? ECDSAP256KeySigner.shared.formatSSHSignatureBlob(rawSignature: ecdsaSig.rawRepresentation)) ?? Data()
     }
 
     // Lock a key immediately
@@ -754,18 +721,14 @@ public class KeychainManager {
     }
 
     private func revokeKeyCapabilities(label: String) throws {
-        GitSigningGraceManager.shared.invalidate(keyLabel: label)
+        gitSigningGraceManager.invalidate(keyLabel: label)
         try agentGrantRevoker(label)
     }
 
     /// Change key purpose between general and agent. Requires user presence authentication.
     public func changeKind(label: String, to newPurpose: KeyPurpose, prompt: String? = nil) throws {
         guard let key = try fetchKeyInfo(label: label) else {
-            throw NSError(
-                domain: "Clavis",
-                code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "Key with label '\(label)' not found."]
-            )
+            throw KeychainManagerError.keyNotFound(label: label)
         }
 
         let currentPurpose = key.purpose
@@ -773,137 +736,85 @@ public class KeychainManager {
             throw KeyPurposeError.kindChangeNotAllowed
         }
 
-        let laPolicy: LAPolicy = (key.biometricPolicy == .biometryCurrentSet)
-            ? .deviceOwnerAuthenticationWithBiometrics
-            : .deviceOwnerAuthentication
-
         let reason = prompt ?? "Touch ID to change key kind for '\(label)'"
-        let context: LAContext
-        do {
-            context = try authenticator.authenticate(reason: reason, policy: laPolicy)
-        } catch {
+        try withVerifiedPrivateKeyRecord(
+            for: key,
+            prompt: reason,
+            auditOnAuthFailure: true,
+            auditKeyKind: newPurpose.auditKind
+        ) { _, record in
+            guard (record.purpose == .general && newPurpose == .agent) || (record.purpose == .agent && newPurpose == .general) else {
+                throw KeyPurposeError.kindChangeNotAllowed
+            }
+
+            var updatedRecord = StoredPrivateKeyRecord(
+                version: record.version,
+                label: record.label,
+                algorithm: record.algorithm,
+                storageType: record.storageType,
+                biometricPolicy: record.biometricPolicy,
+                keyPurpose: newPurpose,
+                keyData: record.keyData,
+                createdAt: record.createdAt
+            )
+            defer { updatedRecord.wipe() }
+
+            let hasVaultRecord = EncryptedVaultStore.shared.hasRecord(label: label)
+            if hasVaultRecord {
+                try EncryptedVaultStore.shared.saveRecord(updatedRecord)
+            }
+
+            var recordData = try updatedRecord.encode()
+            defer { Self.wipeData(&recordData) }
+
+            do {
+                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
+            } catch {
+                if hasVaultRecord {
+                    try? EncryptedVaultStore.shared.saveRecord(record)
+                }
+                throw error
+            }
+
+            let updatedKeyInfo = SSHKeyInfo(
+                label: key.label,
+                publicKeyOpenSSH: key.publicKeyOpenSSH,
+                publicKeyBlob: key.publicKeyBlob,
+                fingerprint: key.fingerprint,
+                createdAt: key.createdAt,
+                algorithmName: key.algorithmName,
+                storage: key.storageType,
+                biometricPolicy: key.biometricPolicy,
+                keyPurpose: newPurpose
+            )
+
+            do {
+                try PublicKeyStore.saveChecked(updatedKeyInfo)
+            } catch {
+                if var originalRecordData = try? record.encode() {
+                    defer { Self.wipeData(&originalRecordData) }
+                    try? privateKeyStore.save(label: label, data: originalRecordData, accessControlFlags: [.userPresence])
+                }
+                if hasVaultRecord {
+                    try? EncryptedVaultStore.shared.saveRecord(record)
+                }
+                throw error
+            }
+
+            try revokeKeyCapabilities(label: label)
+
             auditRecorder.record(
                 AuditEvent(
                     type: .keyKindChange,
-                    result: .denied,
-                    reason: .authenticationFailed,
+                    result: .allowed,
                     keyFingerprint: key.fingerprint,
                     keyKind: newPurpose.auditKind,
                     sensitive: AuditSensitive(keyLabel: label, processChain: [], host: nil)
                 )
             )
-            throw error
+            ClavisLogger.log("KEY_CHANGE_KIND", "Changed purpose of '\(label)' from '\(currentPurpose.rawValue)' to '\(newPurpose.rawValue)'.")
         }
-
-        var record: StoredPrivateKeyRecord
-        do {
-            record = try loadAuthenticatedRecord(
-                label: label,
-                context: context,
-                prompt: reason,
-                expectedKeyInfo: key
-            )
-        } catch {
-            if laPolicy != .deviceOwnerAuthenticationWithBiometrics,
-               case PrivateKeyRecordError.metadataMismatch(let field, _, _) = error,
-               field == "biometricPolicy" {
-                context.invalidate()
-            }
-            if error is KeyPurposeError {
-                context.invalidate()
-            }
-            throw error
-        }
-        defer { record.wipe() }
-
-        try validateAuthenticatedRecord(record, against: key, context: context)
-
-        let recordPolicy = record.biometricPolicy ?? .userPresence
-        if recordPolicy == .biometryCurrentSet && laPolicy != .deviceOwnerAuthenticationWithBiometrics {
-            context.invalidate()
-            ClavisLogger.log("SECURITY_ALERT", "Refusing key kind change for '\(key.label)': record requires biometryCurrentSet but the authentication context was not evaluated with biometrics.")
-            throw PrivateKeyRecordError.metadataMismatch(
-                field: "biometricPolicy",
-                expected: BiometricPolicy.userPresence.rawValue,
-                actual: recordPolicy.rawValue
-            )
-        }
-
-        guard (record.purpose == .general && newPurpose == .agent) || (record.purpose == .agent && newPurpose == .general) else {
-            throw KeyPurposeError.kindChangeNotAllowed
-        }
-
-        var updatedRecord = StoredPrivateKeyRecord(
-            version: record.version,
-            label: record.label,
-            algorithm: record.algorithm,
-            storageType: record.storageType,
-            biometricPolicy: record.biometricPolicy,
-            keyPurpose: newPurpose,
-            keyData: record.keyData,
-            createdAt: record.createdAt
-        )
-        defer { updatedRecord.wipe() }
-
-        let hasVaultRecord = EncryptedVaultStore.shared.hasRecord(label: label)
-        if hasVaultRecord {
-            try EncryptedVaultStore.shared.saveRecord(updatedRecord)
-        }
-
-        var recordData = try updatedRecord.encode()
-        defer { Self.wipeData(&recordData) }
-
-        do {
-            try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
-        } catch {
-            if hasVaultRecord {
-                try? EncryptedVaultStore.shared.saveRecord(record)
-            }
-            throw error
-        }
-
-        let updatedKeyInfo = Ed25519KeyInfo(
-            label: key.label,
-            publicKeyOpenSSH: key.publicKeyOpenSSH,
-            publicKeyBlob: key.publicKeyBlob,
-            fingerprint: key.fingerprint,
-            createdAt: key.createdAt,
-            algorithmName: key.algorithmName,
-            storage: key.storageType,
-            biometricPolicy: key.biometricPolicy,
-            keyPurpose: newPurpose
-        )
-
-        do {
-            try PublicKeyStore.saveChecked(updatedKeyInfo)
-        } catch {
-            if var originalRecordData = try? record.encode() {
-                defer { Self.wipeData(&originalRecordData) }
-                try? privateKeyStore.save(label: label, data: originalRecordData, accessControlFlags: [.userPresence])
-            }
-            if hasVaultRecord {
-                try? EncryptedVaultStore.shared.saveRecord(record)
-            }
-            throw error
-        }
-
-        try revokeKeyCapabilities(label: label)
-
-        auditRecorder.record(
-            AuditEvent(
-                type: .keyKindChange,
-                result: .allowed,
-                keyFingerprint: key.fingerprint,
-                keyKind: newPurpose.auditKind,
-                sensitive: AuditSensitive(keyLabel: label, processChain: [], host: nil)
-            )
-        )
-        ClavisLogger.log("KEY_CHANGE_KIND", "Changed purpose of '\(label)' from '\(currentPurpose.rawValue)' to '\(newPurpose.rawValue)'.")
     }
-
-
-
-
 
     private func validateLabel(_ label: String) throws {
         let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -912,11 +823,36 @@ public class KeychainManager {
               label == trimmed,
               label.utf8.count <= 128,
               !hasControlCharacters else {
-            throw NSError(
-                domain: "Clavis",
-                code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "Key label must be 1-128 bytes and contain no leading, trailing, or control characters."]
-            )
+            throw KeychainManagerError.invalidLabel
+        }
+    }
+}
+
+public enum KeychainManagerError: LocalizedError, Equatable {
+    case keyAlreadyExists(label: String)
+    case secureEnclaveUnavailable
+    case unsupportedConfiguration(algorithm: String, storageType: String)
+    case privateKeyNotFound(label: String)
+    case keyNotFound(label: String)
+    case invalidLabel
+    case invalidSignatureLength(Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .keyAlreadyExists(let label):
+            return "Key with label '\(label)' already exists. Delete it first before generating a new key with this label."
+        case .secureEnclaveUnavailable:
+            return "Apple Secure Enclave is not available on this device."
+        case .unsupportedConfiguration(let algorithm, let storageType):
+            return "Unsupported key algorithm or storage combination: \(algorithm) / \(storageType)."
+        case .privateKeyNotFound(let label):
+            return "Private key not found for '\(label)'"
+        case .keyNotFound(let label):
+            return "Key with label '\(label)' not found."
+        case .invalidLabel:
+            return "Key label must be 1-128 bytes and contain no leading, trailing, or control characters."
+        case .invalidSignatureLength(let count):
+            return "Invalid P-256 signature length: expected 64 bytes, got \(count)."
         }
     }
 }
