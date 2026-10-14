@@ -73,14 +73,14 @@ final class AgentKeyPolicyTests: ClavisBaseTestCase {
         XCTAssertNoThrow(try p.validate())
 
         // Host key types
-        for supported in ["ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521"] {
+        for supported in ["ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "ssh-rsa", "rsa-sha2-256", "rsa-sha2-512"] {
             let host = AgentAllowedHost(name: "test.example.com", hostKeyBlob: makeHostKeyBlob(keyType: supported))
             p = AgentKeyPolicy(allowedHosts: [host])
             XCTAssertNoThrow(try p.validate(), "Expected \(supported) to be supported")
         }
 
-        let rsaHost = AgentAllowedHost(name: "rsa.example.com", hostKeyBlob: makeHostKeyBlob(keyType: "ssh-rsa"))
-        p = AgentKeyPolicy(allowedHosts: [rsaHost])
+        let dsaHost = AgentAllowedHost(name: "dsa.example.com", hostKeyBlob: makeHostKeyBlob(keyType: "ssh-dss"))
+        p = AgentKeyPolicy(allowedHosts: [dsaHost])
         XCTAssertThrowsError(try p.validate())
 
         let malformedHost = AgentAllowedHost(name: "bad.example.com", hostKeyBlob: Data([0x00, 0x01]))

@@ -159,10 +159,10 @@ public final class SigningPolicyEvaluator {
         }
 
         if role == .agent {
-            if connection?.hasForwarding == true {
+            if connection?.hasForwarding == true || connection?.hasFailedBind == true {
                 audit.result = .denied
                 audit.reason = .forwardingRefused
-                ClavisLogger.log("SECURITY_ALERT", "Agent key signature refused because connection has forwarding.")
+                ClavisLogger.log("SECURITY_ALERT", "Agent key signature refused because connection has forwarding or a failed session-bind.")
                 return .denied
             }
             switch agentSessions.session(forKeyFingerprint: matchingKey.fingerprint, peerPid: pid) {
@@ -184,7 +184,12 @@ public final class SigningPolicyEvaluator {
                     var sessionIDPrefix = Data()
                     sessionIDPrefix.appendWireData(authBinding.sessionID)
                     guard dataToSign.starts(with: sessionIDPrefix),
-                          SessionBind.isValidSSH2UserAuthRequest(dataToSign, expectedSessionID: authBinding.sessionID, expectedKeyBlob: matchingKey.publicKeyBlob) else {
+                          SessionBind.isValidSSH2UserAuthRequest(
+                              dataToSign,
+                              expectedSessionID: authBinding.sessionID,
+                              expectedKeyBlob: matchingKey.publicKeyBlob,
+                              expectedHostKeyBlob: authBinding.hostKeyBlob
+                          ) else {
                         audit.result = .denied
                         audit.reason = .hostNotAllowed
                         ClavisLogger.log("SECURITY_ALERT", "Agent key signing refused: signature data does not start with session ID or is not a valid RFC 4252 userauth request matching key blob.")
@@ -420,7 +425,7 @@ public final class SigningPolicyEvaluator {
                     processPath: processPath,
                     dataToSign: dataToSign,
                     keyBlob: matchingKey.publicKeyBlob,
-                    hasForwarding: connection?.hasForwarding ?? false
+                    hasForwarding: (connection?.hasForwarding == true) || (connection?.hasFailedBind == true)
                 )
                 ClavisLogger.log("SSH_AGENT_SIGN", "Initiating signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
                 sigBlob = try promptedSign(
