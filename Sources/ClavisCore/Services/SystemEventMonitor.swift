@@ -32,7 +32,8 @@ private func sys_notify_cancel(_ token: Int32) -> UInt32
 public final class SystemEventMonitor: @unchecked Sendable {
     public static let shared = SystemEventMonitor()
 
-    public static var customScreenLockNotificationName: String? = nil {
+    #if DEBUG
+    internal static var customScreenLockNotificationName: String? = nil {
         didSet {
             shared.reloadDarwinNotification()
         }
@@ -40,17 +41,20 @@ public final class SystemEventMonitor: @unchecked Sendable {
 
     /// Optional hook for overriding session active validation in tests.
     /// Returns `true` when the user session is active/unlocked, `false` when locked or off-console.
-    public static var customSessionActiveValidator: (@Sendable () -> Bool)? = nil
+    internal static var customSessionActiveValidator: (@Sendable () -> Bool)? = nil
+    #endif
 
     /// Returns `true` when the current console session is locked or switched away.
     /// Defaults to `false` inside XCTest unless `customSessionActiveValidator` is configured.
-    public static var isSessionLockedOrOffConsole: @Sendable () -> Bool = {
+    public static func isSessionLockedOrOffConsole() -> Bool {
+        #if DEBUG
         if let validator = SystemEventMonitor.customSessionActiveValidator {
             return !validator()
         }
         if NSClassFromString("XCTestCase") != nil {
             return false
         }
+        #endif
         guard let sessionDict = CGSessionCopyCurrentDictionary() as? [String: Any] else {
             return false
         }
@@ -147,7 +151,11 @@ public final class SystemEventMonitor: @unchecked Sendable {
     }
 
     private func setupDarwinNotificationsLocked() {
+        #if DEBUG
         let name = Self.customScreenLockNotificationName ?? "com.apple.screenIsLocked"
+        #else
+        let name = "com.apple.screenIsLocked"
+        #endif
         var token: Int32 = 0
         let status = sys_notify_register_dispatch(name, &token, queue) { [weak self] _ in
             ClavisLogger.log("SYSTEM_EVENT", "Screen lock detected via Darwin notification.")
