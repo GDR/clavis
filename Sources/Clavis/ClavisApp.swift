@@ -42,6 +42,12 @@ struct ClavisApp: App {
     @StateObject private var appState = AppState.shared
 
     init() {
+        // Wire AppKit adapters for ClavisCore decoupled hooks
+        SingleInstanceLock.processActivator = AppKitProcessActivator.activate
+        SystemEventMonitor.defaultSleepObserverFactory = { AppKitSleepObserver() }
+        SystemEventMonitor.shared.setSleepObserver(AppKitSleepObserver())
+        GitSigningGraceManager.shared.setPresenter(AppKitGitSigningGracePresenter())
+
         guard PlatformSupport.hasSecureEnclave else {
             let alert = NSAlert()
             alert.messageText = ClavisUIStrings.App.unsupportedTitle

@@ -2,7 +2,6 @@ import Foundation
 import LocalAuthentication
 import CryptoKit
 import CoreFoundation
-import AppKit
 import CoreGraphics
 
 public enum GitSigningPromptChoice: Equatable {
@@ -285,6 +284,46 @@ public enum GitSigningPrompt {
     }
 }
 
+public protocol GitSigningGracePresenter: Sendable {
+    func prompt(keyLabel: String, clientDesc: String, timeout: TimeInterval) -> GitSigningPromptChoice
+}
+
+public extension GitSigningGracePresenter {
+    func prompt(keyLabel: String, clientDesc: String) -> GitSigningPromptChoice {
+        prompt(keyLabel: keyLabel, clientDesc: clientDesc, timeout: 30.0)
+    }
+}
+
+public struct CFUserNotificationGitSigningGracePresenter: GitSigningGracePresenter {
+    public let defaultTimeout: TimeInterval
+
+    public init(defaultTimeout: TimeInterval = 30.0) {
+        self.defaultTimeout = defaultTimeout
+    }
+
+    public func prompt(keyLabel: String, clientDesc: String, timeout: TimeInterval) -> GitSigningPromptChoice {
+        GitSigningPrompt.displayModal(keyLabel: keyLabel, clientDesc: clientDesc, timeout: timeout)
+    }
+
+    public func prompt(keyLabel: String, clientDesc: String) -> GitSigningPromptChoice {
+        prompt(keyLabel: keyLabel, clientDesc: clientDesc, timeout: defaultTimeout)
+    }
+}
+
+public typealias DefaultGitSigningGracePresenter = CFUserNotificationGitSigningGracePresenter
+
+public struct ClosureGitSigningGracePresenter: GitSigningGracePresenter, @unchecked Sendable {
+    public let handler: (String, String) -> GitSigningPromptChoice
+
+    public init(handler: @escaping (String, String) -> GitSigningPromptChoice) {
+        self.handler = handler
+    }
+
+    public func prompt(keyLabel: String, clientDesc: String, timeout: TimeInterval) -> GitSigningPromptChoice {
+        handler(keyLabel, clientDesc)
+    }
+}
+
 public final class GitSigningGraceManager: @unchecked Sendable {
     public static let shared = GitSigningGraceManager()
 
@@ -293,20 +332,38 @@ public final class GitSigningGraceManager: @unchecked Sendable {
     public static let gitGraceUpdatedNotification = NSNotification.Name("com.clavis.gitGraceUpdated")
     public static let screenIsLockedNotification = NSNotification.Name("com.apple.screenIsLocked")
 
-    /// Pluggable prompt provider for unit tests and headless environments.
-    public static var promptProvider: (String, String) -> GitSigningPromptChoice = { label, clientDesc in
-        GitSigningPrompt.displayModal(keyLabel: label, clientDesc: clientDesc)
-    }
-
     private let lock = NSLock()
+    private var presenter: GitSigningGracePresenter
     private var activeGrant: GitSigningGrant?
     private var recentSignatures: [String: Date] = [:]
     private let timerQueue = DispatchQueue(label: "com.clavis.git-grace.timer", qos: .userInitiated)
     private var expirationTimer: DispatchSourceTimer?
     private let observeSystemEvents: Bool
 
-    public init(observeSystemEvents: Bool = true) {
+    /// Pluggable prompt provider for unit tests and headless environments (bridged to presenter for backward compatibility).
+    public static var promptProvider: (String, String) -> GitSigningPromptChoice {
+        get {
+            { label, clientDesc in
+                GitSigningGraceManager.shared.prompt(keyLabel: label, clientDesc: clientDesc)
+            }
+        }
+        set {
+            GitSigningGraceManager.shared.setPresenter(ClosureGitSigningGracePresenter(handler: newValue))
+        }
+    }
+
+    public func setPresenter(_ presenter: GitSigningGracePresenter) {
+        lock.lock()
+        self.presenter = presenter
+        lock.unlock()
+    }
+
+    public init(
+        observeSystemEvents: Bool = true,
+        presenter: GitSigningGracePresenter = CFUserNotificationGitSigningGracePresenter()
+    ) {
         self.observeSystemEvents = observeSystemEvents
+        self.presenter = presenter
         let timer = DispatchSource.makeTimerSource(queue: timerQueue)
         timer.setEventHandler { [weak self] in
             self?.expireActiveGrant()
@@ -320,6 +377,17 @@ public final class GitSigningGraceManager: @unchecked Sendable {
                 self?.invalidateAll(broadcast: true)
             }
         }
+    }
+
+    public func prompt(
+        keyLabel: String,
+        clientDesc: String,
+        timeout: TimeInterval = 30.0
+    ) -> GitSigningPromptChoice {
+        lock.lock()
+        let currentPresenter = presenter
+        lock.unlock()
+        return currentPresenter.prompt(keyLabel: keyLabel, clientDesc: clientDesc, timeout: timeout)
     }
 
     deinit {

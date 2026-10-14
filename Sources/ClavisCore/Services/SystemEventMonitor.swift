@@ -1,7 +1,11 @@
 import Foundation
-import AppKit
 import IOKit
 import IOKit.pwr_mgt
+
+public protocol SystemSleepObserving: AnyObject, Sendable {
+    func startObserving(onSleep: @escaping @Sendable () -> Void)
+    func stopObserving()
+}
 
 typealias DarwinNotifyHandler = @convention(block) (Int32) -> Void
 
@@ -33,6 +37,9 @@ public final class SystemEventMonitor: @unchecked Sendable {
         }
     }
 
+    public static var defaultSleepObserverFactory: (@Sendable () -> (any SystemSleepObserving)?)? = nil
+    private var sleepObserver: (any SystemSleepObserving)?
+
     private let lock = NSLock()
     private var handlers: [String: () -> Void] = [:]
     private var darwinToken: Int32?
@@ -41,10 +48,30 @@ public final class SystemEventMonitor: @unchecked Sendable {
     private var portRef: IONotificationPortRef?
     private let queue = DispatchQueue(label: "com.clavis.system-events", qos: .userInitiated)
 
-    public init() {
-        setupDarwinNotifications()
-        setupPowerMonitoring()
-        setupWorkspaceNotifications()
+    public init(
+        observeDarwinEvents: Bool = true,
+        observeIOKitPower: Bool = true,
+        observeDistributedNotifications: Bool = true,
+        sleepObserver: (any SystemSleepObserving)? = nil
+    ) {
+        if observeDarwinEvents { setupDarwinNotifications() }
+        if observeIOKitPower { setupPowerMonitoring() }
+        if observeDistributedNotifications { setupDistributedNotifications() }
+
+        let resolvedObserver = sleepObserver ?? Self.defaultSleepObserverFactory?()
+        if let observer = resolvedObserver {
+            setSleepObserver(observer)
+        }
+    }
+
+    public func setSleepObserver(_ observer: (any SystemSleepObserving)?) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.sleepObserver?.stopObserving()
+        self.sleepObserver = observer
+        self.sleepObserver?.startObserving { [weak self] in
+            self?.notifyHandlers()
+        }
     }
 
     deinit {
@@ -124,16 +151,9 @@ public final class SystemEventMonitor: @unchecked Sendable {
         }
     }
 
-    private func setupWorkspaceNotifications() {
+    private func setupDistributedNotifications() {
         DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name("com.apple.screenIsLocked"),
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
-            self?.notifyHandlers()
-        }
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.willSleepNotification,
             object: nil,
             queue: nil
         ) { [weak self] _ in
@@ -144,6 +164,8 @@ public final class SystemEventMonitor: @unchecked Sendable {
     public func stop() {
         lock.lock()
         defer { lock.unlock() }
+        sleepObserver?.stopObserving()
+        sleepObserver = nil
         if let token = darwinToken {
             _ = sys_notify_cancel(token)
             darwinToken = nil

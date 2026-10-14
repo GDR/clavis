@@ -1,7 +1,10 @@
 import Foundation
-import AppKit
 
 public final class SingleInstanceLock: @unchecked Sendable {
+    public typealias ProcessActivator = @Sendable (pid_t) -> Void
+    public static var processActivator: ProcessActivator? = nil
+    public var processActivator: ProcessActivator? = nil
+
     public static let gui = SingleInstanceLock(name: "clavis-gui", bringToFrontOnConflict: true)
     public static let agent = SingleInstanceLock(name: "clavis-agent", bringToFrontOnConflict: false)
     public static let shared = SingleInstanceLock.gui
@@ -15,10 +18,16 @@ public final class SingleInstanceLock: @unchecked Sendable {
     private var lockFd: Int32 = -1
     private let lock = NSRecursiveLock()
 
-    public init(name: String = "clavis", bringToFrontOnConflict: Bool = true, customLockFileURL: URL? = nil) {
+    public init(
+        name: String = "clavis",
+        bringToFrontOnConflict: Bool = true,
+        customLockFileURL: URL? = nil,
+        processActivator: ProcessActivator? = nil
+    ) {
         self.name = name
         self.bringToFrontOnConflict = bringToFrontOnConflict
         self.customLockFileURL = customLockFileURL
+        self.processActivator = processActivator
     }
 
     public var lockFileURL: URL {
@@ -93,7 +102,8 @@ public final class SingleInstanceLock: @unchecked Sendable {
                 // Read existing PID from lock file to activate its window
                 if let pid = lockOwnerPID {
                     ClavisLogger.log("LOCK", "Attempting to focus existing process with PID \(pid)")
-                    NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateIgnoringOtherApps])
+                    let activator = self.processActivator ?? Self.processActivator
+                    activator?(pid)
                 }
 
                 // Signal existing instance to bring Key Manager window to front
