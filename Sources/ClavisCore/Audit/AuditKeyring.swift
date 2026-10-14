@@ -139,6 +139,15 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
         )
     }
 
+    private static var isRunningUnderXCTest: Bool {
+        #if DEBUG
+        NSClassFromString("XCTestCase") != nil ||
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        #else
+        false
+        #endif
+    }
+
     init(
         service: String,
         addItem: @escaping @Sendable (CFDictionary) -> OSStatus,
@@ -152,7 +161,7 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
         self.updateItem = updateItem
         self.copyItem = copyItem
 
-        if NSClassFromString("XCTestCase") == nil {
+        if !Self.isRunningUnderXCTest {
             self.observer = DistributedNotificationCenter.default().addObserver(
                 forName: Self.notificationName,
                 object: nil,
@@ -449,7 +458,7 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
     }
 
     private func notifyKeyringChanged() {
-        guard NSClassFromString("XCTestCase") == nil else { return }
+        guard !Self.isRunningUnderXCTest else { return }
         DistributedNotificationCenter.default().postNotificationName(
             Self.notificationName,
             object: nil,

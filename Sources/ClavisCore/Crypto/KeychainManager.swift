@@ -7,7 +7,7 @@ public class KeychainManager {
     public static let privateServiceName = "com.clavis.private-record.v2"
     public static let publicServiceName = "com.clavis.ed25519.pub"
     public static let shared = KeychainManager()
-    public static var customSigningProvider: SecureEnclaveSigningProviding? = nil
+    internal static var customSigningProvider: SecureEnclaveSigningProviding? = nil
 
     private let authenticator: UserAuthenticating
     private let privateKeyStore: PrivateKeyStoring
@@ -18,7 +18,11 @@ public class KeychainManager {
     public let signerRegistry: KeySignerRegistry
 
     public var activeSigningProvider: SecureEnclaveSigningProviding {
+        #if DEBUG
         instanceSigningProvider ?? Self.customSigningProvider ?? ProductionSecureEnclaveSigningProvider()
+        #else
+        instanceSigningProvider ?? ProductionSecureEnclaveSigningProvider()
+        #endif
     }
 
     public init(
@@ -245,7 +249,11 @@ public class KeychainManager {
         context: LAContext? = nil,
         provider: SecureEnclaveSigningProviding? = nil
     ) throws -> Data {
+        #if DEBUG
         let activeProvider = provider ?? customSigningProvider ?? ProductionSecureEnclaveSigningProvider()
+        #else
+        let activeProvider = provider ?? ProductionSecureEnclaveSigningProvider()
+        #endif
         let signer = try KeySignerRegistry.shared.signer(for: record.algorithm)
         return try signer.derivePublicKeyBlob(record: record, context: context, provider: activeProvider)
     }

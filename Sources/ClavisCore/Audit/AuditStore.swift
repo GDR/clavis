@@ -92,9 +92,11 @@ public final class AuditStore {
             if let custom = customDefaultURL {
                 return custom
             }
+            #if DEBUG
             if NSClassFromString("XCTestCase") != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
                 return FileManager.default.temporaryDirectory.appendingPathComponent("clavis-audit-test.db")
             }
+            #endif
             return FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".config/clavis", isDirectory: true)
                 .appendingPathComponent("audit.db", isDirectory: false)
