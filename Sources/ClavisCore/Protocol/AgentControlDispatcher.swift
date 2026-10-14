@@ -249,13 +249,17 @@ internal struct AgentControlDispatcher {
         let leaseSeconds = UInt32(leaseMinutesActual * 60)
 
         let requester = SigningPromptGate.Requester(executablePath: processPath, pid: pid)
+        let requesterDesc = SSHAgentServer.requesterDescription(processPath: processPath, pid: pid)
         let grant: AgentSessionGrant
         do {
             grant = try promptGate.run(requester: requester, clientSocket: clientSocket) {
                 let promptText = ClavisUIStrings.AgentSession.approvePrompt(
                     tool: toolName,
                     keyLabel: key.label,
-                    minutes: Int(leaseMinutesActual)
+                    minutes: Int(leaseMinutesActual),
+                    requester: requesterDesc,
+                    mode: policy.mode,
+                    allowedHosts: policy.allowedHosts
                 )
                 return try keyManager.authorizeAgentSession(key: key, prompt: promptText)
             }
@@ -357,15 +361,24 @@ internal struct AgentControlDispatcher {
                 return Data([5])
             }
 
+            let keys = (try? keyManager.listKeys()) ?? []
+            let requiresStrictBiometry = keys.contains {
+                $0.purpose == .agent && $0.effectiveBiometricPolicy == .biometryCurrentSet
+            }
+            let authPolicy = requiresStrictBiometry
+                ? BiometricPolicy.biometryCurrentSet.laPolicy
+                : BiometricPolicy.userPresence.laPolicy
+
             let reason = ClavisUIStrings.AgentPolicy.authReason(
                 keyLabel: KeychainAgentPolicyStore.globalAccount,
-                requester: requester
+                requester: requester,
+                leaseMinutes: globalPolicy.maxLeaseMinutes
             )
             do {
                 _ = try promptGate.run(requester: gateRequester, clientSocket: clientSocket) {
                     try authenticator.authenticate(
                         reason: reason,
-                        policy: .deviceOwnerAuthentication
+                        policy: authPolicy
                     )
                 }
             } catch {
@@ -422,7 +435,12 @@ internal struct AgentControlDispatcher {
             return Data([5])
         }
 
-        let promptReason = ClavisUIStrings.AgentPolicy.authReason(keyLabel: key.label, requester: requester)
+        let promptReason = ClavisUIStrings.AgentPolicy.authReason(
+            keyLabel: key.label,
+            requester: requester,
+            mode: policy.mode,
+            leaseMinutes: policy.leaseMinutes
+        )
 
         do {
             _ = try promptGate.run(requester: gateRequester, clientSocket: clientSocket) {

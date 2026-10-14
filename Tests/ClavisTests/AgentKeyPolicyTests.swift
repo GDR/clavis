@@ -1,4 +1,5 @@
 import XCTest
+import LocalAuthentication
 @testable import ClavisCore
 
 final class AgentKeyPolicyTests: ClavisBaseTestCase {
@@ -513,6 +514,148 @@ final class AgentKeyPolicyTests: ClavisBaseTestCase {
         )
         XCTAssertEqual(invalidResponse, Data([5]))
         XCTAssertEqual(authenticator.authenticationCount, 0)
+    }
+
+    func test_F03_externalDeletionOfConfiguredPolicyFailsClosed() throws {
+        var storage: [String: Data] = [:]
+        let makeStore = {
+            KeychainAgentPolicyStore(
+                service: "com.clavis.test-agent-policy-f03",
+                addItem: { dict in
+                    let d = dict as! [String: Any]
+                    let account = d[kSecAttrAccount as String] as! String
+                    let data = d[kSecValueData as String] as! Data
+                    if storage[account] != nil { return errSecDuplicateItem }
+                    storage[account] = data
+                    return errSecSuccess
+                },
+                deleteItem: { dict in
+                    let d = dict as! [String: Any]
+                    let account = d[kSecAttrAccount as String] as! String
+                    storage.removeValue(forKey: account)
+                    return errSecSuccess
+                },
+                updateItem: { query, dict in
+                    let q = query as! [String: Any]
+                    let d = dict as! [String: Any]
+                    let account = q[kSecAttrAccount as String] as! String
+                    guard storage[account] != nil else { return errSecItemNotFound }
+                    let data = d[kSecValueData as String] as! Data
+                    storage[account] = data
+                    return errSecSuccess
+                },
+                copyItem: { query in
+                    let q = query as! [String: Any]
+                    let account = q[kSecAttrAccount as String] as! String
+                    guard let data = storage[account] else { return (errSecItemNotFound, nil) }
+                    return (errSecSuccess, data as AnyObject)
+                }
+            )
+        }
+
+        let store = makeStore()
+        let strictPolicy = AgentKeyPolicy(mode: .ask, leaseMinutes: 30, burst: 5, refillPerMinute: 1)
+        try store.save(strictPolicy, forFingerprint: "SHA256:configured")
+        XCTAssertEqual(try store.policy(forFingerprint: "SHA256:configured"), strictPolicy)
+
+        // Simulate external SecItemDelete of the per-key policy item (bypassing deletePolicy)
+        storage.removeValue(forKey: "SHA256:configured")
+
+        // Same store instance must fail closed rather than reverting to permissive default
+        XCTAssertThrowsError(try store.policy(forFingerprint: "SHA256:configured")) { error in
+            XCTAssertEqual(error as? AgentPolicyError, .policyUnavailable)
+        }
+
+        // Fresh store instance reading persisted index must also fail closed
+        let reloadedStore = makeStore()
+        XCTAssertThrowsError(try reloadedStore.policy(forFingerprint: "SHA256:configured")) { error in
+            XCTAssertEqual(error as? AgentPolicyError, .policyUnavailable)
+        }
+
+        // Explicit deletePolicy removes it from the configured index and restores default
+        try reloadedStore.deletePolicy(forFingerprint: "SHA256:configured")
+        XCTAssertEqual(try reloadedStore.policy(forFingerprint: "SHA256:configured"), AgentKeyPolicy())
+    }
+
+    func test_F03_globalPolicyUpdateEnforcesStrictBiometricsWhenStrictAgentKeyExists() throws {
+        let auditRecorder = InMemoryAuditRecorder()
+        let authenticator = CountingAuthenticator()
+        let manager = makeKeyManager(authenticator: AllowingAuthenticator(), auditRecorder: auditRecorder)
+        _ = try manager.generateKey(
+            label: "strict-agent-key-f03",
+            biometricPolicy: .biometryCurrentSet,
+            keyPurpose: .agent
+        )
+
+        let policyStore = InMemoryAgentPolicyStore()
+        let server = SSHAgentServer(
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentPolicies: policyStore,
+            authenticator: authenticator
+        )
+
+        let updatedGlobal = AgentGlobalPolicy(version: 1, maxLeaseMinutes: 240)
+        let updatedData = try JSONEncoder().encode(updatedGlobal)
+        let updatedJson = String(data: updatedData, encoding: .utf8)!
+        let setPayload = makeSetPolicyPayload(
+            fingerprint: KeychainAgentPolicyStore.globalAccount,
+            policyJson: updatedJson
+        )
+        let setResponse = server.processAgentRequest(
+            payload: setPayload,
+            clientPid: 4321,
+            clientExecutablePath: "/usr/bin/clavis",
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+
+        XCTAssertEqual(setResponse, Data([6]))
+        XCTAssertEqual(authenticator.authenticationCount, 1)
+        XCTAssertEqual(authenticator.lastPolicy, .deviceOwnerAuthenticationWithBiometrics)
+        XCTAssertTrue(authenticator.lastReason?.contains("240m") ?? false)
+        XCTAssertTrue(authenticator.lastReason?.contains("4321") ?? false)
+    }
+
+    func test_F01_F03_promptsIncludeRequesterModeHostsAndPolicyDetails() throws {
+        let legacyPrompt = ClavisUIStrings.AgentSession.approvePrompt(
+            tool: "/usr/bin/claude",
+            keyLabel: "my-key",
+            minutes: 30
+        )
+        XCTAssertEqual(legacyPrompt, "Start agent session for “claude” with key “my-key” for 30 minutes")
+
+        let host = AgentAllowedHost(name: "github.com", hostKeyBlob: makeHostKeyBlob(keyType: "ssh-ed25519"))
+        let detailedPrompt = ClavisUIStrings.AgentSession.approvePrompt(
+            tool: "/tmp/custom/claude",
+            keyLabel: "my-key",
+            minutes: 60,
+            requester: "/usr/local/bin/clavis (PID 999)",
+            mode: .ask,
+            allowedHosts: [host]
+        )
+        XCTAssertTrue(detailedPrompt.contains("claude (/tmp/custom/claude)"))
+        XCTAssertTrue(detailedPrompt.contains("mode: ask"))
+        XCTAssertTrue(detailedPrompt.contains("hosts: github.com"))
+        XCTAssertTrue(detailedPrompt.contains("requested by /usr/local/bin/clavis (PID 999)"))
+
+        let policyReason = ClavisUIStrings.AgentPolicy.authReason(
+            keyLabel: "my-key",
+            requester: "/usr/local/bin/clavis (PID 999)",
+            mode: .notify,
+            leaseMinutes: 120
+        )
+        XCTAssertTrue(policyReason.contains("mode=notify"))
+        XCTAssertTrue(policyReason.contains("lease=120m"))
+        XCTAssertTrue(policyReason.contains("PID 999"))
+
+        // Resolve executable path helper preserves full paths and resolves bare commands in PATH
+        let resolvedEcho = AgentRunner.resolveExecutablePath("sh", environment: ["PATH": "/bin:/usr/bin"])
+        XCTAssertTrue(resolvedEcho.hasSuffix("/sh") && resolvedEcho.contains("/"))
+        let resolvedRelative = AgentRunner.resolveExecutablePath("/tmp/../usr/bin/git")
+        XCTAssertTrue(resolvedRelative.hasSuffix("/usr/bin/git"))
     }
 }
 

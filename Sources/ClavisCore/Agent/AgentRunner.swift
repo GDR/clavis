@@ -120,6 +120,35 @@ public enum AgentRunner {
         }
     }
 
+    public static func resolveExecutablePath(
+        _ command: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        guard !command.isEmpty else { return command }
+        let resolved: String
+        if command.contains("/") {
+            resolved = URL(fileURLWithPath: command).resolvingSymlinksInPath().standardizedFileURL.path
+        } else if let pathEnv = environment["PATH"] {
+            var found: String?
+            for dir in pathEnv.split(separator: ":", omittingEmptySubsequences: false) {
+                let baseDir = dir.isEmpty ? "." : String(dir)
+                let candidate = URL(fileURLWithPath: baseDir).appendingPathComponent(command)
+                if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                    found = candidate.resolvingSymlinksInPath().standardizedFileURL.path
+                    break
+                }
+            }
+            resolved = found ?? command
+        } else {
+            resolved = command
+        }
+        if resolved.utf8.count <= 256 {
+            return resolved
+        }
+        let basename = (resolved as NSString).lastPathComponent
+        return String(basename.prefix(64))
+    }
+
     public static func childEnvironment(
         base: [String: String],
         agentSocket: String,

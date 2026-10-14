@@ -12,12 +12,15 @@ public protocol AgentPolicyStoring: Sendable {
 public final class KeychainAgentPolicyStore: AgentPolicyStoring, @unchecked Sendable {
     public static let serviceName = "com.clavis.agent-policy.v1"
     public static let globalAccount = "global"
+    public static let configuredIndexAccount = "configured-index"
 
     private let service: String
     private let addItem: (CFDictionary) -> OSStatus
     private let deleteItem: (CFDictionary) -> OSStatus
     private let updateItem: (CFDictionary, CFDictionary) -> OSStatus
     private let copyItem: (CFDictionary) -> (OSStatus, AnyObject?)
+    private let lock = NSLock()
+    private var knownConfiguredFingerprints: Set<String> = []
 
     public init(
         service: String = KeychainAgentPolicyStore.serviceName,
@@ -46,11 +49,17 @@ public final class KeychainAgentPolicyStore: AgentPolicyStoring, @unchecked Send
     }
 
     public func policy(forFingerprint fingerprint: String) throws -> AgentKeyPolicy {
+        lock.lock()
+        defer { lock.unlock() }
+
         var q = query(account: fingerprint)
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         let (status, result) = copyItem(q as CFDictionary)
         if status == errSecItemNotFound {
+            if try isConfiguredLocked(fingerprint: fingerprint) {
+                throw AgentPolicyError.policyUnavailable
+            }
             return AgentKeyPolicy()
         }
         guard status == errSecSuccess, let data = result as? Data else {
@@ -59,6 +68,7 @@ public final class KeychainAgentPolicyStore: AgentPolicyStoring, @unchecked Send
         do {
             let policy = try JSONDecoder().decode(AgentKeyPolicy.self, from: data)
             try policy.validate()
+            knownConfiguredFingerprints.insert(fingerprint)
             return policy
         } catch {
             throw AgentPolicyError.corrupt
@@ -73,15 +83,21 @@ public final class KeychainAgentPolicyStore: AgentPolicyStoring, @unchecked Send
         } catch {
             throw AgentPolicyError.invalid("Failed to encode policy: \(error.localizedDescription)")
         }
+        lock.lock()
+        defer { lock.unlock() }
         try setItemData(data, account: fingerprint)
+        try recordConfiguredLocked(fingerprint: fingerprint)
     }
 
     public func deletePolicy(forFingerprint fingerprint: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
         let q = query(account: fingerprint)
         let status = deleteItem(q as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw AgentPolicyError.corrupt
         }
+        try removeConfiguredLocked(fingerprint: fingerprint)
     }
 
     public func global() throws -> AgentGlobalPolicy {
@@ -113,6 +129,56 @@ public final class KeychainAgentPolicyStore: AgentPolicyStoring, @unchecked Send
             throw AgentPolicyError.invalid("Failed to encode global policy: \(error.localizedDescription)")
         }
         try setItemData(data, account: Self.globalAccount)
+    }
+
+    private func loadPersistedIndexLocked() throws -> Set<String> {
+        var q = query(account: Self.configuredIndexAccount)
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        let (status, result) = copyItem(q as CFDictionary)
+        if status == errSecItemNotFound {
+            return []
+        }
+        guard status == errSecSuccess, let data = result as? Data else {
+            throw AgentPolicyError.corrupt
+        }
+        do {
+            let list = try JSONDecoder().decode([String].self, from: data)
+            return Set(list)
+        } catch {
+            throw AgentPolicyError.corrupt
+        }
+    }
+
+    private func savePersistedIndexLocked(_ index: Set<String>) throws {
+        let sorted = index.sorted()
+        guard let data = try? JSONEncoder().encode(sorted) else {
+            throw AgentPolicyError.corrupt
+        }
+        try setItemData(data, account: Self.configuredIndexAccount)
+    }
+
+    private func isConfiguredLocked(fingerprint: String) throws -> Bool {
+        if knownConfiguredFingerprints.contains(fingerprint) {
+            return true
+        }
+        let persisted = try loadPersistedIndexLocked()
+        return persisted.contains(fingerprint)
+    }
+
+    private func recordConfiguredLocked(fingerprint: String) throws {
+        knownConfiguredFingerprints.insert(fingerprint)
+        var persisted = (try? loadPersistedIndexLocked()) ?? []
+        persisted.insert(fingerprint)
+        try savePersistedIndexLocked(persisted)
+    }
+
+    private func removeConfiguredLocked(fingerprint: String) throws {
+        knownConfiguredFingerprints.remove(fingerprint)
+        var persisted = (try? loadPersistedIndexLocked()) ?? []
+        if persisted.remove(fingerprint) != nil {
+            try savePersistedIndexLocked(persisted)
+        }
     }
 
     private func setItemData(_ data: Data, account: String) throws {
