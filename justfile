@@ -332,7 +332,7 @@ package config=config: (dmg config)
 # Run test suite
 test:
     mkdir -p .build && touch .build/.metadata_never_index
-    swift test
+    swift test --parallel --disable-swift-testing
 
 # Build and relaunch Clavis.app locally
 run config="debug":
