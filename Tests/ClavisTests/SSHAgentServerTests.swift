@@ -157,28 +157,8 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         try server.start()
         defer { server.stop() }
 
-        let clientSock = socket(AF_UNIX, SOCK_STREAM, 0)
-        XCTAssertGreaterThanOrEqual(clientSock, 0)
+        let clientSock = try connectUnixSocket(path: testSockPath)
         defer { close(clientSock) }
-
-        var nosigpipe = 1
-        setsockopt(clientSock, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout.size(ofValue: nosigpipe)))
-
-        var addr = sockaddr_un()
-        addr.sun_family = sa_family_t(AF_UNIX)
-        let pathBytes = testSockPath.utf8CString
-        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
-            let raw = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: CChar.self)
-            for (i, byte) in pathBytes.enumerated() { raw[i] = byte }
-        }
-        let addrLen = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
-
-        let connectResult = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(clientSock, $0, addrLen)
-            }
-        }
-        XCTAssertEqual(connectResult, 0)
 
         // SSH2_AGENTC_REQUEST_IDENTITIES packet: 4 bytes len (1), 1 byte msg (11)
         let request = Data([0x00, 0x00, 0x00, 0x01, 11])
@@ -210,28 +190,8 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         try server.start()
         defer { server.stop() }
 
-        let clientSock = socket(AF_UNIX, SOCK_STREAM, 0)
-        XCTAssertGreaterThanOrEqual(clientSock, 0)
+        let clientSock = try connectUnixSocket(path: testSockPath)
         defer { close(clientSock) }
-
-        var nosigpipe = 1
-        setsockopt(clientSock, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout.size(ofValue: nosigpipe)))
-
-        var addr = sockaddr_un()
-        addr.sun_family = sa_family_t(AF_UNIX)
-        let pathBytes = testSockPath.utf8CString
-        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
-            let raw = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: CChar.self)
-            for (i, byte) in pathBytes.enumerated() { raw[i] = byte }
-        }
-        let addrLen = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
-
-        let connectResult = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(clientSock, $0, addrLen)
-            }
-        }
-        XCTAssertEqual(connectResult, 0)
 
         // SSH2_AGENTC_SIGN_REQUEST packet missing 4-byte flags
         var payloadData = Data([13]) // msg 13
@@ -459,24 +419,8 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
                       "serverB.stop() must not unlink a socket file created by serverA")
 
         // serverA should still be active and accept connections
-        let clientSock = socket(AF_UNIX, SOCK_STREAM, 0)
-        XCTAssertGreaterThanOrEqual(clientSock, 0)
+        let clientSock = try connectUnixSocket(path: testSockPath)
         defer { close(clientSock) }
-
-        var addr = sockaddr_un()
-        addr.sun_family = sa_family_t(AF_UNIX)
-        let pathBytes = testSockPath.utf8CString
-        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
-            let raw = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: CChar.self)
-            for (i, byte) in pathBytes.enumerated() { raw[i] = byte }
-        }
-        let addrLen = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count)
-        let connectResult = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(clientSock, $0, addrLen)
-            }
-        }
-        XCTAssertEqual(connectResult, 0, "serverA must still accept connections after serverB.stop()")
 
         // Calling serverA.stop() removes the socket it created
         serverA.stop()

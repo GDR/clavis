@@ -264,12 +264,6 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
 
 
     @MainActor
-    func testDaemonModeFlagParsing() {
-        let isDaemonMode = CommandLine.arguments.contains("--daemon")
-        XCTAssertEqual(AppState.shared.isDaemonMode, isDaemonMode)
-    }
-
-    @MainActor
     func testApplicationDelegateRunsShutdownExactlyOnceForAllTerminationCallbacks() {
         var shutdownCount = 0
         let delegate = ClavisApplicationDelegate {

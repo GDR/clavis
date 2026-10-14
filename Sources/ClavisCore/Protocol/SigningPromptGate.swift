@@ -51,6 +51,8 @@ public struct Requester: Hashable, Sendable, CustomStringConvertible {
 public final class SigningPromptGate: @unchecked Sendable {
     public typealias Requester = ClavisCore.Requester
 
+    public static let shared = SigningPromptGate()
+
     /// Longest refusal after repeated authentication failures for a specific requester.
     public static let maximumCooldown: TimeInterval = 15 * 60
     /// Smaller global ceiling for refusal interval.
