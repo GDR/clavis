@@ -122,7 +122,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
     func testStoredPrivateKeyRecordSerializationAndWipe() throws {
         let dummyKeyData = Data([0x01, 0x02, 0x03, 0x04, 0x05])
         var record = StoredPrivateKeyRecord(
-            version: 1,
+            version: StoredPrivateKeyRecord.currentVersion,
             label: "test-record",
             algorithm: .ecdsaP256,
             storageType: .secureEnclave,
@@ -132,9 +132,10 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         )
 
         let encoded = try record.encode()
+        XCTAssertTrue(encoded.starts(with: Data("CLVPKR02".utf8)))
         let decoded = try StoredPrivateKeyRecord.decode(from: encoded)
 
-        XCTAssertEqual(decoded.version, 1)
+        XCTAssertEqual(decoded.version, StoredPrivateKeyRecord.currentVersion)
         XCTAssertEqual(decoded.label, "test-record")
         XCTAssertEqual(decoded.algorithm, .ecdsaP256)
         XCTAssertEqual(decoded.storageType, .secureEnclave)
@@ -146,7 +147,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         record.wipe()
         XCTAssertEqual(record.keyData.count, 0)
 
-        // Test unsupported future version rejection
+        // Test unsupported version encode rejection
         let futureRecord = StoredPrivateKeyRecord(
             version: 999,
             label: "future",
@@ -155,12 +156,30 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             keyPurpose: .general,
             keyData: Data([0xAA])
         )
-        let futureData = try JSONEncoder().encode(futureRecord)
-        XCTAssertThrowsError(try StoredPrivateKeyRecord.decode(from: futureData)) { error in
+        XCTAssertThrowsError(try futureRecord.encode()) { error in
             guard case PrivateKeyRecordError.unsupportedVersion(let v) = error else {
                 return XCTFail("Expected unsupportedVersion error, got \(error)")
             }
             XCTAssertEqual(v, 999)
+        }
+
+        // Test binary decode version check
+        var futureBinaryData = Data("CLVPKR02".utf8)
+        futureBinaryData.append(99)
+        futureBinaryData.append(contentsOf: encoded.dropFirst(9))
+        XCTAssertThrowsError(try StoredPrivateKeyRecord.decode(from: futureBinaryData)) { error in
+            guard case PrivateKeyRecordError.unsupportedVersion(let v) = error else {
+                return XCTFail("Expected unsupportedVersion error, got \(error)")
+            }
+            XCTAssertEqual(v, 99)
+        }
+
+        // Test non-binary data is rejected as corruptedRecord
+        let legacyJSON = "{\"version\":1}".data(using: .utf8)!
+        XCTAssertThrowsError(try StoredPrivateKeyRecord.decode(from: legacyJSON)) { error in
+            guard case PrivateKeyRecordError.corruptedRecord = error else {
+                return XCTFail("Expected corruptedRecord error, got \(error)")
+            }
         }
     }
 
@@ -256,7 +275,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
         let label = "tamper-policy-\(UUID().uuidString)"
         let record = StoredPrivateKeyRecord(
-            version: 1,
+            version: StoredPrivateKeyRecord.currentVersion,
             label: label,
             algorithm: .ecdsaP256,
             storageType: .secureEnclave,
@@ -741,20 +760,6 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         XCTAssertGreaterThan(restoredSignature.count, 64)
     }
 
-    func testLegacySoftwareVaultIsPreservedAndRejectedOutsideTestMode() throws {
-        _ = try EncryptedVaultStore.shared.ensureMasterKey()
-        let masterURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.key")
-        let originalMaster = try Data(contentsOf: masterURL)
-        XCTAssertEqual(originalMaster.first, 0x01)
-
-        try Data([0x02, 0xAA, 0xBB]).write(to: masterURL)
-
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKey()) { error in
-            guard case EncryptedVaultStore.VaultError.softwareMasterKeyUnsupported = error else {
-                return XCTFail("Unexpected vault error: \(error)")
-            }
-        }
-    }
 
     func testDeleteKeyThrowsPartialWhenVaultRecordMismatches() throws {
         let backing = ScriptedKeychainItems()

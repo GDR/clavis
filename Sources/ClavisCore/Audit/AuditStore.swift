@@ -1,12 +1,30 @@
 import Foundation
 import SQLite3
 
-public enum AuditStoreError: Error, Equatable {
+public enum AuditStoreError: LocalizedError, Equatable {
     case openFailed(Int32)
     case insecureLocation
     case prepareFailed(Int32)
     case stepFailed(Int32)
     case schemaTooNew(Int32)
+    case unsupportedVersion(Int32)
+
+    public var errorDescription: String? {
+        switch self {
+        case .openFailed(let code):
+            return "Failed to open audit database (sqlite code \(code))."
+        case .insecureLocation:
+            return "Audit database location is insecure."
+        case .prepareFailed(let code):
+            return "Failed to prepare sqlite statement (sqlite code \(code))."
+        case .stepFailed(let code):
+            return "Failed to execute sqlite step (sqlite code \(code))."
+        case .schemaTooNew(let version):
+            return "Audit database schema version (\(version)) is newer than supported."
+        case .unsupportedVersion(let version):
+            return "Unsupported audit database schema version (\(version))."
+        }
+    }
 }
 
 public struct AuditEpoch: Equatable, Sendable {
@@ -172,6 +190,8 @@ public final class AuditStore {
         }
         if currentVersion > 2 {
             throw AuditStoreError.schemaTooNew(currentVersion)
+        } else if currentVersion != 2 {
+            throw AuditStoreError.unsupportedVersion(currentVersion)
         }
     }
 
@@ -249,23 +269,6 @@ public final class AuditStore {
             CREATE INDEX idx_events_session ON events(session_id, time);
             CREATE INDEX idx_events_result  ON events(result, time);
             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
-            COMMIT;
-            """
-            var execErr: UnsafeMutablePointer<CChar>?
-            if sqlite3_exec(dbHandle, schemaSQL, nil, nil, &execErr) != SQLITE_OK {
-                let code = sqlite3_errcode(dbHandle)
-                sqlite3_free(execErr)
-                throw AuditStoreError.stepFailed(code)
-            }
-            if sqlite3_exec(dbHandle, "PRAGMA user_version = 1;", nil, nil, nil) != SQLITE_OK {
-                throw AuditStoreError.stepFailed(sqlite3_errcode(dbHandle))
-            }
-            currentVersion = 1
-        }
-
-        if currentVersion == 1 {
-            let v2SQL = """
-            BEGIN IMMEDIATE;
             CREATE TABLE epochs (
               epoch_id    BLOB    PRIMARY KEY,
               key_id      TEXT    NOT NULL,
@@ -274,22 +277,25 @@ public final class AuditStore {
               created     REAL    NOT NULL
             ) STRICT;
             CREATE INDEX idx_events_format ON events(sensitive_format, seq);
+            PRAGMA user_version = 2;
             COMMIT;
             """
             var execErr: UnsafeMutablePointer<CChar>?
-            if sqlite3_exec(dbHandle, v2SQL, nil, nil, &execErr) != SQLITE_OK {
+            if sqlite3_exec(dbHandle, schemaSQL, nil, nil, &execErr) != SQLITE_OK {
                 let code = sqlite3_errcode(dbHandle)
                 sqlite3_free(execErr)
                 throw AuditStoreError.stepFailed(code)
             }
-            if sqlite3_exec(dbHandle, "PRAGMA user_version = 2;", nil, nil, nil) != SQLITE_OK {
-                throw AuditStoreError.stepFailed(sqlite3_errcode(dbHandle))
-            }
-            currentVersion = 2
+        } else if currentVersion == 2 {
+            // Already current version
         } else if currentVersion > 2 {
             sqlite3_close(dbHandle)
             self.db = nil
             throw AuditStoreError.schemaTooNew(currentVersion)
+        } else {
+            sqlite3_close(dbHandle)
+            self.db = nil
+            throw AuditStoreError.unsupportedVersion(currentVersion)
         }
     }
 

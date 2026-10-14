@@ -7,8 +7,34 @@ final class AuditStoreV2Tests: ClavisBaseTestCase {
         testRootURL.appendingPathComponent("audit-v2-test.db")
     }
 
-    func test_008_T3_migratesV1DatabaseKeepingRows() throws {
-        // Manually create a v1 database with user_version = 1 and 1 event
+    func test_008_T3_freshDatabaseDirectlyInitializesV2() throws {
+        let store = try AuditStore(url: dbURL)
+        defer { store.close() }
+
+        // Verify user_version is 2
+        var rawDb: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbURL.path, &rawDb), SQLITE_OK)
+        var stmt: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(rawDb, "PRAGMA user_version;", -1, &stmt, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_step(stmt), SQLITE_ROW)
+        let version = sqlite3_column_int(stmt, 0)
+        XCTAssertEqual(version, 2)
+        sqlite3_finalize(stmt)
+        sqlite3_close(rawDb)
+
+        // Verify epochs table exists
+        let epoch = AuditEpoch(
+            epochID: Data(repeating: 0x01, count: 16),
+            keyID: "testkeyid",
+            epk: Data(repeating: 0x02, count: 65),
+            wrappedDEK: Data(repeating: 0x03, count: 48)
+        )
+        XCTAssertNoThrow(try store.insertEpoch(epoch))
+        let retrieved = try store.epoch(id: epoch.epochID)
+        XCTAssertEqual(retrieved, epoch)
+    }
+
+    func test_008_T3_refusesV1Database() throws {
         var rawDb: OpaquePointer?
         XCTAssertEqual(sqlite3_open(dbURL.path, &rawDb), SQLITE_OK)
         guard let db = rawDb else {
@@ -32,44 +58,17 @@ final class AuditStoreV2Tests: ClavisBaseTestCase {
           sensitive_format INTEGER NOT NULL,
           sensitive        BLOB    NOT NULL
         ) STRICT;
-        CREATE INDEX idx_events_time    ON events(time);
-        CREATE INDEX idx_events_key     ON events(key_fingerprint, time);
-        CREATE INDEX idx_events_session ON events(session_id, time);
-        CREATE INDEX idx_events_result  ON events(result, time);
         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
         PRAGMA user_version = 1;
         COMMIT;
         """
         XCTAssertEqual(sqlite3_exec(db, v1Schema, nil, nil, nil), SQLITE_OK)
-
-        // Insert a v1 row
-        let insertSQL = """
-        INSERT INTO events (
-          event_id, time, type, result, reason, key_fingerprint, key_kind, session_id, count, sensitive_format, sensitive
-        ) VALUES ('11111111-1111-1111-1111-111111111111', 1700000000.0, 'signature', 'allowed', NULL, 'SHA256:test', 'personal', NULL, 1, 0, X'7B7D');
-        """
-        XCTAssertEqual(sqlite3_exec(db, insertSQL, nil, nil, nil), SQLITE_OK)
         sqlite3_close(db)
 
-        // Open with AuditStore — should migrate to v2
-        let store = try AuditStore(url: dbURL)
-        defer { store.close() }
-
-        let records = try store.query(AuditQuery())
-        XCTAssertEqual(records.count, 1)
-        XCTAssertEqual(records[0].seq, 1)
-        XCTAssertEqual(records[0].event.keyFingerprint, "SHA256:test")
-
-        // Verify epochs table exists and user_version is 2
-        let epoch = AuditEpoch(
-            epochID: Data(repeating: 0x01, count: 16),
-            keyID: "testkeyid",
-            epk: Data(repeating: 0x02, count: 65),
-            wrappedDEK: Data(repeating: 0x03, count: 48)
-        )
-        XCTAssertNoThrow(try store.insertEpoch(epoch))
-        let retrieved = try store.epoch(id: epoch.epochID)
-        XCTAssertEqual(retrieved, epoch)
+        // Open with AuditStore — should be rejected as unsupported version 1
+        XCTAssertThrowsError(try AuditStore(url: dbURL)) { error in
+            XCTAssertEqual(error as? AuditStoreError, AuditStoreError.unsupportedVersion(1))
+        }
     }
 
     func test_008_T3_epochRoundTrip() throws {

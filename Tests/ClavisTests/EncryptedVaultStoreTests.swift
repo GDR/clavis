@@ -11,7 +11,7 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
 
     private func makeRecord(label: String) -> StoredPrivateKeyRecord {
         StoredPrivateKeyRecord(
-            version: 1,
+            version: StoredPrivateKeyRecord.currentVersion,
             label: label,
             algorithm: .ecdsaP256,
             storageType: .secureEnclave,
@@ -640,29 +640,14 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
         XCTAssertGreaterThanOrEqual(elapsed, 0.2)
     }
 
-    func testEnsureMasterKeyLockedThrowsWhenSecureEnclaveUnavailableAndNoSoftwareOverride() throws {
-        EncryptedVaultStore.forceSoftwareMasterKeyForTesting = false
+    func testEnsureMasterKeyLockedThrowsWhenSecureEnclaveUnavailable() throws {
         EncryptedVaultStore.isSecureEnclaveAvailableOverride = false
         defer {
-            EncryptedVaultStore.forceSoftwareMasterKeyForTesting = true
             EncryptedVaultStore.isSecureEnclaveAvailableOverride = nil
         }
 
         XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKeyLocked()) { error in
             XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .secureEnclaveRequired)
-        }
-    }
-
-    func testSoftwareMasterKeyUnsupportedThrows() throws {
-        try FileManager.default.createDirectory(at: EncryptedVaultStore.shared.vaultDirectoryURL, withIntermediateDirectories: true)
-        let keyURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.key")
-        let pubURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.pub")
-        let swKey = P256.KeyAgreement.PrivateKey()
-        try (Data([0x02]) + swKey.rawRepresentation).write(to: keyURL)
-        try swKey.publicKey.rawRepresentation.write(to: pubURL)
-
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKey()) { error in
-            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .softwareMasterKeyUnsupported)
         }
     }
 }

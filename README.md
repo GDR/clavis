@@ -43,13 +43,7 @@ just run debug
 
 Private records use the Login Keychain with `SecAccessControl` authentication.
 Release builds signed with Developer ID or Apple Development certificates include the Data Protection Keychain access group entitlement (`keychain-access-groups` matching `$(AppIdentifierPrefix)com.clavis.app`) for unified access across the app, agent daemon, and CLI helpers. Unprovisioned local development builds (`CLAVIS_ALLOW_ADHOC_SIGNING=1`) sign without restricted entitlements so `just build` and `swift test` continue functioning without requiring an Apple Developer provisioning profile.
-The recovery vault never creates or opens a file-backed software master key in
-normal builds. Software private keys (`Ed25519` and software `P-256`) are protected in the Login Keychain under user presence and are not written to disk or the recovery vault in release builds. Only hardware Secure Enclave private key references are stored in the recovery vault. Key deletion strictly requires user authentication before modifying stores.
-If an older `master.key` uses a software master key, Clavis preserves the
-vault files and refuses new key creation or import until the vault is replaced
-with a Secure Enclave backed vault. Automatic migration is not yet provided.
-Existing Keychain records remain available for signing. Do not delete the old
-vault files as a migration shortcut: they may be the only recovery copy of a key.
+The recovery vault exclusively uses Secure Enclave master keys. Only hardware Secure Enclave private key references are stored in the recovery vault. Key deletion strictly requires user authentication before modifying stores.
 The build script gives every certificate-signed Clavis executable the original
 GUI Code Signing Identifier (`Clavis`), so existing GUI-created records and all
 shipped clients have the same designated requirement. Independently signed or plain

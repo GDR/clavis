@@ -59,7 +59,7 @@ final class KeyPurposeAgentTests: ClavisBaseTestCase {
         let decodedGit = try StoredPrivateKeyRecord.decode(from: encodedGit)
         XCTAssertEqual(decodedGit.purpose, .gitSigningOnly)
 
-        // Legacy v1 JSON decode without purpose defaults to .general
+        // Legacy v1 JSON decode is rejected
         let legacyJSON = """
         {
             "version": 1,
@@ -69,8 +69,11 @@ final class KeyPurposeAgentTests: ClavisBaseTestCase {
             "keyData": "\(keyData.base64EncodedString())"
         }
         """.data(using: .utf8)!
-        let decodedLegacy = try StoredPrivateKeyRecord.decode(from: legacyJSON)
-        XCTAssertEqual(decodedLegacy.purpose, .general)
+        XCTAssertThrowsError(try StoredPrivateKeyRecord.decode(from: legacyJSON)) { error in
+            guard case PrivateKeyRecordError.corruptedRecord = error else {
+                return XCTFail("Expected corruptedRecord error, got \(error)")
+            }
+        }
     }
 
     func test_005_T1_unknownPurposeByteThrows() throws {

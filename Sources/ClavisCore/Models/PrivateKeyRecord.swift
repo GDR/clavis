@@ -85,10 +85,14 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
     }
 
     public func encode() throws -> Data {
-        // JSON v1 remains available only for tests and explicit legacy fixtures.
         guard version == Self.currentVersion else {
-            guard version == 1 else { throw PrivateKeyRecordError.unsupportedVersion(version) }
-            return try JSONEncoder().encode(self)
+            throw PrivateKeyRecordError.unsupportedVersion(version)
+        }
+        guard algorithm == .ecdsaP256 else {
+            throw PrivateKeyRecordError.corruptedRecord("Unsupported algorithm: only ECDSA P-256 is supported")
+        }
+        guard storageType == .secureEnclave else {
+            throw PrivateKeyRecordError.corruptedRecord("Unsupported storage: only Secure Enclave is supported")
         }
         guard let labelData = label.data(using: .utf8),
               !labelData.isEmpty,
@@ -126,22 +130,21 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
     }
 
     public static func decode(from data: Data) throws -> StoredPrivateKeyRecord {
-        if data.starts(with: binaryMagic) {
-            return try decodeBinary(from: data)
+        guard data.starts(with: binaryMagic) else {
+            throw PrivateKeyRecordError.corruptedRecord("Unrecognized private key record envelope")
         }
-
-        // The only accepted non-binary representation is the deployed v1 JSON format.
-        let record = try JSONDecoder().decode(StoredPrivateKeyRecord.self, from: data)
-        guard record.version == 1 else {
-            throw PrivateKeyRecordError.unsupportedVersion(record.version)
-        }
-        return record
+        return try decodeBinary(from: data)
     }
 
     private static func decodeBinary(from data: Data) throws -> StoredPrivateKeyRecord {
         var reader = PrivateRecordBinaryReader(data: data, offset: binaryMagic.count)
-        guard let version = reader.readUInt8(), Int(version) == currentVersion,
-              let algorithmByte = reader.readUInt8(),
+        guard let version = reader.readUInt8() else {
+            throw PrivateKeyRecordError.corruptedRecord("Malformed binary private-key record")
+        }
+        guard Int(version) == currentVersion else {
+            throw PrivateKeyRecordError.unsupportedVersion(Int(version))
+        }
+        guard let algorithmByte = reader.readUInt8(),
               let storageByte = reader.readUInt8(),
               let purposeByte = reader.readUInt8(),
               let biometricByte = reader.readUInt8(),

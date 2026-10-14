@@ -22,12 +22,8 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     public static var customKeyAgreementProvider: SecureEnclaveKeyAgreementProviding? = nil
     public static var masterKeyLockTimeout: TimeInterval = 10.0
     private static var inMemoryPinStoreForTesting: MasterKeyPinStoring = InMemoryMasterKeyPinStore()
-    @available(*, deprecated)
-    public static var forceSoftwareMasterKeyForTesting: Bool = false
     #if DEBUG
     public static var isSecureEnclaveAvailableOverride: Bool? = nil
-    @available(*, deprecated)
-    public static var forceAllowSoftwareKeysForTesting: Bool = false
     #endif
 
     public static var isSecureEnclaveAvailable: Bool {
@@ -40,10 +36,6 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             return true
         }
         return SecureEnclave.isAvailable
-    }
-
-    public static var allowSoftwareKeysForTesting: Bool {
-        false
     }
 
     public static func resetForTesting() {
@@ -86,7 +78,6 @@ public final class EncryptedVaultStore: @unchecked Sendable {
 
     public enum VaultError: LocalizedError, Equatable {
         case secureEnclaveRequired
-        case softwareMasterKeyUnsupported
         case incompleteMasterKey
         case masterKeyTampered
         case masterKeyPinMissing
@@ -96,8 +87,6 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             switch self {
             case .secureEnclaveRequired:
                 return "Secure Enclave is required to protect the Clavis recovery vault."
-            case .softwareMasterKeyUnsupported:
-                return "This vault uses an old software master key. Its files were preserved; migrate the vault before creating more keys."
             case .incompleteMasterKey:
                 return "The recovery vault master key is incomplete or invalid. Its files were preserved. Run 'clavis vault repair' if files are intact."
             case .masterKeyTampered:
@@ -155,7 +144,7 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             throw VaultError.incompleteMasterKey
         }
         guard keyType == 0x01 else {
-            throw keyType == 0x02 ? VaultError.softwareMasterKeyUnsupported : VaultError.incompleteMasterKey
+            throw VaultError.incompleteMasterKey
         }
 
         let keyBytes = Data(privateData.dropFirst())
