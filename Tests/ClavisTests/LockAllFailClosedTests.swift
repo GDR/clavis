@@ -117,7 +117,7 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replyFailure)
         defer { stub.stop() }
 
-        let manager = AgentLifecycleManager(socketPath: sockPath)
+        let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
         XCTAssertThrowsError(try manager.sendLockAllToAgent()) { error in
             guard let lifecycleError = error as? AgentLifecycleError else {
                 XCTFail("Expected AgentLifecycleError, got \(error)")
@@ -134,7 +134,7 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .closeImmediately)
         defer { stub.stop() }
 
-        let manager = AgentLifecycleManager(socketPath: sockPath)
+        let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
         XCTAssertThrowsError(try manager.sendLockAllToAgent())
     }
 
@@ -143,7 +143,7 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replySuccess)
         defer { stub.stop() }
 
-        let manager = AgentLifecycleManager(socketPath: sockPath)
+        let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
         XCTAssertNoThrow(try manager.sendLockAllToAgent())
     }
 
@@ -152,7 +152,7 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .neverReply)
         defer { stub.stop() }
 
-        let manager = AgentLifecycleManager(socketPath: sockPath)
+        let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
         let start = Date()
         XCTAssertThrowsError(try manager.sendLockAllToAgent())
         let elapsed = Date().timeIntervalSince(start)
@@ -165,7 +165,7 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replyFailure)
         defer { stub.stop() }
 
-        let manager = AgentLifecycleManager(socketPath: sockPath)
+        let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
         let result = CLIService.handle(args: ["clavis", "lock"], agentLifecycle: manager)
         XCTAssertEqual(result?.exitCode, 1)
         XCTAssertNotNil(result?.error)
@@ -179,7 +179,7 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replySuccess)
         defer { stub.stop() }
 
-        let manager = AgentLifecycleManager(socketPath: sockPath)
+        let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
         let result = CLIService.handle(args: ["clavis", "lock"], agentLifecycle: manager)
         XCTAssertEqual(result?.exitCode, 0)
         XCTAssertEqual(result?.output, CLIMessages.lockedAll)
@@ -191,7 +191,7 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replyFailure)
         defer { stub.stop() }
 
-        let manager = AgentLifecycleManager(socketPath: sockPath)
+        let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
         let appState = AppState(
             keyManager: makeKeyManager(),
             sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-srv-fail.sock").path),
@@ -231,7 +231,7 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replySuccess)
         defer { stub.stop() }
 
-        let manager = AgentLifecycleManager(socketPath: sockPath)
+        let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
         let appState = AppState(
             keyManager: makeKeyManager(),
             sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-srv-ok.sock").path),
@@ -251,7 +251,7 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replyFailure)
         defer { stub.stop() }
 
-        let manager = AgentLifecycleManager(socketPath: sockPath)
+        let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
         let appState = AppState(
             keyManager: makeKeyManager(),
             sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-srv-locknow-fail.sock").path),

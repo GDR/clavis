@@ -543,7 +543,7 @@ final class AgentSessionProtocolTests: ClavisBaseTestCase {
         try server.start()
         defer { server.stop() }
 
-        let lifecycle = AgentLifecycleManager(socketPath: sockPath)
+        let lifecycle = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
 
         let session = try lifecycle.registerAgentSession(keyLabel: key.label, toolName: "my-tool", leaseMinutes: 30)
         XCTAssertFalse(session.id.isEmpty)

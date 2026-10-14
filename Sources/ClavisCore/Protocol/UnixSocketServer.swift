@@ -8,6 +8,7 @@ public final class UnixSocketServer {
         public let socketPath: String
         public let maxClients: Int
         public let maxClientsPerPID: Int
+        public let maxClientsPerExecutable: Int
         public let clientLifetime: TimeInterval
         public let maxRequestsPerConnection: Int
         public let clientTimeout: TimeInterval
@@ -16,6 +17,7 @@ public final class UnixSocketServer {
             socketPath: String,
             maxClients: Int = 32,
             maxClientsPerPID: Int = 8,
+            maxClientsPerExecutable: Int? = nil,
             clientLifetime: TimeInterval = 120.0,
             maxRequestsPerConnection: Int = 200,
             clientTimeout: TimeInterval = 30.0
@@ -23,6 +25,8 @@ public final class UnixSocketServer {
             self.socketPath = socketPath
             self.maxClients = maxClients
             self.maxClientsPerPID = maxClientsPerPID
+            let defaultPerExec = maxClients >= 8 ? max(maxClientsPerPID, maxClients / 2) : maxClients
+            self.maxClientsPerExecutable = maxClientsPerExecutable ?? defaultPerExec
             self.clientLifetime = clientLifetime
             self.maxRequestsPerConnection = maxRequestsPerConnection
             self.clientTimeout = clientTimeout
@@ -45,6 +49,7 @@ public final class UnixSocketServer {
     public var socketPath: String { configuration.socketPath }
     public var maxConcurrentClients: Int { configuration.maxClients }
     public var maxConcurrentClientsPerPID: Int { configuration.maxClientsPerPID }
+    public var maxConcurrentClientsPerExecutable: Int { configuration.maxClientsPerExecutable }
     public var clientIdleTimeout: TimeInterval { configuration.clientTimeout }
     public let handshakeTimeout: TimeInterval
     public var maxConnectionLifetime: TimeInterval { configuration.clientLifetime }
@@ -63,6 +68,7 @@ public final class UnixSocketServer {
     private var _isRunning = false
     private var _activeClientCount = 0
     private var _clientPIDCounts: [pid_t: Int] = [:]
+    private var _clientExecutableCounts: [String: Int] = [:]
     private var _boundInode: ino_t?
     private var _boundDevice: dev_t?
     private var _onPermanentListenerFailure: (() -> Void)?
@@ -132,6 +138,7 @@ public final class UnixSocketServer {
         socketPath: String,
         maxConcurrentClients: Int = 32,
         maxConcurrentClientsPerPID: Int = 8,
+        maxConcurrentClientsPerExecutable: Int? = nil,
         clientIdleTimeout: TimeInterval = 30.0,
         handshakeTimeout: TimeInterval = 2.0,
         maxConnectionLifetime: TimeInterval = 120.0,
@@ -148,6 +155,7 @@ public final class UnixSocketServer {
             socketPath: socketPath,
             maxClients: maxConcurrentClients,
             maxClientsPerPID: maxConcurrentClientsPerPID,
+            maxClientsPerExecutable: maxConcurrentClientsPerExecutable,
             clientLifetime: maxConnectionLifetime,
             maxRequestsPerConnection: maxRequestsPerConnection,
             clientTimeout: clientIdleTimeout
@@ -360,28 +368,38 @@ public final class UnixSocketServer {
         }
     }
 
-    public func reserveClientSlot(for pid: pid_t) -> Bool {
-        reserveClientSlot(clientPid: pid)
+    public func reserveClientSlot(for pid: pid_t, executablePath: String? = nil) -> Bool {
+        reserveClientSlot(clientPid: pid, clientExecutablePath: executablePath)
     }
 
-    public func releaseClientSlot(for pid: pid_t) {
-        releaseClientSlot(clientPid: pid)
+    public func releaseClientSlot(for pid: pid_t, executablePath: String? = nil) {
+        releaseClientSlot(clientPid: pid, clientExecutablePath: executablePath)
     }
 
-    public func reserveClientSlot(clientPid: pid_t? = nil) -> Bool {
+    public func reserveClientSlot(clientPid: pid_t? = nil, clientExecutablePath: String? = nil) -> Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
         guard _activeClientCount < maxConcurrentClients else { return false }
         if let pid = clientPid {
             let count = _clientPIDCounts[pid] ?? 0
             guard count < maxConcurrentClientsPerPID else { return false }
-            _clientPIDCounts[pid] = count + 1
+        }
+        let normalizedExecPath = (clientExecutablePath?.isEmpty == false) ? clientExecutablePath : nil
+        if let execPath = normalizedExecPath {
+            let execCount = _clientExecutableCounts[execPath] ?? 0
+            guard execCount < maxConcurrentClientsPerExecutable else { return false }
+        }
+        if let pid = clientPid {
+            _clientPIDCounts[pid] = (_clientPIDCounts[pid] ?? 0) + 1
+        }
+        if let execPath = normalizedExecPath {
+            _clientExecutableCounts[execPath] = (_clientExecutableCounts[execPath] ?? 0) + 1
         }
         _activeClientCount += 1
         return true
     }
 
-    public func releaseClientSlot(clientPid: pid_t? = nil) {
+    public func releaseClientSlot(clientPid: pid_t? = nil, clientExecutablePath: String? = nil) {
         stateLock.lock()
         defer { stateLock.unlock() }
         _activeClientCount = max(0, _activeClientCount - 1)
@@ -390,6 +408,13 @@ public final class UnixSocketServer {
                 _clientPIDCounts[pid] = count - 1
             } else {
                 _clientPIDCounts.removeValue(forKey: pid)
+            }
+        }
+        if let execPath = clientExecutablePath, !execPath.isEmpty {
+            if let count = _clientExecutableCounts[execPath], count > 1 {
+                _clientExecutableCounts[execPath] = count - 1
+            } else {
+                _clientExecutableCounts.removeValue(forKey: execPath)
             }
         }
     }
@@ -423,14 +448,14 @@ public final class UnixSocketServer {
                     continue
                 }
 
-                guard reserveClientSlot(clientPid: clientPid) else {
-                    ClavisLogger.log("SSH_AGENT_LIMIT", "Rejected connection because concurrent client limit or per-PID limit was reached (PID: \(clientPid.map(String.init) ?? "unknown")).")
+                guard reserveClientSlot(clientPid: clientPid, clientExecutablePath: clientExecutablePath) else {
+                    ClavisLogger.log("SSH_AGENT_LIMIT", "Rejected connection because concurrent client limit, per-PID limit, or per-executable limit was reached (PID: \(clientPid.map(String.init) ?? "unknown"), executable: \(clientExecutablePath ?? "unknown")).")
                     close(clientSocket)
                     continue
                 }
 
                 queue.async {
-                    defer { self.releaseClientSlot(clientPid: clientPid) }
+                    defer { self.releaseClientSlot(clientPid: clientPid, clientExecutablePath: clientExecutablePath) }
                     self.handleClient(
                         socket: clientSocket,
                         clientPid: clientPid,

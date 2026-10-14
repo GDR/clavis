@@ -30,6 +30,7 @@ public final class AgentLifecycleManager: @unchecked Sendable {
     private let agentPIDProvider: () -> pid_t?
     private let processNameProvider: (pid_t) -> String?
     private let isAlive: (pid_t) -> Bool
+    private let isTrustedServerPeer: (Int32) -> Bool
     private let sigtermTimeout: TimeInterval
 
     public init(
@@ -37,6 +38,7 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         agentPIDProvider: (() -> pid_t?)? = nil,
         processNameProvider: ((pid_t) -> String?)? = nil,
         isAlive: ((pid_t) -> Bool)? = nil,
+        isTrustedServerPeer: ((Int32) -> Bool)? = nil,
         sigtermTimeout: TimeInterval = 2.0
     ) {
         self.socketPath = socketPath
@@ -48,6 +50,7 @@ public final class AgentLifecycleManager: @unchecked Sendable {
             SSHAgentServer.getProcessName(pid: pid)
         }
         self.isAlive = isAlive ?? { Self.isProcessAlive(pid: $0) }
+        self.isTrustedServerPeer = isTrustedServerPeer ?? { ClavisCodeTrust.isTrustedPeer(socket: $0) }
         self.sigtermTimeout = sigtermTimeout
     }
 
@@ -259,6 +262,20 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         }
         guard connected == 0 else {
             throw AgentLifecycleError.agentControlFailed("connection failed (errno \(errno))")
+        }
+
+        // Verify the server on the other end of the control socket belongs to our UID
+        // and satisfies the Clavis signing requirement via LOCAL_PEERTOKEN before sending
+        // or accepting any control response.
+        var peerUid: uid_t = 0
+        var peerGid: gid_t = 0
+        guard getpeereid(sock, &peerUid, &peerGid) == 0, peerUid == geteuid() else {
+            ClavisLogger.log("SECURITY_ALERT", "Rejected control socket server with unauthorized UID \(peerUid) (expected \(geteuid())).")
+            throw AgentLifecycleError.agentControlFailed("untrusted control socket server UID")
+        }
+        guard isTrustedServerPeer(sock) else {
+            ClavisLogger.log("SECURITY_ALERT", "Rejected control socket server: peer does not satisfy the Clavis signing requirement.")
+            throw AgentLifecycleError.agentControlFailed("untrusted control socket server peer")
         }
 
         var packet = Data()

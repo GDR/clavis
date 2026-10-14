@@ -11,8 +11,10 @@ public enum AgentServers {
         } catch {
             ClavisLogger.log(
                 "SECURITY_ALERT",
-                "Failed to start agent socket server at '\(agent.socketPath)': \(error.localizedDescription). Personal socket remains active."
+                "Failed to start agent socket server at '\(agent.socketPath)': \(error.localizedDescription). Stopping personal socket and failing closed."
             )
+            personal.stop()
+            throw error
         }
     }
 
