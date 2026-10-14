@@ -152,6 +152,8 @@ class ClavisBaseTestCase: XCTestCase {
         EncryptedVaultStore.customVaultDirectoryURL = testRootURL.appendingPathComponent("vault", isDirectory: true)
         EncryptedVaultStore.customKeyAgreementProvider = InMemorySecureEnclaveKeyAgreementProvider()
         KeychainManager.customSigningProvider = InMemorySecureEnclaveSigningProvider()
+        SSHAgentServer.gpgSSHProgramResolver = { nil }
+        AuditStore.defaultURL = testRootURL.appendingPathComponent("audit.db")
         #if DEBUG
         SystemEventMonitor.customSessionActiveValidator = nil
         #endif
@@ -166,6 +168,9 @@ class ClavisBaseTestCase: XCTestCase {
         EncryptedVaultStore.customVaultDirectoryURL = nil
         EncryptedVaultStore.customKeyAgreementProvider = nil
         KeychainManager.customSigningProvider = nil
+        SSHAgentServer.gpgSSHProgramResolver = { SSHAgentServer.resolveGpgSSHProgram() }
+        AuditStore.defaultURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clavis-audit-test-\(getpid()).db")
         #if DEBUG
         SystemEventMonitor.customSessionActiveValidator = nil
         #endif
