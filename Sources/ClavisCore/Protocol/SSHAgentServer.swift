@@ -373,12 +373,14 @@ public class SSHAgentServer {
     public static func isValidSSH2UserAuthRequest(
         _ data: Data,
         expectedSessionID: Data? = nil,
-        expectedKeyBlob: Data? = nil
+        expectedKeyBlob: Data? = nil,
+        expectedHostKeyBlob: Data? = nil
     ) -> Bool {
         SessionBind.isValidSSH2UserAuthRequest(
             data,
             expectedSessionID: expectedSessionID,
-            expectedKeyBlob: expectedKeyBlob
+            expectedKeyBlob: expectedKeyBlob,
+            expectedHostKeyBlob: expectedHostKeyBlob
         )
     }
 
