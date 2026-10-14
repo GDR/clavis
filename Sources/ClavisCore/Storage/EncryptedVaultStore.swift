@@ -21,6 +21,7 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     internal static var customPinStore: MasterKeyPinStoring? = nil
     internal static var customKeyAgreementProvider: SecureEnclaveKeyAgreementProviding? = nil
     internal static var masterKeyLockTimeout: TimeInterval = 10.0
+    internal static var masterKeyLockPollInterval: useconds_t = 50_000
     private static var inMemoryPinStoreForTesting: MasterKeyPinStoring = InMemoryMasterKeyPinStore()
     #if DEBUG
     internal static var isSecureEnclaveAvailableOverride: Bool? = nil
@@ -42,6 +43,7 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         customPinStore = nil
         customKeyAgreementProvider = nil
         masterKeyLockTimeout = 10.0
+        masterKeyLockPollInterval = 50_000
         #if DEBUG
         inMemoryPinStoreForTesting = InMemoryMasterKeyPinStore()
         isSecureEnclaveAvailableOverride = nil
@@ -263,7 +265,7 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             if Date().timeIntervalSince(start) >= Self.masterKeyLockTimeout {
                 break
             }
-            usleep(50_000)
+            usleep(Self.masterKeyLockPollInterval)
             if Date().timeIntervalSince(start) >= Self.masterKeyLockTimeout {
                 if flock(lockFd, LOCK_EX | LOCK_NB) == 0 {
                     acquired = true
