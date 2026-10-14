@@ -602,3 +602,6 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         try startAgent()
     }
 }
+
+extension AgentLifecycleManager: AgentControlling {}
+
