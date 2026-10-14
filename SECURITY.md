@@ -14,13 +14,22 @@ Only the latest release receives security fixes.
 
 ## What Clavis protects
 
-- Private keys are stored exclusively in the Secure Enclave:
-  - Hardware keys (`.secureEnclave`) are generated inside the Apple Secure Enclave with user presence access control (`.privateKeyUsage, .userPresence`), and only their opaque hardware references are backed up to the recovery vault (`~/.config/clavis/vault`).
+- Private keys are generated inside and never leave the Secure Enclave:
+  - Hardware ECDSA P-256 keys (`.secureEnclave`) are generated inside the Apple Secure Enclave with one of two hardware `SecAccessControl` policies (`[.privateKeyUsage, .userPresence]` or `[.privateKeyUsage, .biometryCurrentSet]`).
+    - `.userPresence` (`deviceOwnerAuthentication`) accepts Touch ID, Apple Watch, or the macOS account password.
+    - `.biometryCurrentSet` (`deviceOwnerAuthenticationWithBiometrics`) strictly requires Touch ID matching the current biometric enrollment set, enforced by the Secure Enclave.
+  - Only the opaque Secure Enclave key reference (`dataRepresentation`) is stored in the local Keychain—protected by `.userPresence` `SecAccessControl` (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`)—and backed up in the encrypted recovery vault (`~/.config/clavis/vault`).
+  - Secure Enclave key blobs are hardware-bound to the Mac and protected by their `SecAccessControl` policy, while key purpose separation (`general`, `gitSigningOnly`, `agent`), rate limits, and prompt attribution are enforced by Clavis application logic.
   - Key generation fails closed if Keychain access control protection is unavailable (`errSecMissingEntitlement` / `-34018`), refusing to persist keys without proper entitlements.
   - The recovery vault master key requires hardware Secure Enclave support; software master keys are never created or loaded.
   - Key deletion strictly requires user-presence authentication before private or public key records are removed.
-- Every SSH-agent signature asks for fresh user authentication (Touch ID / Apple Watch / password) and shows the requesting process attribution.
-- Git signing sessions (5 minutes / 200 signatures) are an opt-in convenience bound to the requesting process identity. They are not an isolation boundary against code running under the same `git` process, such as repository hooks.
+- Authentication per signature vs. approved sessions:
+  - Direct SSH authentication requests on the personal socket (`~/.ssh/clavis.sock`), single-shot Git signatures, and agent sessions configured in `ask` mode require fresh user authentication for every signature and display the requesting process attribution.
+  - **5-minute Git signing sessions** (up to 300 seconds / 200 operations) and **Agent sessions** in `none` or `notify` mode intentionally reuse an evaluated `LAContext` for the duration of the approved lease. Session and grant scoping (process-tree binding, operation caps, rate limits, and screen-lock/sleep invalidation) is enforced by Clavis application logic on top of the Secure Enclave's `LAContext` requirement.
+  - Git signing sessions are an opt-in convenience bound to the requesting process identity (`ssh-keygen`, its parent `git` process, and process group). They are not an isolation boundary against code running under the same `git` process, such as repository hooks.
+- SSH agent forwarding detection (`session-bind@openssh.com`):
+  - Forwarding detection relies on OpenSSH's `session-bind@openssh.com` protocol extension.
+  - When a client connection reports forwarding (`ssh -A`), the personal socket (`~/.ssh/clavis.sock`) surfaces a forwarded-agent warning in the authentication prompt, whereas the dedicated agent socket (`~/.ssh/clavis-agent.sock`) refuses forwarded signing requests outright.
 
 ## Known Limitations
 
@@ -32,8 +41,7 @@ Only the latest release receives security fixes.
 
 - A fully compromised user account or an attacker who can already run code as you, change your
   shell or Git configuration, or approve authentication prompts on your behalf.
-- Forwarded agents (`ssh -A`): a remote host you forward to can request signatures, which you
-  must approve. Prefer `ProxyJump` over agent forwarding for untrusted hosts.
+- Forwarded personal agents (`ssh -A` on `~/.ssh/clavis.sock`) and SSH clients that do not send `session-bind@openssh.com`: a remote host you forward your personal agent to can request signatures, which you must approve (and clients omitting `session-bind@openssh.com` cannot be distinguished from local requests by protocol extension). Prefer `ProxyJump` over agent forwarding for untrusted hosts.
 - Ad-hoc or development-signed builds. Only official release builds are intended for
   distribution; builds you sign yourself are your responsibility.
 
