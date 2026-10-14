@@ -171,4 +171,38 @@ final class AgentLifecycleManagerTests: ClavisBaseTestCase {
         XCTAssertEqual(kill(pid, 0), 0, "kill(pid, 0) returns 0 for zombies (proves old check was wrong)")
         XCTAssertFalse(AgentLifecycleManager.isProcessAlive(pid: pid), "isProcessAlive must filter zombie processes and return false")
     }
+
+    func testControlClientRejectsUntrustedServerPeer() throws {
+        let sockPath = testRootURL.appendingPathComponent("untrusted-server.sock").path
+        let server = SSHAgentServer(
+            socketPath: sockPath,
+            role: .personal,
+            controlPeerValidator: { _ in true }
+        )
+        try server.start()
+        defer { server.stop() }
+
+        let untrustedManager = AgentLifecycleManager(
+            socketPath: sockPath,
+            isTrustedServerPeer: { _ in false }
+        )
+
+        XCTAssertThrowsError(try untrustedManager.sendControlRequest(Data([SSHAgentServer.lockAllRequest]))) { error in
+            guard let lifecycleError = error as? AgentLifecycleError else {
+                XCTFail("Expected AgentLifecycleError, got \(error)")
+                return
+            }
+            if case .agentControlFailed(let reason) = lifecycleError {
+                XCTAssertTrue(reason.contains("untrusted control socket server peer"), "Unexpected reason: \(reason)")
+            } else {
+                XCTFail("Expected .agentControlFailed, got \(lifecycleError)")
+            }
+        }
+
+        // Default validator uses ClavisCodeTrust.isTrustedPeer(socket:), which also rejects the xctest runner
+        let defaultManager = AgentLifecycleManager(socketPath: sockPath)
+        XCTAssertThrowsError(try defaultManager.sendControlRequest(Data([SSHAgentServer.lockAllRequest])))
+        XCTAssertTrue(defaultManager.listAgentSessions().isEmpty)
+        XCTAssertNil(defaultManager.queryAgentGitGrace())
+    }
 }

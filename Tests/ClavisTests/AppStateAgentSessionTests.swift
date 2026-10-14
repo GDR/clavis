@@ -30,7 +30,7 @@ final class AppStateAgentSessionTests: ClavisBaseTestCase {
         )
         try server.start()
 
-        lifecycle = AgentLifecycleManager(socketPath: sockPath)
+        lifecycle = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
     }
 
     override func tearDownWithError() throws {

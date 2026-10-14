@@ -90,6 +90,7 @@ public class SSHAgentServer {
         role: AgentSocketRole = .personal,
         maxConcurrentClients: Int = 32,
         maxConcurrentClientsPerPID: Int = 8,
+        maxConcurrentClientsPerExecutable: Int? = nil,
         clientIdleTimeout: TimeInterval = 30,
         handshakeTimeout: TimeInterval = 2.0,
         maxConnectionLifetime: TimeInterval = SSHAgentServer.defaultMaxConnectionLifetime,
@@ -148,6 +149,7 @@ public class SSHAgentServer {
             socketPath: socketPath,
             maxClients: max(1, maxConcurrentClients),
             maxClientsPerPID: max(1, maxConcurrentClientsPerPID),
+            maxClientsPerExecutable: maxConcurrentClientsPerExecutable.map { max(1, $0) },
             clientLifetime: max(0.01, maxConnectionLifetime),
             maxRequestsPerConnection: max(1, maxRequestsPerConnection),
             clientTimeout: max(0.1, clientIdleTimeout)
@@ -185,12 +187,12 @@ public class SSHAgentServer {
         socketServer.stop()
     }
 
-    internal func reserveClientSlot(clientPid: pid_t? = nil) -> Bool {
-        socketServer.reserveClientSlot(clientPid: clientPid)
+    internal func reserveClientSlot(clientPid: pid_t? = nil, clientExecutablePath: String? = nil) -> Bool {
+        socketServer.reserveClientSlot(clientPid: clientPid, clientExecutablePath: clientExecutablePath)
     }
 
-    internal func releaseClientSlot(clientPid: pid_t? = nil) {
-        socketServer.releaseClientSlot(clientPid: clientPid)
+    internal func releaseClientSlot(clientPid: pid_t? = nil, clientExecutablePath: String? = nil) {
+        socketServer.releaseClientSlot(clientPid: clientPid, clientExecutablePath: clientExecutablePath)
     }
 
     internal func acceptLoop() {

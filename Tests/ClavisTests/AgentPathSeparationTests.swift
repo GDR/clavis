@@ -289,7 +289,7 @@ final class AgentPathSeparationTests: ClavisBaseTestCase {
         }
     }
 
-    func test_005_T3_startAllKeepsPersonalWhenAgentFails() throws {
+    func test_005_T3_startAllFailsClosedAndStopsPersonalWhenAgentFails() throws {
         let personalSock = testRootURL.appendingPathComponent("p.sock").path
         let invalidAgentSock = "/dev/null/impossible/agent.sock"
 
@@ -300,7 +300,9 @@ final class AgentPathSeparationTests: ClavisBaseTestCase {
             AgentServers.stopAll(personal: personalServer, agent: failingAgentServer)
         }
 
-        XCTAssertNoThrow(try AgentServers.startAll(personal: personalServer, agent: failingAgentServer))
-        XCTAssertTrue(SSHAgentServer.isSocketListening(atPath: personalSock))
+        XCTAssertThrowsError(try AgentServers.startAll(personal: personalServer, agent: failingAgentServer))
+        XCTAssertFalse(personalServer.isSocketActive, "Personal server must be stopped when agent socket fails to start")
+        XCTAssertFalse(SSHAgentServer.isSocketListening(atPath: personalSock), "Personal socket must not remain listening")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: personalSock), "Personal socket file must be unlinked")
     }
 }
