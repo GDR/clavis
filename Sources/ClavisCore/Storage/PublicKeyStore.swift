@@ -21,8 +21,12 @@ public enum PublicKeyStoreError: LocalizedError {
 /// every use — so it needs neither a file nor its own integrity protection.
 public struct PublicKeyStore {
     private static var isRunningUnderXCTest: Bool {
+        #if DEBUG
         NSClassFromString("XCTestCase") != nil ||
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        #else
+        false
+        #endif
     }
 
     private static var isKeychainAccessAllowed: Bool {

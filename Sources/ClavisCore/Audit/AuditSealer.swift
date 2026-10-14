@@ -29,7 +29,13 @@ public final class AuditSealer: @unchecked Sendable {
         self.maxEpochAge = maxEpochAge
         self.maxEpochRows = maxEpochRows
 
-        if NSClassFromString("XCTestCase") == nil {
+        #if DEBUG
+        let isRunningUnderXCTest = NSClassFromString("XCTestCase") != nil ||
+            ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        #else
+        let isRunningUnderXCTest = false
+        #endif
+        if !isRunningUnderXCTest {
             self.observer = DistributedNotificationCenter.default().addObserver(
                 forName: KeychainAuditKeyring.notificationName,
                 object: nil,

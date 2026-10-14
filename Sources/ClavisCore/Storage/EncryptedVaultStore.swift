@@ -11,19 +11,19 @@ import Security
 /// to decrypt and recover keys.
 public final class EncryptedVaultStore: @unchecked Sendable {
     public static let shared = EncryptedVaultStore()
-    public static var customVaultDirectoryURL: URL? = nil {
+    internal static var customVaultDirectoryURL: URL? = nil {
         didSet {
             #if DEBUG
             inMemoryPinStoreForTesting = InMemoryMasterKeyPinStore()
             #endif
         }
     }
-    public static var customPinStore: MasterKeyPinStoring? = nil
-    public static var customKeyAgreementProvider: SecureEnclaveKeyAgreementProviding? = nil
-    public static var masterKeyLockTimeout: TimeInterval = 10.0
+    internal static var customPinStore: MasterKeyPinStoring? = nil
+    internal static var customKeyAgreementProvider: SecureEnclaveKeyAgreementProviding? = nil
+    internal static var masterKeyLockTimeout: TimeInterval = 10.0
     private static var inMemoryPinStoreForTesting: MasterKeyPinStoring = InMemoryMasterKeyPinStore()
     #if DEBUG
-    public static var isSecureEnclaveAvailableOverride: Bool? = nil
+    internal static var isSecureEnclaveAvailableOverride: Bool? = nil
     #endif
 
     public static var isSecureEnclaveAvailable: Bool {
@@ -31,10 +31,10 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         if let override = isSecureEnclaveAvailableOverride {
             return override
         }
-        #endif
         if customKeyAgreementProvider != nil {
             return true
         }
+        #endif
         return SecureEnclave.isAvailable
     }
 
@@ -63,17 +63,24 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     }
 
     var activePinStore: MasterKeyPinStoring {
+        #if DEBUG
         if let custom = Self.customPinStore {
             return custom
         }
         if Self.customKeyAgreementProvider != nil {
             return Self.inMemoryPinStoreForTesting
         }
+        #endif
         return defaultPinStore
     }
 
     var activeKeyAgreementProvider: SecureEnclaveKeyAgreementProviding {
-        Self.customKeyAgreementProvider ?? defaultKeyAgreementProvider
+        #if DEBUG
+        if let custom = Self.customKeyAgreementProvider {
+            return custom
+        }
+        #endif
+        return defaultKeyAgreementProvider
     }
 
     public enum VaultError: LocalizedError, Equatable {
@@ -100,7 +107,9 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     }
 
     public var vaultDirectoryURL: URL {
+        #if DEBUG
         if let custom = Self.customVaultDirectoryURL { return custom }
+        #endif
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(".config/clavis/vault", isDirectory: true)
         try? SecureFS.createDirectory(at: dir)
@@ -290,6 +299,12 @@ public final class EncryptedVaultStore: @unchecked Sendable {
         defer {
             flock(lockFd, LOCK_UN)
             close(lockFd)
+        }
+
+        // Refuse to silently generate a new master key and overwrite an existing valid pin
+        // when master.pub / master.key were deleted from disk.
+        if try activePinStore.loadPin() != nil {
+            throw VaultError.masterKeyTampered
         }
 
         let accessControl = try PrivateKeyAccessControl.make(flags: [.privateKeyUsage, .userPresence])

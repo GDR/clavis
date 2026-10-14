@@ -38,16 +38,20 @@ public final class AuditRecorder: AuditRecording {
     private let witness: AuditWitnessWriting?
 
     public static func makeDefaultSealer() -> AuditSealer? {
+        #if DEBUG
         if NSClassFromString("XCTestCase") != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
             return nil
         }
+        #endif
         return AuditSealer(keyring: KeychainAuditKeyring())
     }
 
     public static func makeDefaultWitness() -> AuditWitnessWriting? {
+        #if DEBUG
         if NSClassFromString("XCTestCase") != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
             return nil
         }
+        #endif
         return OSLogAuditWitness()
     }
 

@@ -142,12 +142,22 @@ sign config=config: (bundle config)
         exit 1
     fi
 
-    entitlements_file="Entitlements.plist"
+    entitlements_file=$(mktemp -t clavis-entitlements.XXXXXX.plist)
+    trap 'rm -f "$entitlements_file"' EXIT
     if [ "$identity" = "-" ]; then
         # For unprovisioned ad-hoc signing, use empty entitlements so local builds run without provisioning profiles
-        entitlements_file=$(mktemp -t clavis-entitlements.XXXXXX.plist)
         echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.plist"><plist version="1.0"><dict></dict></plist>' > "$entitlements_file"
-        trap 'rm -f "$entitlements_file"' EXIT
+    else
+        team_prefix=""
+        if [ -n "{{ expected_team_id }}" ]; then
+            team_prefix="{{ expected_team_id }}."
+        else
+            extracted_ou="$(security find-certificate -c "$identity" -p ${keychain:+"$keychain"} 2>/dev/null | openssl x509 -noout -subject -nameopt RFC2253 2>/dev/null | sed -n 's/.*OU=\([A-Z0-9]\{10\}\).*/\1./p' | head -n 1 || true)"
+            if [ -n "$extracted_ou" ]; then
+                team_prefix="$extracted_ou"
+            fi
+        fi
+        sed "s/\$(AppIdentifierPrefix)/$team_prefix/g" Entitlements.plist > "$entitlements_file"
     fi
 
     echo "🔐 Signing binaries with identity: '$identity' ($timestamp_flag)..."
@@ -181,6 +191,10 @@ sign config=config: (bundle config)
 
         local signed_ent sign_details
         signed_ent="$(/usr/bin/codesign -d --entitlements - "$target" 2>&1 || true)"
+        if echo "$signed_ent" | grep -Fq '$(AppIdentifierPrefix)'; then
+            echo "❌ Unexpanded \$(AppIdentifierPrefix) found in signed entitlements of $target." >&2
+            exit 1
+        fi
         if [ "$identity" = "-" ]; then
             if echo "$signed_ent" | grep -Eq "keychain-access-groups|com.apple.security.application-groups"; then
                 echo "❌ Provisioning-dependent entitlement unexpectedly present in $target." >&2

@@ -650,7 +650,31 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
             XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .secureEnclaveRequired)
         }
     }
+
+    func testDeletingMasterFilesWhenPinExistsRefusesToOverwritePin() throws {
+        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "vault-existing-pin"))
+        let originalPin = try XCTUnwrap(EncryptedVaultStore.shared.activePinStore.loadPin())
+
+        let vaultDir = EncryptedVaultStore.shared.vaultDirectoryURL
+        let pubURL = vaultDir.appendingPathComponent("master.pub")
+        let keyURL = vaultDir.appendingPathComponent("master.key")
+        try FileManager.default.removeItem(at: pubURL)
+        try FileManager.default.removeItem(at: keyURL)
+
+        XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKey()) { error in
+            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyTampered)
+        }
+        XCTAssertThrowsError(try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "attacker-key"))) { error in
+            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyTampered)
+        }
+        XCTAssertEqual(
+            try EncryptedVaultStore.shared.activePinStore.loadPin(),
+            originalPin,
+            "Existing Keychain pin must never be overwritten when master files are deleted from disk"
+        )
+    }
 }
+
 
 
 

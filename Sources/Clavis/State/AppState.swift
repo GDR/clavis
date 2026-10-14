@@ -467,9 +467,17 @@ public class AppState: ObservableObject {
         agentSessionViewModel.handleAgentRateLimitedNotification(note)
     }
 
+    private static var isRunningUnderXCTest: Bool {
+        #if DEBUG
+        NSClassFromString("XCTestCase") != nil ||
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        #else
+        false
+        #endif
+    }
+
     private static var isRealAppBundle: Bool {
-        NSClassFromString("XCTestCase") == nil &&
-        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil &&
+        !isRunningUnderXCTest &&
         Bundle.main.bundleURL.pathExtension == "app"
     }
 }
