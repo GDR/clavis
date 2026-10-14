@@ -350,7 +350,9 @@ public enum ProcessInspector {
 
         if timedOut {
             process.terminate()
-            usleep(50_000)
+            for _ in 0..<10 where process.isRunning {
+                usleep(5_000)
+            }
             if process.isRunning {
                 kill(process.processIdentifier, SIGKILL)
             }
@@ -362,7 +364,9 @@ public enum ProcessInspector {
             let nowUptime = DispatchTime.now().uptimeNanoseconds
             if nowUptime >= deadlineUptime {
                 process.terminate()
-                usleep(50_000)
+                for _ in 0..<10 where process.isRunning {
+                    usleep(5_000)
+                }
                 if process.isRunning {
                     kill(process.processIdentifier, SIGKILL)
                 }
@@ -433,40 +437,8 @@ public enum ProcessInspector {
     ) -> GitApprovedProcess? {
         guard peerPid > 1 else { return nil }
 
-        // If peer executable matches known signer helper, verify parent process is git
-        if isSignerHelper(path: peerPath, resolvedGpgSSHProgram: resolvedGpgSSHProgram) {
-            guard let peerSnap = processInfo(peerPid) else { return nil }
-            let parentPid = peerSnap.parentPid
-            guard parentPid > 1 else { return nil }
-            guard let parentSnap = processInfo(parentPid), parentSnap.startTime > 0 else { return nil }
-            guard let parentPath = processPathLookup(parentPid) else { return nil }
-            if isTrustedGitExecutable(path: parentPath) {
-                guard !isRefusedAnchor(pid: parentPid, path: parentPath) else { return nil }
-                // Walk up contiguous git ancestors to anchor on the root git process (e.g. git rebase)
-                var topGitPid = parentPid
-                var topGitSnap = parentSnap
-                var topGitPath = parentPath
-                var current = parentPid
-                var seen = Set<pid_t>([peerPid, current])
-                for _ in 0..<64 {
-                    guard let currSnap = processInfo(current) else { break }
-                    let ppid = currSnap.parentPid
-                    guard ppid > 1, seen.insert(ppid).inserted else { break }
-                    guard let pSnap = processInfo(ppid), pSnap.startTime > 0 else { break }
-                    guard let pPath = processPathLookup(ppid) else { break }
-                    guard isTrustedGitExecutable(path: pPath), !isRefusedAnchor(pid: ppid, path: pPath) else { break }
-                    topGitPid = ppid
-                    topGitSnap = pSnap
-                    topGitPath = pPath
-                    current = ppid
-                }
-                return GitApprovedProcess(pid: topGitPid, startTime: topGitSnap.startTime, path: topGitPath)
-            }
-            // Signer helper whose parent is not git (e.g. shell, terminal, or launchd): refused.
-            return nil
-        }
-
-        // If peer executable is trusted git (or test runner xctest in DEBUG), anchor on itself
+        // Fast-path: if peer executable is trusted git (or test runner xctest in DEBUG), anchor on itself
+        // without spawning `git config --get gpg.ssh.program`.
         if isTrustedGitExecutable(path: peerPath) {
             guard !isRefusedAnchor(pid: peerPid, path: peerPath) else { return nil }
             guard let peerSnap = processInfo(peerPid), peerSnap.startTime > 0 else { return nil }
@@ -490,8 +462,42 @@ public enum ProcessInspector {
             return GitApprovedProcess(pid: topGitPid, startTime: topGitSnap.startTime, path: topGitPath)
         }
 
-        // All other executables are refused
-        return nil
+        // Otherwise, a peer can only anchor on its parent if that parent is a trusted git executable
+        // AND the peer itself is a recognized signer helper. Verify the parent first (in-memory)
+        // before potentially invoking `resolvedGpgSSHProgram()`.
+        guard let peerSnap = processInfo(peerPid) else { return nil }
+        let parentPid = peerSnap.parentPid
+        guard parentPid > 1 else { return nil }
+        guard let parentSnap = processInfo(parentPid), parentSnap.startTime > 0 else { return nil }
+        guard let parentPath = processPathLookup(parentPid),
+              isTrustedGitExecutable(path: parentPath),
+              !isRefusedAnchor(pid: parentPid, path: parentPath) else {
+            return nil
+        }
+
+        guard isSignerHelper(path: peerPath, resolvedGpgSSHProgram: resolvedGpgSSHProgram) else {
+            return nil
+        }
+
+        // Walk up contiguous git ancestors to anchor on the root git process (e.g. git rebase)
+        var topGitPid = parentPid
+        var topGitSnap = parentSnap
+        var topGitPath = parentPath
+        var current = parentPid
+        var seen = Set<pid_t>([peerPid, current])
+        for _ in 0..<64 {
+            guard let currSnap = processInfo(current) else { break }
+            let ppid = currSnap.parentPid
+            guard ppid > 1, seen.insert(ppid).inserted else { break }
+            guard let pSnap = processInfo(ppid), pSnap.startTime > 0 else { break }
+            guard let pPath = processPathLookup(ppid) else { break }
+            guard isTrustedGitExecutable(path: pPath), !isRefusedAnchor(pid: ppid, path: pPath) else { break }
+            topGitPid = ppid
+            topGitSnap = pSnap
+            topGitPath = pPath
+            current = ppid
+        }
+        return GitApprovedProcess(pid: topGitPid, startTime: topGitSnap.startTime, path: topGitPath)
     }
 
     public static func grantAnchor(peerPid: pid_t, peerPath: String) -> GitApprovedProcess? {
