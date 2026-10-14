@@ -124,7 +124,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         let server = SSHAgentServer(
             socketPath: socketPath,
             maxConcurrentClients: 1,
-            clientIdleTimeout: 0.2
+            clientIdleTimeout: 0.05
         )
         try server.start()
         defer { server.stop() }
@@ -134,18 +134,18 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
 
         let acceptanceDeadline = Date().addingTimeInterval(1)
         while server.activeClientCount != 1 && Date() < acceptanceDeadline {
-            usleep(10_000)
+            usleep(5_000)
         }
         XCTAssertEqual(server.activeClientCount, 1)
 
         let rejectedClient = try connectUnixSocket(path: socketPath)
         defer { close(rejectedClient) }
-        usleep(50_000)
+        usleep(15_000)
         XCTAssertNil(socketReadFullBytes(from: rejectedClient, count: 1))
 
         let timeoutDeadline = Date().addingTimeInterval(1)
         while server.activeClientCount != 0 && Date() < timeoutDeadline {
-            usleep(10_000)
+            usleep(5_000)
         }
         XCTAssertEqual(server.activeClientCount, 0)
     }
@@ -565,7 +565,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         let lifeSocketPath = testRootURL.appendingPathComponent("lifetime.sock").path
         let lifeServer = SSHAgentServer(
             socketPath: lifeSocketPath,
-            maxConnectionLifetime: 0.15
+            maxConnectionLifetime: 0.05
         )
         try lifeServer.start()
         defer { lifeServer.stop() }
@@ -575,17 +575,17 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
 
         let deadline = Date().addingTimeInterval(1)
         while lifeServer.activeClientCount != 1 && Date() < deadline {
-            usleep(10_000)
+            usleep(5_000)
         }
         XCTAssertEqual(lifeServer.activeClientCount, 1)
 
-        // Wait for lifetime limit (0.15s) to elapse
-        usleep(250_000)
+        // Wait for lifetime limit (0.05s) to elapse
+        usleep(80_000)
         XCTAssertNil(socketReadFullBytes(from: lifeClient, count: 1), "Server must drop connection after lifetime limit")
 
         let lifeDeadline = Date().addingTimeInterval(1.0)
         while lifeServer.activeClientCount > 0 && Date() < lifeDeadline {
-            usleep(10_000)
+            usleep(5_000)
         }
         XCTAssertEqual(lifeServer.activeClientCount, 0)
     }
@@ -794,7 +794,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             content: "#!/bin/sh\nexec sleep 30\n"
         )
         let start = Date()
-        let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 0.2)
+        let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 0.08)
         let elapsed = Date().timeIntervalSince(start)
         XCTAssertNil(resolved)
         XCTAssertLessThan(elapsed, 1.5)
@@ -812,7 +812,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             """
         )
         let start = Date()
-        let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 0.2)
+        let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 0.08)
         let elapsed = Date().timeIntervalSince(start)
         XCTAssertNil(resolved)
         XCTAssertLessThan(elapsed, 1.5)
