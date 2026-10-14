@@ -395,5 +395,124 @@ final class AgentKeyPolicyTests: ClavisBaseTestCase {
         let decoded = try JSONDecoder().decode(AgentKeyPolicy.self, from: Data(jsonString.utf8))
         XCTAssertEqual(decoded, customPolicy)
     }
+
+    func test_006_T1_globalPolicyGetAndSetRoundTrip() throws {
+        let auditRecorder = InMemoryAuditRecorder()
+        let authenticator = CountingAuthenticator()
+        let manager = makeKeyManager(authenticator: AllowingAuthenticator(), auditRecorder: auditRecorder)
+        let policyStore = InMemoryAgentPolicyStore()
+
+        let server = SSHAgentServer(
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentPolicies: policyStore,
+            authenticator: authenticator
+        )
+
+        // Default global policy via getAgentPolicyRequest("global")
+        let initialGetPayload = makeGetPolicyPayload(fingerprint: KeychainAgentPolicyStore.globalAccount)
+        let initialGetResponse = server.processAgentRequest(
+            payload: initialGetPayload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(initialGetResponse.first, 6)
+        var initialReader = DataReader(data: Data(initialGetResponse.dropFirst()))
+        guard let initialJson = initialReader.readWireString() else {
+            XCTFail("Failed to read initial global policy JSON")
+            return
+        }
+        let initialDecoded = try JSONDecoder().decode(AgentGlobalPolicy.self, from: Data(initialJson.utf8))
+        XCTAssertEqual(initialDecoded, AgentGlobalPolicy())
+
+        // Set custom global policy via setAgentPolicyRequest("global")
+        let updatedGlobal = AgentGlobalPolicy(version: 1, maxLeaseMinutes: 360)
+        let updatedData = try JSONEncoder().encode(updatedGlobal)
+        let updatedJson = String(data: updatedData, encoding: .utf8)!
+        let setPayload = makeSetPolicyPayload(
+            fingerprint: KeychainAgentPolicyStore.globalAccount,
+            policyJson: updatedJson
+        )
+        let setResponse = server.processAgentRequest(
+            payload: setPayload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(setResponse, Data([6]))
+        XCTAssertEqual(authenticator.authenticationCount, 1)
+        XCTAssertEqual(try policyStore.global(), updatedGlobal)
+
+        // Verify round-trip via getAgentPolicyRequest("global")
+        let getResponse = server.processAgentRequest(
+            payload: initialGetPayload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(getResponse.first, 6)
+        var reader = DataReader(data: Data(getResponse.dropFirst()))
+        guard let jsonString = reader.readWireString() else {
+            XCTFail("Failed to read updated global policy JSON")
+            return
+        }
+        let decoded = try JSONDecoder().decode(AgentGlobalPolicy.self, from: Data(jsonString.utf8))
+        XCTAssertEqual(decoded, updatedGlobal)
+
+        let policyEvents = auditRecorder.events.filter { $0.type == .policyChange }
+        XCTAssertEqual(policyEvents.count, 1)
+        XCTAssertEqual(policyEvents.first?.result, .allowed)
+        XCTAssertEqual(policyEvents.first?.sensitive.keyLabel, KeychainAgentPolicyStore.globalAccount)
+    }
+
+    func test_006_T1_setGlobalPolicyRejectsInvalidBeforePrompt() throws {
+        let auditRecorder = InMemoryAuditRecorder()
+        let authenticator = CountingAuthenticator()
+        let manager = makeKeyManager(authenticator: AllowingAuthenticator(), auditRecorder: auditRecorder)
+        let policyStore = InMemoryAgentPolicyStore()
+
+        let server = SSHAgentServer(
+            keyManager: manager,
+            controlPeerValidator: { _ in true },
+            peerProcessValidator: { _, _, _ in true },
+            auditRecorder: auditRecorder,
+            agentPolicies: policyStore,
+            authenticator: authenticator
+        )
+
+        // Malformed JSON
+        let badJsonPayload = makeSetPolicyPayload(
+            fingerprint: KeychainAgentPolicyStore.globalAccount,
+            policyJson: "not json"
+        )
+        let badJsonResponse = server.processAgentRequest(
+            payload: badJsonPayload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(badJsonResponse, Data([5]))
+        XCTAssertEqual(authenticator.authenticationCount, 0)
+
+        // Out-of-range maxLeaseMinutes
+        let invalidGlobal = AgentGlobalPolicy(version: 1, maxLeaseMinutes: 0)
+        let invalidData = try JSONEncoder().encode(invalidGlobal)
+        let invalidJson = String(data: invalidData, encoding: .utf8)!
+        let invalidPayload = makeSetPolicyPayload(
+            fingerprint: KeychainAgentPolicyStore.globalAccount,
+            policyJson: invalidJson
+        )
+        let invalidResponse = server.processAgentRequest(
+            payload: invalidPayload,
+            clientPid: getpid(),
+            clientStartTime: 1000,
+            isTrustedControlPeer: { true }
+        )
+        XCTAssertEqual(invalidResponse, Data([5]))
+        XCTAssertEqual(authenticator.authenticationCount, 0)
+    }
 }
 

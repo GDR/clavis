@@ -12,6 +12,8 @@ public struct SettingsView: View {
     @ObservedObject var lock = PanelLockController.shared
     private let modeChanger: PinModeChanger?
     @State private var globalMaxLease: Int = 1440
+    @State private var lastSavedGlobalMaxLease: Int = 1440
+    @State private var globalPolicyError: String? = nil
     private let globalMaxLeaseOptions = [60, 240, 480, 1440, 2880, 10080]
 
     @State private var copiedEnv = false
@@ -262,10 +264,21 @@ public struct SettingsView: View {
                         .pickerStyle(.menu)
                         .frame(width: 120)
                         .onChange(of: globalMaxLease) { newValue in
-                            Task {
-                                try? appState.setGlobalPolicy(AgentGlobalPolicy(maxLeaseMinutes: newValue))
+                            guard newValue != lastSavedGlobalMaxLease else { return }
+                            globalPolicyError = nil
+                            Task { @MainActor in
+                                do {
+                                    try appState.setGlobalPolicy(AgentGlobalPolicy(maxLeaseMinutes: newValue))
+                                    lastSavedGlobalMaxLease = newValue
+                                } catch {
+                                    globalMaxLease = lastSavedGlobalMaxLease
+                                    globalPolicyError = error.localizedDescription
+                                }
                             }
                         }
+                    }
+                    if let err = globalPolicyError {
+                        Text(err).font(.caption2).foregroundColor(.red)
                     }
                 }
             }
@@ -330,6 +343,7 @@ public struct SettingsView: View {
         .onAppear {
             if let global = appState.getGlobalPolicy() {
                 globalMaxLease = global.maxLeaseMinutes
+                lastSavedGlobalMaxLease = global.maxLeaseMinutes
             }
         }
     }
