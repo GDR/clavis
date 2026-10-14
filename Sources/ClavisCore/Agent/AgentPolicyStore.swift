@@ -101,6 +101,9 @@ public final class KeychainAgentPolicyStore: AgentPolicyStoring, @unchecked Send
     }
 
     public func global() throws -> AgentGlobalPolicy {
+        lock.lock()
+        defer { lock.unlock() }
+
         var q = query(account: Self.globalAccount)
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -128,6 +131,8 @@ public final class KeychainAgentPolicyStore: AgentPolicyStoring, @unchecked Send
         } catch {
             throw AgentPolicyError.invalid("Failed to encode global policy: \(error.localizedDescription)")
         }
+        lock.lock()
+        defer { lock.unlock() }
         try setItemData(data, account: Self.globalAccount)
     }
 
@@ -168,17 +173,19 @@ public final class KeychainAgentPolicyStore: AgentPolicyStoring, @unchecked Send
 
     private func recordConfiguredLocked(fingerprint: String) throws {
         knownConfiguredFingerprints.insert(fingerprint)
-        var persisted = (try? loadPersistedIndexLocked()) ?? []
+        var persisted = try loadPersistedIndexLocked()
+        persisted.formUnion(knownConfiguredFingerprints)
         persisted.insert(fingerprint)
         try savePersistedIndexLocked(persisted)
+        knownConfiguredFingerprints = persisted
     }
 
     private func removeConfiguredLocked(fingerprint: String) throws {
-        knownConfiguredFingerprints.remove(fingerprint)
-        var persisted = (try? loadPersistedIndexLocked()) ?? []
+        var persisted = try loadPersistedIndexLocked()
         if persisted.remove(fingerprint) != nil {
             try savePersistedIndexLocked(persisted)
         }
+        knownConfiguredFingerprints.remove(fingerprint)
     }
 
     private func setItemData(_ data: Data, account: String) throws {

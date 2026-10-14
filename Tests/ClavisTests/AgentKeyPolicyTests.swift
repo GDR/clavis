@@ -657,5 +657,132 @@ final class AgentKeyPolicyTests: ClavisBaseTestCase {
         let resolvedRelative = AgentRunner.resolveExecutablePath("/tmp/../usr/bin/git")
         XCTAssertTrue(resolvedRelative.hasSuffix("/usr/bin/git"))
     }
+
+    func test_F03_defect2_keychainAgentPolicyStoreGlobalConcurrency() throws {
+        var storage: [String: Data] = [:]
+        let lock = NSLock()
+        let store = KeychainAgentPolicyStore(
+            service: "com.clavis.test-agent-policy-concurrency",
+            addItem: { dict in
+                lock.lock()
+                defer { lock.unlock() }
+                let d = dict as! [String: Any]
+                let account = d[kSecAttrAccount as String] as! String
+                let data = d[kSecValueData as String] as! Data
+                if storage[account] != nil { return errSecDuplicateItem }
+                storage[account] = data
+                return errSecSuccess
+            },
+            deleteItem: { dict in
+                lock.lock()
+                defer { lock.unlock() }
+                let d = dict as! [String: Any]
+                let account = d[kSecAttrAccount as String] as! String
+                storage.removeValue(forKey: account)
+                return errSecSuccess
+            },
+            updateItem: { query, dict in
+                lock.lock()
+                defer { lock.unlock() }
+                let q = query as! [String: Any]
+                let d = dict as! [String: Any]
+                let account = q[kSecAttrAccount as String] as! String
+                guard storage[account] != nil else { return errSecItemNotFound }
+                let data = d[kSecValueData as String] as! Data
+                storage[account] = data
+                return errSecSuccess
+            },
+            copyItem: { query in
+                lock.lock()
+                defer { lock.unlock() }
+                let q = query as! [String: Any]
+                let account = q[kSecAttrAccount as String] as! String
+                guard let data = storage[account] else { return (errSecItemNotFound, nil) }
+                return (errSecSuccess, data as AnyObject)
+            }
+        )
+
+        let iterations = 50
+        DispatchQueue.concurrentPerform(iterations: iterations) { i in
+            if i % 2 == 0 {
+                let policy = AgentGlobalPolicy(version: 1, maxLeaseMinutes: 60 + i)
+                try? store.saveGlobal(policy)
+            } else {
+                _ = try? store.global()
+            }
+        }
+
+        let finalGlobal = try store.global()
+        XCTAssertGreaterThanOrEqual(finalGlobal.maxLeaseMinutes, 60)
+    }
+
+    func test_F03_defect3_transientKeychainErrorPreservesConfiguredIndex() throws {
+        var storage: [String: Data] = [:]
+        var simulateTransientIndexError = false
+
+        let store = KeychainAgentPolicyStore(
+            service: "com.clavis.test-agent-policy-transient-error",
+            addItem: { dict in
+                let d = dict as! [String: Any]
+                let account = d[kSecAttrAccount as String] as! String
+                let data = d[kSecValueData as String] as! Data
+                if storage[account] != nil { return errSecDuplicateItem }
+                storage[account] = data
+                return errSecSuccess
+            },
+            deleteItem: { dict in
+                let d = dict as! [String: Any]
+                let account = d[kSecAttrAccount as String] as! String
+                storage.removeValue(forKey: account)
+                return errSecSuccess
+            },
+            updateItem: { query, dict in
+                let q = query as! [String: Any]
+                let d = dict as! [String: Any]
+                let account = q[kSecAttrAccount as String] as! String
+                guard storage[account] != nil else { return errSecItemNotFound }
+                let data = d[kSecValueData as String] as! Data
+                storage[account] = data
+                return errSecSuccess
+            },
+            copyItem: { query in
+                let q = query as! [String: Any]
+                let account = q[kSecAttrAccount as String] as! String
+                if account == KeychainAgentPolicyStore.configuredIndexAccount && simulateTransientIndexError {
+                    return (errSecIO, nil)
+                }
+                guard let data = storage[account] else { return (errSecItemNotFound, nil) }
+                return (errSecSuccess, data as AnyObject)
+            }
+        )
+
+        // Step 1: Successfully save Key A
+        let policyA = AgentKeyPolicy(mode: .ask, leaseMinutes: 30, burst: 5, refillPerMinute: 1)
+        try store.save(policyA, forFingerprint: "SHA256:keyA")
+
+        // Step 2: Inject transient Keychain read failure for configured-index account
+        simulateTransientIndexError = true
+
+        // Step 3: Attempt to save Key B - MUST fail and throw error rather than silently overwriting index
+        let policyB = AgentKeyPolicy(mode: .notify, leaseMinutes: 60, burst: 10, refillPerMinute: 2)
+        XCTAssertThrowsError(try store.save(policyB, forFingerprint: "SHA256:keyB")) { error in
+            XCTAssertEqual(error as? AgentPolicyError, .corrupt)
+        }
+
+        // Step 4: Resolve transient read error
+        simulateTransientIndexError = false
+
+        // Step 5: Verify Key A's index was NOT wiped out in Keychain storage
+        let indexData = storage[KeychainAgentPolicyStore.configuredIndexAccount]
+        XCTAssertNotNil(indexData)
+        let persistedList = try JSONDecoder().decode([String].self, from: indexData!)
+        XCTAssertTrue(persistedList.contains("SHA256:keyA"), "Key A must remain in the persisted index")
+
+        // Step 6: Verify fail-closed behavior: external deletion of Key A must throw policyUnavailable
+        storage.removeValue(forKey: "SHA256:keyA")
+        XCTAssertThrowsError(try store.policy(forFingerprint: "SHA256:keyA")) { error in
+            XCTAssertEqual(error as? AgentPolicyError, .policyUnavailable)
+        }
+    }
 }
 
