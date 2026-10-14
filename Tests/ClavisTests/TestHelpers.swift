@@ -152,6 +152,9 @@ class ClavisBaseTestCase: XCTestCase {
         EncryptedVaultStore.customVaultDirectoryURL = testRootURL.appendingPathComponent("vault", isDirectory: true)
         EncryptedVaultStore.customKeyAgreementProvider = InMemorySecureEnclaveKeyAgreementProvider()
         KeychainManager.customSigningProvider = InMemorySecureEnclaveSigningProvider()
+        #if DEBUG
+        SystemEventMonitor.customSessionActiveValidator = nil
+        #endif
         ClavisLogger.customLogFileURL = testRootURL.appendingPathComponent("clavis.log")
         ClavisLogger.customMaximumLogFileSize = nil
         ClavisLogger.customVerbose = nil
@@ -163,6 +166,9 @@ class ClavisBaseTestCase: XCTestCase {
         EncryptedVaultStore.customVaultDirectoryURL = nil
         EncryptedVaultStore.customKeyAgreementProvider = nil
         KeychainManager.customSigningProvider = nil
+        #if DEBUG
+        SystemEventMonitor.customSessionActiveValidator = nil
+        #endif
         ClavisLogger.customLogFileURL = nil
         ClavisLogger.customMaximumLogFileSize = nil
         ClavisLogger.customVerbose = nil

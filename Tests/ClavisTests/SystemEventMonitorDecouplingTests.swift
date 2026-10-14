@@ -37,7 +37,9 @@ final class SystemEventMonitorDecouplingTests: ClavisBaseTestCase {
 
     override func tearDownWithError() throws {
         SystemEventMonitor.defaultSleepObserverFactory = nil
+        #if DEBUG
         SystemEventMonitor.customSessionActiveValidator = nil
+        #endif
         try super.tearDownWithError()
     }
 
@@ -216,6 +218,11 @@ final class SystemEventMonitorDecouplingTests: ClavisBaseTestCase {
         XCTAssertTrue(graceManager.hasRecentGitSignature(for: "f8-git-key", clientIdentity: "/usr/bin/git"))
 
         // Simulate locked / off-console session via customSessionActiveValidator
+        #if DEBUG
+        defer {
+            SystemEventMonitor.customSessionActiveValidator = nil
+        }
+        #endif
         SystemEventMonitor.customSessionActiveValidator = { false }
         XCTAssertTrue(SystemEventMonitor.isSessionLockedOrOffConsole())
 
