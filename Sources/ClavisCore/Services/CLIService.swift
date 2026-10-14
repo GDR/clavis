@@ -443,7 +443,7 @@ public struct CLIService {
         return " - [\(label)]\(tag)"
     }
 
-    public static func formatKeyListEntries(keys: [Ed25519KeyInfo]) -> [String] {
+    public static func formatKeyListEntries(keys: [SSHKeyInfo]) -> [String] {
         if keys.isEmpty {
             return [CLIMessages.noKeysFound()]
         }
@@ -474,7 +474,7 @@ public struct CLIService {
         }
 
         let keys = (try? keyManager.listKeys()) ?? []
-        let key: Ed25519KeyInfo
+        let key: SSHKeyInfo
         do {
             key = try AgentRunner.chooseKey(options.keyLabel, keys: keys)
         } catch {

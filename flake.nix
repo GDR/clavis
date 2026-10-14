@@ -1,5 +1,5 @@
 {
-  description = "Clavis — Native macOS Swift/SwiftUI Ed25519 Keychain SSH Agent with Touch ID";
+  description = "Clavis — Native macOS Swift/SwiftUI Secure Enclave SSH Agent with Touch ID";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -20,7 +20,7 @@
         packages = {
           clavis = if pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isAarch64 then pkgs.stdenv.mkDerivation rec {
             pname = "clavis";
-            version = "0.1.1";
+            version = "0.3.1";
 
             src = pkgs.fetchurl {
               url = "https://github.com/GDR/clavis/releases/download/v${version}/clavis-macos-arm64.tar.gz";
@@ -46,7 +46,7 @@
             '';
 
             meta = with pkgs.lib; {
-              description = "Native macOS Swift/SwiftUI Ed25519 Keychain SSH Agent with Touch ID";
+              description = "Native macOS Swift/SwiftUI Secure Enclave SSH Agent with Touch ID";
               homepage = "https://github.com/GDR/clavis";
               license = licenses.mit;
               platforms = [ "aarch64-darwin" ];

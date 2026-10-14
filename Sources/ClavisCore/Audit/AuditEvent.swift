@@ -128,7 +128,7 @@ public struct AuditEvent: Equatable, Sendable {
         self.sensitive = sensitive
     }
 
-    public static func sanitizedPath(_ path: String) -> String {
+    public static func sanitizedPath(_ path: String, maxLength: Int? = 512) -> String {
         let cleaned = String(String.UnicodeScalarView(path.unicodeScalars.filter {
             !CharacterSet.controlCharacters.contains($0)
                 && !CharacterSet.newlines.contains($0)
@@ -138,8 +138,8 @@ public struct AuditEvent: Equatable, Sendable {
                 && $0.properties.generalCategory != .lineSeparator
                 && $0.properties.generalCategory != .paragraphSeparator
         }))
-        if cleaned.count > 512 {
-            return String(cleaned.prefix(512))
+        if let maxLength, cleaned.count > maxLength {
+            return String(cleaned.prefix(maxLength))
         }
         return cleaned
     }

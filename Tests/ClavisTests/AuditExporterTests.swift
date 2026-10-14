@@ -1,7 +1,7 @@
 import XCTest
 @testable import ClavisCore
 
-final class AuditExporterTests: XCTestCase {
+final class AuditExporterTests: ClavisBaseTestCase {
 
     func test_002_AC7_exportRedactsLabelsAndPaths() throws {
         let event = AuditEvent(

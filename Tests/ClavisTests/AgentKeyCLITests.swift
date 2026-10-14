@@ -1,7 +1,7 @@
 import XCTest
 @testable import ClavisCore
 
-final class AgentKeyCLITests: XCTestCase {
+final class AgentKeyCLITests: ClavisBaseTestCase {
 
     func test_005_T6_parseGeneratePurpose() throws {
         // Default to general
@@ -53,7 +53,7 @@ final class AgentKeyCLITests: XCTestCase {
         XCTAssertEqual(emptyEntries, [CLIMessages.noKeysFound()])
 
         // Multiple keys
-        let k1 = Ed25519KeyInfo(
+        let k1 = SSHKeyInfo(
             label: "work-key",
             publicKeyOpenSSH: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGeneral work-key",
             publicKeyBlob: Data(),
@@ -64,7 +64,7 @@ final class AgentKeyCLITests: XCTestCase {
             biometricPolicy: nil,
             keyPurpose: .general
         )
-        let k2 = Ed25519KeyInfo(
+        let k2 = SSHKeyInfo(
             label: "commit-signer",
             publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBB Commit commit-signer",
             publicKeyBlob: Data(),
@@ -75,7 +75,7 @@ final class AgentKeyCLITests: XCTestCase {
             biometricPolicy: nil,
             keyPurpose: .gitSigningOnly
         )
-        let k3 = Ed25519KeyInfo(
+        let k3 = SSHKeyInfo(
             label: "agent-claude",
             publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBB Agent agent-claude",
             publicKeyBlob: Data(),
@@ -92,5 +92,34 @@ final class AgentKeyCLITests: XCTestCase {
         XCTAssertEqual(entries[1], " - [work-key]")
         XCTAssertEqual(entries[4], " - [commit-signer] [Git Only]")
         XCTAssertEqual(entries[7], " - [agent-claude] [Agent]")
+    }
+
+    func test_SSHKeyInfo_promotionAndBackwardCompatibilityTypealias() {
+        // Verify type identity between SSHKeyInfo and backward-compatible Ed25519KeyInfo typealias
+        XCTAssertTrue(SSHKeyInfo.self == Ed25519KeyInfo.self)
+
+        // Verify strict invariant: Keychain publicServiceName must remain unchanged
+        XCTAssertEqual(KeychainManager.publicServiceName, "com.clavis.ed25519.pub")
+        XCTAssertEqual(KeychainManager.privateServiceName, "com.clavis.private-record.v2")
+
+        // Verify accurate CLI strings
+        XCTAssertEqual(CLIMessages.noKeysFound(), "No keys found in Keychain.")
+        XCTAssertTrue(CLIMessages.help.contains("Clavis — Native macOS Secure Enclave SSH Agent & Key Manager"))
+        XCTAssertFalse(CLIMessages.help.contains("Ed25519"))
+
+        let sampleKey = SSHKeyInfo(
+            label: "p256-key",
+            publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA...",
+            publicKeyBlob: Data(),
+            fingerprint: "SHA256:test",
+            createdAt: Date(),
+            algorithmName: "ECDSA P-256",
+            storage: .secureEnclave,
+            biometricPolicy: .userPresence,
+            keyPurpose: .general
+        )
+        let generatedMsg = CLIMessages.successfullyGenerated(info: sampleKey)
+        XCTAssertTrue(generatedMsg.contains("Successfully generated key 'p256-key' in Keychain."))
+        XCTAssertFalse(generatedMsg.contains("Ed25519"))
     }
 }

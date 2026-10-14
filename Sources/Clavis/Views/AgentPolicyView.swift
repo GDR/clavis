@@ -2,7 +2,7 @@ import SwiftUI
 import ClavisCore
 
 public struct AgentPolicyView: View {
-    public let key: Ed25519KeyInfo
+    public let key: SSHKeyInfo
     @ObservedObject var appState: AppState
 
     public static let leaseOptions = [15, 60, 240, 480, 1440]
@@ -21,7 +21,7 @@ public struct AgentPolicyView: View {
     @State private var saveFeedback: String? = nil
     @State private var saveError: String? = nil
 
-    public init(key: Ed25519KeyInfo, appState: AppState) {
+    public init(key: SSHKeyInfo, appState: AppState) {
         self.key = key
         self.appState = appState
     }

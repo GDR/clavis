@@ -224,7 +224,7 @@ final class AgentSessionTests: ClavisBaseTestCase {
             return sigBlob
         }
         let grant = AgentSessionGrant(
-            key: Ed25519KeyInfo(
+            key: SSHKeyInfo(
                 label: "mock-se-key",
                 publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA...",
                 publicKeyBlob: Data(repeating: 0x11, count: 65),
@@ -293,5 +293,63 @@ final class AgentSessionTests: ClavisBaseTestCase {
 
         grant.invalidate()
         XCTAssertThrowsError(try grant.sign(Data("fail".utf8), using: manager))
+    }
+
+    func testAgentSessionGrantEnforcesInteractionNotAllowedAndInvalidationAtSigningBoundary() throws {
+        final class TrackableAuthenticator: UserAuthenticating, @unchecked Sendable {
+            let context: TrackableLAContext
+            init(context: TrackableLAContext) {
+                self.context = context
+            }
+            func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) throws -> LAContext {
+                context
+            }
+            func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) async throws -> LAContext {
+                context
+            }
+        }
+
+        let trackableContext = TrackableLAContext()
+        var validatedContexts: [LAContext?] = []
+        let signingProvider = InMemorySecureEnclaveSigningProvider { context in
+            validatedContexts.append(context)
+            if context == nil
+                || context?.interactionNotAllowed != true
+                || (context as? TrackableLAContext)?.isInvalidated == true {
+                throw LAError(.invalidContext)
+            }
+        }
+        KeychainManager.customSigningProvider = signingProvider
+
+        let keyManager = makeKeyManager(
+            authenticator: TrackableAuthenticator(context: trackableContext),
+            privateKeyStore: InteractionCheckingPrivateKeyStore(),
+            signingProvider: signingProvider
+        )
+
+        let key = try keyManager.generateKey(
+            label: "agent-grant-boundary-validation-key",
+            storageType: .secureEnclave,
+            biometricPolicy: .userPresence,
+            keyPurpose: .agent
+        )
+
+        let grant = try keyManager.authorizeAgentSession(
+            key: key,
+            prompt: "Authorize agent session"
+        )
+
+        let sigBlob = try grant.sign(Data("payload".utf8))
+        var reader = DataReader(data: sigBlob)
+        XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
+        XCTAssertNotNil(reader.readWireData())
+        XCTAssertEqual(validatedContexts.count, 1)
+        XCTAssertTrue(validatedContexts.first as? TrackableLAContext === trackableContext)
+        XCTAssertTrue(trackableContext.interactionNotAllowed)
+        XCTAssertFalse(trackableContext.isInvalidated)
+
+        grant.invalidate()
+        XCTAssertTrue(trackableContext.isInvalidated)
+        XCTAssertThrowsError(try grant.sign(Data("payload".utf8)))
     }
 }

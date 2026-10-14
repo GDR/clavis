@@ -64,7 +64,7 @@ final class AgentSessionAuthorizationTests: ClavisBaseTestCase {
         )
 
         // Tamper with public index so index claims it is an agent key
-        let tamperedKey = Ed25519KeyInfo(
+        let tamperedKey = SSHKeyInfo(
             label: personalKey.label,
             publicKeyOpenSSH: personalKey.publicKeyOpenSSH,
             publicKeyBlob: personalKey.publicKeyBlob,

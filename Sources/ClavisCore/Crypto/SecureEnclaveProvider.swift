@@ -110,10 +110,13 @@ public final class ProductionSecureEnclaveKeyAgreementProvider: SecureEnclaveKey
 
 public final class InMemorySecureEnclaveSigningProvider: SecureEnclaveSigningProviding, @unchecked Sendable {
     public var isAvailable: Bool = true
+    public var contextValidator: ((LAContext?) throws -> Void)?
     private let lock = NSLock()
     private var keysByData: [Data: P256.Signing.PrivateKey] = [:]
 
-    public init() {}
+    public init(contextValidator: ((LAContext?) throws -> Void)? = nil) {
+        self.contextValidator = contextValidator
+    }
 
     public func generateKey(accessControl: SecAccessControl) throws -> (dataRepresentation: Data, publicKeyData: Data) {
         lock.lock()
@@ -140,6 +143,7 @@ public final class InMemorySecureEnclaveSigningProvider: SecureEnclaveSigningPro
     public func signature(for data: Data, dataRepresentation: Data, context: LAContext?) throws -> P256.Signing.ECDSASignature {
         lock.lock()
         defer { lock.unlock() }
+        try contextValidator?(context)
         let key: P256.Signing.PrivateKey
         if let cached = keysByData[dataRepresentation] {
             key = cached

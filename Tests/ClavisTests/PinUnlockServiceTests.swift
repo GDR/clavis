@@ -62,7 +62,7 @@ final class FakePasswordAuthenticator: PasswordAuthenticating, @unchecked Sendab
 }
 
 @MainActor
-final class PinUnlockServiceTests: XCTestCase {
+final class PinUnlockServiceTests: ClavisBaseTestCase {
 
     func test_004_AC1_correctPINUnlocksInOrMode() async throws {
         let keyring = SoftwareAuditKeyring()

@@ -7,22 +7,56 @@ import LocalAuthentication
 final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
     func testKeychainManagerListKeysSingleItemHandling() throws {
-        let keys = try makeKeyManager().listKeys()
+        let keyManager = makeKeyManager()
+        let keys = try keyManager.listKeys()
         XCTAssertNotNil(keys)
 
-        let dummyKeyInfo = Ed25519KeyInfo(label: "dummy", publicKeyOpenSSH: "ssh-ed25519 AAA dummy", publicKeyBlob: Data(), fingerprint: "SHA256:dummy")
+        let dummyKeyInfo = SSHKeyInfo(label: "dummy", publicKeyOpenSSH: "ssh-ed25519 AAA dummy", publicKeyBlob: Data(), fingerprint: "SHA256:dummy")
         let encodedData = try JSONEncoder().encode(dummyKeyInfo)
 
         let itemsSingle: AnyObject = encodedData as AnyObject
         let itemsArray: AnyObject = [encodedData] as AnyObject
 
         if let singleData = itemsSingle as? Data {
-            let decoded = try JSONDecoder().decode(Ed25519KeyInfo.self, from: singleData)
+            let decoded = try JSONDecoder().decode(SSHKeyInfo.self, from: singleData)
             XCTAssertEqual(decoded.label, "dummy")
         }
         if let array = itemsArray as? [Data] {
-            let decoded = try JSONDecoder().decode(Ed25519KeyInfo.self, from: array[0])
+            let decoded = try JSONDecoder().decode(SSHKeyInfo.self, from: array[0])
             XCTAssertEqual(decoded.label, "dummy")
+        }
+
+        let label = "list-and-tamper-\(UUID().uuidString)"
+        let generatedKey = try keyManager.generateKey(label: label, keyPurpose: .agent)
+        defer {
+            PublicKeyStore.save(generatedKey)
+            try? keyManager.deleteKey(label: label)
+        }
+
+        let listedKeys = try keyManager.listKeys()
+        XCTAssertTrue(listedKeys.contains(where: { $0.label == label }))
+
+        var tamperedBlob = generatedKey.publicKeyBlob
+        tamperedBlob[tamperedBlob.count - 1] ^= 0xFF
+        let tamperedKey = SSHKeyInfo(
+            label: generatedKey.label,
+            publicKeyOpenSSH: generatedKey.publicKeyOpenSSH,
+            publicKeyBlob: tamperedBlob,
+            fingerprint: generatedKey.fingerprint,
+            createdAt: generatedKey.createdAt,
+            algorithmName: generatedKey.algorithmName,
+            storage: generatedKey.storage,
+            biometricPolicy: generatedKey.biometricPolicy,
+            keyPurpose: .agent
+        )
+        PublicKeyStore.save(tamperedKey)
+
+        XCTAssertThrowsError(try keyManager.authorizeAgentSession(key: tamperedKey, prompt: "Authorize agent session")) { error in
+            XCTAssertTrue(error is PrivateKeyRecordError, "Expected PrivateKeyRecordError, got \(error)")
+        }
+
+        XCTAssertThrowsError(try keyManager.changeKind(label: label, to: .general, prompt: "Change key kind")) { error in
+            XCTAssertTrue(error is PrivateKeyRecordError, "Expected PrivateKeyRecordError, got \(error)")
         }
     }
 
@@ -32,7 +66,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         XCTAssertEqual(BiometricPolicy.userPresence.accessControlFlags, [.privateKeyUsage, .userPresence])
         XCTAssertEqual(BiometricPolicy.biometryCurrentSet.accessControlFlags, [.privateKeyUsage, .biometryCurrentSet])
 
-        let keyWithPolicy = Ed25519KeyInfo(
+        let keyWithPolicy = SSHKeyInfo(
             label: "test-policy-\(UUID().uuidString)",
             publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA... test",
             publicKeyBlob: Data([1, 2, 3]),
@@ -47,11 +81,11 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         XCTAssertEqual(keyWithPolicy.effectiveBiometricPolicy, .biometryCurrentSet)
 
         let encoded = try JSONEncoder().encode(keyWithPolicy)
-        let decoded = try JSONDecoder().decode(Ed25519KeyInfo.self, from: encoded)
+        let decoded = try JSONDecoder().decode(SSHKeyInfo.self, from: encoded)
         XCTAssertEqual(decoded.biometricPolicy, .biometryCurrentSet)
         XCTAssertEqual(decoded.effectiveBiometricPolicy, .biometryCurrentSet)
 
-        let legacyKey = Ed25519KeyInfo(
+        let legacyKey = SSHKeyInfo(
             label: "legacy-\(UUID().uuidString)",
             publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA... legacy",
             publicKeyBlob: Data([4, 5, 6]),
@@ -222,7 +256,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         let originalKey = try keyManager.generateKey(label: label, algorithm: "ECDSA P-256", storageType: .secureEnclave)
 
         // Attacker tampers with keys.json, claiming this ECDSA P-256 key is actually Ed25519
-        let tamperedKey = Ed25519KeyInfo(
+        let tamperedKey = SSHKeyInfo(
             label: originalKey.label,
             publicKeyOpenSSH: originalKey.publicKeyOpenSSH,
             publicKeyBlob: originalKey.publicKeyBlob,
@@ -287,7 +321,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
         // Attacker edits keys.json to claim the key only needs the weaker default policy,
         // which would make Clavis prompt with a weaker LocalAuthentication policy.
-        let downgraded = Ed25519KeyInfo(
+        let downgraded = SSHKeyInfo(
             label: label,
             publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA... \(label)",
             publicKeyBlob: Data([1, 2, 3]),
@@ -318,7 +352,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             algorithm: "ECDSA P-256",
             storageType: .secureEnclave
         )
-        let tampered = Ed25519KeyInfo(
+        let tampered = SSHKeyInfo(
             label: original.label,
             publicKeyOpenSSH: original.publicKeyOpenSSH,
             publicKeyBlob: original.publicKeyBlob,
@@ -352,7 +386,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         // Attacker tampers keys.json, replacing the public key blob with spoofed bytes
         var spoofedBlob = originalKey.publicKeyBlob
         spoofedBlob[20] ^= 0xFF
-        let tamperedKey = Ed25519KeyInfo(
+        let tamperedKey = SSHKeyInfo(
             label: originalKey.label,
             publicKeyOpenSSH: originalKey.publicKeyOpenSSH,
             publicKeyBlob: spoofedBlob,
@@ -379,7 +413,7 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         }
         PublicKeyStore.disableKeychainMirrorForTesting = false
         defer { PublicKeyStore.disableKeychainMirrorForTesting = true }
-        let keyInfo = Ed25519KeyInfo(
+        let keyInfo = SSHKeyInfo(
             label: "test-rebuild-\(UUID().uuidString)",
             publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAA test",
             publicKeyBlob: Data(repeating: 0x11, count: 65),

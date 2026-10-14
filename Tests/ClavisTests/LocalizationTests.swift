@@ -1,7 +1,7 @@
 import XCTest
 @testable import ClavisCore
 
-final class LocalizationTests: XCTestCase {
+final class LocalizationTests: ClavisBaseTestCase {
 
     func testInspectorLocalizedStrings() {
         XCTAssertFalse(ClavisUIStrings.Inspector.usedBySection.isEmpty)

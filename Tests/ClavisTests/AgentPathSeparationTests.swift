@@ -87,7 +87,7 @@ final class AgentPathSeparationTests: ClavisBaseTestCase {
         let agentKey = try keyManager.generateKey(label: "tampered-agent-key", keyPurpose: .agent)
 
         // Tamper the public index to claim purpose is .general
-        let tampered = Ed25519KeyInfo(
+        let tampered = SSHKeyInfo(
             label: agentKey.label,
             publicKeyOpenSSH: agentKey.publicKeyOpenSSH,
             publicKeyBlob: agentKey.publicKeyBlob,
@@ -156,7 +156,7 @@ final class AgentPathSeparationTests: ClavisBaseTestCase {
         XCTAssertEqual(auth.authenticationCount, 0)
 
         // Tampered index: refuses after authoritative record check
-        let tampered = Ed25519KeyInfo(
+        let tampered = SSHKeyInfo(
             label: agentKey.label,
             publicKeyOpenSSH: agentKey.publicKeyOpenSSH,
             publicKeyBlob: agentKey.publicKeyBlob,

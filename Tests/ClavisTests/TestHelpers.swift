@@ -4,6 +4,15 @@ import LocalAuthentication
 @testable import ClavisCore
 @testable import Clavis
 
+final class TrackableLAContext: LAContext {
+    private(set) var isInvalidated: Bool = false
+
+    override func invalidate() {
+        isInvalidated = true
+        super.invalidate()
+    }
+}
+
 struct AllowingAuthenticator: UserAuthenticating {
     func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) throws -> LAContext {
         LAContext()
@@ -167,14 +176,16 @@ class ClavisBaseTestCase: XCTestCase {
         authenticator: UserAuthenticating = AllowingAuthenticator(),
         privateKeyStore: PrivateKeyStoring = InMemoryPrivateKeyStore(),
         auditRecorder: AuditRecording = InMemoryAuditRecorder(),
-        signingProvider: SecureEnclaveSigningProviding? = nil
+        signingProvider: SecureEnclaveSigningProviding? = nil,
+        gitSigningGraceManager: GitSigningGraceManager = .shared
     ) -> KeychainManager {
         KeychainManager(
             authenticator: authenticator,
             privateKeyStore: privateKeyStore,
             agentGrantRevoker: { _ in },
             auditRecorder: auditRecorder,
-            signingProvider: signingProvider
+            signingProvider: signingProvider,
+            gitSigningGraceManager: gitSigningGraceManager
         )
     }
 

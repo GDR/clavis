@@ -99,7 +99,7 @@ public enum AgentRunner {
         return options
     }
 
-    public static func chooseKey(_ requested: String?, keys: [Ed25519KeyInfo]) throws -> Ed25519KeyInfo {
+    public static func chooseKey(_ requested: String?, keys: [SSHKeyInfo]) throws -> SSHKeyInfo {
         if let requested = requested {
             guard let key = keys.first(where: { $0.label == requested }) else {
                 throw AgentRunError.unknownKey(requested)

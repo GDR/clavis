@@ -9,17 +9,17 @@ public enum AgentSessionGrantError: Error, Equatable {
 
 public final class AgentSessionGrant: @unchecked Sendable {
     private let lock = NSLock()
-    private let key: Ed25519KeyInfo?
+    private let key: SSHKeyInfo?
     private let context: LAContext?
     private var isInvalidated = false
     private var hardwareSigner: (@Sendable (Data) throws -> Data)?
 
-    public convenience init(key: Ed25519KeyInfo, context: LAContext) {
+    public convenience init(key: SSHKeyInfo, context: LAContext) {
         self.init(key: key, context: context, hardwareSigner: nil)
     }
 
     public init(
-        key: Ed25519KeyInfo,
+        key: SSHKeyInfo,
         context: LAContext,
         hardwareSigner: (@Sendable (Data) throws -> Data)? = nil
     ) {

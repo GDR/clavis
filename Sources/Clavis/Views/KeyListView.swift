@@ -11,11 +11,11 @@ struct KeyListView: View {
     @State private var statusMessage: String? = nil
     @State private var kindFilter: KeyKindFilter = .all
 
-    private var filteredKeys: [Ed25519KeyInfo] {
+    private var filteredKeys: [SSHKeyInfo] {
         KeyKindFilter.apply(kindFilter, to: appState.keys)
     }
 
-    private var selectedKey: Ed25519KeyInfo? {
+    private var selectedKey: SSHKeyInfo? {
         if let id = selectedKeyId {
             return filteredKeys.first(where: { $0.id == id })
         }
@@ -188,7 +188,7 @@ struct KeyListView: View {
         ClavisLogger.promptDebug("calvis-ui", "KeyListView: initiating delete for key '\(label)'")
         defer { appState.refresh() }
         do {
-            try KeychainManager.shared.deleteKey(label: label)
+            try appState.deleteKey(label: label)
             statusMessage = ClavisUIStrings.KeyList.deletedKey(label: label)
         } catch {
             ClavisLogger.log("KEY_DELETE", "Failed to delete key '\(label)': \(error.localizedDescription)")
@@ -198,7 +198,7 @@ struct KeyListView: View {
 }
 
 private struct KeySidebarRowView: View {
-    let key: Ed25519KeyInfo
+    let key: SSHKeyInfo
     let isSelected: Bool
     let onSelect: () -> Void
 

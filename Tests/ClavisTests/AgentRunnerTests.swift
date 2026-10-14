@@ -1,9 +1,9 @@
 import XCTest
 @testable import ClavisCore
 
-final class AgentRunnerTests: XCTestCase {
-    private func makeKey(label: String, purpose: KeyPurpose) -> Ed25519KeyInfo {
-        Ed25519KeyInfo(
+final class AgentRunnerTests: ClavisBaseTestCase {
+    private func makeKey(label: String, purpose: KeyPurpose) -> SSHKeyInfo {
+        SSHKeyInfo(
             label: label,
             publicKeyOpenSSH: "ssh-ed25519 AAA",
             publicKeyBlob: Data(),

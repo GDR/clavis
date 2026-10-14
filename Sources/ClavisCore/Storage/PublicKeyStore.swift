@@ -46,19 +46,19 @@ public struct PublicKeyStore {
     private static let cacheTTL: TimeInterval = 2
 
     private static let stateLock = NSLock()
-    private static var cachedKeys: [Ed25519KeyInfo]?
+    private static var cachedKeys: [SSHKeyInfo]?
     private static var cachedAt = Date.distantPast
     private static var generation: UInt64 = 0
     /// Backing store when `disableKeychainMirrorForTesting` is set.
-    private static var memoryOnlyKeys: [String: Ed25519KeyInfo] = [:]
+    private static var memoryOnlyKeys: [String: SSHKeyInfo] = [:]
 
     #if DEBUG
     /// Test seam for loading keys without touching host Keychain.
-    static var keychainLoader: () -> [Ed25519KeyInfo] = {
+    static var keychainLoader: () -> [SSHKeyInfo] = {
         guard isKeychainAccessAllowed else { return [] }
         return loadAllFromKeychain()
     }
-    static var cachedKeysForTesting: [Ed25519KeyInfo]? {
+    static var cachedKeysForTesting: [SSHKeyInfo]? {
         stateLock.lock(); defer { stateLock.unlock() }
         return cachedKeys
     }
@@ -68,7 +68,7 @@ public struct PublicKeyStore {
     }
     #endif
 
-    public static func loadAll() -> [Ed25519KeyInfo] {
+    public static func loadAll() -> [SSHKeyInfo] {
         stateLock.lock()
         if disableKeychainMirrorForTesting {
             defer { stateLock.unlock() }
@@ -96,11 +96,11 @@ public struct PublicKeyStore {
         return keys
     }
 
-    public static func save(_ info: Ed25519KeyInfo) {
+    public static func save(_ info: SSHKeyInfo) {
         try? saveChecked(info)
     }
 
-    public static func saveChecked(_ info: Ed25519KeyInfo) throws {
+    public static func saveChecked(_ info: SSHKeyInfo) throws {
         #if DEBUG
         if let forcedError = forcedSaveErrorForTesting {
             throw forcedError
@@ -144,11 +144,11 @@ public struct PublicKeyStore {
 
     // MARK: - Keychain Public Record Mirroring & Recovery
 
-    public static func saveToKeychain(_ info: Ed25519KeyInfo) {
+    public static func saveToKeychain(_ info: SSHKeyInfo) {
         try? saveToKeychainChecked(info)
     }
 
-    public static func saveToKeychainChecked(_ info: Ed25519KeyInfo) throws {
+    public static func saveToKeychainChecked(_ info: SSHKeyInfo) throws {
         if disableKeychainMirrorForTesting || !isKeychainAccessAllowed {
             stateLock.lock()
             memoryOnlyKeys[info.label] = info
@@ -208,7 +208,7 @@ public struct PublicKeyStore {
         invalidateCache()
     }
 
-    public static func loadAllFromKeychain() -> [Ed25519KeyInfo] {
+    public static func loadAllFromKeychain() -> [SSHKeyInfo] {
         guard isKeychainAccessAllowed else { return [] }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -220,7 +220,7 @@ public struct PublicKeyStore {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess else { return [] }
 
-        var keys: [Ed25519KeyInfo] = []
+        var keys: [SSHKeyInfo] = []
         let dicts = (result as? [[String: Any]]) ?? (result as? [String: Any]).map { [$0] } ?? []
         for dict in dicts {
             guard let account = dict[kSecAttrAccount as String] as? String else { continue }
@@ -234,7 +234,7 @@ public struct PublicKeyStore {
             var itemResult: AnyObject?
             if SecItemCopyMatching(itemQuery as CFDictionary, &itemResult) == errSecSuccess,
                let data = itemResult as? Data,
-               let info = try? JSONDecoder().decode(Ed25519KeyInfo.self, from: data) {
+               let info = try? JSONDecoder().decode(SSHKeyInfo.self, from: data) {
                 keys.append(info)
             }
         }

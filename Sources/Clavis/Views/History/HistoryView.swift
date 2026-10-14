@@ -6,7 +6,7 @@ import ClavisCore
 public struct HistoryView: View {
     @ObservedObject public var viewModel: HistoryViewModel
 
-    @State private var availableKeys: [Ed25519KeyInfo] = []
+    @State private var availableKeys: [SSHKeyInfo] = []
     @State private var selectedKeyFingerprint: String = ""
     @State private var selectedKind: String = "all"
     @State private var selectedResult: String = "all"
@@ -457,9 +457,10 @@ public struct HistoryView: View {
     }
 
     private func loadKeys() {
-        if let keys = try? KeychainManager.shared.listKeys() {
-            availableKeys = keys
+        if AppState.shared.keys.isEmpty {
+            AppState.shared.refresh()
         }
+        availableKeys = AppState.shared.keys
     }
 
     private func syncFiltersFromQuery() {

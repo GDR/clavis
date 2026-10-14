@@ -30,7 +30,7 @@ public enum KeyKindFilter: String, CaseIterable, Identifiable, Sendable {
 
     public var id: String { rawValue }
 
-    public static func apply(_ filter: KeyKindFilter, to keys: [Ed25519KeyInfo]) -> [Ed25519KeyInfo] {
+    public static func apply(_ filter: KeyKindFilter, to keys: [SSHKeyInfo]) -> [SSHKeyInfo] {
         switch filter {
         case .all:
             return keys

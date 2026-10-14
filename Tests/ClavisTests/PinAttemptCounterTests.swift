@@ -3,7 +3,7 @@ import Security
 @testable import ClavisCore
 @testable import Clavis
 
-final class PinAttemptCounterTests: XCTestCase {
+final class PinAttemptCounterTests: ClavisBaseTestCase {
 
     func test_004_AC3_backoffDoublesAfterThreeFailures() {
         let baseTime: Double = 1_000_000.0

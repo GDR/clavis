@@ -2,7 +2,7 @@ import Foundation
 import Security
 import LocalAuthentication
 
-public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
+public struct SSHKeyInfo: Identifiable, Codable, Equatable {
     public var id: String { label }
     public let label: String
     public let publicKeyOpenSSH: String
@@ -72,6 +72,8 @@ public struct Ed25519KeyInfo: Identifiable, Codable, Equatable {
         self.keyPurpose = keyPurpose
     }
 }
+
+public typealias Ed25519KeyInfo = SSHKeyInfo
 
 public enum KeyPurpose: String, CaseIterable, Identifiable, Codable {
     case general = "general"

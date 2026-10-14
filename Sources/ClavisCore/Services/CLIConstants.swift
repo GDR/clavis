@@ -57,7 +57,7 @@ public enum CLIMessages {
     }
 
     public static let help = """
-    Clavis — Native macOS Ed25519 Keychain & SSH Agent Daemon
+    Clavis — Native macOS Secure Enclave SSH Agent & Key Manager
 
     USAGE:
       clavis generate <label> [--git-only] [--agent]  Generate a new key pair in Keychain
@@ -65,6 +65,7 @@ public enum CLIMessages {
       clavis export-pub <label>            Print the OpenSSH public key for <label>
       clavis delete <label> --yes          Authenticate and permanently delete a key pair
       clavis kind <label> agent|personal   Change key kind between personal and agent
+      clavis run [options] -- <command...> Run a command in an isolated agent session
       clavis lock                          Lock all session caches and active Git sessions
       clavis logs                          Print live Touch ID and authentication logs
       clavis vault repair [--replace-pin]  Repair vault master key pin in Keychain
@@ -78,7 +79,7 @@ public enum CLIMessages {
     public static let lockedAll = "🔒 All active sessions and caches locked."
 
     public static func noKeysFound() -> String {
-        "No Ed25519 keys found in Keychain."
+        "No keys found in Keychain."
     }
 
     public static func foundKeysHeader(count: Int) -> String {
@@ -93,8 +94,8 @@ public enum CLIMessages {
         "No log file found at \(path)"
     }
 
-    public static func successfullyGenerated(info: Ed25519KeyInfo) -> String {
-        "Successfully generated Ed25519 key '\(info.label)' in Keychain.\n" + info.cliSummary
+    public static func successfullyGenerated(info: SSHKeyInfo) -> String {
+        "Successfully generated key '\(info.label)' in Keychain.\n" + info.cliSummary
     }
 
     public static func successfullyDeleted(label: String) -> String {

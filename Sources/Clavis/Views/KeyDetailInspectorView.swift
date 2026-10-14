@@ -2,14 +2,14 @@ import SwiftUI
 import ClavisCore
 
 public struct KeyDetailInspectorView: View {
-    public let key: Ed25519KeyInfo
+    public let key: SSHKeyInfo
     @ObservedObject var appState: AppState
     public let onDelete: () -> Void
 
     @State private var copyFeedback: String? = nil
     @State private var showingDeleteAlert: Bool = false
 
-    public init(key: Ed25519KeyInfo, appState: AppState, onDelete: @escaping () -> Void) {
+    public init(key: SSHKeyInfo, appState: AppState, onDelete: @escaping () -> Void) {
         self.key = key
         self.appState = appState
         self.onDelete = onDelete

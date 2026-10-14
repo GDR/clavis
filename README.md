@@ -1,11 +1,11 @@
 # 🔑 Clavis
 
-**Clavis** is a native macOS Swift / SwiftUI application that securely manages Ed25519 private keys in macOS Keychain with Touch ID protection, acts as an SSH Agent daemon (`SSH_AUTH_SOCK`), signs Git commits (`gpg.format = ssh`), and provides a Menu Bar status item + Key Management Window UI.
+**Clavis** is a native macOS Swift / SwiftUI application that securely manages Secure Enclave ECDSA P-256 private keys with Touch ID protection, acts as an SSH Agent daemon (`SSH_AUTH_SOCK`), signs Git commits (`gpg.format = ssh`), and provides a Menu Bar status item + Key Management Window UI.
 
 Clavis requires a Mac with Secure Enclave support (Apple silicon, an Intel Mac
 with a T2 chip, or a 2016–2017 MacBook Pro with Touch Bar and T1). It exits on
-unsupported Macs. Ed25519 keys remain software keys in Keychain; Secure Enclave
-protects the recovery vault master key and can directly hold P-256 signing keys.
+unsupported Macs. All signing keys are hardware-backed Secure Enclave ECDSA P-256
+keys; Secure Enclave also protects the recovery vault master key.
 
 ---
 
@@ -118,7 +118,7 @@ ssh -T git@github.com
 Configure Git commit signing:
 ```bash
 git config --global gpg.format ssh
-git config --global user.signingkey "ssh-ed25519 ..."
+git config --global user.signingkey "ecdsa-sha2-nistp256 ..."
 git commit -S -m "signed commit"
 ```
 

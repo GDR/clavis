@@ -84,6 +84,7 @@ if let cliResult = CLIService.handle(args: CommandLine.arguments) {
             let terminationSignalSources = installTerminationSignalSources {
                 resealer.stop()
                 AgentServers.stopAll()
+                AuditRecorder.shared.flush()
                 SingleInstanceLock.agent.release()
             }
             do {
@@ -105,19 +106,7 @@ if let cliResult = CLIService.handle(args: CommandLine.arguments) {
             }
         }
     } else {
-        let helpMsg = """
-        Clavis — Native macOS Ed25519 Keychain & SSH Agent Daemon
-
-        USAGE:
-          clavis-cli generate <label> [--git-only] [--agent] Generate a new key pair in Keychain
-          clavis-cli list                     List all stored keys and OpenSSH public keys
-          clavis-cli export-pub <label>       Print the OpenSSH public key for <label>
-          clavis-cli delete <label>           Delete key pair from Keychain
-          clavis-cli kind <label> agent|personal Change key kind between personal and agent
-          clavis-cli vault repair [--replace-pin] Repair vault master key pin in Keychain
-          clavis-cli daemon [status|stop|restart]   Run or manage SSH Agent socket daemon
-        """
-        printOut(helpMsg)
+        printOut(CLIMessages.help)
         exit(0)
     }
 }

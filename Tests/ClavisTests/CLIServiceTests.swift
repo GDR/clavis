@@ -20,6 +20,31 @@ final class CLIServiceTests: ClavisBaseTestCase {
         XCTAssertNil(resNoArgs)
     }
 
+    func testCLIServiceHelpIncludesAllSupportedCommands() {
+        let keyManager = makeKeyManager()
+        let resHelp = CLIService.handle(args: ["clavis", "help"], keyManager: keyManager)
+        XCTAssertEqual(resHelp?.exitCode, 0)
+        let helpOutput = resHelp?.output ?? ""
+        XCTAssertEqual(helpOutput, CLIMessages.help)
+
+        for command in ["generate", "list", "export", "delete", "lock", "vault repair", "daemon"] {
+            XCTAssertTrue(CLIMessages.help.contains(command), "CLIMessages.help missing '\(command)'")
+            XCTAssertTrue(helpOutput.contains(command), "Help output missing '\(command)'")
+        }
+        XCTAssertTrue(
+            CLIMessages.help.contains("kind") || CLIMessages.help.contains("key set-kind"),
+            "CLIMessages.help missing kind command"
+        )
+        XCTAssertTrue(
+            CLIMessages.help.localizedCaseInsensitiveContains("run"),
+            "CLIMessages.help missing run reference"
+        )
+        XCTAssertTrue(
+            CLIMessages.usage(for: .run).contains("run"),
+            "CLIMessages.usage(for: .run) missing 'run'"
+        )
+    }
+
 
     func testCLIServiceMissingGenerateArgs() {
         let keyManager = makeKeyManager()

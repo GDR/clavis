@@ -454,7 +454,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func copyKey(_ key: Ed25519KeyInfo) {
+    private func copyKey(_ key: SSHKeyInfo) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(key.displayIdentifier, forType: .string)
         withAnimation {
@@ -471,7 +471,7 @@ struct MenuBarView: View {
 }
 
 private struct MenuBarIdentityRow: View {
-    let key: Ed25519KeyInfo
+    let key: SSHKeyInfo
     let isCopied: Bool
     let onCopy: () -> Void
 

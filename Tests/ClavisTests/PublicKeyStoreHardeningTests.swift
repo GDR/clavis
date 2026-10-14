@@ -14,8 +14,8 @@ final class PublicKeyStoreHardeningTests: ClavisBaseTestCase {
         try super.tearDownWithError()
     }
 
-    private func makeKey(label: String) -> Ed25519KeyInfo {
-        Ed25519KeyInfo(
+    private func makeKey(label: String) -> SSHKeyInfo {
+        SSHKeyInfo(
             label: label,
             publicKeyOpenSSH: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest \(label)",
             publicKeyBlob: Data(repeating: 0x01, count: 32),

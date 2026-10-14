@@ -66,7 +66,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
     func testGitSigningGrantLifecycle() throws {
         let label = "grant-test-\(UUID().uuidString)"
         let myPid = getpid()
-        guard let mySnap = SSHAgentServer.processParentSnapshot(pid: myPid) else {
+        guard let mySnap = ProcessInspector.processParentSnapshot(pid: myPid) else {
             return XCTFail("Failed to get process snapshot for test runner")
         }
         let approved = GitApprovedProcess(pid: myPid, startTime: mySnap.startTime, path: "/usr/bin/git")
@@ -122,7 +122,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         XCTAssertEqual(choice, .grantFiveMinutes)
 
         let myPid = getpid()
-        guard let mySnap = SSHAgentServer.processParentSnapshot(pid: myPid) else {
+        guard let mySnap = ProcessInspector.processParentSnapshot(pid: myPid) else {
             return XCTFail("Failed to get process snapshot for test runner")
         }
         let approved = GitApprovedProcess(pid: myPid, startTime: mySnap.startTime, path: "/usr/bin/git")
@@ -216,7 +216,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         // Authoritative Git-only signing
         _ = try manager.signSSH(key: original, data: gitPayload, prompt: "Git", useCache: true)
 
-        let tampered = Ed25519KeyInfo(
+        let tampered = SSHKeyInfo(
             label: original.label,
             publicKeyOpenSSH: original.publicKeyOpenSSH,
             publicKeyBlob: original.publicKeyBlob,
@@ -339,24 +339,24 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
     func testResolveClientIdentityDifferentiatesProcesses() {
         let currentPid = getpid()
-        guard let currentPath = SSHAgentServer.getProcessPath(pid: currentPid) else {
+        guard let currentPath = ProcessInspector.getProcessPath(pid: currentPid) else {
             return
         }
 
-        let identity1 = SSHAgentServer.resolveClientIdentity(pid: currentPid, processPath: currentPath)
-        let identity2 = SSHAgentServer.resolveClientIdentity(pid: currentPid, processPath: currentPath)
+        let identity1 = ProcessInspector.resolveClientIdentity(pid: currentPid, processPath: currentPath)
+        let identity2 = ProcessInspector.resolveClientIdentity(pid: currentPid, processPath: currentPath)
 
         // Same process call must produce identical identity
         XCTAssertEqual(identity1, identity2)
         XCTAssertTrue(identity1.contains(currentPath))
 
         // Different executable paths or different processes must produce distinct identities
-        let fakeIdentity = SSHAgentServer.resolveClientIdentity(pid: currentPid, processPath: "/usr/bin/git")
+        let fakeIdentity = ProcessInspector.resolveClientIdentity(pid: currentPid, processPath: "/usr/bin/git")
         XCTAssertNotEqual(identity1, fakeIdentity)
 
         // PID 1 (launchd) has no parent or init parent, must differ from current process
-        if let launchdPath = SSHAgentServer.getProcessPath(pid: 1) {
-            let launchdIdentity = SSHAgentServer.resolveClientIdentity(pid: 1, processPath: launchdPath)
+        if let launchdPath = ProcessInspector.getProcessPath(pid: 1) {
+            let launchdIdentity = ProcessInspector.resolveClientIdentity(pid: 1, processPath: launchdPath)
             XCTAssertNotEqual(identity1, launchdIdentity)
         }
     }
@@ -389,7 +389,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let pathLookup: (pid_t) -> String? = { processPaths[$0] }
 
         XCTAssertTrue(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: approvedGit,
                 peerStartTime: approvedStart,
                 approvedPid: approvedGit,
@@ -400,7 +400,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             "The approved git process keeps its own grant"
         )
         XCTAssertTrue(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: signer,
                 peerStartTime: signerStart,
                 approvedPid: approvedGit,
@@ -411,7 +411,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             "A signer helper child of the approved git, such as ssh-keygen, keeps the grant"
         )
         XCTAssertFalse(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: siblingGit,
                 peerStartTime: siblingStart,
                 approvedPid: approvedGit,
@@ -425,7 +425,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         var reused = processes
         reused[approvedGit] = ProcessParentSnapshot(startTime: approvedStart &+ 1, parentPid: shell)
         XCTAssertFalse(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: approvedGit,
                 peerStartTime: approvedStart &+ 1,
                 approvedPid: approvedGit,
@@ -479,7 +479,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let pathLookup: (pid_t) -> String? = { processPaths[$0] }
 
         // Approved signer #2 (parent git G) anchors on parent git G
-        guard let anchor = SSHAgentServer.grantAnchor(
+        guard let anchor = ProcessInspector.grantAnchor(
             peerPid: signer2Pid,
             peerPath: processPaths[signer2Pid]!,
             processInfo: processInfo,
@@ -496,7 +496,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         // Peer signer #3 (same parent G) is covered
         let signer3 = GitApprovedProcess(pid: signer3Pid, startTime: signer3Start)
         XCTAssertTrue(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: signer3.pid,
                 peerStartTime: signer3.startTime,
                 approvedPid: anchor.pid,
@@ -513,7 +513,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             startTime: signerDifferentGitStart
         )
         XCTAssertFalse(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerDifferentGit.pid,
                 peerStartTime: signerDifferentGit.startTime,
                 approvedPid: anchor.pid,
@@ -528,7 +528,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         var recycledProcesses = processes
         recycledProcesses[gitGPid] = ProcessParentSnapshot(startTime: gitGStart &+ 1, parentPid: shellPid)
         XCTAssertFalse(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: signer3.pid,
                 peerStartTime: signer3.startTime,
                 approvedPid: anchor.pid,
@@ -540,7 +540,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
 
         // Anchor on shell is refused
-        let shellSignerAnchor = SSHAgentServer.grantAnchor(
+        let shellSignerAnchor = ProcessInspector.grantAnchor(
             peerPid: shellSignerPid,
             peerPath: processPaths[shellSignerPid]!,
             processInfo: processInfo,
@@ -548,7 +548,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
         XCTAssertNil(shellSignerAnchor, "Anchor on shell must be refused when signer parent is a shell")
 
-        let directShellAnchor = SSHAgentServer.grantAnchor(
+        let directShellAnchor = ProcessInspector.grantAnchor(
             peerPid: shellPid,
             peerPath: processPaths[shellPid]!,
             processInfo: processInfo,
@@ -556,7 +556,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
         XCTAssertNil(directShellAnchor, "Anchor directly on shell must be refused")
 
-        let launchdAnchor = SSHAgentServer.grantAnchor(
+        let launchdAnchor = ProcessInspector.grantAnchor(
             peerPid: 1,
             peerPath: processPaths[1]!,
             processInfo: processInfo,
@@ -591,7 +591,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         // When gpg.ssh.program resolves to /opt/homebrew/bin/my-signer
         let customResolver: () -> String? = { "/opt/homebrew/bin/my-signer" }
 
-        let customAnchor = SSHAgentServer.grantAnchor(
+        let customAnchor = ProcessInspector.grantAnchor(
             peerPid: customSignerPid,
             peerPath: paths[customSignerPid]!,
             processInfo: processInfo,
@@ -604,7 +604,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         XCTAssertEqual(customAnchor?.path, "/usr/local/bin/git")
 
         // Unknown program (e.g. curl) under git is NOT a known signer helper
-        let unknownAnchor = SSHAgentServer.grantAnchor(
+        let unknownAnchor = ProcessInspector.grantAnchor(
             peerPid: unknownProgPid,
             peerPath: paths[unknownProgPid]!,
             processInfo: processInfo,
@@ -621,7 +621,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
 
         let start = Date()
-        let result = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptURL.path, timeout: 0.3)
+        let result = ProcessInspector.resolveGpgSSHProgram(gitExecutablePath: scriptURL.path, timeout: 0.3)
         let elapsed = Date().timeIntervalSince(start)
 
         XCTAssertNil(result, "resolveGpgSSHProgram must return nil on timeout")
@@ -635,7 +635,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         try scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
 
-        let result = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptURL.path, timeout: 2.0)
+        let result = ProcessInspector.resolveGpgSSHProgram(gitExecutablePath: scriptURL.path, timeout: 2.0)
         XCTAssertEqual(result, "/opt/bin/mock-signer")
     }
 
@@ -645,7 +645,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             100: ProcessParentSnapshot(startTime: 1000, parentPid: 101),
             101: ProcessParentSnapshot(startTime: 1001, parentPid: 100),
         ]
-        let covered = SSHAgentServer.gitGrantCoversPeer(
+        let covered = ProcessInspector.gitGrantCoversPeer(
             peerPid: 100,
             peerStartTime: 1000,
             approvedPid: 200,
@@ -663,10 +663,10 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         ]
         for name in refusedNames {
             let path = "/usr/bin/\(name)"
-            let refused = SSHAgentServer.isRefusedAnchor(pid: 42, path: path)
+            let refused = ProcessInspector.isRefusedAnchor(pid: 42, path: path)
             XCTAssertTrue(refused, "Executable named \(name) must be recognized as refused anchor")
 
-            let anchor = SSHAgentServer.grantAnchor(
+            let anchor = ProcessInspector.grantAnchor(
                 peerPid: 42,
                 peerPath: path,
                 processInfo: { _ in ProcessParentSnapshot(startTime: 100, parentPid: 1) },
@@ -679,7 +679,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
     func testGrantAnchorAcceptsGitAndXCTestInDebug() {
         let gitPid: pid_t = 100
         let gitPath = "/nix/store/abc-git-2.40.0/bin/git"
-        let gitAnchor = SSHAgentServer.grantAnchor(
+        let gitAnchor = ProcessInspector.grantAnchor(
             peerPid: gitPid,
             peerPath: gitPath,
             processInfo: { _ in ProcessParentSnapshot(startTime: 1000, parentPid: 1) },
@@ -690,7 +690,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         let xctestPid: pid_t = 200
         let xctestPath = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Xcode/Agents/xctest"
-        let xctestAnchor = SSHAgentServer.grantAnchor(
+        let xctestAnchor = ProcessInspector.grantAnchor(
             peerPid: xctestPid,
             peerPath: xctestPath,
             processInfo: { _ in ProcessParentSnapshot(startTime: 2000, parentPid: 1) },
@@ -888,7 +888,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         label: String,
         recordPolicy: BiometricPolicy?,
         publishedPolicy: BiometricPolicy?
-    ) throws -> Ed25519KeyInfo {
+    ) throws -> SSHKeyInfo {
         let privateKey = P256.Signing.PrivateKey()
         var record = StoredPrivateKeyRecord(
             label: label,
@@ -901,7 +901,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         defer { record.wipe() }
         try store.save(label: label, data: try record.encode())
         let blob = try KeychainManager.derivePublicKeyBlob(record: record)
-        return Ed25519KeyInfo(
+        return SSHKeyInfo(
             label: label,
             publicKeyOpenSSH: "ecdsa-sha2-nistp256 \(blob.base64EncodedString()) \(label)",
             publicKeyBlob: blob,
@@ -1184,7 +1184,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // 1. git -> ssh-keygen: covered
         XCTAssertTrue(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderApprovedGitPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1197,7 +1197,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // 2. git -> git -> ssh-keygen: covered (rebase spawning child git commit)
         XCTAssertTrue(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderChildGitPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1210,7 +1210,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // 3. git -> sh -> ssh-keygen: refused (e.g. git hook)
         XCTAssertFalse(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderShHookPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1223,7 +1223,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // 4. git -> sh -> git -> ssh-keygen: refused (e.g. rebase -x running a script that commits)
         XCTAssertFalse(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderGitUnderScriptPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1236,7 +1236,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // Other non-git intermediate ancestors: refused
         XCTAssertFalse(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderPythonPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1247,7 +1247,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             "git -> python -> ssh-keygen must be refused"
         )
         XCTAssertFalse(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderMakePid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1260,7 +1260,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // Non-signer helper peer: refused
         XCTAssertFalse(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: nonSignerHelperPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1273,7 +1273,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // Custom gpg.ssh.program: covered for git-only chain, refused for non-git chain
         XCTAssertTrue(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: customSignerUnderChildGitPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1285,7 +1285,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             "Custom gpg.ssh.program on git-only chain must be covered"
         )
         XCTAssertFalse(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: customSignerUnderShPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1300,7 +1300,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         // 5. PID reuse / changed start time: refused
         // a) Approved process PID reused with different start time
         XCTAssertFalse(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderChildGitPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1313,7 +1313,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // b) Peer process PID reused with different start time
         XCTAssertFalse(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderChildGitPid,
                 peerStartTime: defaultStartTime &+ 1,
                 approvedPid: approvedGitPid,
@@ -1328,7 +1328,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         var brokenProcesses = processes
         brokenProcesses[childGitPid] = nil
         XCTAssertFalse(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderChildGitPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1344,7 +1344,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let manager = GitSigningGraceManager(observeSystemEvents: false)
         let label = "git-anchor-test-\(UUID().uuidString)"
         let myPid = getpid()
-        guard let mySnap = SSHAgentServer.processParentSnapshot(pid: myPid) else {
+        guard let mySnap = ProcessInspector.processParentSnapshot(pid: myPid) else {
             return XCTFail("Failed to get process snapshot for test runner")
         }
         let approvedPid = myPid
@@ -1408,16 +1408,16 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
     func testGitSigningGraceRejectsUntrustedExecutablePaths() {
         // 1. Allowlist rejects untrusted signer helpers (basename matching like /tmp/ssh-keygen is rejected)
-        XCTAssertFalse(SSHAgentServer.isSignerHelper(path: "/tmp/ssh-keygen"), "/tmp/ssh-keygen must be rejected")
-        XCTAssertFalse(SSHAgentServer.isSignerHelper(path: "/tmp/git"), "/tmp/git must be rejected as helper")
-        XCTAssertFalse(SSHAgentServer.isSignerHelper(path: "/Users/test/.local/bin/ssh-keygen"), "Untrusted path must be rejected")
+        XCTAssertFalse(ProcessInspector.isSignerHelper(path: "/tmp/ssh-keygen"), "/tmp/ssh-keygen must be rejected")
+        XCTAssertFalse(ProcessInspector.isSignerHelper(path: "/tmp/git"), "/tmp/git must be rejected as helper")
+        XCTAssertFalse(ProcessInspector.isSignerHelper(path: "/Users/test/.local/bin/ssh-keygen"), "Untrusted path must be rejected")
 
         // Canonical/trusted signer helper paths
-        XCTAssertTrue(SSHAgentServer.isSignerHelper(path: "/usr/bin/ssh-keygen"))
-        XCTAssertTrue(SSHAgentServer.isSignerHelper(path: "/usr/local/bin/ssh-keygen"))
-        XCTAssertTrue(SSHAgentServer.isSignerHelper(path: "/opt/homebrew/bin/ssh-keygen"))
-        XCTAssertTrue(SSHAgentServer.isSignerHelper(path: "/run/current-system/sw/bin/ssh-keygen"))
-        XCTAssertTrue(SSHAgentServer.isSignerHelper(path: "/nix/store/s0m3h4sh-openssh-9.5/bin/ssh-keygen"))
+        XCTAssertTrue(ProcessInspector.isSignerHelper(path: "/usr/bin/ssh-keygen"))
+        XCTAssertTrue(ProcessInspector.isSignerHelper(path: "/usr/local/bin/ssh-keygen"))
+        XCTAssertTrue(ProcessInspector.isSignerHelper(path: "/opt/homebrew/bin/ssh-keygen"))
+        XCTAssertTrue(ProcessInspector.isSignerHelper(path: "/run/current-system/sw/bin/ssh-keygen"))
+        XCTAssertTrue(ProcessInspector.isSignerHelper(path: "/nix/store/s0m3h4sh-openssh-9.5/bin/ssh-keygen"))
 
         // 2. grantAnchor rejects untrusted git paths (e.g. /tmp/git)
         let mockProcesses: [pid_t: ProcessParentSnapshot] = [
@@ -1433,7 +1433,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // Direct anchor on /tmp/git must be rejected
         XCTAssertNil(
-            SSHAgentServer.grantAnchor(
+            ProcessInspector.grantAnchor(
                 peerPid: 100,
                 peerPath: "/tmp/git",
                 processInfo: pInfo,
@@ -1444,7 +1444,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // ssh-keygen child under /tmp/git parent must be rejected
         XCTAssertNil(
-            SSHAgentServer.grantAnchor(
+            ProcessInspector.grantAnchor(
                 peerPid: 200,
                 peerPath: "/usr/bin/ssh-keygen",
                 processInfo: pInfo,
@@ -1462,7 +1462,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             "/run/current-system/sw/bin/git",
             "/nix/store/s0m3h4sh-git-2.42.0/bin/git"
         ] {
-            let anchor = SSHAgentServer.grantAnchor(
+            let anchor = ProcessInspector.grantAnchor(
                 peerPid: 100,
                 peerPath: trustedGit,
                 processInfo: { _ in ProcessParentSnapshot(startTime: 1000, parentPid: 1) },
@@ -1492,7 +1492,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // /tmp/ssh-keygen under /usr/bin/git -> rejected
         XCTAssertFalse(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: untrustedHelperPid,
                 peerStartTime: 3000,
                 peerPath: "/tmp/ssh-keygen",
@@ -1506,7 +1506,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // /usr/bin/ssh-keygen under /tmp/git -> rejected
         XCTAssertFalse(
-            SSHAgentServer.gitGrantCoversPeer(
+            ProcessInspector.gitGrantCoversPeer(
                 peerPid: 303,
                 peerStartTime: 3000,
                 peerPath: "/usr/bin/ssh-keygen",
@@ -1566,6 +1566,101 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         grant.invalidate()
         XCTAssertFalse(grant.isValid, "Grant must be invalid")
         XCTAssertThrowsError(try grant.sign(dataToSign, using: manager))
+    }
+
+    func testCustomPresenterInjectionWithoutTouchingStaticState() throws {
+        final class CustomPresenterSpy: GitSigningGracePresenter, @unchecked Sendable {
+            struct Call: Equatable {
+                let keyLabel: String
+                let clientDesc: String
+                let timeout: TimeInterval
+            }
+            private let lock = NSLock()
+            private var _calls: [Call] = []
+            var responseChoice: GitSigningPromptChoice = .grantFiveMinutes
+
+            var calls: [Call] {
+                lock.lock()
+                defer { lock.unlock() }
+                return _calls
+            }
+
+            func prompt(keyLabel: String, clientDesc: String, timeout: TimeInterval) -> GitSigningPromptChoice {
+                lock.lock()
+                _calls.append(Call(keyLabel: keyLabel, clientDesc: clientDesc, timeout: timeout))
+                let choice = responseChoice
+                lock.unlock()
+                return choice
+            }
+        }
+
+        let spy = CustomPresenterSpy()
+        let customGraceManager = GitSigningGraceManager(observeSystemEvents: false, presenter: spy)
+
+        // 1. Direct prompt on manager receives the call on injected presenter
+        let choice1 = customGraceManager.prompt(keyLabel: "injected-key", clientDesc: "git (PID 4242)", timeout: 12.5)
+        XCTAssertEqual(choice1, .grantFiveMinutes)
+        XCTAssertEqual(spy.calls.count, 1)
+        XCTAssertEqual(spy.calls.first?.keyLabel, "injected-key")
+        XCTAssertEqual(spy.calls.first?.clientDesc, "git (PID 4242)")
+        XCTAssertEqual(spy.calls.first?.timeout, 12.5)
+
+        // 2. Default timeout convenience method
+        spy.responseChoice = .singleShot
+        let choice2 = customGraceManager.prompt(keyLabel: "injected-key-2", clientDesc: "git (PID 4243)")
+        XCTAssertEqual(choice2, .singleShot)
+        XCTAssertEqual(spy.calls.count, 2)
+        XCTAssertEqual(spy.calls.last?.keyLabel, "injected-key-2")
+        XCTAssertEqual(spy.calls.last?.clientDesc, "git (PID 4243)")
+        XCTAssertEqual(spy.calls.last?.timeout, 30.0)
+
+        // 3. Dependency injection into SSHAgentServer and KeychainManager:
+        // Run full rebase flow through SSHAgentServer and verify prompt is received by spy
+        // without touching static GitSigningGraceManager.promptProvider or GitSigningGraceManager.shared
+        let store = InMemoryPrivateKeyStore()
+        let authenticator = CountingAuthenticator()
+        let keyManager = makeKeyManager(
+            authenticator: authenticator,
+            privateKeyStore: store,
+            gitSigningGraceManager: customGraceManager
+        )
+        let server = SSHAgentServer(
+            keyManager: keyManager,
+            gitSigningGraceManager: customGraceManager
+        )
+
+        let label = "injected-rebase-\(UUID().uuidString)"
+        let keyInfo = try keyManager.generateKey(label: label, keyPurpose: .general)
+
+        let makeGitSignRequest: () -> Data = {
+            let gitPayload = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: Data(repeating: 0x88, count: 32)).serialize()
+            var req = Data()
+            req.appendWireData(keyInfo.publicKeyBlob)
+            req.appendWireData(gitPayload)
+            var flags: UInt32 = 0
+            Swift.withUnsafeBytes(of: &flags) { req.append(contentsOf: $0) }
+            return req
+        }
+
+        // Reset spy responseChoice for server interaction
+        spy.responseChoice = .grantFiveMinutes
+
+        // Commit #1: standard Touch ID, no prompt
+        let resp1 = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
+        XCTAssertEqual(resp1.first, 14)
+        XCTAssertEqual(spy.calls.count, 2, "Commit #1 must not trigger prompt")
+        XCTAssertNil(customGraceManager.getValidGrant(for: label))
+
+        // Commit #2 within 30s: rapid signing triggers custom presenter prompt via SSHAgentServer!
+        let resp2 = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
+        XCTAssertEqual(resp2.first, 14)
+        XCTAssertEqual(spy.calls.count, 3, "Commit #2 must route prompt directly through custom presenter")
+        XCTAssertEqual(spy.calls.last?.keyLabel, label)
+
+        // Verify active grant exists on injected manager and NOT on shared manager
+        let activeGrant = try XCTUnwrap(customGraceManager.getValidGrant(for: label))
+        XCTAssertTrue(activeGrant.isValid)
+        XCTAssertNil(GitSigningGraceManager.shared.getValidGrant(for: label), "Shared GitSigningGraceManager must not be touched")
     }
 }
 
