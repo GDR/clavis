@@ -363,14 +363,59 @@ public enum ClavisUIStrings {
     }
 
     public enum AgentSession {
-        public static func approvePrompt(tool: String, keyLabel: String, minutes: Int) -> String {
-            let sanitizedTool = String(AuditEvent.sanitizedPath((tool as NSString).lastPathComponent).prefix(64))
+        public static func approvePrompt(
+            tool: String,
+            keyLabel: String,
+            minutes: Int,
+            requester: String? = nil,
+            mode: AgentKeyPolicy.Mode? = nil,
+            allowedHosts: [AgentAllowedHost] = []
+        ) -> String {
+            let basename = String(AuditEvent.sanitizedPath((tool as NSString).lastPathComponent).prefix(64))
+            guard requester != nil || mode != nil || !allowedHosts.isEmpty else {
+                return localizedFormat(
+                    "agent_session.approve_prompt",
+                    "Start agent session for “%@” with key “%@” for %d minutes",
+                    basename,
+                    keyLabel,
+                    minutes
+                )
+            }
+
+            let sanitizedFullPath = String(AuditEvent.sanitizedPath(tool).prefix(128))
+            let toolDisplay: String
+            if tool.contains("/") && sanitizedFullPath != basename {
+                toolDisplay = "\(basename) (\(sanitizedFullPath))"
+            } else {
+                toolDisplay = basename
+            }
+
+            var details: [String] = []
+            if let mode {
+                details.append("mode: \(mode.rawValue)")
+            }
+            let hostsSummary: String
+            if allowedHosts.isEmpty {
+                hostsSummary = "any host"
+            } else {
+                let names = allowedHosts.prefix(3).map { AuditEvent.sanitizedPath($0.name) }.joined(separator: ", ")
+                hostsSummary = allowedHosts.count > 3 ? "\(names), +\(allowedHosts.count - 3) more" : names
+            }
+            if mode != nil || !allowedHosts.isEmpty {
+                details.append("hosts: \(hostsSummary)")
+            }
+            if let requester, !requester.isEmpty {
+                details.append("requested by \(requester)")
+            }
+
+            let suffix = details.isEmpty ? "" : " (\(details.joined(separator: ", ")))"
             return localizedFormat(
-                "agent_session.approve_prompt",
-                "Start agent session for “%@” with key “%@” for %d minutes",
-                sanitizedTool,
+                "agent_session.approve_prompt_detailed",
+                "Start agent session for “%1$@” with key “%2$@” for %3$d minutes%4$@",
+                toolDisplay,
                 keyLabel,
-                minutes
+                minutes,
+                suffix
             )
         }
         public static var menuSection: String { localized("agent_session.menu_section", "Agent Sessions") }
@@ -442,8 +487,31 @@ public enum ClavisUIStrings {
         public static var savedFeedback: String { localized("agent_policy.saved_feedback", "Policy saved") }
         public static var globalMaxLease: String { localized("agent_policy.global_max_lease", "Maximum agent session length") }
         public static var changePrompt: String { localized("agent_policy.change_prompt", "Change agent session policy") }
-        public static func authReason(keyLabel: String, requester: String) -> String {
-            localizedFormat(
+        public static func authReason(
+            keyLabel: String,
+            requester: String,
+            mode: AgentKeyPolicy.Mode? = nil,
+            leaseMinutes: Int? = nil
+        ) -> String {
+            if let mode, let leaseMinutes {
+                return localizedFormat(
+                    "agent_policy.auth_reason_detailed",
+                    "change agent session policy for \u{201c}%1$@\u{201d} to mode=%2$@, lease=%3$dm (requested by %4$@)",
+                    keyLabel,
+                    mode.rawValue,
+                    leaseMinutes,
+                    requester
+                )
+            } else if let leaseMinutes {
+                return localizedFormat(
+                    "agent_policy.auth_reason_lease",
+                    "change agent session policy for \u{201c}%1$@\u{201d} to maxLease=%2$dm (requested by %3$@)",
+                    keyLabel,
+                    leaseMinutes,
+                    requester
+                )
+            }
+            return localizedFormat(
                 "agent_policy.auth_reason",
                 "change agent session policy for \u{201c}%1$@\u{201d} (requested by %2$@)",
                 keyLabel,

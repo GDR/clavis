@@ -481,7 +481,7 @@ public struct CLIService {
             return CLICommandResult(exitCode: 1, output: "", error: error.localizedDescription)
         }
 
-        let toolName = (options.command[0] as NSString).lastPathComponent
+        let toolName = AgentRunner.resolveExecutablePath(options.command[0])
         let leaseMinutes = options.leaseMinutes ?? 0
 
         let session: (id: String, leaseSeconds: Int)
