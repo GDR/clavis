@@ -37,12 +37,21 @@ public final class AgentSessionGrant: @unchecked Sendable {
     public var isValid: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return !isInvalidated
+        return !isInvalidated && !SystemEventMonitor.isSessionLockedOrOffConsole()
     }
 
     public func sign(_ data: Data, using keyManager: KeychainManager? = nil) throws -> Data {
         lock.lock()
         defer { lock.unlock() }
+
+        if SystemEventMonitor.isSessionLockedOrOffConsole() {
+            if !isInvalidated {
+                isInvalidated = true
+                hardwareSigner = nil
+                context?.invalidate()
+            }
+            throw AgentSessionGrantError.grantInvalidated
+        }
 
         guard !isInvalidated, let key = key else {
             throw AgentSessionGrantError.grantInvalidated

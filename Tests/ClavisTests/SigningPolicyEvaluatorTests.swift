@@ -183,4 +183,59 @@ final class SigningPolicyEvaluatorTests: ClavisBaseTestCase {
         let safePath = SigningPolicyEvaluator.safeProcessPath("hello\u{0000}world")
         XCTAssertEqual(safePath, "hello?world")
     }
+
+    func test_F6_requesterDescriptionMiddleTruncatesAndCollapsesWhitespace() {
+        let spoofAttempt = "/Users/attacker/payload" + String(repeating: " ", count: 75) + "/usr/bin/ssh"
+        let collapsedDesc = SigningPolicyEvaluator.requesterDescription(processPath: spoofAttempt, pid: 321)
+        XCTAssertEqual(collapsedDesc, "/Users/attacker/payload /usr/bin/ssh (PID 321)")
+
+        let longSpoofAttempt = "/Users/attacker/deeply/nested/directory/structure/that/exceeds/eighty/characters/easily/usr/bin/ssh"
+        let truncatedDesc = SigningPolicyEvaluator.requesterDescription(processPath: longSpoofAttempt, pid: 654)
+        XCTAssertTrue(truncatedDesc.hasPrefix("/Users/attacker/deeply/nested/di"), "Must preserve leading /Users/... prefix")
+        XCTAssertTrue(truncatedDesc.contains("…"), "Must middle-truncate with ellipsis")
+        XCTAssertTrue(truncatedDesc.hasSuffix("/usr/bin/ssh (PID 654)"), "Must preserve trailing binary path and PID")
+        XCTAssertEqual(truncatedDesc.count, 80 + " (PID 654)".count)
+    }
+
+    func test_F6_processInspectorValidatesNixStorePathsAndPermissions() throws {
+        // Malformed /nix/store paths must be rejected
+        XCTAssertFalse(ProcessInspector.isTrustedSshBinary(path: "/nix/store/evil/sub/bin/ssh"))
+        XCTAssertFalse(ProcessInspector.isTrustedSshBinary(path: "/nix/store/evil/bin/ssh"))
+        XCTAssertFalse(ProcessInspector.isTrustedSshBinary(path: "/nix/store/../../tmp/bin/ssh"))
+        XCTAssertFalse(ProcessInspector.isTrustedGitExecutable(path: "/nix/store/evil/sub/bin/git"))
+        XCTAssertFalse(ProcessInspector.isTrustedGitExecutable(path: "/nix/store/0123456789abcdef0123456789abcdef-git/sub/bin/git"))
+        XCTAssertFalse(ProcessInspector.isTrustedSshKeygen(path: "/nix/store/evil/sub/bin/ssh-keygen"))
+
+        // Valid /nix/store/<32-char-hash>-<name>/bin/<binary> paths must be accepted
+        let validHash = "0123456789abcdef0123456789abcdef"
+        XCTAssertTrue(ProcessInspector.isTrustedSshBinary(path: "/nix/store/\(validHash)-openssh-9.8p1/bin/ssh"))
+        XCTAssertTrue(ProcessInspector.isTrustedGitExecutable(path: "/nix/store/\(validHash)-git-2.44.0/bin/git"))
+        XCTAssertTrue(ProcessInspector.isTrustedSshKeygen(path: "/nix/store/\(validHash)-openssh-9.8p1/bin/ssh-keygen"))
+
+        // On-disk permission checks (reject group/world-writable binaries)
+        let fakeStoreRoot = testRootURL.appendingPathComponent("nix-store")
+        let entryDir = fakeStoreRoot.appendingPathComponent("\(validHash)-openssh-9.8p1/bin")
+        try FileManager.default.createDirectory(at: entryDir, withIntermediateDirectories: true)
+        let binURL = entryDir.appendingPathComponent("ssh")
+        try Data("#!/bin/sh\n".utf8).write(to: binURL)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binURL.path)
+        XCTAssertTrue(
+            ProcessInspector.isValidNixStoreBinary(
+                standardizedPath: binURL.path,
+                binaryName: "ssh",
+                storeRoot: fakeStoreRoot.path
+            )
+        )
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: binURL.path)
+        XCTAssertFalse(
+            ProcessInspector.isValidNixStoreBinary(
+                standardizedPath: binURL.path,
+                binaryName: "ssh",
+                storeRoot: fakeStoreRoot.path
+            ),
+            "World-writable binary in Nix store must be rejected"
+        )
+    }
 }

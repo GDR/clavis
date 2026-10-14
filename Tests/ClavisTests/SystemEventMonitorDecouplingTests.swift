@@ -37,6 +37,7 @@ final class SystemEventMonitorDecouplingTests: ClavisBaseTestCase {
 
     override func tearDownWithError() throws {
         SystemEventMonitor.defaultSleepObserverFactory = nil
+        SystemEventMonitor.customSessionActiveValidator = nil
         try super.tearDownWithError()
     }
 
@@ -156,9 +157,84 @@ final class SystemEventMonitorDecouplingTests: ClavisBaseTestCase {
 
     func testAppKitSleepObserver_startAndStopObserving() {
         let observer = AppKitSleepObserver()
-        observer.startObserving { }
+        let lock = NSLock()
+        var fireCount = 0
+        observer.startObserving {
+            lock.lock()
+            fireCount += 1
+            lock.unlock()
+        }
+
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.willSleepNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+
+        lock.lock()
+        let countAfterPosts = fireCount
+        lock.unlock()
+        XCTAssertEqual(countAfterPosts, 3, "AppKitSleepObserver must fire on sleep, display sleep, and session resign")
+
         observer.stopObserving()
         // Idempotent stop
         observer.stopObserving()
+
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        lock.lock()
+        let countAfterStop = fireCount
+        lock.unlock()
+        XCTAssertEqual(countAfterStop, 3)
+    }
+
+    func test_F8_customSessionActiveValidatorInvalidatesGrants() throws {
+        let graceManager = GitSigningGraceManager(observeSystemEvents: false)
+        let myPid = getpid()
+        let myStart = ProcessInspector.processStartTime(pid: myPid) ?? 100
+        let approved = GitApprovedProcess(pid: myPid, startTime: myStart, path: "/usr/bin/git")
+
+        let gitGrant = graceManager.recordGrant(
+            keyLabel: "f8-git-key",
+            clientIdentity: "/usr/bin/git",
+            duration: 300,
+            maxOperations: 10,
+            context: .init(),
+            approvedProcess: approved,
+            hardwareSigner: { _ in Data("sig".utf8) }
+        )
+        graceManager.recordGitSignature(for: "f8-git-key", clientIdentity: "/usr/bin/git")
+
+        let keyMgr = makeKeyManager()
+        let agentKey = try keyMgr.generateKey(label: "f8-agent-key", keyPurpose: .agent)
+        let agentGrant = AgentSessionGrant(
+            key: agentKey,
+            context: .init(),
+            hardwareSigner: { _ in Data("agent-sig".utf8) }
+        )
+
+        XCTAssertTrue(gitGrant.isValid)
+        XCTAssertTrue(agentGrant.isValid)
+        XCTAssertNotNil(graceManager.getValidGrant(for: "f8-git-key"))
+        XCTAssertTrue(graceManager.hasRecentGitSignature(for: "f8-git-key", clientIdentity: "/usr/bin/git"))
+
+        // Simulate locked / off-console session via customSessionActiveValidator
+        SystemEventMonitor.customSessionActiveValidator = { false }
+        XCTAssertTrue(SystemEventMonitor.isSessionLockedOrOffConsole())
+
+        XCTAssertFalse(gitGrant.isValid)
+        XCTAssertNil(graceManager.getValidGrant(for: "f8-git-key"))
+        XCTAssertFalse(graceManager.hasRecentGitSignature(for: "f8-git-key", clientIdentity: "/usr/bin/git"))
+        XCTAssertThrowsError(try gitGrant.sign(Data("payload".utf8))) { error in
+            XCTAssertEqual(error as? AgentSessionGrantError, .grantInvalidated)
+        }
+
+        XCTAssertFalse(agentGrant.isValid)
+        XCTAssertThrowsError(try agentGrant.sign(Data("payload".utf8))) { error in
+            XCTAssertEqual(error as? AgentSessionGrantError, .grantInvalidated)
+        }
+
+        // Restoring active session does not resurrect permanently invalidated grants
+        SystemEventMonitor.customSessionActiveValidator = { true }
+        XCTAssertFalse(SystemEventMonitor.isSessionLockedOrOffConsole())
+        XCTAssertFalse(gitGrant.isValid)
+        XCTAssertFalse(agentGrant.isValid)
     }
 }

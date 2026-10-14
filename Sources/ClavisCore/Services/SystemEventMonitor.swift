@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import IOKit
 import IOKit.pwr_mgt
 
@@ -37,12 +38,38 @@ public final class SystemEventMonitor: @unchecked Sendable {
         }
     }
 
+    /// Optional hook for overriding session active validation in tests.
+    /// Returns `true` when the user session is active/unlocked, `false` when locked or off-console.
+    public static var customSessionActiveValidator: (@Sendable () -> Bool)? = nil
+
+    /// Returns `true` when the current console session is locked or switched away.
+    /// Defaults to `false` inside XCTest unless `customSessionActiveValidator` is configured.
+    public static var isSessionLockedOrOffConsole: @Sendable () -> Bool = {
+        if let validator = SystemEventMonitor.customSessionActiveValidator {
+            return !validator()
+        }
+        if NSClassFromString("XCTestCase") != nil {
+            return false
+        }
+        guard let sessionDict = CGSessionCopyCurrentDictionary() as? [String: Any] else {
+            return false
+        }
+        if (sessionDict["CGSSessionScreenIsLocked"] as? Bool) == true {
+            return true
+        }
+        if let onConsole = sessionDict["kCGSSessionOnConsoleKey"] as? Bool, !onConsole {
+            return true
+        }
+        return false
+    }
+
     public static var defaultSleepObserverFactory: (@Sendable () -> (any SystemSleepObserving)?)? = nil
     private var sleepObserver: (any SystemSleepObserving)?
 
     private let lock = NSLock()
     private var handlers: [String: () -> Void] = [:]
     private var darwinToken: Int32?
+    private var distributedTokens: [any NSObjectProtocol] = []
     private var rootPort: io_connect_t = 0
     private var notifier: io_object_t = 0
     private var portRef: IONotificationPortRef?
@@ -152,12 +179,22 @@ public final class SystemEventMonitor: @unchecked Sendable {
     }
 
     private func setupDistributedNotifications() {
-        DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name("com.apple.screenIsLocked"),
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
-            self?.notifyHandlers()
+        let center = DistributedNotificationCenter.default()
+        let names = [
+            NSNotification.Name("com.apple.screenIsLocked"),
+            NSNotification.Name("com.apple.screensaver.didstart")
+        ]
+        lock.lock()
+        defer { lock.unlock() }
+        for name in names {
+            let token = center.addObserver(
+                forName: name,
+                object: nil,
+                queue: nil
+            ) { [weak self] _ in
+                self?.notifyHandlers()
+            }
+            distributedTokens.append(token)
         }
     }
 
@@ -166,6 +203,10 @@ public final class SystemEventMonitor: @unchecked Sendable {
         defer { lock.unlock() }
         sleepObserver?.stopObserving()
         sleepObserver = nil
+        for token in distributedTokens {
+            DistributedNotificationCenter.default().removeObserver(token)
+        }
+        distributedTokens.removeAll()
         if let token = darwinToken {
             _ = sys_notify_cancel(token)
             darwinToken = nil
