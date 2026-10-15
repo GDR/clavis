@@ -1,16 +1,17 @@
-import XCTest
+import Foundation
+import Testing
 import LocalAuthentication
 import CryptoKit
 @testable import ClavisCore
 @testable import Clavis
 
 @MainActor
-final class PinModeChangerTests: ClavisBaseTestCase {
-    private var dbURL: URL {
-        testRootURL.appendingPathComponent("pin-mode-changer-test.db")
-    }
+@Suite struct PinModeChangerTests {
+    @Test func test_004_AC5_changeRequiresPasswordFirst() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("pin-mode-changer-test.db")
 
-    func test_004_AC5_changeRequiresPasswordFirst() async throws {
         let keyring = SoftwareAuditKeyring()
         let initialKey = try keyring.currentPublicKey()
         let store = try AuditStore(url: dbURL)
@@ -32,24 +33,25 @@ final class PinModeChangerTests: ClavisBaseTestCase {
             sleep: { _ in }
         )
 
-        do {
+        await #expect(throws: PinModeChanger.ChangeError.passwordFailed) {
             _ = try await changer.changeMode(
                 to: .biometryOrPIN,
                 newPIN: "123456",
                 confirmPIN: "123456",
                 oldContext: LAContext()
             )
-            XCTFail("Should have failed with passwordFailed")
-        } catch let err as PinModeChanger.ChangeError {
-            XCTAssertEqual(err, .passwordFailed)
         }
 
         // Verify no new key was set
-        XCTAssertEqual(try keyring.currentPublicKey().keyID, initialKey.keyID)
-        XCTAssertEqual(try keyring.currentMode(), .passwordOrBiometry)
+        #expect(try keyring.currentPublicKey().keyID == initialKey.keyID)
+        #expect(try keyring.currentMode() == .passwordOrBiometry)
     }
 
-    func test_004_AC7_historyReadableAfterModeChange() async throws {
+    @Test func test_004_AC7_historyReadableAfterModeChange() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("pin-mode-changer-test.db")
+
         let keyring = SoftwareAuditKeyring()
         let oldKey = try keyring.currentPublicKey()
         let counter = InMemoryPinAttemptStore()
@@ -58,7 +60,7 @@ final class PinModeChangerTests: ClavisBaseTestCase {
         // Write events across multiple epochs (maxEpochRows: 1 forces new epoch per row)
         let sealer = AuditSealer(keyring: keyring, maxEpochRows: 1)
         let recorder = AuditRecorder(
-            storeFactory: { try AuditStore(url: self.dbURL) },
+            storeFactory: { try AuditStore(url: dbURL) },
             sealer: sealer
         )
 
@@ -91,10 +93,10 @@ final class PinModeChangerTests: ClavisBaseTestCase {
             oldContext: oldContext
         )
 
-        XCTAssertEqual(report.rewrapped, 3)
-        XCTAssertEqual(report.unreadable, 0)
-        XCTAssertEqual(try keyring.currentMode(), .biometryOrPIN)
-        XCTAssertNotEqual(try keyring.currentPublicKey().keyID, oldKey.keyID)
+        #expect(report.rewrapped == 3)
+        #expect(report.unreadable == 0)
+        #expect(try keyring.currentMode() == .biometryOrPIN)
+        #expect(try keyring.currentPublicKey().keyID != oldKey.keyID)
 
         // Read back all records using AuditUnsealer with the new PIN context
         let newContext = LAContext()
@@ -102,19 +104,23 @@ final class PinModeChangerTests: ClavisBaseTestCase {
         let unsealer = AuditUnsealer(keyring: keyring, store: store, context: newContext)
 
         let fetched = try store.query(AuditQuery())
-        XCTAssertEqual(fetched.count, 3)
+        #expect(fetched.count == 3)
         for record in fetched {
             let result = unsealer.open(record)
             guard case .plaintext(let sensitive) = result else {
-                XCTFail("Record \(record.seq) failed to unseal")
+                Issue.record("Record \(record.seq) failed to unseal")
                 continue
             }
             let originalIndex = Int(record.seq) - 1
-            XCTAssertEqual(sensitive.keyLabel, sensitiveList[originalIndex].keyLabel)
+            #expect(sensitive.keyLabel == sensitiveList[originalIndex].keyLabel)
         }
     }
 
-    func test_004_T4_oldKeyDeletedOnlyWhenFullyRewrapped() async throws {
+    @Test func test_004_T4_oldKeyDeletedOnlyWhenFullyRewrapped() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("pin-mode-changer-test.db")
+
         let keyring = SoftwareAuditKeyring()
         let oldKey = try keyring.currentPublicKey()
         let store = try AuditStore(url: dbURL)
@@ -150,15 +156,19 @@ final class PinModeChangerTests: ClavisBaseTestCase {
             oldContext: oldContext
         )
 
-        XCTAssertEqual(report.rewrapped, 1)
-        XCTAssertEqual(report.unreadable, 1)
+        #expect(report.rewrapped == 1)
+        #expect(report.unreadable == 1)
 
         // Old key should NOT be deleted because not all of its epochs could be rewrapped
         let knownIDs = try keyring.knownKeyIDs()
-        XCTAssertTrue(knownIDs.contains(oldKey.keyID), "Old key must remain because one epoch failed to rewrap")
+        #expect(knownIDs.contains(oldKey.keyID), "Old key must remain because one epoch failed to rewrap")
     }
 
-    func test_004_T4_epochCreatedDuringSwitchIsRewrapped() async throws {
+    @Test func test_004_T4_epochCreatedDuringSwitchIsRewrapped() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("pin-mode-changer-test.db")
+
         let keyring = SoftwareAuditKeyring()
         let oldKey = try keyring.currentPublicKey()
         let store = try AuditStore(url: dbURL)
@@ -199,11 +209,15 @@ final class PinModeChangerTests: ClavisBaseTestCase {
         )
 
         // Both initial and mid-switch epochs were rewrapped
-        XCTAssertEqual(report.rewrapped, 2)
-        XCTAssertEqual(report.unreadable, 0)
+        #expect(report.rewrapped == 2)
+        #expect(report.unreadable == 0)
     }
 
-    func test_004_D8_resetMakesOldHistoryUnreadable() async throws {
+    @Test func test_004_D8_resetMakesOldHistoryUnreadable() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("pin-mode-changer-test.db")
+
         let keyring = SoftwareAuditKeyring()
         let counter = InMemoryPinAttemptStore()
 
@@ -215,7 +229,7 @@ final class PinModeChangerTests: ClavisBaseTestCase {
 
         let sealer = AuditSealer(keyring: keyring, maxEpochRows: 1)
         let recorder = AuditRecorder(
-            storeFactory: { try AuditStore(url: self.dbURL) },
+            storeFactory: { try AuditStore(url: dbURL) },
             sealer: sealer
         )
         let sensitive = AuditSensitive(keyLabel: "secretKey", processChain: [], host: "myhost")
@@ -224,14 +238,14 @@ final class PinModeChangerTests: ClavisBaseTestCase {
 
         let store = try AuditStore(url: dbURL)
         let fetched = try store.query(AuditQuery())
-        XCTAssertEqual(fetched.count, 1)
+        #expect(fetched.count == 1)
         let record = fetched[0]
 
         // Verify unsealer works with old PIN
         let oldUnsealer = AuditUnsealer(keyring: keyring, store: store, context: initialPINContext)
         let initialOpen = oldUnsealer.open(record)
         guard case .plaintext = initialOpen else {
-            XCTFail("Should be unsealed initially")
+            Issue.record("Should be unsealed initially")
             return
         }
 
@@ -255,10 +269,14 @@ final class PinModeChangerTests: ClavisBaseTestCase {
         TestContextPinRegistry.shared.setPIN("brandNewPIN", for: newContext)
         let unsealer = AuditUnsealer(keyring: keyring, store: store, context: newContext)
         let result = unsealer.open(record)
-        XCTAssertEqual(result, .unreadable)
+        #expect(result == .unreadable)
     }
 
-    func test_004_C1_pinNotPersisted() async throws {
+    @Test func test_004_C1_pinNotPersisted() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("pin-mode-changer-test.db")
+
         let keyring = SoftwareAuditKeyring()
         let store = try AuditStore(url: dbURL)
         let counter = InMemoryPinAttemptStore()
@@ -288,17 +306,21 @@ final class PinModeChangerTests: ClavisBaseTestCase {
         // Scan database file
         let dbData = try Data(contentsOf: dbURL)
         let pinData = Data(testPIN.utf8)
-        XCTAssertNil(dbData.range(of: pinData), "PIN must not appear in audit database")
+        #expect(dbData.range(of: pinData) == nil, "PIN must not appear in audit database")
 
         // Scan UserDefaults
         let defaultsDict = UserDefaults.standard.dictionaryRepresentation()
         for (key, val) in defaultsDict {
             let desc = String(describing: val)
-            XCTAssertFalse(desc.contains(testPIN), "PIN found in UserDefaults key '\(key)'")
+            #expect(!desc.contains(testPIN), "PIN found in UserDefaults key '\(key)'")
         }
     }
 
-    func test_changeMode_skipPasswordAuth_succeedsWithoutPasswordAuth() async throws {
+    @Test func test_changeMode_skipPasswordAuth_succeedsWithoutPasswordAuth() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("pin-mode-changer-test.db")
+
         let keyring = SoftwareAuditKeyring()
         let store = try AuditStore(url: dbURL)
         let counter = InMemoryPinAttemptStore()
@@ -326,11 +348,15 @@ final class PinModeChangerTests: ClavisBaseTestCase {
             oldContext: LAContext(),
             skipPasswordAuth: true
         )
-        XCTAssertEqual(report.unreadable, 0)
-        XCTAssertEqual(try keyring.currentMode(), .biometryOrPIN)
+        #expect(report.unreadable == 0)
+        #expect(try keyring.currentMode() == .biometryOrPIN)
     }
 
-    func test_resetPIN_skipPasswordAuth_succeedsWithoutPasswordAuth() async throws {
+    @Test func test_resetPIN_skipPasswordAuth_succeedsWithoutPasswordAuth() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("pin-mode-changer-test.db")
+
         let keyring = SoftwareAuditKeyring()
         let store = try AuditStore(url: dbURL)
         let counter = InMemoryPinAttemptStore()
@@ -356,6 +382,6 @@ final class PinModeChangerTests: ClavisBaseTestCase {
             confirmPIN: "654321",
             skipPasswordAuth: true
         )
-        XCTAssertEqual(try counter.load().attempts, 0)
+        #expect(try counter.load().attempts == 0)
     }
 }

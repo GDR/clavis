@@ -1,11 +1,11 @@
-import XCTest
+import Testing
 import ClavisCore
 @testable import Clavis
 
-final class PinModeUITests: ClavisBaseTestCase {
-    func test_004_AC6_orModeShowsWarning() {
-        XCTAssertTrue(PinModeUI.showsWeakPINWarning(.biometryOrPIN))
-        XCTAssertFalse(PinModeUI.showsWeakPINWarning(.biometryAndPIN))
-        XCTAssertFalse(PinModeUI.showsWeakPINWarning(.passwordOrBiometry))
+@Suite struct PinModeUITests {
+    @Test func test_004_AC6_orModeShowsWarning() {
+        #expect(PinModeUI.showsWeakPINWarning(.biometryOrPIN))
+        #expect(!PinModeUI.showsWeakPINWarning(.biometryAndPIN))
+        #expect(!PinModeUI.showsWeakPINWarning(.passwordOrBiometry))
     }
 }

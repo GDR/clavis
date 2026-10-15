@@ -1,4 +1,5 @@
-import XCTest
+import Foundation
+import Testing
 import LocalAuthentication
 @testable import ClavisCore
 @testable import Clavis
@@ -62,9 +63,9 @@ final class FakePasswordAuthenticator: PasswordAuthenticating, @unchecked Sendab
 }
 
 @MainActor
-final class PinUnlockServiceTests: ClavisBaseTestCase {
+@Suite struct PinUnlockServiceTests {
 
-    func test_004_AC1_correctPINUnlocksInOrMode() async throws {
+    @Test func test_004_AC1_correctPINUnlocksInOrMode() async throws {
         let keyring = SoftwareAuditKeyring()
         let pinContext = LAContext()
         TestContextPinRegistry.shared.setPIN("123456", for: pinContext)
@@ -84,13 +85,13 @@ final class PinUnlockServiceTests: ClavisBaseTestCase {
         )
 
         let (outcome, ctx) = await service.unlock(pin: "123456")
-        XCTAssertEqual(outcome, .unlocked)
-        XCTAssertNotNil(ctx)
-        XCTAssertEqual(try counter.load().attempts, 0)
-        XCTAssertEqual(keyAuth.callCount, 1)
+        #expect(outcome == .unlocked)
+        #expect(ctx != nil)
+        #expect(try counter.load().attempts == 0)
+        #expect(keyAuth.callCount == 1)
     }
 
-    func test_004_AC2_wrongPINKeepsLockedInAndMode() async throws {
+    @Test func test_004_AC2_wrongPINKeepsLockedInAndMode() async throws {
         let keyring = SoftwareAuditKeyring()
         let pinContext = LAContext()
         TestContextPinRegistry.shared.setPIN("correctPIN", for: pinContext)
@@ -113,13 +114,13 @@ final class PinUnlockServiceTests: ClavisBaseTestCase {
         )
 
         let (outcome, ctx) = await service.unlock(pin: "wrongPIN")
-        XCTAssertEqual(outcome, .wrongPIN)
-        XCTAssertNil(ctx)
-        XCTAssertEqual(try counter.load().attempts, 1)
-        XCTAssertEqual(keyAuth.callCount, 1)
+        #expect(outcome == .wrongPIN)
+        #expect(ctx == nil)
+        #expect(try counter.load().attempts == 1)
+        #expect(keyAuth.callCount == 1)
     }
 
-    func test_004_T3_attemptIsCountedBeforeEvaluation() async throws {
+    @Test func test_004_T3_attemptIsCountedBeforeEvaluation() async throws {
         let keyring = SoftwareAuditKeyring()
         let counter = InMemoryPinAttemptStore(initialState: PinAttemptState(attempts: 0, lastAttemptAt: 0))
 
@@ -136,13 +137,13 @@ final class PinUnlockServiceTests: ClavisBaseTestCase {
         )
 
         let (outcome, _) = await service.unlock(pin: "123456")
-        XCTAssertEqual(outcome, .unlocked)
-        XCTAssertEqual(attemptsInsideKeyAuth, 1, "Attempt must be incremented before key evaluation")
+        #expect(outcome == .unlocked)
+        #expect(attemptsInsideKeyAuth == 1, "Attempt must be incremented before key evaluation")
         // After success, it resets to 0
-        XCTAssertEqual(try counter.load().attempts, 0)
+        #expect(try counter.load().attempts == 0)
     }
 
-    func test_004_T3_cancelDoesNotCount() async throws {
+    @Test func test_004_T3_cancelDoesNotCount() async throws {
         let keyring = SoftwareAuditKeyring()
         let counter = InMemoryPinAttemptStore(initialState: PinAttemptState(attempts: 2, lastAttemptAt: 1000))
 
@@ -157,13 +158,13 @@ final class PinUnlockServiceTests: ClavisBaseTestCase {
         )
 
         let (outcome, ctx) = await service.unlock(pin: "123456")
-        XCTAssertEqual(outcome, .cancelled)
-        XCTAssertNil(ctx)
+        #expect(outcome == .cancelled)
+        #expect(ctx == nil)
         // Restored to previous attempts
-        XCTAssertEqual(try counter.load().attempts, 2)
+        #expect(try counter.load().attempts == 2)
     }
 
-    func test_004_AC3_waitIsEnforcedWithoutCallingKey() async throws {
+    @Test func test_004_AC3_waitIsEnforcedWithoutCallingKey() async throws {
         let keyring = SoftwareAuditKeyring()
         let baseTime: Double = 2000
         let counter = InMemoryPinAttemptStore(initialState: PinAttemptState(attempts: 3, lastAttemptAt: baseTime))
@@ -178,12 +179,12 @@ final class PinUnlockServiceTests: ClavisBaseTestCase {
         )
 
         let (outcome, ctx) = await service.unlock(pin: "123456")
-        XCTAssertEqual(outcome, .wait(20.0))
-        XCTAssertNil(ctx)
-        XCTAssertEqual(keyAuth.callCount, 0, "Key must not be called when backoff is active")
+        #expect(outcome == .wait(20.0))
+        #expect(ctx == nil)
+        #expect(keyAuth.callCount == 0, "Key must not be called when backoff is active")
     }
 
-    func test_004_AC4_passwordUnlockResetsCounter() async throws {
+    @Test func test_004_AC4_passwordUnlockResetsCounter() async throws {
         let keyring = SoftwareAuditKeyring()
         let baseTime: Double = 2000
         let counter = InMemoryPinAttemptStore(initialState: PinAttemptState(attempts: 10, lastAttemptAt: baseTime))
@@ -202,23 +203,23 @@ final class PinUnlockServiceTests: ClavisBaseTestCase {
 
         // PIN unlock is blocked
         let (blockedOutcome, _) = await service.unlock(pin: "123456")
-        XCTAssertEqual(blockedOutcome, .passwordRequired)
-        XCTAssertEqual(keyAuth.callCount, 0)
+        #expect(blockedOutcome == .passwordRequired)
+        #expect(keyAuth.callCount == 0)
 
         // Password unlock resets counter
         let (pwOutcome, pwCtx) = await service.unlockWithPassword()
-        XCTAssertEqual(pwOutcome, .unlocked)
-        XCTAssertNotNil(pwCtx)
-        XCTAssertEqual(try counter.load().attempts, 0)
-        XCTAssertEqual(passwordAuth.callCount, 1)
+        #expect(pwOutcome == .unlocked)
+        #expect(pwCtx != nil)
+        #expect(try counter.load().attempts == 0)
+        #expect(passwordAuth.callCount == 1)
 
         // Now PIN unlock is allowed again
         let (allowedOutcome, _) = await service.unlock(pin: "123456")
-        XCTAssertEqual(allowedOutcome, .unlocked)
-        XCTAssertEqual(keyAuth.callCount, 1)
+        #expect(allowedOutcome == .unlocked)
+        #expect(keyAuth.callCount == 1)
     }
 
-    func test_004_C2_counterWriteFailureRequiresPassword() async throws {
+    @Test func test_004_C2_counterWriteFailureRequiresPassword() async throws {
         let keyring = SoftwareAuditKeyring()
         let counter = InMemoryPinAttemptStore(initialState: PinAttemptState(attempts: 0, lastAttemptAt: 1000))
         counter.shouldFailSave = true
@@ -232,12 +233,12 @@ final class PinUnlockServiceTests: ClavisBaseTestCase {
         )
 
         let (outcome, ctx) = await service.unlock(pin: "123456")
-        XCTAssertEqual(outcome, .passwordRequired)
-        XCTAssertNil(ctx)
-        XCTAssertEqual(keyAuth.callCount, 0, "Key must not be called when counter write fails")
+        #expect(outcome == .passwordRequired)
+        #expect(ctx == nil)
+        #expect(keyAuth.callCount == 0, "Key must not be called when counter write fails")
     }
 
-    func test_004_C3_shortPINRejectedWithoutCounting() async throws {
+    @Test func test_004_C3_shortPINRejectedWithoutCounting() async throws {
         let keyring = SoftwareAuditKeyring()
         let counter = InMemoryPinAttemptStore(initialState: PinAttemptState(attempts: 0, lastAttemptAt: 1000))
 
@@ -250,9 +251,9 @@ final class PinUnlockServiceTests: ClavisBaseTestCase {
         )
 
         let (outcome, ctx) = await service.unlock(pin: "12345") // 5 characters
-        XCTAssertEqual(outcome, .wrongPIN)
-        XCTAssertNil(ctx)
-        XCTAssertEqual(try counter.load().attempts, 0, "Short PIN must not increment attempt counter")
-        XCTAssertEqual(keyAuth.callCount, 0, "Key must not be called for invalid PIN length")
+        #expect(outcome == .wrongPIN)
+        #expect(ctx == nil)
+        #expect(try counter.load().attempts == 0, "Short PIN must not increment attempt counter")
+        #expect(keyAuth.callCount == 0, "Key must not be called for invalid PIN length")
     }
 }

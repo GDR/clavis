@@ -1,9 +1,21 @@
-import XCTest
+import Foundation
+import Testing
 import Darwin
 @testable import ClavisCore
 @testable import Clavis
 
-final class LockAllFailClosedTests: ClavisBaseTestCase {
+private final class CleanupHook: @unchecked Sendable {
+    private let action: () -> Void
+    init(action: @escaping () -> Void) {
+        self.action = action
+    }
+    deinit {
+        action()
+    }
+}
+
+@Suite
+struct LockAllFailClosedTests {
 
     enum StubBehavior {
         case replyFailure
@@ -12,24 +24,64 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         case replySuccess
     }
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    private let fixture: ClavisTestFixture
+    private var testRootURL: URL { fixture.testRootURL }
+    private let _cleanup: CleanupHook
+
+    init() throws {
         signal(SIGPIPE, SIG_IGN)
+        let fixture = try ClavisTestFixture()
+        self.fixture = fixture
+        self._cleanup = CleanupHook {
+            fixture.cleanup()
+        }
     }
 
-    final class StubAgentServer {
+    private func makeKeyManager(
+        authenticator: UserAuthenticating = AllowingAuthenticator(),
+        privateKeyStore: PrivateKeyStoring = InMemoryPrivateKeyStore(),
+        vaultStore: EncryptedVaultStore? = nil,
+        auditRecorder: AuditRecording = InMemoryAuditRecorder(),
+        signingProvider: SecureEnclaveSigningProviding? = nil,
+        gitSigningGraceManager: GitSigningGraceManager = .shared
+    ) -> KeychainManager {
+        fixture.makeKeyManager(
+            authenticator: authenticator,
+            privateKeyStore: privateKeyStore,
+            vaultStore: vaultStore,
+            auditRecorder: auditRecorder,
+            signingProvider: signingProvider,
+            gitSigningGraceManager: gitSigningGraceManager
+        )
+    }
+
+    final class StubAgentServer: @unchecked Sendable {
         let socketPath: String
-        private var listeningFd: Int32 = -1
+        private let lock = NSLock()
+        private var _listeningFd: Int32 = -1
         private let behavior: StubBehavior
         private var workerThread: Thread?
-        private var isRunning = true
+        private var _isRunning = true
+
+        private var isRunning: Bool {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return _isRunning
+            }
+            set {
+                lock.lock()
+                defer { lock.unlock() }
+                _isRunning = newValue
+            }
+        }
 
         init(socketPath: String, behavior: StubBehavior) throws {
             self.socketPath = socketPath
             self.behavior = behavior
 
             unlink(socketPath)
-            listeningFd = socket(AF_UNIX, SOCK_STREAM, 0)
+            let listeningFd = socket(AF_UNIX, SOCK_STREAM, 0)
             guard listeningFd >= 0 else {
                 throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
             }
@@ -55,6 +107,10 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
                 throw NSError(domain: NSPOSIXErrorDomain, code: Int(err))
             }
 
+            lock.lock()
+            self._listeningFd = listeningFd
+            lock.unlock()
+
             let thread = Thread { [weak self] in
                 self?.runLoop()
             }
@@ -64,7 +120,12 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
 
         private func runLoop() {
             while isRunning {
-                let clientFd = accept(listeningFd, nil, nil)
+                lock.lock()
+                let fd = _listeningFd
+                lock.unlock()
+                guard fd >= 0 else { break }
+
+                let clientFd = accept(fd, nil, nil)
                 guard clientFd >= 0 else { break }
                 var nosigpipe: Int32 = 1
                 setsockopt(clientFd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
@@ -100,9 +161,12 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
 
         func stop() {
             isRunning = false
-            if listeningFd >= 0 {
-                close(listeningFd)
-                listeningFd = -1
+            lock.lock()
+            let fd = _listeningFd
+            _listeningFd = -1
+            lock.unlock()
+            if fd >= 0 {
+                close(fd)
             }
             unlink(socketPath)
         }
@@ -112,42 +176,46 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         }
     }
 
-    func testSendLockAllThrowsOnFailureReply() throws {
+    @Test func testSendLockAllThrowsOnFailureReply() throws {
         let sockPath = testRootURL.appendingPathComponent("stub-fail.sock").path
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replyFailure)
         defer { stub.stop() }
 
         let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
-        XCTAssertThrowsError(try manager.sendLockAllToAgent()) { error in
-            guard let lifecycleError = error as? AgentLifecycleError else {
-                XCTFail("Expected AgentLifecycleError, got \(error)")
-                return
+        #expect {
+            try manager.sendLockAllToAgent()
+        } throws: { error in
+            guard let lifecycleError = error as? AgentLifecycleError,
+                  case .agentControlFailed = lifecycleError else {
+                return false
             }
-            if case .agentControlFailed = lifecycleError {} else {
-                XCTFail("Expected agentControlFailed, got \(lifecycleError)")
-            }
+            return true
         }
     }
 
-    func testSendLockAllThrowsOnImmediateClose() throws {
+    @Test func testSendLockAllThrowsOnImmediateClose() throws {
         let sockPath = testRootURL.appendingPathComponent("stub-close.sock").path
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .closeImmediately)
         defer { stub.stop() }
 
         let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
-        XCTAssertThrowsError(try manager.sendLockAllToAgent())
+        #expect(throws: (any Error).self) {
+            try manager.sendLockAllToAgent()
+        }
     }
 
-    func testSendLockAllSucceedsOnSuccessReply() throws {
+    @Test func testSendLockAllSucceedsOnSuccessReply() throws {
         let sockPath = testRootURL.appendingPathComponent("stub-success.sock").path
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replySuccess)
         defer { stub.stop() }
 
         let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
-        XCTAssertNoThrow(try manager.sendLockAllToAgent())
+        #expect(throws: Never.self) {
+            try manager.sendLockAllToAgent()
+        }
     }
 
-    func testSendLockAllThrowsOnNeverReplyWithinTimeout() throws {
+    @Test func testSendLockAllThrowsOnNeverReplyWithinTimeout() throws {
         let sockPath = testRootURL.appendingPathComponent("stub-never.sock").path
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .neverReply)
         defer { stub.stop() }
@@ -158,39 +226,41 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
             controlTimeout: 0.15
         )
         let start = Date()
-        XCTAssertThrowsError(try manager.sendLockAllToAgent())
+        #expect(throws: (any Error).self) {
+            try manager.sendLockAllToAgent()
+        }
         let elapsed = Date().timeIntervalSince(start)
-        XCTAssertGreaterThanOrEqual(elapsed, 0.12, "Should respect socket receive timeout")
-        XCTAssertLessThan(elapsed, 1.5, "Should timeout without hanging indefinitely")
+        #expect(elapsed >= 0.12, "Should respect socket receive timeout")
+        #expect(elapsed < 1.5, "Should timeout without hanging indefinitely")
     }
 
-    func testCLIServiceLockFailsClosedWhenAgentRejects() throws {
+    @Test func testCLIServiceLockFailsClosedWhenAgentRejects() throws {
         let sockPath = testRootURL.appendingPathComponent("stub-cli-fail.sock").path
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replyFailure)
         defer { stub.stop() }
 
         let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
         let result = CLIService.handle(args: ["clavis", "lock"], agentLifecycle: manager)
-        XCTAssertEqual(result?.exitCode, 1)
-        XCTAssertNotNil(result?.error)
-        XCTAssertTrue(result?.error?.contains("Lock failed:") == true)
-        XCTAssertFalse(result?.error?.contains("Failed to revoke the SSH agent grant") == true)
-        XCTAssertTrue(result?.error?.contains("Failed to control SSH agent: agent rejected lock-all") == true)
+        #expect(result?.exitCode == 1)
+        #expect(result?.error != nil)
+        #expect(result?.error?.contains("Lock failed:") == true)
+        #expect(result?.error?.contains("Failed to revoke the SSH agent grant") == false)
+        #expect(result?.error?.contains("Failed to control SSH agent: agent rejected lock-all") == true)
     }
 
-    func testCLIServiceLockSucceedsWhenAgentConfirms() throws {
+    @Test func testCLIServiceLockSucceedsWhenAgentConfirms() throws {
         let sockPath = testRootURL.appendingPathComponent("stub-cli-ok.sock").path
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replySuccess)
         defer { stub.stop() }
 
         let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
         let result = CLIService.handle(args: ["clavis", "lock"], agentLifecycle: manager)
-        XCTAssertEqual(result?.exitCode, 0)
-        XCTAssertEqual(result?.output, CLIMessages.lockedAll)
+        #expect(result?.exitCode == 0)
+        #expect(result?.output == CLIMessages.lockedAll)
     }
 
     @MainActor
-    func testAppStateEndGitSigningSessionFailsClosedWhenAgentRejects() throws {
+    @Test func testAppStateEndGitSigningSessionFailsClosedWhenAgentRejects() throws {
         let sockPath = testRootURL.appendingPathComponent("stub-appstate-fail.sock").path
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replyFailure)
         defer { stub.stop() }
@@ -205,11 +275,11 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         appState.activeGitGrace = ActiveGitGraceInfo(keyLabel: "test-key", remainingSeconds: 300, remainingOperations: 10)
         appState.endGitSigningSession()
 
-        XCTAssertNotNil(appState.errorMessage, "Error message must be set when agent rejects lock-all")
-        XCTAssertNotNil(appState.activeGitGrace, "activeGitGrace must NOT be cleared when lock-all fails")
+        #expect(appState.errorMessage != nil, "Error message must be set when agent rejects lock-all")
+        #expect(appState.activeGitGrace != nil, "activeGitGrace must NOT be cleared when lock-all fails")
     }
 
-    func testSendLockAllThrowsOnMissingSocketWithOrphanProcess() throws {
+    @Test func testSendLockAllThrowsOnMissingSocketWithOrphanProcess() throws {
         let sockPath = testRootURL.appendingPathComponent("nonexistent.sock").path
         unlink(sockPath)
 
@@ -218,19 +288,19 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
             agentPIDProvider: { 99999 },
             processNameProvider: { _ in "clavis-agent" }
         )
-        XCTAssertThrowsError(try manager.sendLockAllToAgent()) { error in
-            guard let lifecycleError = error as? AgentLifecycleError else {
-                XCTFail("Expected AgentLifecycleError, got \(error)")
-                return
+        #expect {
+            try manager.sendLockAllToAgent()
+        } throws: { error in
+            guard let lifecycleError = error as? AgentLifecycleError,
+                  case .agentControlFailed = lifecycleError else {
+                return false
             }
-            if case .agentControlFailed = lifecycleError {} else {
-                XCTFail("Expected agentControlFailed, got \(lifecycleError)")
-            }
+            return true
         }
     }
 
     @MainActor
-    func testAppStateEndGitSigningSessionSucceedsWhenAgentConfirms() throws {
+    @Test func testAppStateEndGitSigningSessionSucceedsWhenAgentConfirms() throws {
         let sockPath = testRootURL.appendingPathComponent("stub-appstate-ok.sock").path
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replySuccess)
         defer { stub.stop() }
@@ -245,12 +315,12 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         appState.activeGitGrace = ActiveGitGraceInfo(keyLabel: "test-key", remainingSeconds: 300, remainingOperations: 10)
         appState.endGitSigningSession()
 
-        XCTAssertNil(appState.errorMessage)
-        XCTAssertNil(appState.activeGitGrace, "activeGitGrace must be cleared on success")
+        #expect(appState.errorMessage == nil)
+        #expect(appState.activeGitGrace == nil, "activeGitGrace must be cleared on success")
     }
 
     @MainActor
-    func testAppStateLockNowPreservesErrorMessageOnFailure() throws {
+    @Test func testAppStateLockNowPreservesErrorMessageOnFailure() throws {
         let sockPath = testRootURL.appendingPathComponent("stub-appstate-locknow-fail.sock").path
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .replyFailure)
         defer { stub.stop() }
@@ -265,13 +335,12 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         appState.activeGitGrace = ActiveGitGraceInfo(keyLabel: "test-key", remainingSeconds: 300, remainingOperations: 10)
         appState.lockNow()
 
-        XCTAssertNotNil(appState.errorMessage, "Error message must be preserved when lockNow fails")
+        #expect(appState.errorMessage != nil, "Error message must be preserved when lockNow fails")
     }
 
-    func testAgentControlFailedErrorDescriptionDoesNotMentionRevoke() {
+    @Test func testAgentControlFailedErrorDescriptionDoesNotMentionRevoke() {
         let err = AgentLifecycleError.agentControlFailed("agent rejected lock-all")
-        XCTAssertEqual(err.errorDescription, "Failed to control SSH agent: agent rejected lock-all")
-        XCTAssertFalse(err.errorDescription?.contains("revoke") == true)
+        #expect(err.errorDescription == "Failed to control SSH agent: agent rejected lock-all")
+        #expect(err.errorDescription?.contains("revoke") == false)
     }
 }
-
