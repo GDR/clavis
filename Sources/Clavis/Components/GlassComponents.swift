@@ -168,10 +168,6 @@ public extension View {
     func liquidGlassRowSelection(isSelected: Bool, isHovered: Bool = false, cornerRadius: CGFloat = 10) -> some View {
         self.modifier(LiquidGlassRowSelectionModifier(isSelected: isSelected, isHovered: isHovered, cornerRadius: cornerRadius))
     }
-
-    func disableFocusEffect() -> some View {
-        self
-    }
 }
 
 

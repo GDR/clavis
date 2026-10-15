@@ -62,6 +62,7 @@ public final class PanelLockController: ObservableObject {
     private let recorder: AuditRecording
     private let now: () -> Date
     private var lastActivity: Date
+    private var vaultKeyCountProvider: (() -> Int)?
 
     public var currentMode: AuditReadMode {
         (try? keyring?.currentMode()) ?? .passwordOrBiometry
@@ -88,6 +89,28 @@ public final class PanelLockController: ObservableObject {
         isEnabled && state == .locked
     }
 
+    /// Returns true if the lock gate should be bypassed because the vault contains 0 keys
+    /// and no custom PIN policy is configured.
+    public var shouldBypassLock: Bool {
+        guard !currentMode.requiresPIN else { return false }
+        guard let provider = vaultKeyCountProvider else { return false }
+        return provider() == 0
+    }
+
+    /// Convenience alias for `shouldBypassLock`.
+    public var isBypassed: Bool {
+        shouldBypassLock
+    }
+
+    /// Indicates whether the panel is actively locked and not bypassed.
+    public var isEffectivelyLocked: Bool {
+        isLocked && !shouldBypassLock
+    }
+
+    public func setVaultKeyCountProvider(_ provider: @escaping () -> Int) {
+        self.vaultKeyCountProvider = provider
+    }
+
     public nonisolated static func makeDefaultKeyring() -> AuditKeyring? {
         #if DEBUG
         if ClavisEnvironment.isTesting {
@@ -97,19 +120,30 @@ public final class PanelLockController: ObservableObject {
         return KeychainAuditKeyring()
     }
 
+    public nonisolated static func makeDefaultVaultKeyCountProvider() -> (() -> Int)? {
+        #if DEBUG
+        if ClavisEnvironment.isTesting {
+            return nil
+        }
+        #endif
+        return { PublicKeyStore.loadAll().count }
+    }
+
     public init(
         defaults: UserDefaults = .standard,
         authenticator: PanelAuthenticating = LAPanelAuthenticator(),
         keyring: AuditKeyring? = PanelLockController.makeDefaultKeyring(),
         pinUnlockService: PinUnlockService? = nil,
         recorder: AuditRecording = AuditRecorder.shared,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        vaultKeyCount: (() -> Int)? = PanelLockController.makeDefaultVaultKeyCountProvider()
     ) {
         self.defaults = defaults
         self.authenticator = authenticator
         self.keyring = keyring
         self.recorder = recorder
         self.now = now
+        self.vaultKeyCountProvider = vaultKeyCount
         let currentTime = now()
         self.lastActivity = currentTime
 
@@ -145,7 +179,7 @@ public final class PanelLockController: ObservableObject {
     }
 
     public func unlock() async {
-        guard isLocked else { return }
+        guard isLocked, !shouldBypassLock else { return }
         if isUnlocking {
             while isUnlocking {
                 await Task.yield()
