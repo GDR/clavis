@@ -5,6 +5,7 @@ import LocalAuthentication
 @testable import ClavisCore
 @testable import Clavis
 
+@Suite(.serialized)
 final class GitSigningGraceTests {
     private let fixture: ClavisTestFixture
     private var testRootURL: URL { fixture.testRootURL }
@@ -800,7 +801,7 @@ final class GitSigningGraceTests {
         #expect(grant.isValid)
     }
 
-    @Test func testAuthorizeGitSigningGrantRejectsWeakerContextForStrictRecord() throws {
+    @Test func testAuthorizeGitSigningGrantRejectsWeakerContextForStrictRecord() async throws {
         let store = InMemoryPrivateKeyStore()
         let authenticator = PolicyCapturingAuthenticator()
         let customGraceManager = GitSigningGraceManager(observeSystemEvents: false)
@@ -839,15 +840,11 @@ final class GitSigningGraceTests {
         let context = try #require(authenticator.contexts.last)
         context.interactionNotAllowed = true
 
-        let evalDone = DispatchSemaphore(value: 0)
-        var evaluatedSuccess = true
-        var evaluatedError: Error?
-        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "reuse") { success, error in
-            evaluatedSuccess = success
-            evaluatedError = error
-            evalDone.signal()
+        let (evaluatedSuccess, evaluatedError): (Bool, Error?) = await withCheckedContinuation { continuation in
+            context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "reuse") { success, error in
+                continuation.resume(returning: (success, error))
+            }
         }
-        #expect(evalDone.wait(timeout: .now() + 5.0) == .success)
         #expect(!evaluatedSuccess)
         #expect((evaluatedError as? LAError)?.code == .invalidContext)
     }
