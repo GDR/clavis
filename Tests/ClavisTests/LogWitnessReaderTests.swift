@@ -1,8 +1,9 @@
-import XCTest
+import Foundation
+import Testing
 @testable import ClavisCore
 
-final class LogWitnessReaderTests: ClavisBaseTestCase {
-    func test_007_T2_parsesFixture() {
+@Suite struct LogWitnessReaderTests {
+    @Test func test_007_T2_parsesFixture() {
         let fixture = """
         Filtering the log data using "subsystem == com.clavis.audit AND category == witness"
         {"processImagePath":"/Applications/Clavis.app/Contents/MacOS/Clavis","eventMessage":"w1 seq=1 eid=11111111-1111-1111-1111-111111111111 type=signature result=allowed fp=SHA256:abc h=0123456789abcdef0123456789abcdef","timestamp":"2026-10-06 03:55:41.787123+0000"}
@@ -11,39 +12,39 @@ final class LogWitnessReaderTests: ClavisBaseTestCase {
         """
 
         let reader = LogWitnessReader(run: { args in
-            XCTAssertTrue(args.contains("--last"))
-            XCTAssertTrue(args.contains("7d"))
+            #expect(args.contains("--last"))
+            #expect(args.contains("7d"))
             return (0, Data(fixture.utf8))
         })
 
         let result = reader.read(days: 7)
         guard case .entries(let entries) = result else {
-            XCTFail("Expected .entries, got \(result)")
+            Issue.record("Expected .entries, got \(result)")
             return
         }
 
-        XCTAssertEqual(entries.count, 2)
+        #expect(entries.count == 2)
 
         let first = entries[0]
-        XCTAssertEqual(first.seq, 1)
-        XCTAssertEqual(first.eventID, UUID(uuidString: "11111111-1111-1111-1111-111111111111"))
-        XCTAssertEqual(first.type, "signature")
-        XCTAssertEqual(first.result, "allowed")
-        XCTAssertEqual(first.fingerprint, "SHA256:abc")
-        XCTAssertEqual(first.digest, "0123456789abcdef0123456789abcdef")
-        XCTAssertNotNil(first.loggedAt)
+        #expect(first.seq == 1)
+        #expect(first.eventID == UUID(uuidString: "11111111-1111-1111-1111-111111111111"))
+        #expect(first.type == "signature")
+        #expect(first.result == "allowed")
+        #expect(first.fingerprint == "SHA256:abc")
+        #expect(first.digest == "0123456789abcdef0123456789abcdef")
+        #expect(first.loggedAt != nil)
 
         let second = entries[1]
-        XCTAssertEqual(second.seq, 2)
-        XCTAssertEqual(second.eventID, UUID(uuidString: "22222222-2222-2222-2222-222222222222"))
-        XCTAssertEqual(second.type, "key_create")
-        XCTAssertEqual(second.result, "allowed")
-        XCTAssertNil(second.fingerprint)
-        XCTAssertEqual(second.digest, "fedcba9876543210fedcba9876543210")
-        XCTAssertNotNil(second.loggedAt)
+        #expect(second.seq == 2)
+        #expect(second.eventID == UUID(uuidString: "22222222-2222-2222-2222-222222222222"))
+        #expect(second.type == "key_create")
+        #expect(second.result == "allowed")
+        #expect(second.fingerprint == nil)
+        #expect(second.digest == "fedcba9876543210fedcba9876543210")
+        #expect(second.loggedAt != nil)
     }
 
-    func test_007_T2_ignoresForeignProcesses() {
+    @Test func test_007_T2_ignoresForeignProcesses() {
         let fixture = """
         {"processImagePath":"/usr/bin/python3","eventMessage":"w1 seq=1 eid=11111111-1111-1111-1111-111111111111 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef","timestamp":"2026-10-06 03:55:41.787123+0000"}
         {"processImagePath":"/usr/local/bin/clavis-cli","eventMessage":"w1 seq=2 eid=22222222-2222-2222-2222-222222222222 type=key_create result=allowed fp=- h=fedcba9876543210fedcba9876543210","timestamp":"2026-10-06 03:55:42.123456+0000"}
@@ -55,39 +56,39 @@ final class LogWitnessReaderTests: ClavisBaseTestCase {
 
         let result = reader.read(days: 1)
         guard case .entries(let entries) = result else {
-            XCTFail("Expected .entries, got \(result)")
+            Issue.record("Expected .entries, got \(result)")
             return
         }
 
-        XCTAssertEqual(entries.count, 1)
-        XCTAssertEqual(entries[0].seq, 2)
+        #expect(entries.count == 1)
+        #expect(entries[0].seq == 2)
 
         // Only foreign process: should return .unavailable("log show failed") because 0 accepted entries
         let foreignOnlyFixture = """
         {"processImagePath":"/bin/zsh","eventMessage":"w1 seq=1 eid=11111111-1111-1111-1111-111111111111 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef","timestamp":"2026-10-06 03:55:41.787123+0000"}
         """
         let foreignReader = LogWitnessReader(run: { _ in (0, Data(foreignOnlyFixture.utf8)) })
-        XCTAssertEqual(foreignReader.read(days: 1), .unavailable("log show failed"))
+        #expect(foreignReader.read(days: 1) == .unavailable("log show failed"))
     }
 
-    func test_007_T2_nonZeroStatusIsUnavailable() {
+    @Test func test_007_T2_nonZeroStatusIsUnavailable() {
         let nonZeroReader = LogWitnessReader(run: { _ in
             return (1, Data("Permission denied".utf8))
         })
-        XCTAssertEqual(nonZeroReader.read(days: 7), .unavailable("log show failed"))
+        #expect(nonZeroReader.read(days: 7) == .unavailable("log show failed"))
 
         let timeoutReader = LogWitnessReader(run: { _ in
             throw LogWitnessReaderError.timeout
         })
-        XCTAssertEqual(timeoutReader.read(days: 7), .unavailable("timeout"))
+        #expect(timeoutReader.read(days: 7) == .unavailable("timeout"))
 
         let emptyReader = LogWitnessReader(run: { _ in
             return (0, Data())
         })
-        XCTAssertEqual(emptyReader.read(days: 7), .unavailable("log show failed"))
+        #expect(emptyReader.read(days: 7) == .unavailable("log show failed"))
     }
 
-    func test_F08_rejectsUntrustedProcessPaths() {
+    @Test func test_F08_rejectsUntrustedProcessPaths() {
         let fixture = """
         {"processImagePath":"/tmp/clavis-cli","eventMessage":"w1 seq=1 eid=11111111-1111-1111-1111-111111111111 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef","timestamp":"2026-10-06 03:55:41.787123+0000"}
         {"processImagePath":"/private/tmp/clavis-agent","eventMessage":"w1 seq=2 eid=22222222-2222-2222-2222-222222222222 type=key_create result=allowed fp=- h=fedcba9876543210fedcba9876543210","timestamp":"2026-10-06 03:55:42.123456+0000"}
@@ -100,10 +101,10 @@ final class LogWitnessReaderTests: ClavisBaseTestCase {
 
         // All entries come from untrusted temporary paths; none should be accepted.
         let result = reader.read(days: 7)
-        XCTAssertEqual(result, .unavailable("log show failed"))
+        #expect(result == .unavailable("log show failed"))
     }
 
-    func test_F08_acceptsCanonicalInstallPaths() {
+    @Test func test_F08_acceptsCanonicalInstallPaths() {
         let fixture = """
         {"processImagePath":"/opt/homebrew/bin/clavis-cli","eventMessage":"w1 seq=1 eid=11111111-1111-1111-1111-111111111111 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef","timestamp":"2026-10-06 03:55:41.787123+0000"}
         {"processImagePath":"/run/current-system/sw/bin/clavis-agent","eventMessage":"w1 seq=2 eid=22222222-2222-2222-2222-222222222222 type=key_create result=allowed fp=- h=fedcba9876543210fedcba9876543210","timestamp":"2026-10-06 03:55:42.123456+0000"}
@@ -116,14 +117,14 @@ final class LogWitnessReaderTests: ClavisBaseTestCase {
 
         let result = reader.read(days: 7)
         guard case .entries(let entries) = result else {
-            XCTFail("Expected .entries, got \(result)")
+            Issue.record("Expected .entries, got \(result)")
             return
         }
-        XCTAssertEqual(entries.count, 3)
-        XCTAssertEqual(entries.map(\.seq), [1, 2, 3])
+        #expect(entries.count == 3)
+        #expect(entries.map(\.seq) == [1, 2, 3])
     }
 
-    func test_F08_customPathValidator() {
+    @Test func test_F08_customPathValidator() {
         let fixture = """
         {"processImagePath":"/custom/path/clavis-cli","eventMessage":"w1 seq=1 eid=11111111-1111-1111-1111-111111111111 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef","timestamp":"2026-10-06 03:55:41.787123+0000"}
         """
@@ -135,40 +136,40 @@ final class LogWitnessReaderTests: ClavisBaseTestCase {
 
         let result = reader.read(days: 7)
         guard case .entries(let entries) = result else {
-            XCTFail("Expected .entries, got \(result)")
+            Issue.record("Expected .entries, got \(result)")
             return
         }
-        XCTAssertEqual(entries.count, 1)
-        XCTAssertEqual(entries[0].seq, 1)
+        #expect(entries.count == 1)
+        #expect(entries[0].seq == 1)
     }
 
-    func test_F08_isCanonicalPathRejectsRelativeAndTempTraversal() {
-        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/tmp/../Applications/Clavis.app/Contents/MacOS/Clavis"))
-        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/private/tmp/../Applications/Clavis.app/Contents/MacOS/Clavis"))
-        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/var/tmp/../Applications/Clavis.app/Contents/MacOS/Clavis"))
-        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/private/var/tmp/../Applications/Clavis.app/Contents/MacOS/Clavis"))
-        XCTAssertFalse(LogWitnessReader.isCanonicalPath("../Applications/Clavis.app/Contents/MacOS/Clavis"))
-        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/Applications/Clavis.app/../Applications/Clavis.app/Contents/MacOS/Clavis"))
-        XCTAssertFalse(LogWitnessReader.isCanonicalPath("Applications/Clavis.app/Contents/MacOS/Clavis"))
+    @Test func test_F08_isCanonicalPathRejectsRelativeAndTempTraversal() {
+        #expect(!LogWitnessReader.isCanonicalPath("/tmp/../Applications/Clavis.app/Contents/MacOS/Clavis"))
+        #expect(!LogWitnessReader.isCanonicalPath("/private/tmp/../Applications/Clavis.app/Contents/MacOS/Clavis"))
+        #expect(!LogWitnessReader.isCanonicalPath("/var/tmp/../Applications/Clavis.app/Contents/MacOS/Clavis"))
+        #expect(!LogWitnessReader.isCanonicalPath("/private/var/tmp/../Applications/Clavis.app/Contents/MacOS/Clavis"))
+        #expect(!LogWitnessReader.isCanonicalPath("../Applications/Clavis.app/Contents/MacOS/Clavis"))
+        #expect(!LogWitnessReader.isCanonicalPath("/Applications/Clavis.app/../Applications/Clavis.app/Contents/MacOS/Clavis"))
+        #expect(!LogWitnessReader.isCanonicalPath("Applications/Clavis.app/Contents/MacOS/Clavis"))
     }
 
-    func test_F08_isCanonicalPathCaseInsensitiveOnMacOS() {
-        XCTAssertTrue(LogWitnessReader.isCanonicalPath("/applications/clavis.app/Contents/MacOS/Clavis"))
-        XCTAssertTrue(LogWitnessReader.isCanonicalPath("/APPLICATIONS/CLAVIS.APP/Contents/MacOS/Clavis"))
-        XCTAssertTrue(LogWitnessReader.isCanonicalPath("/opt/Homebrew/bin/clavis-cli"))
-        XCTAssertTrue(LogWitnessReader.isCanonicalPath("/OPT/HOMEBREW/BIN/clavis-cli"))
-        XCTAssertTrue(LogWitnessReader.isCanonicalPath("/usr/local/BIN/clavis-agent"))
+    @Test func test_F08_isCanonicalPathCaseInsensitiveOnMacOS() {
+        #expect(LogWitnessReader.isCanonicalPath("/applications/clavis.app/Contents/MacOS/Clavis"))
+        #expect(LogWitnessReader.isCanonicalPath("/APPLICATIONS/CLAVIS.APP/Contents/MacOS/Clavis"))
+        #expect(LogWitnessReader.isCanonicalPath("/opt/Homebrew/bin/clavis-cli"))
+        #expect(LogWitnessReader.isCanonicalPath("/OPT/HOMEBREW/BIN/clavis-cli"))
+        #expect(LogWitnessReader.isCanonicalPath("/usr/local/BIN/clavis-agent"))
     }
 
-    func test_F08_isCanonicalPathRequiresResolvedMatchesAllowedPrefix() {
-        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/Users/Shared/evil/clavis-cli"))
-        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/usr/bin/clavis-cli"))
-        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/tmp/clavis-cli"))
-        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/private/tmp/clavis-cli"))
-        XCTAssertFalse(LogWitnessReader.isCanonicalPath("/etc/clavis-cli"))
+    @Test func test_F08_isCanonicalPathRequiresResolvedMatchesAllowedPrefix() {
+        #expect(!LogWitnessReader.isCanonicalPath("/Users/Shared/evil/clavis-cli"))
+        #expect(!LogWitnessReader.isCanonicalPath("/usr/bin/clavis-cli"))
+        #expect(!LogWitnessReader.isCanonicalPath("/tmp/clavis-cli"))
+        #expect(!LogWitnessReader.isCanonicalPath("/private/tmp/clavis-cli"))
+        #expect(!LogWitnessReader.isCanonicalPath("/etc/clavis-cli"))
     }
 
-    func test_F08_readerFiltersTraversalAndAcceptsCaseInsensitiveFixture() {
+    @Test func test_F08_readerFiltersTraversalAndAcceptsCaseInsensitiveFixture() {
         let fixture = """
         {"processImagePath":"/tmp/../Applications/Clavis.app/Contents/MacOS/Clavis","eventMessage":"w1 seq=1 eid=11111111-1111-1111-1111-111111111111 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef","timestamp":"2026-10-06 03:55:41.787123+0000"}
         {"processImagePath":"/applications/clavis.app/Contents/MacOS/Clavis","eventMessage":"w1 seq=2 eid=22222222-2222-2222-2222-222222222222 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef","timestamp":"2026-10-06 03:55:42.000000+0000"}
@@ -181,11 +182,11 @@ final class LogWitnessReaderTests: ClavisBaseTestCase {
 
         let result = reader.read(days: 7)
         guard case .entries(let entries) = result else {
-            XCTFail("Expected .entries, got \(result)")
+            Issue.record("Expected .entries, got \(result)")
             return
         }
 
-        XCTAssertEqual(entries.count, 2)
-        XCTAssertEqual(entries.map(\.seq), [2, 3])
+        #expect(entries.count == 2)
+        #expect(entries.map(\.seq) == [2, 3])
     }
 }
