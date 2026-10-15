@@ -38,44 +38,54 @@ import LocalAuthentication
     }
 
     @Test func test_002_T1_reasonRawValuesAreStable() {
-        #expect(AuditEventType.signature.rawValue == "signature")
-        #expect(AuditEventType.sessionStart.rawValue == "session_start")
-        #expect(AuditEventType.sessionExtend.rawValue == "session_extend")
-        #expect(AuditEventType.sessionRevoke.rawValue == "session_revoke")
-        #expect(AuditEventType.sessionEnd.rawValue == "session_end")
-        #expect(AuditEventType.keyCreate.rawValue == "key_create")
-        #expect(AuditEventType.keyImport.rawValue == "key_import")
-        #expect(AuditEventType.keyDelete.rawValue == "key_delete")
-        #expect(AuditEventType.keyKindChange.rawValue == "key_kind_change")
-        #expect(AuditEventType.lock.rawValue == "lock")
-        #expect(AuditEventType.securityAlert.rawValue == "security_alert")
-        #expect(AuditEventType.suppressed.rawValue == "suppressed")
+        let expectedTypes: [(AuditEventType, String)] = [
+            (.signature, "signature"),
+            (.sessionStart, "session_start"),
+            (.sessionExtend, "session_extend"),
+            (.sessionRevoke, "session_revoke"),
+            (.sessionEnd, "session_end"),
+            (.keyCreate, "key_create"),
+            (.keyImport, "key_import"),
+            (.keyDelete, "key_delete"),
+            (.keyKindChange, "key_kind_change"),
+            (.lock, "lock"),
+            (.securityAlert, "security_alert"),
+            (.suppressed, "suppressed")
+        ]
+        for (eventType, expectedRaw) in expectedTypes {
+            #expect(eventType.rawValue == expectedRaw)
+        }
 
-        #expect(AuditReason.malformedRequest.rawValue == "malformed_request")
-        #expect(AuditReason.unknownKey.rawValue == "unknown_key")
-        #expect(AuditReason.noPeerAttribution.rawValue == "no_peer_attribution")
-        #expect(AuditReason.gitOnlyKeyNonGitPayload.rawValue == "git_only_key_non_git_payload")
-        #expect(AuditReason.gitAnchorUnavailable.rawValue == "git_anchor_unavailable")
-        #expect(AuditReason.peerChanged.rawValue == "peer_changed")
-        #expect(AuditReason.userCancelled.rawValue == "user_cancelled")
-        #expect(AuditReason.authenticationFailed.rawValue == "authentication_failed")
-        #expect(AuditReason.signingError.rawValue == "signing_error")
-        #expect(AuditReason.viaPrompt.rawValue == "via_prompt")
-        #expect(AuditReason.viaGitGrant.rawValue == "via_git_grant")
-        #expect(AuditReason.lockNow.rawValue == "lock_now")
-        #expect(AuditReason.screenLocked.rawValue == "screen_locked")
-        #expect(AuditReason.partialDeletion.rawValue == "partial_deletion")
-        #expect(AuditReason.noAgentSession.rawValue == "no_agent_session")
-        #expect(AuditReason.auditKeyMismatch.rawValue == "audit_key_mismatch")
-        #expect(AuditReason.viaAgentSession.rawValue == "via_agent_session")
-        #expect(AuditReason.outsideSessionTree.rawValue == "outside_session_tree")
-        #expect(AuditReason.rootExited.rawValue == "root_exited")
-        #expect(AuditReason.lockAll.rawValue == "lock_all")
-        #expect(AuditReason.revokedByUser.rawValue == "revoked_by_user")
-        #expect(AuditReason.leaseExpired.rawValue == "lease_expired")
-        #expect(AuditReason.keyChanged.rawValue == "key_changed")
-        #expect(AuditReason.daemonStopping.rawValue == "daemon_stopping")
-        #expect(AuditReason.sessionApproved.rawValue == "session_approved")
+        let expectedReasons: [(AuditReason, String)] = [
+            (.malformedRequest, "malformed_request"),
+            (.unknownKey, "unknown_key"),
+            (.noPeerAttribution, "no_peer_attribution"),
+            (.gitOnlyKeyNonGitPayload, "git_only_key_non_git_payload"),
+            (.gitAnchorUnavailable, "git_anchor_unavailable"),
+            (.peerChanged, "peer_changed"),
+            (.userCancelled, "user_cancelled"),
+            (.authenticationFailed, "authentication_failed"),
+            (.signingError, "signing_error"),
+            (.viaPrompt, "via_prompt"),
+            (.viaGitGrant, "via_git_grant"),
+            (.lockNow, "lock_now"),
+            (.screenLocked, "screen_locked"),
+            (.partialDeletion, "partial_deletion"),
+            (.noAgentSession, "no_agent_session"),
+            (.auditKeyMismatch, "audit_key_mismatch"),
+            (.viaAgentSession, "via_agent_session"),
+            (.outsideSessionTree, "outside_session_tree"),
+            (.rootExited, "root_exited"),
+            (.lockAll, "lock_all"),
+            (.revokedByUser, "revoked_by_user"),
+            (.leaseExpired, "lease_expired"),
+            (.keyChanged, "key_changed"),
+            (.daemonStopping, "daemon_stopping"),
+            (.sessionApproved, "session_approved")
+        ]
+        for (reason, expectedRaw) in expectedReasons {
+            #expect(reason.rawValue == expectedRaw)
+        }
     }
 
     @Test func test_002_T1_sanitizedPathStripsControlAndBidi() {

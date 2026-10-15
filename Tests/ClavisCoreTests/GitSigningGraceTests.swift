@@ -1621,31 +1621,6 @@ final class GitSigningGraceTests {
     }
 
     @Test func testCustomPresenterInjectionWithoutTouchingStaticState() throws {
-        final class CustomPresenterSpy: GitSigningGracePresenter, @unchecked Sendable {
-            struct Call: Equatable {
-                let keyLabel: String
-                let clientDesc: String
-                let timeout: TimeInterval
-            }
-            private let lock = NSLock()
-            private var _calls: [Call] = []
-            var responseChoice: GitSigningPromptChoice = .grantFiveMinutes
-
-            var calls: [Call] {
-                lock.lock()
-                defer { lock.unlock() }
-                return _calls
-            }
-
-            func prompt(keyLabel: String, clientDesc: String, timeout: TimeInterval) -> GitSigningPromptChoice {
-                lock.lock()
-                _calls.append(Call(keyLabel: keyLabel, clientDesc: clientDesc, timeout: timeout))
-                let choice = responseChoice
-                lock.unlock()
-                return choice
-            }
-        }
-
         let spy = CustomPresenterSpy()
         let customGraceManager = GitSigningGraceManager(observeSystemEvents: false, presenter: spy)
 
@@ -1786,5 +1761,30 @@ private final class LoadFailingPrivateKeyStore: PrivateKeyStoring {
 
     func remove(label: String, context: LAContext?, prompt: String) throws {
         try inner.remove(label: label, context: context, prompt: prompt)
+    }
+}
+
+fileprivate final class CustomPresenterSpy: GitSigningGracePresenter, @unchecked Sendable {
+    struct Call: Equatable {
+        let keyLabel: String
+        let clientDesc: String
+        let timeout: TimeInterval
+    }
+    private let lock = NSLock()
+    private var _calls: [Call] = []
+    var responseChoice: GitSigningPromptChoice = .grantFiveMinutes
+
+    var calls: [Call] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _calls
+    }
+
+    func prompt(keyLabel: String, clientDesc: String, timeout: TimeInterval) -> GitSigningPromptChoice {
+        lock.lock()
+        _calls.append(Call(keyLabel: keyLabel, clientDesc: clientDesc, timeout: timeout))
+        let choice = responseChoice
+        lock.unlock()
+        return choice
     }
 }

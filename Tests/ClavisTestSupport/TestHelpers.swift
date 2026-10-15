@@ -160,6 +160,12 @@ struct ClavisTestFixture: Sendable {
         self.context = context
     }
 
+    func run(_ operation: () async throws -> Void) async rethrows {
+        try await TestContextScope.$current.withValue(context) {
+            try await operation()
+        }
+    }
+
     func run<T>(_ operation: () async throws -> T) async rethrows -> T {
         try await TestContextScope.$current.withValue(context) {
             try await operation()
@@ -169,6 +175,12 @@ struct ClavisTestFixture: Sendable {
     func run<T>(_ operation: (TestContext) async throws -> T) async rethrows -> T {
         try await TestContextScope.$current.withValue(context) {
             try await operation(context)
+        }
+    }
+
+    func runSync(_ operation: () throws -> Void) rethrows {
+        try TestContextScope.$current.withValue(context) {
+            try operation()
         }
     }
 
