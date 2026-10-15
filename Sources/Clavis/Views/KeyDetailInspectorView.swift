@@ -55,14 +55,6 @@ public struct KeyDetailInspectorView: View {
         )
     }
 
-    private var securitySubtitle: String {
-        Self.dynamicSecuritySubtitle(
-            for: key,
-            agentPolicy: currentAgentPolicy,
-            hasActiveGitGrace: activeGitGraceSession != nil
-        )
-    }
-
     private var securityPosture: (title: String, description: String) {
         Self.securityPostureInfo(
             for: key,
@@ -144,18 +136,6 @@ public struct KeyDetailInspectorView: View {
                         Text(ClavisUIStrings.Inspector.keySubtitle(algorithm: key.algorithm, isHardware: key.isHardware))
                             .font(.subheadline)
                             .foregroundColor(DesignTokens.textSecondary)
-
-                        HStack(spacing: 6) {
-                            if key.isHardware {
-                                Image(systemName: "lock.shield.fill")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(DesignTokens.accentGreen)
-                                Text(securitySubtitle)
-                                    .font(.caption)
-                                    .foregroundColor(DesignTokens.accentGreen)
-                            }
-                        }
-                        .padding(.top, 2)
                     }
 
                     Spacer()
@@ -207,12 +187,6 @@ public struct KeyDetailInspectorView: View {
                             }) {
                                 Label(ClavisUIStrings.Inspector.changeKind, systemImage: "arrow.triangle.2.circlepath")
                             }
-                        }
-                        Divider()
-                        Button(action: {
-                            WindowManager.shared.openHistory(keyFingerprint: key.fingerprint)
-                        }) {
-                            Label(ClavisUIStrings.History.showHistory, systemImage: "clock.arrow.circlepath")
                         }
                         Divider()
                         Button(role: .destructive, action: {
@@ -734,6 +708,38 @@ public extension KeyDetailInspectorView {
         }
         let status = isSocketActive ? ClavisUIStrings.Inspector.statusActive : ClavisUIStrings.Inspector.statusOffline
         return (name: name, socketPath: path, status: status, isActive: isSocketActive)
+    }
+
+    /// Semantic actions available in the header overflow (•••) menu.
+    enum OverflowMenuAction: String, CaseIterable, Equatable, Sendable {
+        case copyDeployKey
+        case copyOpenSSH
+        case copyFingerprint
+        case changePurpose
+        case deleteKey
+    }
+
+    /// Returns the ordered list of actions present in the overflow (•••) menu for the given key.
+    static func overflowMenuActions(for key: SSHKeyInfo) -> [OverflowMenuAction] {
+        var actions: [OverflowMenuAction] = []
+        if key.purpose == .agent {
+            actions.append(.copyDeployKey)
+        }
+        actions.append(.copyOpenSSH)
+        actions.append(.copyFingerprint)
+        if key.purpose == .general || key.purpose == .agent {
+            actions.append(.changePurpose)
+        }
+        actions.append(.deleteKey)
+        return actions
+    }
+
+    /// Returns the 2-line title stack strings (title and algorithm/storage subtitle).
+    static func headerTitleStack(for key: SSHKeyInfo) -> (title: String, subtitle: String) {
+        (
+            title: key.label,
+            subtitle: ClavisUIStrings.Inspector.keySubtitle(algorithm: key.algorithm, isHardware: key.isHardware)
+        )
     }
 }
 
