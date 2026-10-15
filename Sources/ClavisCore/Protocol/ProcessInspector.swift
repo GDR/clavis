@@ -143,7 +143,8 @@ public enum ProcessInspector {
         }
         if isValidNixStoreBinary(standardizedPath: stdPath, binaryName: "git") { return true }
         #if DEBUG
-        if (path as NSString).lastPathComponent == "xctest" { return true }
+        let last = (path as NSString).lastPathComponent
+        if last == "xctest" || last == "swiftpm-testing-helper" { return true }
         #endif
         return false
     }
@@ -181,7 +182,8 @@ public enum ProcessInspector {
         if trustedSshPaths.contains(std) { return true }
         if isValidNixStoreBinary(standardizedPath: std, binaryName: "ssh") { return true }
         #if DEBUG
-        if (path as NSString).lastPathComponent == "xctest" { return true }
+        let last = (path as NSString).lastPathComponent
+        if last == "xctest" || last == "swiftpm-testing-helper" { return true }
         #endif
         return false
     }
@@ -260,7 +262,11 @@ public enum ProcessInspector {
         )
     }
 
-    public static func resolveGpgSSHProgram(gitExecutablePath: String? = nil, timeout: TimeInterval = 2.0) -> String? {
+    public static func resolveGpgSSHProgram(
+        gitExecutablePath: String? = nil,
+        environment: [String: String]? = nil,
+        timeout: TimeInterval = 2.0
+    ) -> String? {
         let gitPath: String
         if let customPath = gitExecutablePath {
             guard FileManager.default.isExecutableFile(atPath: customPath) else { return nil }
@@ -279,7 +285,7 @@ public enum ProcessInspector {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: gitPath)
         process.arguments = ["config", "--get", "gpg.ssh.program"]
-        var env = ProcessInfo.processInfo.environment
+        var env = environment ?? TestContextScope.current?.environment ?? ProcessInfo.processInfo.environment
         for key in Array(env.keys) where key.hasPrefix("GIT_") {
             env.removeValue(forKey: key)
         }
@@ -386,8 +392,16 @@ public enum ProcessInspector {
         return raw
     }
 
-    public static func resolveGpgSSHProgram(forGitProcess gitExecutablePath: String? = nil, timeout: TimeInterval = 2.0) -> String? {
-        resolveGpgSSHProgram(gitExecutablePath: gitExecutablePath, timeout: timeout)
+    public static func resolveGpgSSHProgram(
+        forGitProcess gitExecutablePath: String? = nil,
+        environment: [String: String]? = nil,
+        timeout: TimeInterval = 2.0
+    ) -> String? {
+        resolveGpgSSHProgram(
+            gitExecutablePath: gitExecutablePath,
+            environment: environment,
+            timeout: timeout
+        )
     }
 
     public static func isSignerHelper(

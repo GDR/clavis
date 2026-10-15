@@ -155,12 +155,7 @@ public class AgentSessionViewModel: ObservableObject {
     }
 
     private static var isRunningUnderXCTest: Bool {
-        #if DEBUG
-        NSClassFromString("XCTestCase") != nil ||
-        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-        #else
-        false
-        #endif
+        ClavisEnvironment.isTesting
     }
 
     private static var isRealAppBundle: Bool {

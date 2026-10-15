@@ -52,26 +52,30 @@ public final class HistoryViewModel: ObservableObject {
 
     public nonisolated static func makeDefaultKeyring() -> AuditKeyring? {
         #if DEBUG
-        if NSClassFromString("XCTestCase") != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+        if ClavisEnvironment.isTesting {
             return nil
         }
         #endif
         return KeychainAuditKeyring()
     }
 
+    private let notificationCenter: NotificationCenter
+
     public init(
         initialKeyFingerprint: String? = nil,
         store: @escaping () throws -> AuditStore = { try AuditStore() },
         keyring: AuditKeyring? = HistoryViewModel.makeDefaultKeyring(),
-        contextProvider: @escaping @MainActor () -> LAContext? = { PanelLockController.shared.unlockContext }
+        contextProvider: @escaping @MainActor () -> LAContext? = { PanelLockController.shared.unlockContext },
+        notificationCenter: NotificationCenter = .default
     ) {
         self.storeFactory = store
         self.keyring = keyring
         self.contextProvider = contextProvider
+        self.notificationCenter = notificationCenter
         if let initialKeyFingerprint {
             self.query.keyFingerprint = initialKeyFingerprint
         }
-        self.lockObserver = NotificationCenter.default.addObserver(
+        self.lockObserver = notificationCenter.addObserver(
             forName: PanelLockController.didLockNotification,
             object: nil,
             queue: .main
@@ -85,7 +89,7 @@ public final class HistoryViewModel: ObservableObject {
 
     deinit {
         if let lockObserver {
-            NotificationCenter.default.removeObserver(lockObserver)
+            notificationCenter.removeObserver(lockObserver)
         }
     }
 

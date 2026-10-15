@@ -16,33 +16,59 @@ public class KeychainManager {
     private let instanceSigningProvider: SecureEnclaveSigningProviding?
     private let gitSigningGraceManager: GitSigningGraceManager
     public let signerRegistry: KeySignerRegistry
+    #if DEBUG
+    public let testContext: TestContext?
+    #endif
 
     public var activeSigningProvider: SecureEnclaveSigningProviding {
         #if DEBUG
-        instanceSigningProvider ?? Self.customSigningProvider ?? ProductionSecureEnclaveSigningProvider()
+        if let instance = instanceSigningProvider {
+            return instance
+        }
+        if let context = TestContextScope.current, let provider = context.signingProvider {
+            return provider
+        }
+        if let context = testContext, let provider = context.signingProvider {
+            return provider
+        }
+        if let custom = Self.customSigningProvider {
+            return custom
+        }
+        if ClavisEnvironment.isTesting {
+            return InMemorySecureEnclaveSigningProvider()
+        }
+        return ProductionSecureEnclaveSigningProvider()
         #else
-        instanceSigningProvider ?? ProductionSecureEnclaveSigningProvider()
+        return instanceSigningProvider ?? ProductionSecureEnclaveSigningProvider()
         #endif
     }
+
+    private let vaultStore: EncryptedVaultStore
 
     public init(
         authenticator: UserAuthenticating = LocalUserAuthenticator(),
         privateKeyStore: PrivateKeyStoring = KeychainPrivateKeyStore(),
+        vaultStore: EncryptedVaultStore = .shared,
         agentGrantRevoker: @escaping (String) throws -> Void = { label in
             try AgentLifecycleManager.shared.invalidateAgentGrant(label: label)
         },
         auditRecorder: AuditRecording = AuditRecorder.shared,
         signingProvider: SecureEnclaveSigningProviding? = nil,
         gitSigningGraceManager: GitSigningGraceManager = .shared,
-        signerRegistry: KeySignerRegistry = .shared
+        signerRegistry: KeySignerRegistry = .shared,
+        testContext: TestContext? = nil
     ) {
         self.authenticator = authenticator
         self.privateKeyStore = privateKeyStore
+        self.vaultStore = vaultStore
         self.agentGrantRevoker = agentGrantRevoker
         self.auditRecorder = auditRecorder
         self.instanceSigningProvider = signingProvider
         self.gitSigningGraceManager = gitSigningGraceManager
         self.signerRegistry = signerRegistry
+        #if DEBUG
+        self.testContext = testContext ?? TestContextScope.current
+        #endif
     }
 
     // Generate new Key and save private seed (guarded by Touch ID) and public metadata (unencrypted)
@@ -54,13 +80,20 @@ public class KeychainManager {
         biometricPolicy: BiometricPolicy? = nil,
         keyPurpose: KeyPurpose = .general
     ) throws -> SSHKeyInfo {
+        #if DEBUG
+        if let context = self.testContext, TestContextScope.current == nil {
+            return try TestContextScope.$current.withValue(context) {
+                try self.generateKey(label: label, algorithm: algorithm, storageType: storageType, biometricPolicy: biometricPolicy, keyPurpose: keyPurpose)
+            }
+        }
+        #endif
         try validateLabel(label)
         try validateGenerationConfiguration(algorithm: algorithm, storageType: storageType)
         let signer = try signerRegistry.signer(forAlgorithmName: algorithm)
         if try fetchKeyInfo(label: label) != nil || privateKeyStore.contains(label: label) {
             throw KeychainManagerError.keyAlreadyExists(label: label)
         }
-        _ = try EncryptedVaultStore.shared.ensureMasterKey()
+        _ = try vaultStore.ensureMasterKey()
 
         guard activeSigningProvider.isAvailable else {
             throw KeychainManagerError.secureEnclaveUnavailable
@@ -90,7 +123,7 @@ public class KeychainManager {
         // presence here only protects the handle from other processes.
         try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
         do {
-            try EncryptedVaultStore.shared.saveRecord(record)
+            try vaultStore.saveRecord(record)
         } catch {
             ClavisLogger.log("VAULT_WARNING", "Failed to backup private record to shadow vault: \(error.localizedDescription)")
             try? privateKeyStore.remove(label: label)
@@ -116,7 +149,7 @@ public class KeychainManager {
             try PublicKeyStore.saveChecked(keyInfo)
         } catch {
             try? privateKeyStore.remove(label: label)
-            EncryptedVaultStore.shared.removeRecord(label: label)
+            vaultStore.removeRecord(label: label)
             throw error
         }
         auditRecorder.record(
@@ -143,16 +176,37 @@ public class KeychainManager {
 
     // List all public key metadata WITHOUT triggering Touch ID or Keychain prompts
     public func listKeys() throws -> [SSHKeyInfo] {
+        #if DEBUG
+        if let context = self.testContext, TestContextScope.current == nil {
+            return try TestContextScope.$current.withValue(context) {
+                try self.listKeys()
+            }
+        }
+        #endif
         ClavisLogger.log("KEY_LIST", "Fetching key list from local store...")
         return PublicKeyStore.loadAll()
     }
 
     public func fetchKeyInfo(label: String) throws -> SSHKeyInfo? {
+        #if DEBUG
+        if let context = self.testContext, TestContextScope.current == nil {
+            return try TestContextScope.$current.withValue(context) {
+                try self.fetchKeyInfo(label: label)
+            }
+        }
+        #endif
         return PublicKeyStore.loadAll().first(where: { $0.label == label })
     }
 
     // Delete key (both private seed and public metadata)
     public func deleteKey(label: String) throws {
+        #if DEBUG
+        if let context = self.testContext, TestContextScope.current == nil {
+            return try TestContextScope.$current.withValue(context) {
+                try self.deleteKey(label: label)
+            }
+        }
+        #endif
         let fingerprint = (try? fetchKeyInfo(label: label))?.fingerprint
         ClavisLogger.log("KEY_DELETE", "Deleting key '\(label)'...")
         let prompt = "Authenticate to permanently delete key '\(label)'"
@@ -192,7 +246,7 @@ public class KeychainManager {
             ClavisLogger.log("KEY_DELETE", "Warning: Keychain private key removal encountered error (\(error.localizedDescription)). Proceeding with metadata cleanup.")
         }
         if removeVault {
-            EncryptedVaultStore.shared.removeRecord(label: label)
+            vaultStore.removeRecord(label: label)
             try PublicKeyStore.removeChecked(label: label)
             ClavisLogger.log("KEY_DELETE", "Key '\(label)' deleted successfully.")
             auditRecorder.record(
@@ -250,7 +304,10 @@ public class KeychainManager {
         provider: SecureEnclaveSigningProviding? = nil
     ) throws -> Data {
         #if DEBUG
-        let activeProvider = provider ?? customSigningProvider ?? ProductionSecureEnclaveSigningProvider()
+        let activeProvider: SecureEnclaveSigningProviding = provider
+            ?? customSigningProvider
+            ?? (TestContextScope.current?.signingProvider)
+            ?? (ClavisEnvironment.isTesting ? InMemorySecureEnclaveSigningProvider() : ProductionSecureEnclaveSigningProvider())
         #else
         let activeProvider = provider ?? ProductionSecureEnclaveSigningProvider()
         #endif
@@ -339,7 +396,7 @@ public class KeychainManager {
 
         let vaultRecord: StoredPrivateKeyRecord?
         do {
-            vaultRecord = try EncryptedVaultStore.shared.loadRecord(label: label, context: context)
+            vaultRecord = try vaultStore.loadRecord(label: label, context: context)
         } catch {
             ClavisLogger.log("KEY_DELETE", "Could not read the vault record for '\(label)' (\(error.localizedDescription)). Preserving it.")
             return false
@@ -428,7 +485,7 @@ public class KeychainManager {
         expectedKeyInfo: SSHKeyInfo?,
         logMessage: String
     ) throws -> StoredPrivateKeyRecord {
-        guard var restoredRecord = try EncryptedVaultStore.shared.loadRecord(label: label, context: context) else {
+        guard var restoredRecord = try vaultStore.loadRecord(label: label, context: context) else {
             throw KeychainManagerError.privateKeyNotFound(label: label)
         }
 
@@ -466,7 +523,7 @@ public class KeychainManager {
         replacePin: Bool = false,
         context: LAContext? = nil
     ) throws -> (publicKey: P256.KeyAgreement.PublicKey, fingerprint: String) {
-        try EncryptedVaultStore.shared.repairMasterKeyPin(replacePin: replacePin, context: context)
+        try vaultStore.repairMasterKeyPin(replacePin: replacePin, context: context)
     }
 
     private static func wipeData(_ data: inout Data) {
@@ -767,9 +824,9 @@ public class KeychainManager {
             )
             defer { updatedRecord.wipe() }
 
-            let hasVaultRecord = EncryptedVaultStore.shared.hasRecord(label: label)
+            let hasVaultRecord = vaultStore.hasRecord(label: label)
             if hasVaultRecord {
-                try EncryptedVaultStore.shared.saveRecord(updatedRecord)
+                try vaultStore.saveRecord(updatedRecord)
             }
 
             var recordData = try updatedRecord.encode()
@@ -779,7 +836,7 @@ public class KeychainManager {
                 try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
             } catch {
                 if hasVaultRecord {
-                    try? EncryptedVaultStore.shared.saveRecord(record)
+                    try? vaultStore.saveRecord(record)
                 }
                 throw error
             }
@@ -804,7 +861,7 @@ public class KeychainManager {
                     try? privateKeyStore.save(label: label, data: originalRecordData, accessControlFlags: [.userPresence])
                 }
                 if hasVaultRecord {
-                    try? EncryptedVaultStore.shared.saveRecord(record)
+                    try? vaultStore.saveRecord(record)
                 }
                 throw error
             }

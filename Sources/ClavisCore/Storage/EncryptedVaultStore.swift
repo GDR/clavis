@@ -18,17 +18,127 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             #endif
         }
     }
+    #if DEBUG
+    private static var _staticCustomPinStore: (any MasterKeyPinStoring)? = nil
+    private static let customPinStoreLock = NSLock()
+    internal static var customPinStore: (any MasterKeyPinStoring)? {
+        get {
+            if let context = TestContextScope.current {
+                if let override = context.pinStoreBox.override {
+                    return override
+                }
+            }
+            customPinStoreLock.lock()
+            defer { customPinStoreLock.unlock() }
+            return _staticCustomPinStore
+        }
+        set {
+            if let context = TestContextScope.current {
+                context.pinStoreBox.override = newValue
+                return
+            }
+            customPinStoreLock.lock()
+            defer { customPinStoreLock.unlock() }
+            _staticCustomPinStore = newValue
+        }
+    }
+    #else
     internal static var customPinStore: MasterKeyPinStoring? = nil
+    #endif
+
     internal static var customKeyAgreementProvider: SecureEnclaveKeyAgreementProviding? = nil
-    internal static var masterKeyLockTimeout: TimeInterval = 10.0
-    internal static var masterKeyLockPollInterval: useconds_t = 50_000
+    private static let lockSettingsLock = NSLock()
+    private static var _staticMasterKeyLockTimeout: TimeInterval = 10.0
+    private static var _staticMasterKeyLockPollInterval: useconds_t = 50_000
+
+    internal static var masterKeyLockTimeout: TimeInterval {
+        get {
+            #if DEBUG
+            if let context = TestContextScope.current {
+                if let override = context.masterKeyLockTimeoutBox.override {
+                    return override
+                }
+            }
+            #endif
+            lockSettingsLock.lock()
+            defer { lockSettingsLock.unlock() }
+            return _staticMasterKeyLockTimeout
+        }
+        set {
+            #if DEBUG
+            if let context = TestContextScope.current {
+                context.masterKeyLockTimeoutBox.override = newValue
+                return
+            }
+            #endif
+            lockSettingsLock.lock()
+            defer { lockSettingsLock.unlock() }
+            _staticMasterKeyLockTimeout = newValue
+        }
+    }
+
+    internal static var masterKeyLockPollInterval: useconds_t {
+        get {
+            #if DEBUG
+            if let context = TestContextScope.current {
+                if let override = context.masterKeyLockPollIntervalBox.override {
+                    return override
+                }
+            }
+            #endif
+            lockSettingsLock.lock()
+            defer { lockSettingsLock.unlock() }
+            return _staticMasterKeyLockPollInterval
+        }
+        set {
+            #if DEBUG
+            if let context = TestContextScope.current {
+                context.masterKeyLockPollIntervalBox.override = newValue
+                return
+            }
+            #endif
+            lockSettingsLock.lock()
+            defer { lockSettingsLock.unlock() }
+            _staticMasterKeyLockPollInterval = newValue
+        }
+    }
     private static var inMemoryPinStoreForTesting: MasterKeyPinStoring = InMemoryMasterKeyPinStore()
     #if DEBUG
-    internal static var isSecureEnclaveAvailableOverride: Bool? = nil
+    private static var _staticIsSecureEnclaveAvailableOverride: Bool? = nil
+    private static let isSecureEnclaveLock = NSLock()
+    internal static var isSecureEnclaveAvailableOverride: Bool? {
+        get {
+            if let context = TestContextScope.current {
+                if let override = context.secureEnclaveOverrideBox.override {
+                    return override
+                }
+            }
+            isSecureEnclaveLock.lock()
+            defer { isSecureEnclaveLock.unlock() }
+            return _staticIsSecureEnclaveAvailableOverride
+        }
+        set {
+            if let context = TestContextScope.current {
+                context.secureEnclaveOverrideBox.override = newValue
+                return
+            }
+            isSecureEnclaveLock.lock()
+            defer { isSecureEnclaveLock.unlock() }
+            _staticIsSecureEnclaveAvailableOverride = newValue
+        }
+    }
     #endif
 
     public static var isSecureEnclaveAvailable: Bool {
         #if DEBUG
+        if let context = TestContextScope.current {
+            if let override = context.secureEnclaveOverrideBox.override {
+                return override
+            }
+            if context.keyAgreementProvider != nil {
+                return true
+            }
+        }
         if let override = isSecureEnclaveAvailableOverride {
             return override
         }
@@ -42,42 +152,92 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     public static func resetForTesting() {
         customPinStore = nil
         customKeyAgreementProvider = nil
-        masterKeyLockTimeout = 10.0
-        masterKeyLockPollInterval = 50_000
+        lockSettingsLock.lock()
+        _staticMasterKeyLockTimeout = 10.0
+        _staticMasterKeyLockPollInterval = 50_000
+        lockSettingsLock.unlock()
         #if DEBUG
         inMemoryPinStoreForTesting = InMemoryMasterKeyPinStore()
         isSecureEnclaveAvailableOverride = nil
+        customPinStoreLock.lock()
+        _staticCustomPinStore = nil
+        customPinStoreLock.unlock()
+        isSecureEnclaveLock.lock()
+        _staticIsSecureEnclaveAvailableOverride = nil
+        isSecureEnclaveLock.unlock()
         #endif
     }
 
     /// Re-entrant lock for in-process thread serialization (allows methods like `saveRecord`
     /// that already hold `lock` to call `ensureMasterKey` without self-deadlock).
     private let lock = NSRecursiveLock()
+    private let customInstanceVaultDirectoryURL: URL?
+    private let injectedPinStore: MasterKeyPinStoring?
+    private let injectedKeyAgreementProvider: SecureEnclaveKeyAgreementProviding?
     private let defaultPinStore: MasterKeyPinStoring
     private let defaultKeyAgreementProvider: SecureEnclaveKeyAgreementProviding
+    private let defaultInstanceVaultDirectoryURL: URL
 
     public init(
-        pinStore: MasterKeyPinStoring = KeychainMasterKeyPinStore(),
-        keyAgreementProvider: SecureEnclaveKeyAgreementProviding = ProductionSecureEnclaveKeyAgreementProvider()
+        vaultDirectoryURL: URL? = nil,
+        pinStore: MasterKeyPinStoring? = nil,
+        keyAgreementProvider: SecureEnclaveKeyAgreementProviding? = nil
     ) {
-        self.defaultPinStore = pinStore
-        self.defaultKeyAgreementProvider = keyAgreementProvider
+        self.customInstanceVaultDirectoryURL = vaultDirectoryURL
+        self.injectedPinStore = pinStore
+        self.injectedKeyAgreementProvider = keyAgreementProvider
+        if ClavisEnvironment.isTesting {
+            self.defaultPinStore = InMemoryMasterKeyPinStore()
+            self.defaultKeyAgreementProvider = InMemorySecureEnclaveKeyAgreementProvider()
+            self.defaultInstanceVaultDirectoryURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("clavis-vault-\(UUID().uuidString)", isDirectory: true)
+        } else {
+            self.defaultPinStore = KeychainMasterKeyPinStore()
+            self.defaultKeyAgreementProvider = ProductionSecureEnclaveKeyAgreementProvider()
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            self.defaultInstanceVaultDirectoryURL = home.appendingPathComponent(".config/clavis/vault", isDirectory: true)
+        }
+    }
+
+    deinit {
+        #if DEBUG
+        if ClavisEnvironment.isTesting && customInstanceVaultDirectoryURL == nil {
+            try? FileManager.default.removeItem(at: defaultInstanceVaultDirectoryURL)
+        }
+        #endif
     }
 
     var activePinStore: MasterKeyPinStoring {
+        if let injected = injectedPinStore {
+            return injected
+        }
         #if DEBUG
+        if let context = TestContextScope.current {
+            if let override = context.pinStoreBox.override {
+                return override
+            }
+            if let pinStore = context.pinStore {
+                return pinStore
+            }
+            if context.keyAgreementProvider != nil {
+                return context.inMemoryPinStore
+            }
+        }
         if let custom = Self.customPinStore {
             return custom
-        }
-        if Self.customKeyAgreementProvider != nil {
-            return Self.inMemoryPinStoreForTesting
         }
         #endif
         return defaultPinStore
     }
 
     var activeKeyAgreementProvider: SecureEnclaveKeyAgreementProviding {
+        if let injected = injectedKeyAgreementProvider {
+            return injected
+        }
         #if DEBUG
+        if let context = TestContextScope.current, let provider = context.keyAgreementProvider {
+            return provider
+        }
         if let custom = Self.customKeyAgreementProvider {
             return custom
         }
@@ -109,8 +269,23 @@ public final class EncryptedVaultStore: @unchecked Sendable {
     }
 
     public var vaultDirectoryURL: URL {
+        if let custom = customInstanceVaultDirectoryURL {
+            try? SecureFS.createDirectory(at: custom)
+            return custom
+        }
         #if DEBUG
+        if let context = TestContextScope.current {
+            let dir = context.vaultDirectoryURL
+            try? SecureFS.createDirectory(at: dir)
+            return dir
+        }
         if let custom = Self.customVaultDirectoryURL { return custom }
+        if ClavisEnvironment.isTesting {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("clavis-test-vault-\(getpid())", isDirectory: true)
+            try? SecureFS.createDirectory(at: dir)
+            return dir
+        }
         #endif
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(".config/clavis/vault", isDirectory: true)

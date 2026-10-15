@@ -140,12 +140,7 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
     }
 
     private static var isRunningUnderXCTest: Bool {
-        #if DEBUG
-        NSClassFromString("XCTestCase") != nil ||
-        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-        #else
-        false
-        #endif
+        ClavisEnvironment.isTesting
     }
 
     init(

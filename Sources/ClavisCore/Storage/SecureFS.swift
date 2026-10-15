@@ -7,7 +7,7 @@ import Foundation
 /// - Verification and enforcement of `0o700` POSIX mode on directory paths (owned by user, no group/other access).
 /// - Enforces `O_NOFOLLOW` flag on lock files to prevent symlink traversal attacks.
 public enum SecureFS {
-    private static let umaskLock = NSLock()
+    internal static let umaskLock = NSRecursiveLock()
 
     /// Executes `body` with process umask set to `mask` (default 0o077), restored upon exit.
     /// Synchronized across threads to prevent race conditions during file creation.

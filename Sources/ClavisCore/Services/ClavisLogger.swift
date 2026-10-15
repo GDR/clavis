@@ -5,7 +5,7 @@ import Foundation
 /// General operational events are written to `clavis.log` with size-based rotation.
 /// Security-relevant events are recorded in the SQLite audit store (`audit.db`).
 public struct ClavisLogger {
-    private static let lock = NSLock()
+    private static let lock = NSRecursiveLock()
     private static let defaultMaximumLogFileSize: UInt64 = 1_048_576
     private static let retainedLogFileCount = 3
     private static let maximumMessageBytes = 8_192
@@ -14,11 +14,24 @@ public struct ClavisLogger {
 
     public static var customLogFileURL: URL? {
         get {
+            #if DEBUG
+            if let context = TestContextScope.current {
+                if let override = context.logFileBox.override {
+                    return override
+                }
+            }
+            #endif
             lock.lock()
             defer { lock.unlock() }
             return _customLogFileURL
         }
         set {
+            #if DEBUG
+            if let context = TestContextScope.current {
+                context.logFileBox.override = newValue
+                return
+            }
+            #endif
             lock.lock()
             defer { lock.unlock() }
             _customLogFileURL = newValue
@@ -27,14 +40,27 @@ public struct ClavisLogger {
 
     internal static var customMaximumLogFileSize: UInt64? {
         get {
+            #if DEBUG
+            if let context = TestContextScope.current {
+                if let override = context.maxLogFileSizeBox.override {
+                    return override
+                }
+            }
+            #endif
             lock.lock()
             defer { lock.unlock() }
             return _customMaximumLogFileSize
         }
         set {
+            #if DEBUG
+            if let context = TestContextScope.current {
+                context.maxLogFileSizeBox.override = newValue
+                return
+            }
+            #endif
             lock.lock()
+            defer { lock.unlock() }
             _customMaximumLogFileSize = newValue
-            lock.unlock()
         }
     }
 
@@ -45,7 +71,21 @@ public struct ClavisLogger {
     }
 
     private static func resolvedLogFileURL() -> URL {
+        #if DEBUG
+        if let context = TestContextScope.current {
+            if let override = context.logFileBox.override {
+                return override
+            }
+            return context.logFileURL
+        }
+        #endif
         if let customLogFileURL = _customLogFileURL { return customLogFileURL }
+        #if DEBUG
+        if ClavisEnvironment.isTesting {
+            return FileManager.default.temporaryDirectory
+                .appendingPathComponent("clavis-test-\(getpid()).log")
+        }
+        #endif
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(".config/clavis", isDirectory: true)
         return dir.appendingPathComponent("clavis.log")
@@ -64,14 +104,36 @@ public struct ClavisLogger {
 
     /// Enabled with `CLAVIS_VERBOSE_LOG=1` for troubleshooting.
     public static var isVerboseLoggingEnabled: Bool {
-        if let override = _customVerbose { return override }
+        #if DEBUG
+        if let context = TestContextScope.current, let override = context.verboseBox.override {
+            return override
+        }
+        #endif
+        if let override = customVerbose { return override }
         return ProcessInfo.processInfo.environment["CLAVIS_VERBOSE_LOG"] == "1"
     }
 
     private static var _customDebug: Bool?
     internal static var customDebug: Bool? {
-        get { lock.lock(); defer { lock.unlock() }; return _customDebug }
-        set { lock.lock(); _customDebug = newValue; lock.unlock() }
+        get {
+            #if DEBUG
+            if let context = TestContextScope.current {
+                if let override = context.debugBox.override {
+                    return override
+                }
+            }
+            #endif
+            lock.lock(); defer { lock.unlock() }; return _customDebug
+        }
+        set {
+            #if DEBUG
+            if let context = TestContextScope.current {
+                context.debugBox.override = newValue
+                return
+            }
+            #endif
+            lock.lock(); _customDebug = newValue; lock.unlock()
+        }
     }
 
     /// Enabled in debug builds or with `CLAVIS_DEBUG_LOG=1` / `CLAVIS_VERBOSE_LOG=1`.
@@ -88,8 +150,25 @@ public struct ClavisLogger {
 
     private static var _customVerbose: Bool?
     internal static var customVerbose: Bool? {
-        get { lock.lock(); defer { lock.unlock() }; return _customVerbose }
-        set { lock.lock(); _customVerbose = newValue; lock.unlock() }
+        get {
+            #if DEBUG
+            if let context = TestContextScope.current {
+                if let override = context.verboseBox.override {
+                    return override
+                }
+            }
+            #endif
+            lock.lock(); defer { lock.unlock() }; return _customVerbose
+        }
+        set {
+            #if DEBUG
+            if let context = TestContextScope.current {
+                context.verboseBox.override = newValue
+                return
+            }
+            #endif
+            lock.lock(); _customVerbose = newValue; lock.unlock()
+        }
     }
 
     public enum Category: String {
@@ -194,7 +273,7 @@ public struct ClavisLogger {
     }
 
     public static var effectiveMaximumLogFileSize: UInt64 {
-        if let custom = _customMaximumLogFileSize { return custom }
+        if let custom = customMaximumLogFileSize { return custom }
         if let envStr = ProcessInfo.processInfo.environment["CLAVIS_MAX_LOG_SIZE"],
            let envVal = UInt64(envStr), envVal >= 1024 {
             return envVal

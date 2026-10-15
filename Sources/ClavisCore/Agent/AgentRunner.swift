@@ -199,9 +199,24 @@ public enum AgentRunner {
         }
 
         var pid: pid_t = 0
+        var attr: posix_spawnattr_t? = nil
+        posix_spawnattr_init(&attr)
+        defer { posix_spawnattr_destroy(&attr) }
+        var defSignals = sigset_t()
+        sigemptyset(&defSignals)
+        sigaddset(&defSignals, SIGTERM)
+        sigaddset(&defSignals, SIGHUP)
+        sigaddset(&defSignals, SIGINT)
+        posix_spawnattr_setsigdefault(&attr, &defSignals)
+
+        var emptyMask = sigset_t()
+        sigemptyset(&emptyMask)
+        posix_spawnattr_setsigmask(&attr, &emptyMask)
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
+
         let spawnResult = cArgs.withUnsafeMutableBufferPointer { argv in
             cEnv.withUnsafeMutableBufferPointer { envp in
-                posix_spawnp(&pid, exe, nil, nil, argv.baseAddress, envp.baseAddress)
+                posix_spawnp(&pid, exe, nil, &attr, argv.baseAddress, envp.baseAddress)
             }
         }
 
