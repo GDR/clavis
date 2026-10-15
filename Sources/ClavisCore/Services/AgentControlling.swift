@@ -13,6 +13,8 @@ public protocol AgentControlling: Sendable {
 
     func sendLockAllToAgent() throws
     func queryAgentGitGrace() -> (keyLabel: String, remainingSeconds: Int, remainingOperations: Int)?
+    func queryAllAgentGitGraces() -> [(keyLabel: String, remainingSeconds: Int, remainingOperations: Int)]
+    func invalidateAgentGrant(label: String) throws
 
     func listAgentSessions() -> [AgentSessionSummary]
     @discardableResult
@@ -23,4 +25,15 @@ public protocol AgentControlling: Sendable {
 
     func getAgentPolicy(target: String) -> String?
     func setAgentPolicy(target: String, policyJson: String) -> Bool
+}
+
+public extension AgentControlling {
+    func queryAllAgentGitGraces() -> [(keyLabel: String, remainingSeconds: Int, remainingOperations: Int)] {
+        if let single = queryAgentGitGrace() {
+            return [single]
+        }
+        return []
+    }
+
+    func invalidateAgentGrant(label: String) throws {}
 }

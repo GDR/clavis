@@ -9,7 +9,8 @@ public enum KeyManagerSheet: String, Identifiable {
     public var id: String { rawValue }
 }
 
-public struct ActiveGitGraceInfo: Equatable {
+public struct ActiveGitGraceInfo: Equatable, Identifiable, Sendable {
+    public var id: String { keyLabel }
     public let keyLabel: String
     public let remainingSeconds: Int
     public let remainingOperations: Int
@@ -57,10 +58,26 @@ public class AppState: ObservableObject {
         }
     }
 
+    @Published public var activeGitGraces: [ActiveGitGraceInfo] = [] {
+        didSet {
+            if settingsViewModel.activeGitGraces != activeGitGraces {
+                settingsViewModel.activeGitGraces = activeGitGraces
+            }
+        }
+    }
+
     @Published public var activeGitGrace: ActiveGitGraceInfo? = nil {
         didSet {
             if settingsViewModel.activeGitGrace != activeGitGrace {
                 settingsViewModel.activeGitGrace = activeGitGrace
+            }
+        }
+    }
+
+    @Published public var vaultSyncReport: VaultSyncReport? = nil {
+        didSet {
+            if keyManagementViewModel.vaultSyncReport != vaultSyncReport {
+                keyManagementViewModel.vaultSyncReport = vaultSyncReport
             }
         }
     }
@@ -170,7 +187,9 @@ public class AppState: ObservableObject {
         self.keys = keyVM.keys
         self.isSocketActive = settingsVM.isSocketActive
         self.agentPID = settingsVM.agentPID
+        self.activeGitGraces = settingsVM.activeGitGraces
         self.activeGitGrace = settingsVM.activeGitGrace
+        self.vaultSyncReport = keyVM.vaultSyncReport
         self.agentSessions = sessionVM.agentSessions
         self.errorMessage = settingsVM.errorMessage ?? keyVM.errorMessage
         self.launchAtLogin = settingsVM.launchAtLogin
@@ -200,6 +219,17 @@ public class AppState: ObservableObject {
                 guard let self else { return }
                 if self.errorMessage != newErr {
                     self.errorMessage = newErr
+                }
+            }
+            .store(in: &cancellables)
+
+        keyVM.$vaultSyncReport
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] newReport in
+                guard let self else { return }
+                if self.vaultSyncReport != newReport {
+                    self.vaultSyncReport = newReport
                 }
             }
             .store(in: &cancellables)
@@ -244,6 +274,17 @@ public class AppState: ObservableObject {
                 guard let self else { return }
                 if self.activeGitGrace != newGrace {
                     self.activeGitGrace = newGrace
+                }
+            }
+            .store(in: &cancellables)
+
+        settingsVM.$activeGitGraces
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] newGraces in
+                guard let self else { return }
+                if self.activeGitGraces != newGraces {
+                    self.activeGitGraces = newGraces
                 }
             }
             .store(in: &cancellables)
@@ -309,6 +350,7 @@ public class AppState: ObservableObject {
     @MainActor
     public func updateGitGraceState() {
         settingsViewModel.updateGitGraceState()
+        self.activeGitGraces = settingsViewModel.activeGitGraces
         self.activeGitGrace = settingsViewModel.activeGitGrace
     }
 
@@ -322,7 +364,9 @@ public class AppState: ObservableObject {
         self.agentPID = settingsViewModel.agentPID
         self.launchAtLogin = settingsViewModel.launchAtLogin
         self.errorMessage = settingsViewModel.errorMessage ?? keyManagementViewModel.errorMessage
+        self.activeGitGraces = settingsViewModel.activeGitGraces
         self.activeGitGrace = settingsViewModel.activeGitGrace
+        self.vaultSyncReport = keyManagementViewModel.vaultSyncReport
     }
 
     public func refreshAgentSessions() {
@@ -346,7 +390,26 @@ public class AppState: ObservableObject {
     public func endGitSigningSession() {
         settingsViewModel.endGitSigningSession()
         self.errorMessage = settingsViewModel.errorMessage
+        self.activeGitGraces = settingsViewModel.activeGitGraces
         self.activeGitGrace = settingsViewModel.activeGitGrace
+    }
+
+    public func revokeGitGrace(for keyLabel: String) {
+        settingsViewModel.revokeGitGrace(for: keyLabel)
+        self.activeGitGraces = settingsViewModel.activeGitGraces
+        self.activeGitGrace = settingsViewModel.activeGitGrace
+    }
+
+    public func revokeGitGrace(keyLabel: String) {
+        revokeGitGrace(for: keyLabel)
+    }
+
+    @discardableResult
+    public func syncVault(repair: Bool = false) throws -> VaultSyncReport {
+        let report = try keyManagementViewModel.syncVault(repair: repair)
+        self.vaultSyncReport = report
+        self.keys = keyManagementViewModel.keys
+        return report
     }
 
     public func startAgent() {
@@ -364,6 +427,7 @@ public class AppState: ObservableObject {
 
     public func shutdownForTermination() {
         settingsViewModel.shutdownForTermination()
+        self.activeGitGraces = settingsViewModel.activeGitGraces
         self.activeGitGrace = settingsViewModel.activeGitGrace
         self.isSocketActive = settingsViewModel.isSocketActive
         self.agentPID = settingsViewModel.agentPID
@@ -384,6 +448,7 @@ public class AppState: ObservableObject {
     public func lockNow() {
         settingsViewModel.lockNow()
         self.errorMessage = settingsViewModel.errorMessage
+        self.activeGitGraces = settingsViewModel.activeGitGraces
         self.activeGitGrace = settingsViewModel.activeGitGrace
     }
 

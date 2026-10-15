@@ -352,7 +352,7 @@ public final class GitSigningGraceManager: @unchecked Sendable {
 
     private let lock = NSLock()
     private var presenter: GitSigningGracePresenter
-    private var activeGrant: GitSigningGrant?
+    private var activeGrants: [String: GitSigningGrant] = [:]
     private var recentSignatures: [String: Date] = [:]
     private let timerQueue = DispatchQueue(label: "com.clavis.git-grace.timer", qos: .userInitiated)
     private var expirationTimer: DispatchSourceTimer?
@@ -384,7 +384,7 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         self.presenter = presenter
         let timer = DispatchSource.makeTimerSource(queue: timerQueue)
         timer.setEventHandler { [weak self] in
-            self?.expireActiveGrant()
+            self?.expireActiveGrants()
         }
         timer.schedule(deadline: .distantFuture)
         timer.resume()
@@ -415,20 +415,33 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         expirationTimer?.setEventHandler(handler: nil)
         expirationTimer?.cancel()
         expirationTimer = nil
-        activeGrant?.invalidate()
+        for grant in activeGrants.values {
+            grant.invalidate()
+        }
+        activeGrants.removeAll()
+    }
+
+    public func allActiveGrants() -> [GitSigningGrant] {
+        lock.lock()
+        defer { lock.unlock() }
+        var valid: [GitSigningGrant] = []
+        for (label, grant) in activeGrants {
+            if grant.isValid {
+                valid.append(grant)
+            } else {
+                grant.invalidate()
+                activeGrants.removeValue(forKey: label)
+            }
+        }
+        return valid.sorted(by: { $0.keyLabel < $1.keyLabel })
     }
 
     public var currentActiveGrant: GitSigningGrant? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let grant = activeGrant else { return nil }
-        if grant.isValid {
-            return grant
-        } else {
-            activeGrant?.invalidate()
-            activeGrant = nil
-            return nil
-        }
+        allActiveGrants().first
+    }
+
+    public func queryAllAgentGitGraces() -> [(keyLabel: String, remainingSeconds: Int, remainingOperations: Int)] {
+        allActiveGrants().map { ($0.keyLabel, $0.remainingSeconds, $0.remainingOperations) }
     }
 
     @objc private func handleScreenLocked() {
@@ -442,14 +455,15 @@ public final class GitSigningGraceManager: @unchecked Sendable {
     public func getValidGrant(for keyLabel: String) -> GitSigningGrant? {
         lock.lock()
         defer { lock.unlock() }
-        guard let grant = activeGrant, grant.keyLabel == keyLabel else {
+        guard let grant = activeGrants[keyLabel] else {
             return nil
         }
         if grant.isValid {
             return grant
         } else {
-            activeGrant?.invalidate()
-            activeGrant = nil
+            grant.invalidate()
+            activeGrants.removeValue(forKey: keyLabel)
+            scheduleNextExpirationTimerLocked()
             return nil
         }
     }
@@ -462,14 +476,14 @@ public final class GitSigningGraceManager: @unchecked Sendable {
     ) rethrows -> Result? {
         lock.lock()
         defer { lock.unlock() }
-        guard let grant = activeGrant, grant.keyLabel == keyLabel else {
+        guard let grant = activeGrants[keyLabel] else {
             return nil
         }
         guard grant.consumeOperation(clientIdentity: clientIdentity, peerProcess: peerProcess) else {
             if !grant.isValid {
                 grant.invalidate()
-                activeGrant = nil
-                expirationTimer?.schedule(deadline: .distantFuture)
+                activeGrants.removeValue(forKey: keyLabel)
+                scheduleNextExpirationTimerLocked()
                 broadcastUpdate(grant: nil)
             }
             return nil
@@ -514,7 +528,7 @@ public final class GitSigningGraceManager: @unchecked Sendable {
     ) -> GitSigningGrant {
         lock.lock()
         defer { lock.unlock() }
-        activeGrant?.invalidate()
+        activeGrants[keyLabel]?.invalidate()
         recentSignatures.removeValue(forKey: recentSignatureKey(label: keyLabel, clientIdentity: clientIdentity))
         let grant = GitSigningGrant(
             keyLabel: keyLabel,
@@ -525,16 +539,18 @@ public final class GitSigningGraceManager: @unchecked Sendable {
             approvedProcess: approvedProcess,
             hardwareSigner: hardwareSigner
         )
-        activeGrant = grant
-        expirationTimer?.schedule(deadline: grant.deadline)
+        activeGrants[keyLabel] = grant
+        scheduleNextExpirationTimerLocked()
         broadcastUpdate(grant: grant)
         return grant
     }
 
     public func invalidateAll(broadcast: Bool = true) {
         lock.lock()
-        activeGrant?.invalidate()
-        activeGrant = nil
+        for grant in activeGrants.values {
+            grant.invalidate()
+        }
+        activeGrants.removeAll()
         recentSignatures.removeAll()
         expirationTimer?.schedule(deadline: .distantFuture)
         lock.unlock()
@@ -550,30 +566,49 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         }
     }
 
-    internal func invalidate(keyLabel: String) {
+    public func invalidate(keyLabel: String, broadcast: Bool = true) {
         lock.lock()
-        if activeGrant?.keyLabel == keyLabel {
-            activeGrant?.invalidate()
-            activeGrant = nil
-            expirationTimer?.schedule(deadline: .distantFuture)
+        if let grant = activeGrants.removeValue(forKey: keyLabel) {
+            grant.invalidate()
         }
         let prefix = "\(keyLabel)\u{0}"
         recentSignatures = recentSignatures.filter { !$0.key.hasPrefix(prefix) }
+        scheduleNextExpirationTimerLocked()
         lock.unlock()
-        broadcastUpdate(grant: nil)
+
+        if broadcast {
+            broadcastUpdate(grant: nil)
+        }
     }
 
-    private func expireActiveGrant() {
+    public func invalidate(keyLabel: String) {
+        invalidate(keyLabel: keyLabel, broadcast: true)
+    }
+
+    private func expireActiveGrants() {
         lock.lock()
-        guard let grant = activeGrant, !grant.isValid else {
-            lock.unlock()
+        var expiredAny = false
+        for (label, grant) in activeGrants {
+            if !grant.isValid {
+                grant.invalidate()
+                activeGrants.removeValue(forKey: label)
+                expiredAny = true
+            }
+        }
+        scheduleNextExpirationTimerLocked()
+        lock.unlock()
+        if expiredAny {
+            broadcastUpdate(grant: nil)
+        }
+    }
+
+    private func scheduleNextExpirationTimerLocked() {
+        let validDeadlines = activeGrants.values.compactMap { $0.isValid ? $0.deadline : nil }
+        guard let earliest = validDeadlines.min() else {
+            expirationTimer?.schedule(deadline: .distantFuture)
             return
         }
-        grant.invalidate()
-        activeGrant = nil
-        expirationTimer?.schedule(deadline: .distantFuture)
-        lock.unlock()
-        broadcastUpdate(grant: nil)
+        expirationTimer?.schedule(deadline: earliest)
     }
 
     private func recentSignatureKey(label: String, clientIdentity: String) -> String {

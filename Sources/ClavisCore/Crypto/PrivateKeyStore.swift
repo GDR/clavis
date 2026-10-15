@@ -4,12 +4,15 @@ import Security
 
 public protocol PrivateKeyStoring {
     func contains(label: String) -> Bool
+    func allLabels() throws -> [String]
     func save(label: String, data: Data, accessControlFlags: SecAccessControlCreateFlags) throws
     func load(label: String, context: LAContext, prompt: String) throws -> Data?
     func remove(label: String, context: LAContext?, prompt: String) throws
 }
 
 public extension PrivateKeyStoring {
+    func allLabels() throws -> [String] { [] }
+
     func save(label: String, data: Data) throws {
         try save(label: label, data: data, accessControlFlags: [.userPresence])
     }
@@ -103,6 +106,35 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
         ]) { _, new in new }
         let (status, _) = copyItem(query as CFDictionary)
         return status == errSecSuccess || status == errSecInteractionNotAllowed
+    }
+
+    public func allLabels() throws -> [String] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll
+        ]
+        let (status, result) = copyItem(query as CFDictionary)
+        if status == errSecItemNotFound {
+            return []
+        }
+        guard status == errSecSuccess else {
+            throw PrivateKeyStoreError.keychain(status)
+        }
+        if let items = result as? [[String: Any]] {
+            return items.compactMap { $0[kSecAttrAccount as String] as? String }
+        }
+        if let items = result as? [NSDictionary] {
+            return items.compactMap { $0[kSecAttrAccount as String] as? String }
+        }
+        if let single = result as? [String: Any], let account = single[kSecAttrAccount as String] as? String {
+            return [account]
+        }
+        if let single = result as? NSDictionary, let account = single[kSecAttrAccount as String] as? String {
+            return [account]
+        }
+        return []
     }
 
     public func save(label: String, data: Data, accessControlFlags: SecAccessControlCreateFlags = [.userPresence]) throws {

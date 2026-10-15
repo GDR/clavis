@@ -1,9 +1,9 @@
+@testable import ClavisTestSupport
 import Foundation
 import Testing
 import CryptoKit
 import LocalAuthentication
 @testable import ClavisCore
-@testable import ClavisTestSupport
 
 @Suite(.serialized)
 final class GitSigningGraceTests {
@@ -1621,6 +1621,31 @@ final class GitSigningGraceTests {
     }
 
     @Test func testCustomPresenterInjectionWithoutTouchingStaticState() throws {
+        final class CustomPresenterSpy: GitSigningGracePresenter, @unchecked Sendable {
+            struct Call: Equatable {
+                let keyLabel: String
+                let clientDesc: String
+                let timeout: TimeInterval
+            }
+            private let lock = NSLock()
+            private var _calls: [Call] = []
+            var responseChoice: GitSigningPromptChoice = .grantFiveMinutes
+
+            var calls: [Call] {
+                lock.lock()
+                defer { lock.unlock() }
+                return _calls
+            }
+
+            func prompt(keyLabel: String, clientDesc: String, timeout: TimeInterval) -> GitSigningPromptChoice {
+                lock.lock()
+                _calls.append(Call(keyLabel: keyLabel, clientDesc: clientDesc, timeout: timeout))
+                let choice = responseChoice
+                lock.unlock()
+                return choice
+            }
+        }
+
         let spy = CustomPresenterSpy()
         let customGraceManager = GitSigningGraceManager(observeSystemEvents: false, presenter: spy)
 
@@ -1689,7 +1714,290 @@ final class GitSigningGraceTests {
         #expect(activeGrant.isValid)
         #expect(GitSigningGraceManager.shared.getValidGrant(for: label) == nil, "Shared GitSigningGraceManager must not be touched")
     }
+
+    @Test func testConcurrentMultiGrantTrackingAndPerKeyInvalidation() throws {
+        let manager = GitSigningGraceManager(observeSystemEvents: false)
+        let keyA = "key-alpha-\(UUID().uuidString)"
+        let keyB = "key-beta-\(UUID().uuidString)"
+        let keyC = "key-gamma-\(UUID().uuidString)"
+
+        let myPid = getpid()
+        let mySnap = try #require(ProcessInspector.processParentSnapshot(pid: myPid))
+        let approved = GitApprovedProcess(pid: myPid, startTime: mySnap.startTime, path: "/usr/bin/git")
+
+        // Record three concurrent grants
+        _ = manager.recordGrant(
+            keyLabel: keyA,
+            clientIdentity: "/usr/bin/git",
+            duration: 300,
+            maxOperations: 10,
+            context: LAContext(),
+            approvedProcess: approved
+        )
+        _ = manager.recordGrant(
+            keyLabel: keyB,
+            clientIdentity: "/usr/bin/git",
+            duration: 300,
+            maxOperations: 20,
+            context: LAContext(),
+            approvedProcess: approved
+        )
+        _ = manager.recordGrant(
+            keyLabel: keyC,
+            clientIdentity: "/usr/bin/git",
+            duration: 300,
+            maxOperations: 30,
+            context: LAContext(),
+            approvedProcess: approved
+        )
+
+        // All three are tracked simultaneously
+        let allGrants = manager.allActiveGrants()
+        #expect(allGrants.count == 3)
+        #expect(manager.getValidGrant(for: keyA)?.keyLabel == keyA)
+        #expect(manager.getValidGrant(for: keyB)?.keyLabel == keyB)
+        #expect(manager.getValidGrant(for: keyC)?.keyLabel == keyC)
+
+        // queryAllAgentGitGraces returns all 3
+        let queries = manager.queryAllAgentGitGraces()
+        #expect(queries.count == 3)
+        let labels = queries.map(\.keyLabel)
+        #expect(labels.contains(keyA))
+        #expect(labels.contains(keyB))
+        #expect(labels.contains(keyC))
+
+        // Invalidate single grant keyB
+        manager.invalidate(keyLabel: keyB)
+        #expect(manager.getValidGrant(for: keyB) == nil)
+        #expect(manager.getValidGrant(for: keyA) != nil)
+        #expect(manager.getValidGrant(for: keyC) != nil)
+        #expect(manager.allActiveGrants().count == 2)
+
+        // Re-recording keyA updates keyA only without affecting keyC
+        let grantA2 = manager.recordGrant(
+            keyLabel: keyA,
+            clientIdentity: "/usr/bin/git",
+            duration: 120,
+            maxOperations: 5,
+            context: LAContext(),
+            approvedProcess: approved
+        )
+        #expect(grantA2.remainingOperations == 5)
+        #expect(manager.getValidGrant(for: keyA)?.remainingOperations == 5)
+        #expect(manager.getValidGrant(for: keyC)?.remainingOperations == 30)
+
+        // Invalidate all clears remaining
+        manager.invalidateAll()
+        #expect(manager.allActiveGrants().isEmpty)
+        #expect(manager.getValidGrant(for: keyA) == nil)
+        #expect(manager.getValidGrant(for: keyC) == nil)
+    }
+
+    // MARK: - Adversarial Concurrency & Stress Tests
+
+    @Test func testAdversarialConcurrentMultiKeyGrantsAndPerKeyRevocation() async throws {
+        let graceManager = GitSigningGraceManager(observeSystemEvents: false)
+        let myPid = getpid()
+        let mySnap = try #require(ProcessInspector.processParentSnapshot(pid: myPid))
+        let approved = GitApprovedProcess(pid: myPid, startTime: mySnap.startTime, path: "/usr/bin/git")
+
+        let keyCount = 10
+        let keys = (0..<keyCount).map { "adversarial-key-\($0)-\(UUID().uuidString)" }
+        let tasksPerKey = 5
+        let iterations = 20
+
+        // Concurrently record grants across multiple keys in parallel Tasks
+        await withTaskGroup(of: Void.self) { group in
+            for key in keys {
+                for _ in 0..<tasksPerKey {
+                    group.addTask {
+                        let context = LAContext()
+                        for _ in 0..<iterations {
+                            let grant = graceManager.recordGrant(
+                                keyLabel: key,
+                                clientIdentity: "/usr/bin/git",
+                                duration: 300,
+                                maxOperations: 50,
+                                context: context,
+                                approvedProcess: approved
+                            )
+                            #expect(grant.keyLabel == key)
+                            let active = graceManager.getValidGrant(for: key)
+                            #expect(active != nil)
+
+                            // Concurrent withGrant consumption
+                            let result = graceManager.withGrant(for: key, clientIdentity: "/usr/bin/git", peerProcess: approved) { g in
+                                return g.remainingOperations
+                            }
+                            #expect(result != nil)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Verify all 10 keys are active
+        let allActive = graceManager.allActiveGrants()
+        #expect(allActive.count == keyCount)
+        let activeLabels = Set(allActive.map(\.keyLabel))
+        #expect(activeLabels == Set(keys))
+
+        // Per-key revocation stress test: revoke keys one by one concurrently
+        // Pick 3 target keys to revoke concurrently while other keys are continuously read
+        let keysToRevoke = Array(keys.prefix(3))
+        let keysToPreserve = Array(keys.suffix(from: 3))
+
+        await withTaskGroup(of: Void.self) { group in
+            // Revoke target keys
+            for key in keysToRevoke {
+                group.addTask {
+                    graceManager.invalidate(keyLabel: key)
+                }
+            }
+            // Concurrently read preserved keys
+            for key in keysToPreserve {
+                group.addTask {
+                    for _ in 0..<20 {
+                        let g = graceManager.getValidGrant(for: key)
+                        #expect(g != nil)
+                    }
+                }
+            }
+        }
+
+        // Verify revoked keys are strictly evicted
+        for revokedKey in keysToRevoke {
+            #expect(graceManager.getValidGrant(for: revokedKey) == nil, "Revoked key \(revokedKey) must be evicted")
+        }
+
+        // Verify preserved keys remain strictly valid
+        for preservedKey in keysToPreserve {
+            let grant = graceManager.getValidGrant(for: preservedKey)
+            #expect(grant != nil, "Preserved key \(preservedKey) must remain valid")
+            #expect(grant?.isValid == true)
+        }
+
+        let remainingGrants = graceManager.allActiveGrants()
+        #expect(remainingGrants.count == keysToPreserve.count)
+        #expect(Set(remainingGrants.map(\.keyLabel)) == Set(keysToPreserve))
+
+        // Invalidate all clears everything
+        graceManager.invalidateAll()
+        #expect(graceManager.allActiveGrants().isEmpty)
+    }
+
+    @Test func testAdversarialExpiredGrantsEviction() async throws {
+        let graceManager = GitSigningGraceManager(observeSystemEvents: false)
+        let myPid = getpid()
+        let mySnap = try #require(ProcessInspector.processParentSnapshot(pid: myPid))
+        let approved = GitApprovedProcess(pid: myPid, startTime: mySnap.startTime, path: "/usr/bin/git")
+
+        let shortKey1 = "short-ttl-1-\(UUID().uuidString)"
+        let shortKey2 = "short-ttl-2-\(UUID().uuidString)"
+        let longKey = "long-ttl-\(UUID().uuidString)"
+        let zeroOpKey = "zero-op-\(UUID().uuidString)"
+
+        // 1. Time-based expiration eviction
+        // Record short TTL grants (0.25s) and a long TTL grant (300s)
+        graceManager.recordGrant(
+            keyLabel: shortKey1,
+            clientIdentity: "/usr/bin/git",
+            duration: 0.25,
+            maxOperations: 100,
+            context: LAContext(),
+            approvedProcess: approved
+        )
+        graceManager.recordGrant(
+            keyLabel: shortKey2,
+            clientIdentity: "/usr/bin/git",
+            duration: 0.25,
+            maxOperations: 100,
+            context: LAContext(),
+            approvedProcess: approved
+        )
+        graceManager.recordGrant(
+            keyLabel: longKey,
+            clientIdentity: "/usr/bin/git",
+            duration: 300,
+            maxOperations: 100,
+            context: LAContext(),
+            approvedProcess: approved
+        )
+
+        // Initially all 3 are active
+        #expect(graceManager.allActiveGrants().count == 3)
+
+        // Wait 0.35s for short TTL grants to expire
+        try await Task.sleep(nanoseconds: 350_000_000)
+
+        // allActiveGrants() must evict shortKey1 and shortKey2, leaving only longKey
+        let activeAfterExpiry = graceManager.allActiveGrants()
+        #expect(activeAfterExpiry.count == 1)
+        #expect(activeAfterExpiry.first?.keyLabel == longKey)
+        #expect(graceManager.getValidGrant(for: shortKey1) == nil)
+        #expect(graceManager.getValidGrant(for: shortKey2) == nil)
+        #expect(graceManager.getValidGrant(for: longKey) != nil)
+
+        // 2. Operation exhaustion eviction
+        graceManager.recordGrant(
+            keyLabel: zeroOpKey,
+            clientIdentity: "/usr/bin/git",
+            duration: 300,
+            maxOperations: 2,
+            context: LAContext(),
+            approvedProcess: approved
+        )
+        #expect(graceManager.getValidGrant(for: zeroOpKey) != nil)
+
+        // Consume 2 operations
+        let op1 = graceManager.withGrant(for: zeroOpKey, clientIdentity: "/usr/bin/git", peerProcess: approved) { $0.remainingOperations }
+        #expect(op1 == 1)
+        let op2 = graceManager.withGrant(for: zeroOpKey, clientIdentity: "/usr/bin/git", peerProcess: approved) { $0.remainingOperations }
+        #expect(op2 == 0)
+
+        // 3rd operation fails and evicts the grant
+        let op3 = graceManager.withGrant(for: zeroOpKey, clientIdentity: "/usr/bin/git", peerProcess: approved) { $0.remainingOperations }
+        #expect(op3 == nil)
+        #expect(graceManager.getValidGrant(for: zeroOpKey) == nil)
+
+        let remaining = graceManager.allActiveGrants()
+        #expect(remaining.count == 1)
+        #expect(remaining.first?.keyLabel == longKey)
+
+        graceManager.invalidateAll()
+    }
+
+    @Test func testAdversarialRapidConcurrentBackgroundTimerEviction() async throws {
+        let graceManager = GitSigningGraceManager(observeSystemEvents: false)
+        let myPid = getpid()
+        let mySnap = try #require(ProcessInspector.processParentSnapshot(pid: myPid))
+        let approved = GitApprovedProcess(pid: myPid, startTime: mySnap.startTime, path: "/usr/bin/git")
+
+        let grantCount = 10
+        for i in 0..<grantCount {
+            let key = "staggered-key-\(i)-\(UUID().uuidString)"
+            let ttl = 0.35 + Double(i) * 0.02 // 0.35s to 0.53s
+            graceManager.recordGrant(
+                keyLabel: key,
+                clientIdentity: "/usr/bin/git",
+                duration: ttl,
+                maxOperations: 10,
+                context: LAContext(),
+                approvedProcess: approved
+            )
+        }
+
+        #expect(graceManager.allActiveGrants().count == grantCount)
+
+        // Sleep until all have expired
+        try await Task.sleep(nanoseconds: 650_000_000) // 0.65s
+
+        // Verify all are evicted by expiration
+        #expect(graceManager.allActiveGrants().isEmpty)
+        #expect(graceManager.queryAllAgentGitGraces().isEmpty)
+    }
 }
+
 
 private final class PolicyCapturingAuthenticator: UserAuthenticating {
     private let lock = NSLock()
@@ -1761,30 +2069,5 @@ private final class LoadFailingPrivateKeyStore: PrivateKeyStoring {
 
     func remove(label: String, context: LAContext?, prompt: String) throws {
         try inner.remove(label: label, context: context, prompt: prompt)
-    }
-}
-
-fileprivate final class CustomPresenterSpy: GitSigningGracePresenter, @unchecked Sendable {
-    struct Call: Equatable {
-        let keyLabel: String
-        let clientDesc: String
-        let timeout: TimeInterval
-    }
-    private let lock = NSLock()
-    private var _calls: [Call] = []
-    var responseChoice: GitSigningPromptChoice = .grantFiveMinutes
-
-    var calls: [Call] {
-        lock.lock()
-        defer { lock.unlock() }
-        return _calls
-    }
-
-    func prompt(keyLabel: String, clientDesc: String, timeout: TimeInterval) -> GitSigningPromptChoice {
-        lock.lock()
-        _calls.append(Call(keyLabel: keyLabel, clientDesc: clientDesc, timeout: timeout))
-        let choice = responseChoice
-        lock.unlock()
-        return choice
     }
 }
