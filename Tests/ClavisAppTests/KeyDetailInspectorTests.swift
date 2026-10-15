@@ -332,4 +332,85 @@ struct KeyDetailInspectorTests {
         #expect(ClavisUIStrings.History.showHistory == "Show History")
         #expect(ClavisUIStrings.Accessibility.moreActions == "More actions")
     }
+
+    // MARK: - Milestone M2 (PR 2): Consistent Public Identity Bordered Copy Controls (Refs clavis-m46)
+
+    @Test
+    func testPublicIdentityCopyStringsAndAccessibility() {
+        #expect(ClavisUIStrings.Common.copy == "Copy")
+        #expect(ClavisUIStrings.Inspector.copySSHKeyButton == "Copy SSH Key")
+        #expect(ClavisUIStrings.KeyDetail.copyDeployKey == "Copy Deploy Key")
+        #expect(ClavisUIStrings.Accessibility.copyFingerprint == "Copy SHA-256 fingerprint")
+        #expect(ClavisUIStrings.Inspector.copyFingerprintHelp == "Copy SHA-256 Fingerprint")
+    }
+
+    @Test
+    func testFingerprintCopyButtonAttributes() {
+        let attrs = KeyDetailInspectorView.fingerprintCopyButtonAttributes()
+
+        // 1. Button label string matching ClavisUIStrings.Common.copy ("Copy")
+        #expect(attrs.label == ClavisUIStrings.Common.copy)
+        #expect(attrs.label == "Copy")
+
+        // 2. Accessibility label matching ClavisUIStrings.Accessibility.copyFingerprint ("Copy SHA-256 fingerprint")
+        #expect(attrs.accessibilityLabel == ClavisUIStrings.Accessibility.copyFingerprint)
+        #expect(attrs.accessibilityLabel == "Copy SHA-256 fingerprint")
+
+        // 3. Tooltip help string matching ClavisUIStrings.Inspector.copyFingerprintHelp ("Copy SHA-256 Fingerprint")
+        #expect(attrs.help == ClavisUIStrings.Inspector.copyFingerprintHelp)
+        #expect(attrs.help == "Copy SHA-256 Fingerprint")
+
+        // 4. Assert distinctions between control attributes
+        #expect(!attrs.label.isEmpty)
+        #expect(!attrs.accessibilityLabel.isEmpty)
+        #expect(!attrs.help.isEmpty)
+        #expect(attrs.label != attrs.accessibilityLabel)
+        #expect(attrs.label != attrs.help)
+    }
+
+    @Test
+    func testPublicKeyCopyButtonTitleForDifferentKeyPurposes() {
+        // General SSH key: "Copy SSH Key"
+        let generalKey = makeTestKey(label: "personal-laptop", purpose: .general)
+        #expect(KeyDetailInspectorView.publicKeyCopyButtonTitle(for: generalKey) == ClavisUIStrings.Inspector.copySSHKeyButton)
+        #expect(KeyDetailInspectorView.publicKeyCopyButtonTitle(for: generalKey) == "Copy SSH Key")
+
+        // Git signing only key: "Copy SSH Key"
+        let gitKey = makeTestKey(label: "git-commit-signer", purpose: .gitSigningOnly)
+        #expect(KeyDetailInspectorView.publicKeyCopyButtonTitle(for: gitKey) == ClavisUIStrings.Inspector.copySSHKeyButton)
+        #expect(KeyDetailInspectorView.publicKeyCopyButtonTitle(for: gitKey) == "Copy SSH Key")
+
+        // Agent key: "Copy Deploy Key"
+        let agentKey = makeTestKey(label: "agent-session-key", purpose: .agent)
+        #expect(KeyDetailInspectorView.publicKeyCopyButtonTitle(for: agentKey) == ClavisUIStrings.KeyDetail.copyDeployKey)
+        #expect(KeyDetailInspectorView.publicKeyCopyButtonTitle(for: agentKey) == "Copy Deploy Key")
+    }
+
+    @Test
+    func testCopyActionFeedbackStrings() {
+        // Assert exact localized values and non-empty feedback strings
+        #expect(ClavisUIStrings.Inspector.feedbackCopiedFingerprint == "Copied fingerprint to clipboard")
+        #expect(ClavisUIStrings.Inspector.feedbackCopiedOpenSSH == "Copied OpenSSH public key to clipboard")
+
+        #expect(!ClavisUIStrings.Inspector.feedbackCopiedFingerprint.isEmpty)
+        #expect(!ClavisUIStrings.Inspector.feedbackCopiedOpenSSH.isEmpty)
+        #expect(ClavisUIStrings.Inspector.feedbackCopiedFingerprint != ClavisUIStrings.Inspector.feedbackCopiedOpenSSH)
+    }
+
+    @Test
+    func testPublicIdentityCopyControlsComposite() {
+        let generalKey = makeTestKey(purpose: .general)
+        let generalControls = KeyDetailInspectorView.publicIdentityCopyControls(for: generalKey)
+        #expect(generalControls.publicKeyButtonTitle == ClavisUIStrings.Inspector.copySSHKeyButton)
+        #expect(generalControls.publicKeyFeedback == ClavisUIStrings.Inspector.feedbackCopiedOpenSSH)
+        #expect(generalControls.fingerprintButtonLabel == ClavisUIStrings.Common.copy)
+        #expect(generalControls.fingerprintAccessibilityLabel == ClavisUIStrings.Accessibility.copyFingerprint)
+        #expect(generalControls.fingerprintHelp == ClavisUIStrings.Inspector.copyFingerprintHelp)
+        #expect(generalControls.fingerprintFeedback == ClavisUIStrings.Inspector.feedbackCopiedFingerprint)
+
+        let agentKey = makeTestKey(purpose: .agent)
+        let agentControls = KeyDetailInspectorView.publicIdentityCopyControls(for: agentKey)
+        #expect(agentControls.publicKeyButtonTitle == ClavisUIStrings.KeyDetail.copyDeployKey)
+        #expect(agentControls.publicKeyFeedback == ClavisUIStrings.Inspector.feedbackCopiedOpenSSH)
+    }
 }
