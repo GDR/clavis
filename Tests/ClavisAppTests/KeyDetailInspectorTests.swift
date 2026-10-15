@@ -586,4 +586,24 @@ struct KeyDetailInspectorTests {
         #expect(ClavisUIStrings.Inspector.socketStatusOffline == "Offline")
         #expect(!ClavisUIStrings.Inspector.securitySection.isEmpty)
     }
+
+    // MARK: - Key Purpose Actions & Localization Invariants (M4 / clavis-t53)
+
+    @Test
+    func testKeyPurposeActionStringsAndInvariants() {
+        let strings = KeyDetailInspectorView.purposeActionStrings
+        #expect(strings.actionLabel == "Change Purpose…")
+        #expect(strings.confirmButton == "Change Purpose")
+        #expect(strings.alertTitle == "Change Purpose…")
+
+        #expect(ClavisUIStrings.Inspector.changeKind == strings.actionLabel)
+        #expect(ClavisUIStrings.Inspector.changeKindConfirm == strings.confirmButton)
+        #expect(ClavisUIStrings.KeyDetail.changeKind == strings.actionLabel)
+        #expect(ClavisUIStrings.KeyDetail.changeKindConfirm == strings.confirmButton)
+
+        let msg = strings.alertMessage(label: "my-key", targetPurpose: .agent)
+        #expect(msg.contains("my-key"))
+        #expect(msg.contains("Agent"))
+        #expect(msg.contains("purpose") || msg.contains("назначение"))
+    }
 }

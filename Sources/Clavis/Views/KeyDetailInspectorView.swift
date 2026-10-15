@@ -17,9 +17,9 @@ public struct KeyDetailInspectorView: View {
 
     @State private var copyFeedback: String? = nil
     @State private var showingDeleteAlert: Bool = false
-    @State private var showingChangeKindAlert: Bool = false
-    @State private var changeKindError: String? = nil
-    @State private var showingChangeKindError: Bool = false
+    @State private var showingChangePurposeAlert: Bool = false
+    @State private var changePurposeError: String? = nil
+    @State private var showingChangePurposeError: Bool = false
 
     public init(key: SSHKeyInfo, appState: AppState, onDelete: @escaping () -> Void) {
         self.key = key
@@ -176,9 +176,9 @@ public struct KeyDetailInspectorView: View {
                         if key.purpose == .general || key.purpose == .agent {
                             Divider()
                             Button(action: {
-                                showingChangeKindAlert = true
+                                showingChangePurposeAlert = true
                             }) {
-                                Label(ClavisUIStrings.Inspector.changeKind, systemImage: "arrow.triangle.2.circlepath")
+                                Label(ClavisUIStrings.Inspector.changePurpose, systemImage: "arrow.triangle.2.circlepath")
                             }
                         }
                         Divider()
@@ -358,9 +358,9 @@ public struct KeyDetailInspectorView: View {
                                 .fontWeight(.medium)
                             if key.purpose == .general || key.purpose == .agent {
                                 Button(action: {
-                                    showingChangeKindAlert = true
+                                    showingChangePurposeAlert = true
                                 }) {
-                                    Text(ClavisUIStrings.Inspector.changeKind)
+                                    Text(ClavisUIStrings.Inspector.changePurpose)
                                         .font(.caption2)
                                 }
                                 .buttonStyle(.bordered)
@@ -445,26 +445,26 @@ public struct KeyDetailInspectorView: View {
         } message: {
             Text(Self.deleteConfirmationMessage(label: key.label, shortFingerprint: key.shortFingerprint))
         }
-        .alert(ClavisUIStrings.Inspector.changeKind, isPresented: $showingChangeKindAlert) {
+        .alert(ClavisUIStrings.Inspector.changePurpose, isPresented: $showingChangePurposeAlert) {
             let target = (key.purpose == .agent) ? KeyPurpose.general : KeyPurpose.agent
-            Button(ClavisUIStrings.KeyDetail.changeKindConfirm) {
+            Button(ClavisUIStrings.KeyDetail.changePurposeConfirm) {
                 do {
                     try appState.changeKeyKind(label: key.label, to: target)
                     showFeedback(target == .agent ? "Changed purpose to Agent" : "Changed purpose to General")
                 } catch {
-                    changeKindError = error.localizedDescription
-                    showingChangeKindError = true
+                    changePurposeError = error.localizedDescription
+                    showingChangePurposeError = true
                 }
             }
             Button(ClavisUIStrings.Common.cancel, role: .cancel) {}
         } message: {
             let target = (key.purpose == .agent) ? KeyPurpose.general : KeyPurpose.agent
-            Text(ClavisUIStrings.KeyDetail.changeKindAlertMessage(label: key.label, newPurpose: target))
+            Text(ClavisUIStrings.KeyDetail.changePurposeAlertMessage(label: key.label, newPurpose: target))
         }
-        .alert(ClavisUIStrings.Common.error, isPresented: $showingChangeKindError) {
+        .alert(ClavisUIStrings.Common.error, isPresented: $showingChangePurposeError) {
             Button(ClavisUIStrings.Common.ok, role: .cancel) {}
         } message: {
-            Text(changeKindError ?? "")
+            Text(changePurposeError ?? "")
         }
     }
 
@@ -879,6 +879,33 @@ public extension KeyDetailInspectorView {
             isSocketActive: socket.isActive,
             postureIcon: postureIcon(for: key),
             postureDescription: posture.description
+        )
+    }
+
+    // MARK: - Key Purpose Actions (Milestone M4 / Refs clavis-t53)
+
+    /// Semantic labels and copy for Key Purpose actions and alerts.
+    struct PurposeActionStrings: Equatable, Sendable {
+        public let actionLabel: String
+        public let confirmButton: String
+        public let alertTitle: String
+
+        public init(actionLabel: String, confirmButton: String, alertTitle: String) {
+            self.actionLabel = actionLabel
+            self.confirmButton = confirmButton
+            self.alertTitle = alertTitle
+        }
+
+        public func alertMessage(label: String, targetPurpose: KeyPurpose) -> String {
+            ClavisUIStrings.KeyDetail.changePurposeAlertMessage(label: label, newPurpose: targetPurpose)
+        }
+    }
+
+    static var purposeActionStrings: PurposeActionStrings {
+        PurposeActionStrings(
+            actionLabel: ClavisUIStrings.Inspector.changePurpose,
+            confirmButton: ClavisUIStrings.KeyDetail.changePurposeConfirm,
+            alertTitle: ClavisUIStrings.Inspector.changePurpose
         )
     }
 }

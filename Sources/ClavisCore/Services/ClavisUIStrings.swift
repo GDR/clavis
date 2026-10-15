@@ -136,8 +136,10 @@ public enum ClavisUIStrings {
         }
 
         public static var copyDeployKey: String { KeyDetail.copyDeployKey }
-        public static var changeKind: String { KeyDetail.changeKind }
-        public static var changeKindConfirm: String { KeyDetail.changeKindConfirm }
+        public static var changePurpose: String { KeyDetail.changePurpose }
+        public static var changeKind: String { changePurpose }
+        public static var changePurposeConfirm: String { KeyDetail.changePurposeConfirm }
+        public static var changeKindConfirm: String { changePurposeConfirm }
 
         // Header & Context Menu
         public static func keySubtitle(algorithm: String, isHardware: Bool) -> String {
@@ -263,10 +265,15 @@ public enum ClavisUIStrings {
 
     public enum KeyDetail {
         public static var copyDeployKey: String { localized("key_detail.copy_deploy_key", "Copy Deploy Key") }
-        public static var changeKind: String { localized("key_detail.change_kind", "Change Kind…") }
-        public static var changeKindConfirm: String { localized("key_detail.change_kind_confirm", "Change Kind") }
+        public static var changePurpose: String { localized("key_detail.change_kind", "Change Purpose…") }
+        public static var changeKind: String { changePurpose }
+        public static var changePurposeConfirm: String { localized("key_detail.change_kind_confirm", "Change Purpose") }
+        public static var changeKindConfirm: String { changePurposeConfirm }
+        public static func changePurposeAlertMessage(label: String, newPurpose: KeyPurpose) -> String {
+            localizedFormat("key_detail.change_kind_message", "Are you sure you want to change the purpose of key '%1$@' to %2$@? This requires confirmation with user presence.", label, newPurpose.title)
+        }
         public static func changeKindAlertMessage(label: String, newPurpose: KeyPurpose) -> String {
-            localizedFormat("key_detail.change_kind_message", "Are you sure you want to change the kind of key '%1$@' to %2$@? This requires confirmation with user presence.", label, newPurpose.title)
+            changePurposeAlertMessage(label: label, newPurpose: newPurpose)
         }
     }
 
