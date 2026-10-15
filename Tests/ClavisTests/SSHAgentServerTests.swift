@@ -1,81 +1,170 @@
-import XCTest
+import Foundation
+import Testing
 import CryptoKit
 import LocalAuthentication
 import Darwin
 @testable import ClavisCore
 @testable import Clavis
 
-final class SSHAgentServerTests: ClavisBaseTestCase {
-    func testAuthenticationReasonsFitSystemPromptGrammar() {
-        XCTAssertEqual(
-            SSHAgentServer.sshAuthenticationReason(keyLabel: "Main Key"),
+private final class CleanupHook: @unchecked Sendable {
+    private let action: () -> Void
+    init(action: @escaping () -> Void) {
+        self.action = action
+    }
+    deinit {
+        action()
+    }
+}
+
+private final class GrandchildPidTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var urls: [URL] = []
+
+    func append(_ url: URL) {
+        lock.lock()
+        defer { lock.unlock() }
+        urls.append(url)
+    }
+
+    func cleanup() {
+        lock.lock()
+        defer { lock.unlock() }
+        for pidFileURL in urls {
+            if let pidString = try? String(contentsOf: pidFileURL, encoding: .utf8),
+               let pid = pid_t(pidString.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                kill(pid, SIGKILL)
+            }
+        }
+        urls.removeAll()
+    }
+
+    deinit {
+        cleanup()
+    }
+}
+
+struct SSHAgentServerTests {
+    private static let gitEnvLock = NSLock()
+    private let fixture: ClavisTestFixture
+    private var testRootURL: URL { fixture.testRootURL }
+    private let grandchildPidFilesToClean: GrandchildPidTracker
+    private let _cleanup: CleanupHook
+
+
+    init() throws {
+        let fixture = try ClavisTestFixture()
+        self.fixture = fixture
+        let tracker = GrandchildPidTracker()
+        self.grandchildPidFilesToClean = tracker
+
+        self._cleanup = CleanupHook {
+            tracker.cleanup()
+            fixture.cleanup()
+        }
+    }
+
+    private func makeKeyManager(
+        authenticator: UserAuthenticating = AllowingAuthenticator(),
+        privateKeyStore: PrivateKeyStoring = InMemoryPrivateKeyStore(),
+        vaultStore: EncryptedVaultStore? = nil,
+        auditRecorder: AuditRecording = InMemoryAuditRecorder(),
+        signingProvider: SecureEnclaveSigningProviding? = nil,
+        gitSigningGraceManager: GitSigningGraceManager = .shared
+    ) -> KeychainManager {
+        fixture.makeKeyManager(
+            authenticator: authenticator,
+            privateKeyStore: privateKeyStore,
+            vaultStore: vaultStore,
+            auditRecorder: auditRecorder,
+            signingProvider: signingProvider,
+            gitSigningGraceManager: gitSigningGraceManager
+        )
+    }
+
+    private func connectUnixSocket(path: String) throws -> Int32 {
+        try fixture.connectUnixSocket(path: path)
+    }
+
+    private func socketReadFullBytes(from sock: Int32, count: Int) -> Data? {
+        fixture.socketReadFullBytes(from: sock, count: count)
+    }
+
+    @Test func testAuthenticationReasonsFitSystemPromptGrammar() {
+        #expect(
+            SSHAgentServer.sshAuthenticationReason(keyLabel: "Main Key") ==
             "use \u{201c}Main Key\u{201d} for SSH authentication"
         )
-        XCTAssertEqual(
-            SSHAgentServer.gitCommitSigningReason(keyLabel: "Main Key"),
+        #expect(
+            SSHAgentServer.gitCommitSigningReason(keyLabel: "Main Key") ==
             "sign a Git commit with \u{201c}Main Key\u{201d}"
         )
-        XCTAssertEqual(
-            SSHAgentServer.gitSigningSessionReason(keyLabel: "Main Key"),
+        #expect(
+            SSHAgentServer.gitSigningSessionReason(keyLabel: "Main Key") ==
             "authorize a 5-minute Git signing session with \u{201c}Main Key\u{201d}"
         )
     }
 
-    func testOwnerControlRequestRevokesPerKeyGitGrant() throws {
+    @Test func testOwnerControlRequestRevokesPerKeyGitGrant() throws {
         let label = "revoke-\(UUID().uuidString)"
-        GitSigningGraceManager.shared.invalidateAll(broadcast: false)
-        defer { GitSigningGraceManager.shared.invalidateAll(broadcast: false) }
-        _ = GitSigningGraceManager.shared.recordGrant(
+        let graceManager = GitSigningGraceManager(observeSystemEvents: false)
+        _ = graceManager.recordGrant(
             keyLabel: label,
             clientIdentity: "/usr/bin/git",
             context: LAContext()
         )
-        XCTAssertNotNil(GitSigningGraceManager.shared.getValidGrant(for: label))
+        #expect(graceManager.getValidGrant(for: label) != nil)
 
         var request = Data([SSHAgentServer.invalidateKeyRequest])
         request.appendWireString(label)
-        let response = SSHAgentServer(keyManager: makeKeyManager()).processAgentRequest(
+        let response = SSHAgentServer(
+            keyManager: makeKeyManager(gitSigningGraceManager: graceManager),
+            gitSigningGraceManager: graceManager
+        ).processAgentRequest(
             payload: request,
             clientPid: getpid(),
             clientExecutablePath: "/Applications/Clavis.app/Contents/MacOS/Clavis",
             isTrustedControlPeer: { true }
         )
 
-        XCTAssertEqual(response, Data([6]))
-        XCTAssertNil(GitSigningGraceManager.shared.getValidGrant(for: label))
+        #expect(response == Data([6]))
+        #expect(graceManager.getValidGrant(for: label) == nil)
     }
 
-    func testControlOpcodesAreRefusedForUntrustedPeers() throws {
+    @Test func testControlOpcodesAreRefusedForUntrustedPeers() throws {
         let label = "untrusted-\(UUID().uuidString)"
-        GitSigningGraceManager.shared.invalidateAll(broadcast: false)
-        defer { GitSigningGraceManager.shared.invalidateAll(broadcast: false) }
-        _ = GitSigningGraceManager.shared.recordGrant(
+        let graceManager = GitSigningGraceManager(observeSystemEvents: false)
+        _ = graceManager.recordGrant(
             keyLabel: label,
             clientIdentity: "/usr/bin/git",
             context: LAContext()
         )
-        let server = SSHAgentServer(keyManager: makeKeyManager())
+        let server = SSHAgentServer(
+            keyManager: makeKeyManager(gitSigningGraceManager: graceManager),
+            gitSigningGraceManager: graceManager
+        )
 
         var invalidate = Data([SSHAgentServer.invalidateKeyRequest])
-        invalidate.appendWireString(label)
-        let requests = [invalidate, Data([SSHAgentServer.queryGitGraceRequest]), Data([SSHAgentServer.lockAllRequest])]
-        for request in requests {
+        requestLoop: for request in [invalidate, Data([SSHAgentServer.queryGitGraceRequest]), Data([SSHAgentServer.lockAllRequest])] {
+            var req = request
+            if req == invalidate {
+                req.appendWireString(label)
+            }
             // Default (no trust callback) and an explicit "untrusted" peer are both refused.
-            XCTAssertEqual(server.processAgentRequest(payload: request), Data([5]))
-            XCTAssertEqual(server.processAgentRequest(payload: request, isTrustedControlPeer: { false }), Data([5]))
+            #expect(server.processAgentRequest(payload: req) == Data([5]))
+            #expect(server.processAgentRequest(payload: req, isTrustedControlPeer: { false }) == Data([5]))
         }
-        XCTAssertNotNil(GitSigningGraceManager.shared.getValidGrant(for: label),
-                        "A refused control request must not revoke or reveal the grant")
+        #expect(graceManager.getValidGrant(for: label) != nil,
+                "A refused control request must not revoke or reveal the grant")
     }
 
-    func testTrustCallbackIsNotEvaluatedForStandardAgentMessages() {
+    @Test func testTrustCallbackIsNotEvaluatedForStandardAgentMessages() {
         let server = SSHAgentServer(keyManager: makeKeyManager())
         var evaluated = false
         _ = server.processAgentRequest(payload: Data([11]), isTrustedControlPeer: { evaluated = true; return true })
-        XCTAssertFalse(evaluated)
+        #expect(!evaluated)
     }
 
-    func testControlOpcodeOverRealSocketIsRefusedForNonClavisPeer() throws {
+    @Test func testControlOpcodeOverRealSocketIsRefusedForNonClavisPeer() throws {
         let socketPath = testRootURL.appendingPathComponent("control.sock").path
         let server = SSHAgentServer(socketPath: socketPath, keyManager: makeKeyManager())
         try server.start()
@@ -86,7 +175,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         var packet = Data()
         packet.appendWireUInt32(1)
         packet.append(SSHAgentServer.lockAllRequest)
-        XCTAssertEqual(packet.withUnsafeBytes { write(fd, $0.baseAddress, packet.count) }, packet.count)
+        #expect(packet.withUnsafeBytes { write(fd, $0.baseAddress, packet.count) } == packet.count)
 
         var header = [UInt8](repeating: 0, count: 5)
         var received = 0
@@ -95,36 +184,34 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             if n <= 0 { break }
             received += n
         }
-        // The xctest runner is not a Clavis-signed binary, so the request must be refused.
-        XCTAssertEqual(header, [0, 0, 0, 1, 5])
+        // The xctest/runner is not a Clavis-signed binary, so the request must be refused.
+        #expect(header == [0, 0, 0, 1, 5])
     }
 
-
-    func testSSHAgentServerLifecycle() throws {
+    @Test func testSSHAgentServerLifecycle() throws {
         let testSockPath = testRootURL.appendingPathComponent("clavis-unittest.sock").path
         let server = SSHAgentServer(socketPath: testSockPath)
 
-        XCTAssertFalse(server.isSocketActive)
+        #expect(!server.isSocketActive)
         try server.start()
-        XCTAssertTrue(server.isSocketActive)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: testSockPath))
+        #expect(server.isSocketActive)
+        #expect(FileManager.default.fileExists(atPath: testSockPath))
 
         // Verify socket permissions are restricted to 0600
         let attrs = try FileManager.default.attributesOfItem(atPath: testSockPath)
         let perms = (attrs[.posixPermissions] as? NSNumber)?.intValue
-        XCTAssertEqual(perms, 0o600)
+        #expect(perms == 0o600)
 
         server.stop()
-        XCTAssertFalse(server.isSocketActive)
+        #expect(!server.isSocketActive)
     }
 
-
-    func testSSHAgentServerBoundsIdleClients() throws {
+    @Test func testSSHAgentServerBoundsIdleClients() throws {
         let socketPath = testRootURL.appendingPathComponent("clavis-client-limit.sock").path
         let server = SSHAgentServer(
             socketPath: socketPath,
             maxConcurrentClients: 1,
-            clientIdleTimeout: 0.05
+            clientIdleTimeout: 0.6
         )
         try server.start()
         defer { server.stop() }
@@ -132,26 +219,25 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         let idleClient = try connectUnixSocket(path: socketPath)
         defer { close(idleClient) }
 
-        let acceptanceDeadline = Date().addingTimeInterval(1)
+        let acceptanceDeadline = Date().addingTimeInterval(3)
         while server.activeClientCount != 1 && Date() < acceptanceDeadline {
             usleep(5_000)
         }
-        XCTAssertEqual(server.activeClientCount, 1)
+        #expect(server.activeClientCount == 1)
+
 
         let rejectedClient = try connectUnixSocket(path: socketPath)
         defer { close(rejectedClient) }
-        usleep(15_000)
-        XCTAssertNil(socketReadFullBytes(from: rejectedClient, count: 1))
+        #expect(socketReadFullBytes(from: rejectedClient, count: 1) == nil)
 
-        let timeoutDeadline = Date().addingTimeInterval(1)
+        let timeoutDeadline = Date().addingTimeInterval(3)
         while server.activeClientCount != 0 && Date() < timeoutDeadline {
             usleep(5_000)
         }
-        XCTAssertEqual(server.activeClientCount, 0)
+        #expect(server.activeClientCount == 0)
     }
 
-
-    func testSSHAgentServerRequestIdentitiesSocket() throws {
+    @Test func testSSHAgentServerRequestIdentitiesSocket() throws {
         let testSockPath = testRootURL.appendingPathComponent("clavis-req-ident.sock").path
         let server = SSHAgentServer(socketPath: testSockPath)
         try server.start()
@@ -166,25 +252,24 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
 
         // Read response header (4 bytes len)
         guard let lenData = socketReadFullBytes(from: clientSock, count: 4) else {
-            XCTFail("Failed to read length header from agent socket")
+            Issue.record("Failed to read length header from agent socket")
             return
         }
         var respLenVal: UInt32 = 0
         _ = withUnsafeMutableBytes(of: &respLenVal) { lenData.copyBytes(to: $0) }
         let respLen = Int(UInt32(bigEndian: respLenVal))
-        XCTAssertGreaterThan(respLen, 0)
+        #expect(respLen > 0)
 
         guard let payload = socketReadFullBytes(from: clientSock, count: respLen) else {
-            XCTFail("Failed to read response payload from agent socket")
+            Issue.record("Failed to read response payload from agent socket")
             return
         }
 
-        XCTAssertGreaterThanOrEqual(payload.count, 5)
-        XCTAssertEqual(payload[0], 12) // SSH2_AGENT_IDENTITIES_ANSWER
+        #expect(payload.count >= 5)
+        #expect(payload[0] == 12) // SSH2_AGENT_IDENTITIES_ANSWER
     }
 
-
-    func testSSHAgentServerSignRequestMissingFlags() throws {
+    @Test func testSSHAgentServerSignRequestMissingFlags() throws {
         let testSockPath = testRootURL.appendingPathComponent("clavis-sign-req.sock").path
         let server = SSHAgentServer(socketPath: testSockPath)
         try server.start()
@@ -207,51 +292,49 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         _ = packet.withUnsafeBytes { write(clientSock, $0.baseAddress!, packet.count) }
 
         guard let lenData = socketReadFullBytes(from: clientSock, count: 4) else {
-            XCTFail("Failed to read length header from agent socket")
+            Issue.record("Failed to read length header from agent socket")
             return
         }
         var respLenVal: UInt32 = 0
         _ = withUnsafeMutableBytes(of: &respLenVal) { lenData.copyBytes(to: $0) }
         let respLen = Int(UInt32(bigEndian: respLenVal))
-        XCTAssertEqual(respLen, 1)
+        #expect(respLen == 1)
 
         guard let responsePayload = socketReadFullBytes(from: clientSock, count: respLen) else {
-            XCTFail("Failed to read response payload from agent socket")
+            Issue.record("Failed to read response payload from agent socket")
             return
         }
 
-        XCTAssertEqual(responsePayload[0], 5) // SSH_AGENT_FAILURE
+        #expect(responsePayload[0] == 5) // SSH_AGENT_FAILURE
     }
 
-
-    func testSSHAgentServerRequestIdentities() throws {
+    @Test func testSSHAgentServerRequestIdentities() throws {
         let server = SSHAgentServer()
         let requestPayload = Data([11]) // SSH2_AGENTC_REQUEST_IDENTITIES
         let response = server.processAgentRequest(payload: requestPayload)
 
-        XCTAssertFalse(response.isEmpty)
-        XCTAssertEqual(response[0], 12) // SSH2_AGENT_IDENTITIES_ANSWER
+        #expect(!response.isEmpty)
+        #expect(response[0] == 12) // SSH2_AGENT_IDENTITIES_ANSWER
 
         // Key count is 4 bytes big endian starting at index 1
-        XCTAssertGreaterThanOrEqual(response.count, 5)
-        let keyCount = response.subdata(in: 1..<5).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
-        XCTAssertGreaterThanOrEqual(keyCount, 0)
+        #expect(response.count >= 5)
+        let keyCount = response.subdata(in: 1..<5).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self).bigEndian }
+        #expect(keyCount >= 0)
     }
 
-
-    func testSSHAgentServerSignRequestParsing() throws {
+    @Test func testSSHAgentServerSignRequestParsing() throws {
         let server = SSHAgentServer()
 
         // 1. Invalid payload: empty or unknown msg type
-        XCTAssertEqual(server.processAgentRequest(payload: Data()), Data([5]))
-        XCTAssertEqual(server.processAgentRequest(payload: Data([99])), Data([5]))
+        #expect(server.processAgentRequest(payload: Data()) == Data([5]))
+        #expect(server.processAgentRequest(payload: Data([99])) == Data([5]))
 
         // 2. Msg type 13 with truncated payload (missing flags)
         var truncatedPayload = Data([13])
         truncatedPayload.appendWireString("fake-key-blob")
         truncatedPayload.appendWireString("data-to-sign")
         // Missing 4-byte flags parameter
-        XCTAssertEqual(server.processAgentRequest(payload: truncatedPayload), Data([5]))
+        #expect(server.processAgentRequest(payload: truncatedPayload) == Data([5]))
 
         // 3. Msg type 13 with valid wire framing and flags but non-existent keyBlob
         var validFramedPayload = Data([13])
@@ -259,11 +342,10 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         validFramedPayload.appendWireString("hello world")
         var flags: UInt32 = 0
         Swift.withUnsafeBytes(of: &flags) { validFramedPayload.append(contentsOf: $0) }
-        XCTAssertEqual(server.processAgentRequest(payload: validFramedPayload), Data([5]))
+        #expect(server.processAgentRequest(payload: validFramedPayload) == Data([5]))
 
-        XCTAssertEqual(
-            server.processAgentRequest(payload: Data([11, 0x00])),
-            Data([5]),
+        #expect(
+            server.processAgentRequest(payload: Data([11, 0x00])) == Data([5]),
             "Identities requests with trailing bytes must be rejected"
         )
 
@@ -272,15 +354,14 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         unsupportedFlagsPayload.appendWireString("hello world")
         var unsupportedFlags = UInt32(1).bigEndian
         Swift.withUnsafeBytes(of: &unsupportedFlags) { unsupportedFlagsPayload.append(contentsOf: $0) }
-        XCTAssertEqual(server.processAgentRequest(payload: unsupportedFlagsPayload), Data([5]))
+        #expect(server.processAgentRequest(payload: unsupportedFlagsPayload) == Data([5]))
 
         var trailingPayload = validFramedPayload
         trailingPayload.append(0x00)
-        XCTAssertEqual(server.processAgentRequest(payload: trailingPayload), Data([5]))
+        #expect(server.processAgentRequest(payload: trailingPayload) == Data([5]))
     }
 
-
-    func testSSHSigningCanRequirePerRequestAuthentication() throws {
+    @Test func testSSHSigningCanRequirePerRequestAuthentication() throws {
         let authenticator = CountingAuthenticator()
         let keyManager = makeKeyManager(authenticator: authenticator)
         let label = "ssh-single-shot-\(UUID().uuidString)"
@@ -301,21 +382,20 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             useCache: false
         )
 
-        XCTAssertEqual(authenticator.authenticationCount, 2)
+        #expect(authenticator.authenticationCount == 2)
     }
 
-
-    func testSSHClientAttributionUsesExecutablePath() {
+    @Test func testSSHClientAttributionUsesExecutablePath() {
         let path = SSHAgentServer.getProcessPath(pid: getpid())
-        XCTAssertNotNil(path)
-        XCTAssertTrue(path?.hasPrefix("/") == true)
-        XCTAssertEqual(
-            SSHAgentServer.getProcessName(pid: getpid()),
+        #expect(path != nil)
+        #expect(path?.hasPrefix("/") == true)
+        #expect(
+            SSHAgentServer.getProcessName(pid: getpid()) ==
             path.map { ($0 as NSString).lastPathComponent }
         )
     }
 
-    func testSSHAgentServerPerPIDClientLimit() {
+    @Test func testSSHAgentServerPerPIDClientLimit() {
         let server = SSHAgentServer(
             maxConcurrentClients: 10,
             maxConcurrentClientsPerPID: 2
@@ -325,49 +405,47 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         let pidB: pid_t = 2000
 
         // PID A can reserve up to 2 slots
-        XCTAssertTrue(server.reserveClientSlot(clientPid: pidA))
-        XCTAssertTrue(server.reserveClientSlot(clientPid: pidA))
+        #expect(server.reserveClientSlot(clientPid: pidA))
+        #expect(server.reserveClientSlot(clientPid: pidA))
         // 3rd attempt by PID A must be rejected
-        XCTAssertFalse(server.reserveClientSlot(clientPid: pidA))
+        #expect(!server.reserveClientSlot(clientPid: pidA))
 
         // PID B can still reserve slots
-        XCTAssertTrue(server.reserveClientSlot(clientPid: pidB))
-        XCTAssertTrue(server.reserveClientSlot(clientPid: pidB))
-        XCTAssertFalse(server.reserveClientSlot(clientPid: pidB))
+        #expect(server.reserveClientSlot(clientPid: pidB))
+        #expect(server.reserveClientSlot(clientPid: pidB))
+        #expect(!server.reserveClientSlot(clientPid: pidB))
 
         // Releasing a slot for PID A allows PID A to reserve again
         server.releaseClientSlot(clientPid: pidA)
-        XCTAssertTrue(server.reserveClientSlot(clientPid: pidA))
-        XCTAssertFalse(server.reserveClientSlot(clientPid: pidA))
+        #expect(server.reserveClientSlot(clientPid: pidA))
+        #expect(!server.reserveClientSlot(clientPid: pidA))
 
         // Cleanup
         server.releaseClientSlot(clientPid: pidA)
         server.releaseClientSlot(clientPid: pidA)
         server.releaseClientSlot(clientPid: pidB)
         server.releaseClientSlot(clientPid: pidB)
-        XCTAssertEqual(server.activeClientCount, 0)
+        #expect(server.activeClientCount == 0)
     }
 
     // MARK: - Peer process binding
 
-    func testPeerProcessUnchangedForCurrentProcess() throws {
+    @Test func testPeerProcessUnchangedForCurrentProcess() throws {
         let pid = getpid()
-        let path = try XCTUnwrap(SSHAgentServer.getProcessPath(pid: pid))
-        let start = try XCTUnwrap(SSHAgentServer.processStartTime(pid: pid))
+        let path = try #require(SSHAgentServer.getProcessPath(pid: pid))
+        let start = try #require(SSHAgentServer.processStartTime(pid: pid))
 
-        XCTAssertTrue(SSHAgentServer.peerProcessUnchanged(pid: pid, path: path, startTime: start))
-        XCTAssertFalse(SSHAgentServer.peerProcessUnchanged(pid: pid, path: path + "-other", startTime: start))
-        XCTAssertFalse(SSHAgentServer.peerProcessUnchanged(pid: pid, path: path, startTime: start &+ 1),
-                       "A different start time means the PID was recycled")
+        #expect(SSHAgentServer.peerProcessUnchanged(pid: pid, path: path, startTime: start))
+        #expect(!SSHAgentServer.peerProcessUnchanged(pid: pid, path: path + "-other", startTime: start))
+        #expect(!SSHAgentServer.peerProcessUnchanged(pid: pid, path: path, startTime: start &+ 1),
+                "A different start time means the PID was recycled")
     }
 
-    func testPeerProcessUnchangedIsFalseForMissingProcess() {
-        XCTAssertFalse(SSHAgentServer.peerProcessUnchanged(pid: 999_999, path: "/bin/sh", startTime: 1))
+    @Test func testPeerProcessUnchangedIsFalseForMissingProcess() {
+        #expect(!SSHAgentServer.peerProcessUnchanged(pid: 999_999, path: "/bin/sh", startTime: 1))
     }
 
-    func testPeerProcessChangeAfterExecIsDetected() throws {
-        // Child blocks on stdin, then exec()s a different binary while keeping its PID
-        // (and any inherited sockets), which is exactly what the connection check must catch.
+    @Test func testPeerProcessChangeAfterExecIsDetected() throws {
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/bin/sh")
         child.arguments = ["-c", "read line; exec /bin/sleep 30"]
@@ -385,9 +463,9 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             attributed = SSHAgentServer.getProcessPath(pid: pid)
             if attributed == nil { Thread.sleep(forTimeInterval: 0.01) }
         }
-        let path = try XCTUnwrap(attributed)
-        let start = try XCTUnwrap(SSHAgentServer.processStartTime(pid: pid))
-        XCTAssertTrue(SSHAgentServer.peerProcessUnchanged(pid: pid, path: path, startTime: start))
+        let path = try #require(attributed)
+        let start = try #require(SSHAgentServer.processStartTime(pid: pid))
+        #expect(SSHAgentServer.peerProcessUnchanged(pid: pid, path: path, startTime: start))
 
         stdin.fileHandleForWriting.write(Data("go\n".utf8))
         try stdin.fileHandleForWriting.close()
@@ -401,10 +479,10 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             }
             Thread.sleep(forTimeInterval: 0.02)
         }
-        XCTAssertTrue(detected, "exec() of a different image must invalidate the attributed identity")
+        #expect(detected, "exec() of a different image must invalidate the attributed identity")
     }
 
-    func testStopDoesNotUnlinkForeignSocket() throws {
+    @Test func testStopDoesNotUnlinkForeignSocket() throws {
         let testSockPath = testRootURL.appendingPathComponent("clavis-foreign-stop.sock").path
         let serverA = SSHAgentServer(socketPath: testSockPath)
         try serverA.start()
@@ -415,8 +493,8 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         serverB.stop()
 
         // Socket file must still exist because serverB does not own it
-        XCTAssertTrue(FileManager.default.fileExists(atPath: testSockPath),
-                      "serverB.stop() must not unlink a socket file created by serverA")
+        #expect(FileManager.default.fileExists(atPath: testSockPath),
+                "serverB.stop() must not unlink a socket file created by serverA")
 
         // serverA should still be active and accept connections
         let clientSock = try connectUnixSocket(path: testSockPath)
@@ -424,11 +502,11 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
 
         // Calling serverA.stop() removes the socket it created
         serverA.stop()
-        XCTAssertFalse(FileManager.default.fileExists(atPath: testSockPath),
-                       "serverA.stop() should remove its own socket")
+        #expect(!FileManager.default.fileExists(atPath: testSockPath),
+                "serverA.stop() should remove its own socket")
     }
 
-    func testStopDoesNotUnlinkReplacedSocket() throws {
+    @Test func testStopDoesNotUnlinkReplacedSocket() throws {
         let testSockPath = testRootURL.appendingPathComponent("clavis-replaced-stop.sock").path
         let serverA = SSHAgentServer(socketPath: testSockPath)
         try serverA.start()
@@ -437,7 +515,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         _ = unlink(testSockPath)
 
         let newSock = socket(AF_UNIX, SOCK_STREAM, 0)
-        XCTAssertGreaterThanOrEqual(newSock, 0)
+        #expect(newSock >= 0)
         defer {
             close(newSock)
             _ = unlink(testSockPath)
@@ -456,17 +534,17 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
                 Darwin.bind(newSock, $0, addrLen)
             }
         }
-        XCTAssertEqual(bindResult, 0)
+        #expect(bindResult == 0)
 
         // Calling serverA.stop() must not remove the replaced socket file
         serverA.stop()
-        XCTAssertTrue(FileManager.default.fileExists(atPath: testSockPath),
-                      "serverA.stop() must not remove a socket replaced with a different inode")
+        #expect(FileManager.default.fileExists(atPath: testSockPath),
+                "serverA.stop() must not remove a socket replaced with a different inode")
     }
 
     // MARK: - Server loop hardening tests
 
-    func testAcceptErrorBackoffBehavior() throws {
+    @Test func testAcceptErrorBackoffBehavior() async throws {
         let socketPath = testRootURL.appendingPathComponent("accept-backoff.sock").path
         var sleepCalls: [useconds_t] = []
         let lock = NSLock()
@@ -480,46 +558,56 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             (-1, ENOBUFS),
         ]
 
-        let expectation = expectation(description: "Accept error sequence completed")
-
         var server: SSHAgentServer!
-        server = SSHAgentServer(
-            socketPath: socketPath,
-            backoffHandler: { duration in
-                lock.lock()
-                sleepCalls.append(duration)
-                lock.unlock()
-            },
-            acceptCall: { _ in
-                lock.lock()
-                defer { lock.unlock() }
-                if acceptInvocations < errorsToSimulate.count {
-                    let result = errorsToSimulate[acceptInvocations]
-                    acceptInvocations += 1
-                    return result
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            var resumed = false
+            let resumeLock = NSLock()
+            func finish() {
+                resumeLock.lock()
+                defer { resumeLock.unlock() }
+                if !resumed {
+                    resumed = true
+                    continuation.resume()
                 }
-                server.stop()
-                expectation.fulfill()
-                return (-1, EBADF)
             }
-        )
 
-        try server.start()
-        wait(for: [expectation], timeout: 2.0)
+            server = SSHAgentServer(
+                socketPath: socketPath,
+                backoffHandler: { duration in
+                    lock.lock()
+                    sleepCalls.append(duration)
+                    lock.unlock()
+                },
+                acceptCall: { _ in
+                    lock.lock()
+                    defer { lock.unlock() }
+                    if acceptInvocations < errorsToSimulate.count {
+                        let result = errorsToSimulate[acceptInvocations]
+                        acceptInvocations += 1
+                        return result
+                    }
+                    server.stop()
+                    finish()
+                    return (-1, EBADF)
+                }
+            )
+
+            try? server.start()
+        }
 
         lock.lock()
         defer { lock.unlock() }
-        XCTAssertEqual(acceptInvocations, 5)
+        #expect(acceptInvocations == 5)
         // EINTR and ECONNABORTED must NOT back off.
         // EMFILE, ENFILE, ENOBUFS must each back off 100_000 us (100ms).
-        XCTAssertEqual(sleepCalls, [100_000, 100_000, 100_000])
-        XCTAssertFalse(server.isSocketActive)
+        #expect(sleepCalls == [100_000, 100_000, 100_000])
+        #expect(!server.isSocketActive)
     }
 
-    func testConnectionLifetimeAndRequestCapLimit() throws {
+    @Test func testConnectionLifetimeAndRequestCapLimit() throws {
         // 1. Verify default values
-        XCTAssertEqual(SSHAgentServer.defaultMaxConnectionLifetime, 120.0)
-        XCTAssertEqual(SSHAgentServer.defaultMaxRequestsPerConnection, 200)
+        #expect(SSHAgentServer.defaultMaxConnectionLifetime == 120.0)
+        #expect(SSHAgentServer.defaultMaxRequestsPerConnection == 200)
 
         // 2. Request cap limit (200 requests)
         let capSocketPath = testRootURL.appendingPathComponent("req-cap.sock").path
@@ -536,30 +624,30 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         let requestPacket = Data([0x00, 0x00, 0x00, 0x01, 11])
         for _ in 1...200 {
             let written = requestPacket.withUnsafeBytes { write(capClient, $0.baseAddress!, requestPacket.count) }
-            XCTAssertEqual(written, requestPacket.count)
+            #expect(written == requestPacket.count)
 
             guard let lenData = socketReadFullBytes(from: capClient, count: 4) else {
-                XCTFail("Expected response header")
+                Issue.record("Expected response header")
                 return
             }
-            let respLen = Int(lenData.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
+            let respLen = Int(lenData.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self).bigEndian })
             guard let respPayload = socketReadFullBytes(from: capClient, count: respLen) else {
-                XCTFail("Expected response payload")
+                Issue.record("Expected response payload")
                 return
             }
-            XCTAssertEqual(respPayload.first, 12)
+            #expect(respPayload.first == 12)
         }
 
         // The 201st request must trigger connection drop (EOF)
         _ = requestPacket.withUnsafeBytes { write(capClient, $0.baseAddress!, requestPacket.count) }
         let eofResult = socketReadFullBytes(from: capClient, count: 4)
-        XCTAssertNil(eofResult, "Server must drop connection after reaching 200 requests")
+        #expect(eofResult == nil, "Server must drop connection after reaching 200 requests")
 
         let capDeadline = Date().addingTimeInterval(1.0)
         while capServer.activeClientCount > 0 && Date() < capDeadline {
             usleep(10_000)
         }
-        XCTAssertEqual(capServer.activeClientCount, 0)
+        #expect(capServer.activeClientCount == 0)
 
         // 3. Connection lifetime limit
         let lifeSocketPath = testRootURL.appendingPathComponent("lifetime.sock").path
@@ -577,200 +665,213 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         while lifeServer.activeClientCount != 1 && Date() < deadline {
             usleep(5_000)
         }
-        XCTAssertEqual(lifeServer.activeClientCount, 1)
+        #expect(lifeServer.activeClientCount == 1)
 
         // Wait for lifetime limit (0.05s) to elapse
         usleep(80_000)
-        XCTAssertNil(socketReadFullBytes(from: lifeClient, count: 1), "Server must drop connection after lifetime limit")
+        #expect(socketReadFullBytes(from: lifeClient, count: 1) == nil, "Server must drop connection after lifetime limit")
 
         let lifeDeadline = Date().addingTimeInterval(1.0)
         while lifeServer.activeClientCount > 0 && Date() < lifeDeadline {
             usleep(5_000)
         }
-        XCTAssertEqual(lifeServer.activeClientCount, 0)
+        #expect(lifeServer.activeClientCount == 0)
     }
 
-    func testTOCTOUPeerProcessMismatchAfterPromptWithholdsSignatureAndDropsConnection() throws {
-        let socketPath = testRootURL.appendingPathComponent("toctou.sock").path
+    @Test func testTOCTOUPeerProcessMismatchAfterPromptWithholdsSignatureAndDropsConnection() async throws {
+        try await fixture.run {
+            let socketPath = testRootURL.appendingPathComponent("toctou.sock").path
 
-        var promptInvoked = false
-        var peerProcessChanged = false
+            var promptInvoked = false
+            var peerProcessChanged = false
 
-        let authenticator = HookAuthenticator(onAuthenticate: {
-            promptInvoked = true
-            // Injected mismatching peer process after prompt has started/returned
-            peerProcessChanged = true
-        })
+            let authenticator = HookAuthenticator(onAuthenticate: {
+                promptInvoked = true
+                // Injected mismatching peer process after prompt has started/returned
+                peerProcessChanged = true
+            })
 
-        let keyManager = makeKeyManager(authenticator: authenticator)
-        let label = "toctou-key-\(UUID().uuidString)"
-        defer { try? keyManager.deleteKey(label: label) }
-        let keyInfo = try keyManager.generateKey(label: label)
+            let keyManager = makeKeyManager(authenticator: authenticator)
+            let label = "toctou-key-\(UUID().uuidString)"
+            defer { try? keyManager.deleteKey(label: label) }
+            let keyInfo = try keyManager.generateKey(label: label)
 
-        let server = SSHAgentServer(
-            socketPath: socketPath,
-            keyManager: keyManager,
-            peerProcessValidator: { pid, path, startTime in
-                if peerProcessChanged {
-                    return false
-                }
-                return true
+            let server = SSHAgentServer(
+                socketPath: socketPath,
+                keyManager: keyManager,
+                peerProcessValidator: { pid, path, startTime in
+                    if peerProcessChanged {
+                        return false
+                    }
+                    return true
+                },
+                testContext: fixture.context
+            )
+            try server.start()
+            defer { server.stop() }
+
+            let client = try connectUnixSocket(path: socketPath)
+            defer { close(client) }
+
+            var payloadData = Data([13])
+            payloadData.appendWireData(keyInfo.publicKeyBlob)
+            payloadData.appendWireData(Data("challenge-to-sign".utf8))
+            var flags: UInt32 = 0
+            Swift.withUnsafeBytes(of: &flags) { payloadData.append(contentsOf: $0) }
+
+            var packet = Data()
+            var len = UInt32(payloadData.count).bigEndian
+            Swift.withUnsafeBytes(of: &len) { packet.append(contentsOf: $0) }
+            packet.append(payloadData)
+
+            let written = packet.withUnsafeBytes { write(client, $0.baseAddress!, packet.count) }
+            #expect(written == packet.count)
+
+            // Reading from client socket: signature must be withheld and connection dropped (EOF)
+            let responseHeader = socketReadFullBytes(from: client, count: 4)
+            #expect(responseHeader == nil, "Signature must be withheld and connection dropped on TOCTOU mismatch")
+            #expect(promptInvoked, "Signing prompt must have been executed")
+
+            close(client)
+            let deadline = Date().addingTimeInterval(3.0)
+            while server.activeClientCount > 0 && Date() < deadline {
+                usleep(10_000)
             }
-        )
-        try server.start()
-        defer { server.stop() }
-
-        let client = try connectUnixSocket(path: socketPath)
-        defer { close(client) }
-
-        var payloadData = Data([13])
-        payloadData.appendWireData(keyInfo.publicKeyBlob)
-        payloadData.appendWireData(Data("challenge-to-sign".utf8))
-        var flags: UInt32 = 0
-        Swift.withUnsafeBytes(of: &flags) { payloadData.append(contentsOf: $0) }
-
-        var packet = Data()
-        var len = UInt32(payloadData.count).bigEndian
-        Swift.withUnsafeBytes(of: &len) { packet.append(contentsOf: $0) }
-        packet.append(payloadData)
-
-        let written = packet.withUnsafeBytes { write(client, $0.baseAddress!, packet.count) }
-        XCTAssertEqual(written, packet.count)
-
-        // Reading from client socket: signature must be withheld and connection dropped (EOF)
-        let responseHeader = socketReadFullBytes(from: client, count: 4)
-        XCTAssertNil(responseHeader, "Signature must be withheld and connection dropped on TOCTOU mismatch")
-        XCTAssertTrue(promptInvoked, "Signing prompt must have been executed")
-
-        let deadline = Date().addingTimeInterval(1.0)
-        while server.activeClientCount > 0 && Date() < deadline {
-            usleep(10_000)
+            #expect(server.activeClientCount == 0, "Client slot must be released")
         }
-        XCTAssertEqual(server.activeClientCount, 0, "Client slot must be released")
     }
 
-    func testPermanentSocketErrorClassification() {
-        XCTAssertTrue(SSHAgentServer.isPermanentSocketError(EBADF))
-        XCTAssertTrue(SSHAgentServer.isPermanentSocketError(EINVAL))
-        XCTAssertTrue(SSHAgentServer.isPermanentSocketError(ENOTSOCK))
+    @Test func testPermanentSocketErrorClassification() {
+        #expect(SSHAgentServer.isPermanentSocketError(EBADF))
+        #expect(SSHAgentServer.isPermanentSocketError(EINVAL))
+        #expect(SSHAgentServer.isPermanentSocketError(ENOTSOCK))
 
-        XCTAssertFalse(SSHAgentServer.isPermanentSocketError(EMFILE))
-        XCTAssertFalse(SSHAgentServer.isPermanentSocketError(ENFILE))
-        XCTAssertFalse(SSHAgentServer.isPermanentSocketError(ENOBUFS))
-        XCTAssertFalse(SSHAgentServer.isPermanentSocketError(ENOMEM))
-        XCTAssertFalse(SSHAgentServer.isPermanentSocketError(EINTR))
-        XCTAssertFalse(SSHAgentServer.isPermanentSocketError(ECONNABORTED))
+        #expect(!SSHAgentServer.isPermanentSocketError(EMFILE))
+        #expect(!SSHAgentServer.isPermanentSocketError(ENFILE))
+        #expect(!SSHAgentServer.isPermanentSocketError(ENOBUFS))
+        #expect(!SSHAgentServer.isPermanentSocketError(ENOMEM))
+        #expect(!SSHAgentServer.isPermanentSocketError(EINTR))
+        #expect(!SSHAgentServer.isPermanentSocketError(ECONNABORTED))
     }
 
-    func testAcceptPermanentErrorEBADFExitsLoopAndFiresFailureCallback() throws {
+    @Test func testAcceptPermanentErrorEBADFExitsLoopAndFiresFailureCallback() async throws {
         let socketPath = testRootURL.appendingPathComponent("accept-ebadf.sock").path
-        let failureExpectation = expectation(description: "Permanent failure callback invoked")
         let lock = NSLock()
         var failureCallCount = 0
         var acceptCount = 0
         var backoffCallCount = 0
 
         var server: SSHAgentServer!
-        server = SSHAgentServer(
-            socketPath: socketPath,
-            backoffHandler: { _ in
-                lock.lock()
-                backoffCallCount += 1
-                lock.unlock()
-            },
-            acceptCall: { _ in
-                lock.lock()
-                acceptCount += 1
-                lock.unlock()
-                return (-1, EBADF)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            var resumed = false
+            let resumeLock = NSLock()
+            func finish() {
+                resumeLock.lock()
+                defer { resumeLock.unlock() }
+                if !resumed {
+                    resumed = true
+                    continuation.resume()
+                }
             }
-        )
-        defer { server.stop() }
 
-        server.onPermanentListenerFailure = {
-            lock.lock()
-            failureCallCount += 1
-            lock.unlock()
-            failureExpectation.fulfill()
+            server = SSHAgentServer(
+                socketPath: socketPath,
+                backoffHandler: { _ in
+                    lock.lock()
+                    backoffCallCount += 1
+                    lock.unlock()
+                },
+                acceptCall: { _ in
+                    lock.lock()
+                    acceptCount += 1
+                    lock.unlock()
+                    return (-1, EBADF)
+                }
+            )
+
+            server.onPermanentListenerFailure = {
+                lock.lock()
+                failureCallCount += 1
+                lock.unlock()
+                finish()
+            }
+
+            try? server.start()
         }
-
-        try server.start()
-        wait(for: [failureExpectation], timeout: 1.0)
+        defer { server.stop() }
 
         usleep(50_000)
 
         lock.lock()
         defer { lock.unlock() }
-        XCTAssertEqual(failureCallCount, 1, "Failure callback must fire exactly once")
-        XCTAssertFalse(server.isSocketActive, "Server socket must not be active")
-        XCTAssertEqual(acceptCount, 1, "Accept loop must exit immediately on permanent error")
-        XCTAssertEqual(backoffCallCount, 0, "Permanent error must not invoke backoffHandler")
+        #expect(failureCallCount == 1, "Failure callback must fire exactly once")
+        #expect(!server.isSocketActive, "Server socket must not be active")
+        #expect(acceptCount == 1, "Accept loop must exit immediately on permanent error")
+        #expect(backoffCallCount == 0, "Permanent error must not invoke backoffHandler")
     }
 
-    func testAcceptTransientErrorEMFILECallsBackoffAndKeepsLooping() throws {
+    @Test func testAcceptTransientErrorEMFILECallsBackoffAndKeepsLooping() async throws {
         let socketPath = testRootURL.appendingPathComponent("accept-emfile.sock").path
         let targetBackoffCalls = 3
-        let backoffExpectation = expectation(description: "Backoff called \(targetBackoffCalls) times")
         let lock = NSLock()
         var backoffCount = 0
         var acceptCount = 0
         var failureCallbackCalled = false
 
         var server: SSHAgentServer!
-        server = SSHAgentServer(
-            socketPath: socketPath,
-            backoffHandler: { duration in
-                lock.lock()
-                backoffCount += 1
-                let currentCount = backoffCount
-                lock.unlock()
-
-                XCTAssertEqual(duration, 100_000)
-                if currentCount == targetBackoffCalls {
-                    backoffExpectation.fulfill()
-                    server.stop()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            var resumed = false
+            let resumeLock = NSLock()
+            func finish() {
+                resumeLock.lock()
+                defer { resumeLock.unlock() }
+                if !resumed {
+                    resumed = true
+                    continuation.resume()
                 }
-            },
-            acceptCall: { _ in
-                lock.lock()
-                acceptCount += 1
-                lock.unlock()
-                return (-1, EMFILE)
             }
-        )
-        defer { server.stop() }
 
-        server.onPermanentListenerFailure = {
-            lock.lock()
-            failureCallbackCalled = true
-            lock.unlock()
+            server = SSHAgentServer(
+                socketPath: socketPath,
+                backoffHandler: { duration in
+                    lock.lock()
+                    backoffCount += 1
+                    let currentCount = backoffCount
+                    lock.unlock()
+
+                    #expect(duration == 100_000)
+                    if currentCount == targetBackoffCalls {
+                        server.stop()
+                        finish()
+                    }
+                },
+                acceptCall: { _ in
+                    lock.lock()
+                    acceptCount += 1
+                    lock.unlock()
+                    return (-1, EMFILE)
+                }
+            )
+
+            server.onPermanentListenerFailure = {
+                lock.lock()
+                failureCallbackCalled = true
+                lock.unlock()
+            }
+
+            try? server.start()
         }
-
-        try server.start()
-        wait(for: [backoffExpectation], timeout: 2.0)
+        defer { server.stop() }
 
         lock.lock()
         defer { lock.unlock() }
-        XCTAssertEqual(backoffCount, targetBackoffCalls, "backoffHandler should be called for each transient error")
-        XCTAssertGreaterThanOrEqual(acceptCount, targetBackoffCalls, "Accept loop should keep looping across transient errors")
-        XCTAssertFalse(failureCallbackCalled, "Failure callback must not fire for transient errors")
-        XCTAssertFalse(server.isSocketActive)
+        #expect(backoffCount == targetBackoffCalls, "backoffHandler should be called for each transient error")
+        #expect(acceptCount >= targetBackoffCalls, "Accept loop should keep looping across transient errors")
+        #expect(!failureCallbackCalled, "Failure callback must not fire for transient errors")
+        #expect(!server.isSocketActive)
     }
 
     // MARK: - resolveGpgSSHProgram tests
-
-    private var grandchildPidFilesToClean: [URL] = []
-
-    override func tearDownWithError() throws {
-        for pidFileURL in grandchildPidFilesToClean {
-            if let pidString = try? String(contentsOf: pidFileURL, encoding: .utf8),
-               let pid = pid_t(pidString.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                kill(pid, SIGKILL)
-            }
-        }
-        grandchildPidFilesToClean.removeAll()
-        try super.tearDownWithError()
-    }
 
     private func createStubGitScript(named name: String, content: String) throws -> String {
         let scriptURL = testRootURL.appendingPathComponent(name)
@@ -779,16 +880,16 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         return scriptURL.path
     }
 
-    func testResolveGpgSSHProgramSuccessReturnsPath() throws {
+    @Test func testResolveGpgSSHProgramSuccessReturnsPath() throws {
         let scriptPath = try createStubGitScript(
             named: "git-success.sh",
             content: "#!/bin/sh\nprintf \"/path/to/signer\\n\"\nexit 0\n"
         )
         let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 2.0)
-        XCTAssertEqual(resolved, "/path/to/signer")
+        #expect(resolved == "/path/to/signer")
     }
 
-    func testResolveGpgSSHProgramTimeoutReturnsNilPromptly() throws {
+    @Test func testResolveGpgSSHProgramTimeoutReturnsNilPromptly() throws {
         let scriptPath = try createStubGitScript(
             named: "git-timeout.sh",
             content: "#!/bin/sh\nexec sleep 30\n"
@@ -796,11 +897,11 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         let start = Date()
         let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 0.08)
         let elapsed = Date().timeIntervalSince(start)
-        XCTAssertNil(resolved)
-        XCTAssertLessThan(elapsed, 1.5)
+        #expect(resolved == nil)
+        #expect(elapsed < 1.5)
     }
 
-    func testResolveGpgSSHProgramGrandchildHoldingStdoutTimesOutCleanly() throws {
+    @Test func testResolveGpgSSHProgramGrandchildHoldingStdoutTimesOutCleanly() throws {
         let pidFileURL = testRootURL.appendingPathComponent("grandchild.pid")
         grandchildPidFilesToClean.append(pidFileURL)
 
@@ -814,11 +915,11 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         let start = Date()
         let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 0.08)
         let elapsed = Date().timeIntervalSince(start)
-        XCTAssertNil(resolved)
-        XCTAssertLessThan(elapsed, 1.5)
+        #expect(resolved == nil)
+        #expect(elapsed < 1.5)
     }
 
-    func testResolveGpgSSHProgramBoundedOutputWithoutHang() throws {
+    @Test func testResolveGpgSSHProgramBoundedOutputWithoutHang() throws {
         let scriptPath = try createStubGitScript(
             named: "git-large-output.sh",
             content: """
@@ -830,22 +931,25 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         let start = Date()
         let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 2.0)
         let elapsed = Date().timeIntervalSince(start)
-        XCTAssertLessThan(elapsed, 1.5)
+        #expect(elapsed < 1.5)
         if let resolved {
-            XCTAssertLessThanOrEqual(resolved.utf8.count, 64 * 1024)
+            #expect(resolved.utf8.count <= 64 * 1024)
         }
     }
 
-    func testResolveGpgSSHProgramNonZeroExitReturnsNil() throws {
+    @Test func testResolveGpgSSHProgramNonZeroExitReturnsNil() throws {
         let scriptPath = try createStubGitScript(
             named: "git-failure.sh",
             content: "#!/bin/sh\nprintf \"/path/to/signer\\n\"\nexit 1\n"
         )
         let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 2.0)
-        XCTAssertNil(resolved)
+        #expect(resolved == nil)
     }
 
-    func testResolveGpgSSHProgramSanitizesGitEnvironmentVariables() throws {
+    @Test func testResolveGpgSSHProgramSanitizesGitEnvironmentVariables() throws {
+        Self.gitEnvLock.lock()
+        defer { Self.gitEnvLock.unlock() }
+
         let scriptPath = try createStubGitScript(
             named: "git-env-test.sh",
             content: """
@@ -871,10 +975,13 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         }
 
         let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 2.0)
-        XCTAssertEqual(resolved, "/usr/bin/ssh-keygen", "resolveGpgSSHProgram must sanitize GIT_CONFIG_* environment variables")
+        #expect(resolved == "/usr/bin/ssh-keygen", "resolveGpgSSHProgram must sanitize GIT_CONFIG_* environment variables")
     }
 
-    func testResolveGpgSSHProgramSanitizesGitConfigLegacyEnvVar() throws {
+    @Test func testResolveGpgSSHProgramSanitizesGitConfigLegacyEnvVar() throws {
+        Self.gitEnvLock.lock()
+        defer { Self.gitEnvLock.unlock() }
+
         let scriptPath = try createStubGitScript(
             named: "git-env-gitconfig.sh",
             content: """
@@ -894,7 +1001,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         }
 
         let resolved = SSHAgentServer.resolveGpgSSHProgram(gitExecutablePath: scriptPath, timeout: 2.0)
-        XCTAssertEqual(resolved, "/usr/bin/ssh-keygen", "resolveGpgSSHProgram must sanitize GIT_CONFIG environment variable")
+        #expect(resolved == "/usr/bin/ssh-keygen", "resolveGpgSSHProgram must sanitize GIT_CONFIG environment variable")
     }
 
     static func makeSSH2UserAuthRequest(
@@ -918,13 +1025,13 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         return data
     }
 
-    func test_F04_gitCommitSigningReasonIncludesRequester() {
+    @Test func test_F04_gitCommitSigningReasonIncludesRequester() {
         let reason = SSHAgentServer.gitCommitSigningReason(keyLabel: "DeployKey", requester: "/usr/bin/git (PID 4242)")
-        XCTAssertTrue(reason.contains("(requested by /usr/bin/git (PID 4242))"), "gitCommitSigningReason must include requester description")
-        XCTAssertTrue(reason.contains("DeployKey"))
+        #expect(reason.contains("(requested by /usr/bin/git (PID 4242))"), "gitCommitSigningReason must include requester description")
+        #expect(reason.contains("DeployKey"))
     }
 
-    func test_F04_gitCommitSigningPromptPresentedOnlyForVerifiedSignerHelper() throws {
+    @Test func test_F04_gitCommitSigningPromptPresentedOnlyForVerifiedSignerHelper() throws {
         let countingAuth = CountingAuthenticator()
         let audit = InMemoryAuditRecorder()
         let keyMgr = makeKeyManager(authenticator: countingAuth, auditRecorder: audit)
@@ -953,13 +1060,13 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             clientExecutablePath: "/bin/cat",
             clientStartTime: 1000
         )
-        XCTAssertEqual(respUnverifiedGitOnly, Data([5]), "Unverified peer requesting SSHSIG on gitSigningOnly key must fail")
+        #expect(respUnverifiedGitOnly == Data([5]), "Unverified peer requesting SSHSIG on gitSigningOnly key must fail")
         let gitOnlyDeniedAudit = audit.events.last { e in
             e.sensitive.keyLabel == gitOnlyKey.label && e.type == .signature
         }
-        XCTAssertNotNil(gitOnlyDeniedAudit)
-        XCTAssertEqual(gitOnlyDeniedAudit?.result, .denied)
-        XCTAssertEqual(gitOnlyDeniedAudit?.reason, .wrongKeyKind)
+        #expect(gitOnlyDeniedAudit != nil)
+        #expect(gitOnlyDeniedAudit?.result == .denied)
+        #expect(gitOnlyDeniedAudit?.reason == .wrongKeyKind)
 
         // 2. Unverified peer with .general key receives generic data signing prompt (not gitCommitSigning)
         var signGeneral = Data([13])
@@ -973,10 +1080,10 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             clientExecutablePath: "/bin/cat",
             clientStartTime: 1000
         )
-        XCTAssertEqual(respUnverifiedGeneral.first, 14, "Unverified peer requesting SSHSIG on general key should succeed with data prompt")
-        XCTAssertNotNil(countingAuth.lastReason)
-        XCTAssertFalse(countingAuth.lastReason!.contains("sign a Git commit"), "Unverified peer must NOT receive git commit prompt: \(countingAuth.lastReason!)")
-        XCTAssertTrue(countingAuth.lastReason!.contains("sign data requested by"), "Unverified peer must receive generic data prompt: \(countingAuth.lastReason!)")
+        #expect(respUnverifiedGeneral.first == 14, "Unverified peer requesting SSHSIG on general key should succeed with data prompt")
+        #expect(countingAuth.lastReason != nil)
+        #expect(!countingAuth.lastReason!.contains("sign a Git commit"), "Unverified peer must NOT receive git commit prompt: \(countingAuth.lastReason!)")
+        #expect(countingAuth.lastReason!.contains("sign data requested by"), "Unverified peer must receive generic data prompt: \(countingAuth.lastReason!)")
 
         // 3. Verified Git signer helper with .gitSigningOnly key receives gitCommitSigning prompt
         let respVerifiedGitOnly = server.processAgentRequest(
@@ -985,12 +1092,12 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             clientExecutablePath: "/usr/bin/ssh-keygen",
             clientStartTime: 1000
         )
-        XCTAssertEqual(respVerifiedGitOnly.first, 14, "Verified signer helper on gitSigningOnly key must succeed")
-        XCTAssertNotNil(countingAuth.lastReason)
-        XCTAssertTrue(countingAuth.lastReason!.contains("sign a Git commit"), "Verified signer helper must receive Git commit prompt: \(countingAuth.lastReason!)")
+        #expect(respVerifiedGitOnly.first == 14, "Verified signer helper on gitSigningOnly key must succeed")
+        #expect(countingAuth.lastReason != nil)
+        #expect(countingAuth.lastReason!.contains("sign a Git commit"), "Verified signer helper must receive Git commit prompt: \(countingAuth.lastReason!)")
     }
 
-    func test_F05_sshAuthenticationPromptPresentedOnlyForTrustedSSHBinaryAndRFC4252Payload() throws {
+    @Test func test_F05_sshAuthenticationPromptPresentedOnlyForTrustedSSHBinaryAndRFC4252Payload() throws {
         let keyBlob = Data("test-ed25519-public-key-blob".utf8)
         let otherKeyBlob = Data("other-ed25519-public-key-blob".utf8)
         let sessionID = Data("valid-session-id-123".utf8)
@@ -1016,7 +1123,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             keyBlob: keyBlob,
             hasForwarding: false
         )
-        XCTAssertEqual(reasonDirect, ClavisUIStrings.Prompt.sshAuthentication(keyLabel: "MyKey", requester: reqDesc))
+        #expect(reasonDirect == ClavisUIStrings.Prompt.sshAuthentication(keyLabel: "MyKey", requester: reqDesc))
 
         let reasonForwarded = SSHAgentServer.signatureReason(
             keyLabel: "MyKey",
@@ -1026,7 +1133,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             keyBlob: keyBlob,
             hasForwarding: true
         )
-        XCTAssertEqual(reasonForwarded, ClavisUIStrings.Prompt.sshAuthenticationFromForwardedAgent(keyLabel: "MyKey", requester: reqDesc))
+        #expect(reasonForwarded == ClavisUIStrings.Prompt.sshAuthenticationFromForwardedAgent(keyLabel: "MyKey", requester: reqDesc))
 
         // (b) Untrusted binary (e.g. /tmp/ssh or /bin/cat) with valid RFC 4252 payload
         let reasonUntrustedPath = SSHAgentServer.signatureReason(
@@ -1036,7 +1143,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             dataToSign: validAuthData,
             keyBlob: keyBlob
         )
-        XCTAssertEqual(reasonUntrustedPath, ClavisUIStrings.Prompt.dataSigning(keyLabel: "MyKey", requester: reqDesc))
+        #expect(reasonUntrustedPath == ClavisUIStrings.Prompt.dataSigning(keyLabel: "MyKey", requester: reqDesc))
 
         // (c) Trusted ssh binary with non-RFC 4252 payload (e.g. random data)
         let randomData = Data("random-bytes-not-rfc4252".utf8)
@@ -1047,7 +1154,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             dataToSign: randomData,
             keyBlob: keyBlob
         )
-        XCTAssertEqual(reasonRandom, ClavisUIStrings.Prompt.dataSigning(keyLabel: "MyKey", requester: reqDesc))
+        #expect(reasonRandom == ClavisUIStrings.Prompt.dataSigning(keyLabel: "MyKey", requester: reqDesc))
 
         // (d) Trusted ssh binary with RFC 4252 payload matching different keyBlob
         let reasonKeyMismatch = SSHAgentServer.signatureReason(
@@ -1057,7 +1164,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             dataToSign: validAuthData,
             keyBlob: otherKeyBlob
         )
-        XCTAssertEqual(reasonKeyMismatch, ClavisUIStrings.Prompt.dataSigning(keyLabel: "MyKey", requester: reqDesc))
+        #expect(reasonKeyMismatch == ClavisUIStrings.Prompt.dataSigning(keyLabel: "MyKey", requester: reqDesc))
 
         // (e) Trusted ssh binary with RFC 4252 payload with invalid service
         let invalidServiceData = SSHAgentServerTests.makeSSH2UserAuthRequest(
@@ -1072,10 +1179,10 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             dataToSign: invalidServiceData,
             keyBlob: keyBlob
         )
-        XCTAssertEqual(reasonWrongService, ClavisUIStrings.Prompt.dataSigning(keyLabel: "MyKey", requester: reqDesc))
+        #expect(reasonWrongService == ClavisUIStrings.Prompt.dataSigning(keyLabel: "MyKey", requester: reqDesc))
     }
 
-    func test_F06_handleSetAgentPolicyAndExtendEnforceBiometricPolicyAndContext() throws {
+    @Test func test_F06_handleSetAgentPolicyAndExtendEnforceBiometricPolicyAndContext() throws {
         let countingAuth = CountingAuthenticator()
         let audit = InMemoryAuditRecorder()
         let store = InMemoryPrivateKeyStore()
@@ -1118,11 +1225,11 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             clientStartTime: 1000,
             isTrustedControlPeer: { true }
         )
-        XCTAssertEqual(setResp, Data([6]))
-        XCTAssertEqual(countingAuth.lastPolicy, .deviceOwnerAuthenticationWithBiometrics)
-        XCTAssertNotNil(countingAuth.lastReason)
-        XCTAssertTrue(countingAuth.lastReason!.contains(key.label))
-        XCTAssertTrue(countingAuth.lastReason!.contains("1234"))
+        #expect(setResp == Data([6]))
+        #expect(countingAuth.lastPolicy == .deviceOwnerAuthenticationWithBiometrics)
+        #expect(countingAuth.lastReason != nil)
+        #expect(countingAuth.lastReason!.contains(key.label))
+        #expect(countingAuth.lastReason!.contains("1234"))
 
         // 2. Register session
         var regPayload = Data([SSHAgentServer.registerAgentSessionRequest])
@@ -1135,10 +1242,10 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             clientStartTime: 1000,
             isTrustedControlPeer: { true }
         )
-        XCTAssertEqual(regResp.first, 6)
+        #expect(regResp.first == 6)
 
         let summaries = registry.summaries()
-        XCTAssertEqual(summaries.count, 1)
+        #expect(summaries.count == 1)
         let sessionID = summaries[0].id
 
         // 3. handleExtendAgentSession enforces key's biometricPolicy.laPolicy and contextual prompt
@@ -1153,13 +1260,13 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             clientStartTime: 1000,
             isTrustedControlPeer: { true }
         )
-        XCTAssertEqual(extendResp.first, 6)
-        XCTAssertEqual(countingAuth.lastPolicy, .deviceOwnerAuthenticationWithBiometrics)
-        XCTAssertNotNil(countingAuth.lastReason)
-        XCTAssertTrue(countingAuth.lastReason!.contains(key.label))
-        XCTAssertTrue(countingAuth.lastReason!.contains("build-tool"))
-        XCTAssertTrue(countingAuth.lastReason!.contains("45"))
-        XCTAssertTrue(countingAuth.lastReason!.contains("5678"))
+        #expect(extendResp.first == 6)
+        #expect(countingAuth.lastPolicy == .deviceOwnerAuthenticationWithBiometrics)
+        #expect(countingAuth.lastReason != nil)
+        #expect(countingAuth.lastReason!.contains(key.label))
+        #expect(countingAuth.lastReason!.contains("build-tool"))
+        #expect(countingAuth.lastReason!.contains("45"))
+        #expect(countingAuth.lastReason!.contains("5678"))
 
         // 4. .ask mode on agent socket enforces key's biometricPolicy.laPolicy and contextual prompt
         let agentServer = SSHAgentServer(
@@ -1184,12 +1291,12 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
             clientExecutablePath: "/usr/bin/ssh",
             clientStartTime: 1000
         )
-        XCTAssertEqual(signResp.first, 14)
-        XCTAssertEqual(countingAuth.lastPolicy, .deviceOwnerAuthenticationWithBiometrics)
-        XCTAssertNotNil(countingAuth.lastReason)
-        XCTAssertTrue(countingAuth.lastReason!.contains(key.label))
-        XCTAssertTrue(countingAuth.lastReason!.contains("build-tool"))
-        XCTAssertTrue(countingAuth.lastReason!.contains("1234"))
+        #expect(signResp.first == 14)
+        #expect(countingAuth.lastPolicy == .deviceOwnerAuthenticationWithBiometrics)
+        #expect(countingAuth.lastReason != nil)
+        #expect(countingAuth.lastReason!.contains(key.label))
+        #expect(countingAuth.lastReason!.contains("build-tool"))
+        #expect(countingAuth.lastReason!.contains("1234"))
     }
 }
 

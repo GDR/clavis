@@ -1,55 +1,69 @@
-import XCTest
+import Testing
 import Foundation
 import LocalAuthentication
 @testable import ClavisCore
 @testable import Clavis
 
-final class SettingsViewModelTests: ClavisBaseTestCase {
-    private var mockAgent: MockAgentController!
-    private var server: SSHAgentServer!
-    private var sockPath: String!
+private final class CleanupHook: @unchecked Sendable {
+    private let action: () -> Void
+    init(action: @escaping () -> Void) {
+        self.action = action
+    }
+    deinit {
+        action()
+    }
+}
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
-        mockAgent = MockAgentController()
-        sockPath = testRootURL.appendingPathComponent("settings-test.sock").path
-        server = SSHAgentServer(socketPath: sockPath)
+@Suite
+struct SettingsViewModelTests {
+    private let fixture: ClavisTestFixture
+    private let mockAgent: MockAgentController
+    private let server: SSHAgentServer
+    private let sockPath: String
+    private let _cleanup: CleanupHook
+
+    init() throws {
+        let fixture = try ClavisTestFixture()
+        self.fixture = fixture
+        let mockAgent = MockAgentController()
+        self.mockAgent = mockAgent
+        let sockPath = fixture.testRootURL.appendingPathComponent("settings-test.sock").path
+        self.sockPath = sockPath
+        let server = SSHAgentServer(socketPath: sockPath)
+        self.server = server
+        self._cleanup = CleanupHook {
+            server.stop()
+            fixture.cleanup()
+        }
     }
 
-    override func tearDownWithError() throws {
-        server?.stop()
-        server = nil
-        mockAgent = nil
-        try super.tearDownWithError()
-    }
-
-    @MainActor
+    @Test @MainActor
     func testStartStopRestartAgentUpdatesState() throws {
         let viewModel = SettingsViewModel(
             agentLifecycle: mockAgent,
             sshAgentServer: server,
             isDaemonMode: false
         )
-        XCTAssertFalse(viewModel.isSocketActive)
-        XCTAssertNil(viewModel.agentPID)
+        #expect(!viewModel.isSocketActive)
+        #expect(viewModel.agentPID == nil)
 
         viewModel.startAgent()
-        XCTAssertTrue(viewModel.isSocketActive)
-        XCTAssertEqual(viewModel.agentPID, 12345)
-        XCTAssertEqual(mockAgent.startAgentCallCount, 1)
+        #expect(viewModel.isSocketActive)
+        #expect(viewModel.agentPID == 12345)
+        #expect(mockAgent.startAgentCallCount == 1)
 
         viewModel.stopAgent()
-        XCTAssertFalse(viewModel.isSocketActive)
-        XCTAssertNil(viewModel.agentPID)
-        XCTAssertEqual(mockAgent.stopAgentCallCount, 1)
+        #expect(!viewModel.isSocketActive)
+        #expect(viewModel.agentPID == nil)
+        #expect(mockAgent.stopAgentCallCount == 1)
 
         viewModel.restartAgent()
-        XCTAssertTrue(viewModel.isSocketActive)
-        XCTAssertEqual(viewModel.agentPID, 12346)
-        XCTAssertEqual(mockAgent.restartAgentCallCount, 1)
+        #expect(viewModel.isSocketActive)
+        #expect(viewModel.agentPID == 12346)
+        #expect(mockAgent.restartAgentCallCount == 1)
     }
 
-    @MainActor
+    @Test @MainActor
     func testStartAgentFailureSetsErrorMessage() throws {
         struct DummyError: LocalizedError {
             var errorDescription: String? { "Failed to launch agent binary" }
@@ -63,12 +77,12 @@ final class SettingsViewModelTests: ClavisBaseTestCase {
         )
         viewModel.startAgent()
 
-        XCTAssertNotNil(viewModel.errorMessage)
-        XCTAssertEqual(viewModel.errorMessage, "Failed to launch agent binary")
-        XCTAssertFalse(viewModel.isSocketActive)
+        #expect(viewModel.errorMessage != nil)
+        #expect(viewModel.errorMessage == "Failed to launch agent binary")
+        #expect(!viewModel.isSocketActive)
     }
 
-    @MainActor
+    @Test @MainActor
     func testEndGitSigningSessionCallsLockAllAndClearsGrace() throws {
         let viewModel = SettingsViewModel(
             agentLifecycle: mockAgent,
@@ -79,12 +93,12 @@ final class SettingsViewModelTests: ClavisBaseTestCase {
 
         viewModel.endGitSigningSession()
 
-        XCTAssertEqual(mockAgent.sendLockAllCallCount, 1)
-        XCTAssertNil(viewModel.activeGitGrace)
-        XCTAssertNil(viewModel.errorMessage)
+        #expect(mockAgent.sendLockAllCallCount == 1)
+        #expect(viewModel.activeGitGrace == nil)
+        #expect(viewModel.errorMessage == nil)
     }
 
-    @MainActor
+    @Test @MainActor
     func testEndGitSigningSessionFailsClosedWhenAgentThrows() throws {
         struct DummyError: LocalizedError {
             var errorDescription: String? { "Agent rejected lock-all command" }
@@ -100,13 +114,13 @@ final class SettingsViewModelTests: ClavisBaseTestCase {
 
         viewModel.endGitSigningSession()
 
-        XCTAssertEqual(mockAgent.sendLockAllCallCount, 1)
-        XCTAssertNotNil(viewModel.errorMessage)
-        XCTAssertEqual(viewModel.errorMessage, "Agent rejected lock-all command")
-        XCTAssertNotNil(viewModel.activeGitGrace, "activeGitGrace must NOT be cleared when lock-all fails")
+        #expect(mockAgent.sendLockAllCallCount == 1)
+        #expect(viewModel.errorMessage != nil)
+        #expect(viewModel.errorMessage == "Agent rejected lock-all command")
+        #expect(viewModel.activeGitGrace != nil, "activeGitGrace must NOT be cleared when lock-all fails")
     }
 
-    @MainActor
+    @Test @MainActor
     func testLockNowPreservesErrorMessageOnFailure() throws {
         struct DummyError: LocalizedError {
             var errorDescription: String? { "Lock-all failed" }
@@ -122,12 +136,12 @@ final class SettingsViewModelTests: ClavisBaseTestCase {
 
         viewModel.lockNow()
 
-        XCTAssertNotNil(viewModel.errorMessage)
-        XCTAssertEqual(viewModel.errorMessage, "Lock-all failed")
-        XCTAssertNotNil(viewModel.activeGitGrace)
+        #expect(viewModel.errorMessage != nil)
+        #expect(viewModel.errorMessage == "Lock-all failed")
+        #expect(viewModel.activeGitGrace != nil)
     }
 
-    @MainActor
+    @Test @MainActor
     func testUpdateGitGraceStateInProcessVsDaemon() async throws {
         // Setup in-process active grant in GitSigningGraceManager
         GitSigningGraceManager.shared.invalidateAll(broadcast: false)
@@ -147,8 +161,8 @@ final class SettingsViewModelTests: ClavisBaseTestCase {
             isDaemonMode: true
         )
         daemonVM.updateGitGraceState()
-        XCTAssertEqual(daemonVM.activeGitGrace?.keyLabel, "in-process-key")
-        XCTAssertEqual(mockAgent.queryAgentGitGraceCallCount, 0, "In daemon mode, must not query remote agent socket")
+        #expect(daemonVM.activeGitGrace?.keyLabel == "in-process-key")
+        #expect(mockAgent.queryAgentGitGraceCallCount == 0, "In daemon mode, must not query remote agent socket")
 
         // Case 2: Out-of-process standalone GUI -> does NOT read GitSigningGraceManager.shared
         let guiVM = SettingsViewModel(
@@ -165,11 +179,11 @@ final class SettingsViewModelTests: ClavisBaseTestCase {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
 
-        XCTAssertEqual(guiVM.activeGitGrace?.keyLabel, "remote-agent-key", "Out of process mode must query remote agent, not in-process grant")
-        XCTAssertGreaterThanOrEqual(mockAgent.queryAgentGitGraceCallCount, 1)
+        #expect(guiVM.activeGitGrace?.keyLabel == "remote-agent-key", "Out of process mode must query remote agent, not in-process grant")
+        #expect(mockAgent.queryAgentGitGraceCallCount >= 1)
     }
 
-    @MainActor
+    @Test @MainActor
     func testShutdownForTermination() throws {
         var terminationCallbackCalled = false
         let viewModel = SettingsViewModel(
@@ -187,13 +201,13 @@ final class SettingsViewModelTests: ClavisBaseTestCase {
 
         viewModel.shutdownForTermination()
 
-        XCTAssertTrue(terminationCallbackCalled)
-        XCTAssertFalse(viewModel.isSocketActive)
-        XCTAssertNil(viewModel.agentPID)
-        XCTAssertNil(viewModel.activeGitGrace)
+        #expect(terminationCallbackCalled)
+        #expect(!viewModel.isSocketActive)
+        #expect(viewModel.agentPID == nil)
+        #expect(viewModel.activeGitGrace == nil)
     }
 
-    @MainActor
+    @Test @MainActor
     func testSetLaunchAtLogin() throws {
         let viewModel = SettingsViewModel(
             agentLifecycle: mockAgent,
@@ -201,9 +215,9 @@ final class SettingsViewModelTests: ClavisBaseTestCase {
             isDaemonMode: false
         )
         viewModel.setLaunchAtLogin(true)
-        XCTAssertTrue(viewModel.launchAtLogin)
+        #expect(viewModel.launchAtLogin)
 
         viewModel.setLaunchAtLogin(false)
-        XCTAssertFalse(viewModel.launchAtLogin)
+        #expect(!viewModel.launchAtLogin)
     }
 }

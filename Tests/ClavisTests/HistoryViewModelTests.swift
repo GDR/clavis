@@ -1,74 +1,97 @@
-import XCTest
+import Foundation
+import Testing
 import LocalAuthentication
 @testable import ClavisCore
 @testable import Clavis
 
+private final class CleanupHook: @unchecked Sendable {
+    private let action: () -> Void
+    init(action: @escaping () -> Void) {
+        self.action = action
+    }
+    deinit {
+        action()
+    }
+}
+
 @MainActor
-final class HistoryViewModelTests: ClavisBaseTestCase {
+struct HistoryViewModelTests {
+    private let fixture: ClavisTestFixture
+    private var testRootURL: URL { fixture.testRootURL }
+    private let _cleanup: CleanupHook
+    private let notificationCenter = NotificationCenter()
+
+    init() throws {
+        let fixture = try ClavisTestFixture()
+        self.fixture = fixture
+        self._cleanup = CleanupHook {
+            fixture.cleanup()
+        }
+    }
 
     private func createTestStore() throws -> AuditStore {
         let storeURL = testRootURL.appendingPathComponent("audit-\(UUID().uuidString).db")
         return try AuditStore(url: storeURL)
     }
 
-    func test_002_AC3_viewModelAppliesFilters() async throws {
+    @Test func test_002_AC3_viewModelAppliesFilters() async throws {
         let store = try createTestStore()
         let eventAllowed = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k1"))
         let eventDenied = AuditEvent(type: .signature, result: .denied, reason: .unknownKey)
         try store.insert(eventAllowed)
         try store.insert(eventDenied)
 
-        let viewModel = HistoryViewModel(store: { store })
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
         viewModel.query.results = [.allowed]
 
         await viewModel.reload().value
 
-        XCTAssertEqual(viewModel.records.count, 1)
-        XCTAssertEqual(viewModel.records[0].event.result, .allowed)
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.result == .allowed)
     }
 
-    func test_002_AC4_openingForKeyPresetsFingerprintFilter() async throws {
+    @Test func test_002_AC4_openingForKeyPresetsFingerprintFilter() async throws {
         let store = try createTestStore()
         let eventA = AuditEvent(type: .signature, result: .allowed, keyFingerprint: "fp-A")
         let eventB = AuditEvent(type: .signature, result: .allowed, keyFingerprint: "fp-B")
         try store.insert(eventA)
         try store.insert(eventB)
 
-        let viewModel = HistoryViewModel(initialKeyFingerprint: "fp-A", store: { store })
-        XCTAssertEqual(viewModel.query.keyFingerprint, "fp-A")
+        let viewModel = HistoryViewModel(initialKeyFingerprint: "fp-A", store: { store }, notificationCenter: notificationCenter)
+        #expect(viewModel.query.keyFingerprint == "fp-A")
 
         await viewModel.reload().value
 
-        XCTAssertEqual(viewModel.records.count, 1)
-        XCTAssertEqual(viewModel.records[0].event.keyFingerprint, "fp-A")
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.keyFingerprint == "fp-A")
     }
 
-    func test_002_T7_loadMorePagesBySeq() async throws {
+    @Test func test_002_T7_loadMorePagesBySeq() async throws {
         let store = try createTestStore()
         for i in 1...5 {
             let event = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "key-\(i)"))
             try store.insert(event)
         }
 
-        let viewModel = HistoryViewModel(store: { store })
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
         viewModel.query.limit = 2
 
         await viewModel.reload().value
 
-        XCTAssertEqual(viewModel.records.count, 2)
+        #expect(viewModel.records.count == 2)
         let firstSeq = viewModel.records.first?.seq
         let secondSeq = viewModel.records.last?.seq
-        XCTAssertEqual(firstSeq, 5)
-        XCTAssertEqual(secondSeq, 4)
+        #expect(firstSeq == 5)
+        #expect(secondSeq == 4)
 
         await viewModel.loadMore().value
 
-        XCTAssertEqual(viewModel.records.count, 4)
-        XCTAssertEqual(viewModel.records[2].seq, 3)
-        XCTAssertEqual(viewModel.records[3].seq, 2)
+        #expect(viewModel.records.count == 4)
+        #expect(viewModel.records[2].seq == 3)
+        #expect(viewModel.records[3].seq == 2)
     }
 
-    func test_008_T5_viewModelUnsealsAndClearsOnLock() async throws {
+    @Test func test_008_T5_viewModelUnsealsAndClearsOnLock() async throws {
         let store = try createTestStore()
         let keyring = SoftwareAuditKeyring(requireContext: true)
         let sealer = AuditSealer(keyring: keyring)
@@ -98,37 +121,40 @@ final class HistoryViewModelTests: ClavisBaseTestCase {
         let viewModel = HistoryViewModel(
             store: { store },
             keyring: keyring,
-            contextProvider: { dummyContext }
+            contextProvider: { dummyContext },
+            notificationCenter: notificationCenter
         )
 
         await viewModel.reload().value
 
-        XCTAssertEqual(viewModel.records.count, 3)
-        XCTAssertEqual(viewModel.sensitive.count, 3)
+        #expect(viewModel.records.count == 3)
+        #expect(viewModel.sensitive.count == 3)
 
         if case .plaintext(let s1) = viewModel.sensitive[seq1] {
-            XCTAssertEqual(s1.keyLabel, "secret-key")
+            #expect(s1.keyLabel == "secret-key")
         } else {
-            XCTFail("Expected plaintext for seq1")
+            Issue.record("Expected plaintext for seq1")
         }
 
         if case .plaintext(let s2) = viewModel.sensitive[seq2] {
-            XCTAssertEqual(s2.keyLabel, "legacy-key")
+            #expect(s2.keyLabel == "legacy-key")
         } else {
-            XCTFail("Expected plaintext for seq2")
+            Issue.record("Expected plaintext for seq2")
         }
 
-        XCTAssertEqual(viewModel.sensitive[seq3], AuditUnsealResult.omitted)
+        #expect(viewModel.sensitive[seq3] == AuditUnsealResult.omitted)
 
         // Lock notification must clear sensitive dictionary
-        NotificationCenter.default.post(name: PanelLockController.didLockNotification, object: nil)
-        // Yield to allow Task @MainActor to execute
-        await Task.yield()
+        notificationCenter.post(name: PanelLockController.didLockNotification, object: nil)
+        for _ in 0..<100 {
+            if viewModel.sensitive.isEmpty { break }
+            await Task.yield()
+        }
 
-        XCTAssertTrue(viewModel.sensitive.isEmpty)
+        #expect(viewModel.sensitive.isEmpty)
     }
 
-    func test_008_T5_viewModelExportWithUnsealed() async throws {
+    @Test func test_008_T5_viewModelExportWithUnsealed() async throws {
         let store = try createTestStore()
         let keyring = SoftwareAuditKeyring(requireContext: true)
         let sealer = AuditSealer(keyring: keyring)
@@ -145,26 +171,27 @@ final class HistoryViewModelTests: ClavisBaseTestCase {
         let viewModel = HistoryViewModel(
             store: { store },
             keyring: keyring,
-            contextProvider: { dummyContext }
+            contextProvider: { dummyContext },
+            notificationCenter: notificationCenter
         )
 
         await viewModel.reload().value
-        XCTAssertEqual(viewModel.sensitive.count, 1)
+        #expect(viewModel.sensitive.count == 1)
 
         let exportURL = testRootURL.appendingPathComponent("export.jsonl")
         try viewModel.export(to: exportURL)
 
         let exportedData = try Data(contentsOf: exportURL)
         let jsonString = String(decoding: exportedData, as: UTF8.self)
-        XCTAssertFalse(jsonString.isEmpty)
+        #expect(!jsonString.isEmpty)
 
         // Key label should be hashed, not plaintext
-        XCTAssertFalse(jsonString.contains("export-key"))
+        #expect(!jsonString.contains("export-key"))
         // host is unredacted in export
-        XCTAssertTrue(jsonString.contains("export.host"))
+        #expect(jsonString.contains("export.host"))
     }
 
-    func test_002_AC5_sessionFilterShowsOnlySessionRows() async throws {
+    @Test func test_002_AC5_sessionFilterShowsOnlySessionRows() async throws {
         let store = try createTestStore()
         let eventSession = AuditEvent(type: .signature, result: .allowed, sessionID: "sess-123", sensitive: AuditSensitive(keyLabel: "k1"))
         let eventOther = AuditEvent(type: .signature, result: .allowed, sessionID: "sess-456", sensitive: AuditSensitive(keyLabel: "k2"))
@@ -173,16 +200,16 @@ final class HistoryViewModelTests: ClavisBaseTestCase {
         try store.insert(eventOther)
         try store.insert(eventNoSession)
 
-        let viewModel = HistoryViewModel(store: { store })
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
         viewModel.query.sessionID = "sess-123"
 
         await viewModel.reload().value
 
-        XCTAssertEqual(viewModel.records.count, 1)
-        XCTAssertEqual(viewModel.records[0].event.sessionID, "sess-123")
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.sessionID == "sess-123")
     }
 
-    func test_004_T5a_historyNeedsKeyContextWhenPinRequired() async throws {
+    @Test func test_004_T5a_historyNeedsKeyContextWhenPinRequired() async throws {
         let store = try createTestStore()
         let keyring = SoftwareAuditKeyring()
         let pinContext = LAContext()
@@ -194,22 +221,26 @@ final class HistoryViewModelTests: ClavisBaseTestCase {
         let viewModel = HistoryViewModel(
             store: { store },
             keyring: keyring,
-            contextProvider: { currentContext }
+            contextProvider: { currentContext },
+            notificationCenter: notificationCenter
         )
 
         // Without PIN context: needsKeyContext is true
         await viewModel.reload().value
-        XCTAssertTrue(viewModel.needsKeyContext)
+        #expect(viewModel.needsKeyContext)
 
         // With PIN context: needsKeyContext is false
         currentContext = pinContext
         await viewModel.reload().value
-        XCTAssertFalse(viewModel.needsKeyContext)
+        #expect(!viewModel.needsKeyContext)
 
         // On lock: needsKeyContext becomes false
         viewModel.needsKeyContext = true
-        NotificationCenter.default.post(name: PanelLockController.didLockNotification, object: nil)
-        await Task.yield()
-        XCTAssertFalse(viewModel.needsKeyContext)
+        notificationCenter.post(name: PanelLockController.didLockNotification, object: nil)
+        for _ in 0..<100 {
+            if !viewModel.needsKeyContext { break }
+            await Task.yield()
+        }
+        #expect(!viewModel.needsKeyContext)
     }
 }

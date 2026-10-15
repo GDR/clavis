@@ -1,99 +1,167 @@
-import XCTest
+import Foundation
+import Testing
 import CryptoKit
 import LocalAuthentication
+import AppKit
 @testable import ClavisCore
 @testable import Clavis
 
-final class DaemonLifecycleTests: ClavisBaseTestCase {
+private final class CleanupHook: @unchecked Sendable {
+    private let action: () -> Void
+    init(action: @escaping () -> Void) {
+        self.action = action
+    }
+    deinit {
+        action()
+    }
+}
 
-    func testLoggerUsesPrivatePermissionsAndRotates() throws {
-        ClavisLogger.customMaximumLogFileSize = 256
-        for index in 0..<8 {
-            ClavisLogger.log("TEST", "entry-\(index)-\(String(repeating: "x", count: 80))")
+@Suite(.serialized)
+struct DaemonLifecycleTests {
+    private let fixture: ClavisTestFixture
+    private var testRootURL: URL { fixture.testRootURL }
+    private let _cleanup: CleanupHook
+
+    init() throws {
+        let fixture = try ClavisTestFixture()
+        self.fixture = fixture
+        self._cleanup = CleanupHook {
+            fixture.cleanup()
         }
-
-        let logURL = try XCTUnwrap(ClavisLogger.customLogFileURL)
-        let logAttributes = try FileManager.default.attributesOfItem(atPath: logURL.path)
-        XCTAssertEqual((logAttributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
-
-        let directoryAttributes = try FileManager.default.attributesOfItem(atPath: logURL.deletingLastPathComponent().path)
-        XCTAssertEqual((directoryAttributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: "\(logURL.path).1"))
     }
 
-
-    func testHighFrequencyCategoriesAreDroppedUnlessVerbose() throws {
-        let logURL = try XCTUnwrap(ClavisLogger.customLogFileURL)
-
-        ClavisLogger.customVerbose = false
-        ClavisLogger.log("SSH_AGENT_REQ", "noise-quiet")
-        ClavisLogger.log("SSH_AGENT_IDENTITIES", "noise-quiet")
-        ClavisLogger.log("KEY_LIST", "noise-quiet")
-        ClavisLogger.log("SSH_AGENT", "kept-quiet")
-
-        ClavisLogger.customVerbose = true
-        ClavisLogger.log("SSH_AGENT_REQ", "noise-verbose")
-
-        let contents = try String(contentsOf: logURL, encoding: .utf8)
-        XCTAssertFalse(contents.contains("noise-quiet"))
-        XCTAssertTrue(contents.contains("kept-quiet"))
-        XCTAssertTrue(contents.contains("noise-verbose"))
+    private func makeKeyManager(
+        authenticator: UserAuthenticating = AllowingAuthenticator(),
+        privateKeyStore: PrivateKeyStoring = InMemoryPrivateKeyStore(),
+        vaultStore: EncryptedVaultStore? = nil,
+        auditRecorder: AuditRecording = InMemoryAuditRecorder(),
+        signingProvider: SecureEnclaveSigningProviding? = nil,
+        gitSigningGraceManager: GitSigningGraceManager = .shared
+    ) -> KeychainManager {
+        fixture.makeKeyManager(
+            authenticator: authenticator,
+            privateKeyStore: privateKeyStore,
+            vaultStore: vaultStore,
+            auditRecorder: auditRecorder,
+            signingProvider: signingProvider,
+            gitSigningGraceManager: gitSigningGraceManager
+        )
     }
 
+    @Test func testLoggerUsesPrivatePermissionsAndRotates() throws {
+        try fixture.runSync {
+            let logURL = testRootURL.appendingPathComponent("clavis.log")
+            ClavisLogger.customLogFileURL = logURL
+            defer {
+                ClavisLogger.customLogFileURL = nil
+                ClavisLogger.customMaximumLogFileSize = nil
+            }
+            ClavisLogger.customMaximumLogFileSize = 256
+            for index in 0..<8 {
+                ClavisLogger.log("TEST", "entry-\(index)-\(String(repeating: "x", count: 80))")
+            }
 
+            let logAttributes = try FileManager.default.attributesOfItem(atPath: logURL.path)
+            #expect((logAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
 
-    func testLoggerEscapesEmbeddedNewlines() throws {
-        ClavisLogger.log("TEST\nFORGED", "message\r\n[AUTH] forged")
-
-        let logURL = try XCTUnwrap(ClavisLogger.customLogFileURL)
-        let contents = try String(contentsOf: logURL, encoding: .utf8)
-        XCTAssertEqual(contents.split(separator: "\n").count, 1)
-        XCTAssertTrue(contents.contains("TEST\\nFORGED"))
-        XCTAssertTrue(contents.contains("message\\r\\n[AUTH] forged"))
-    }
-
-    func testLoggerMultiGenerationRotationAndPermissions() throws {
-        ClavisLogger.customMaximumLogFileSize = 128
-        let logURL = try XCTUnwrap(ClavisLogger.customLogFileURL)
-
-        for index in 0..<20 {
-            ClavisLogger.log("TEST", "payload-\(index)-\(String(repeating: "a", count: 64))")
+            let directoryAttributes = try FileManager.default.attributesOfItem(atPath: logURL.deletingLastPathComponent().path)
+            #expect((directoryAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+            #expect(FileManager.default.fileExists(atPath: "\(logURL.path).1"))
         }
+    }
 
-        let fm = FileManager.default
-        XCTAssertTrue(fm.fileExists(atPath: logURL.path))
-        XCTAssertTrue(fm.fileExists(atPath: "\(logURL.path).1"))
-        XCTAssertTrue(fm.fileExists(atPath: "\(logURL.path).2"))
-        XCTAssertTrue(fm.fileExists(atPath: "\(logURL.path).3"))
-        XCTAssertFalse(fm.fileExists(atPath: "\(logURL.path).4"))
+    @Test func testHighFrequencyCategoriesAreDroppedUnlessVerbose() throws {
+        try fixture.runSync {
+            let logURL = testRootURL.appendingPathComponent("clavis.log")
+            ClavisLogger.customLogFileURL = logURL
+            defer {
+                ClavisLogger.customLogFileURL = nil
+                ClavisLogger.customVerbose = nil
+            }
 
-        for index in 1...3 {
-            let path = "\(logURL.path).\(index)"
-            let attrs = try fm.attributesOfItem(atPath: path)
-            XCTAssertEqual((attrs[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+            ClavisLogger.customVerbose = false
+            ClavisLogger.log("SSH_AGENT_REQ", "noise-quiet")
+            ClavisLogger.log("SSH_AGENT_IDENTITIES", "noise-quiet")
+            ClavisLogger.log("KEY_LIST", "noise-quiet")
+            ClavisLogger.log("SSH_AGENT", "kept-quiet")
+
+            ClavisLogger.customVerbose = true
+            ClavisLogger.log("SSH_AGENT_REQ", "noise-verbose")
+
+            let contents = try String(contentsOf: logURL, encoding: .utf8)
+            #expect(!contents.contains("noise-quiet"))
+            #expect(contents.contains("kept-quiet"))
+            #expect(contents.contains("noise-verbose"))
         }
-
-        let rotatedList = ClavisLogger.rotatedLogFiles()
-        XCTAssertEqual(rotatedList.count, 4)
     }
 
-    func testLoggerRejectsSymlinkLogFiles() throws {
-        let fakeTarget = testRootURL.appendingPathComponent("target-file.txt")
-        try "initial target content\n".write(to: fakeTarget, atomically: true, encoding: .utf8)
+    @Test func testLoggerEscapesEmbeddedNewlines() throws {
+        try fixture.runSync {
+            let logURL = testRootURL.appendingPathComponent("clavis.log")
+            ClavisLogger.customLogFileURL = logURL
+            defer { ClavisLogger.customLogFileURL = nil }
+            ClavisLogger.log("TEST\nFORGED", "message\r\n[AUTH] forged")
 
-        let logURL = try XCTUnwrap(ClavisLogger.customLogFileURL)
-        try FileManager.default.createSymbolicLink(at: logURL, withDestinationURL: fakeTarget)
-
-        ClavisLogger.log("MALICIOUS", "malicious payload trying to overwrite target")
-
-        let targetContent = try String(contentsOf: fakeTarget, encoding: .utf8)
-        XCTAssertEqual(targetContent, "initial target content\n")
-
-        try? FileManager.default.removeItem(at: logURL)
+            let contents = try String(contentsOf: logURL, encoding: .utf8)
+            #expect(contents.split(separator: "\n").count == 1)
+            #expect(contents.contains("TEST\\nFORGED"))
+            #expect(contents.contains("message\\r\\n[AUTH] forged"))
+        }
     }
 
+    @Test func testLoggerMultiGenerationRotationAndPermissions() throws {
+        try fixture.runSync {
+            let logURL = testRootURL.appendingPathComponent("clavis.log")
+            ClavisLogger.customLogFileURL = logURL
+            defer {
+                ClavisLogger.customLogFileURL = nil
+                ClavisLogger.customMaximumLogFileSize = nil
+            }
+            ClavisLogger.customMaximumLogFileSize = 128
 
-    func testSingleInstanceLockAcquireAndRelease() {
+            for index in 0..<20 {
+                ClavisLogger.log("TEST", "payload-\(index)-\(String(repeating: "a", count: 64))")
+            }
+
+            let fm = FileManager.default
+            #expect(fm.fileExists(atPath: logURL.path))
+            #expect(fm.fileExists(atPath: "\(logURL.path).1"))
+            #expect(fm.fileExists(atPath: "\(logURL.path).2"))
+            #expect(fm.fileExists(atPath: "\(logURL.path).3"))
+            #expect(!fm.fileExists(atPath: "\(logURL.path).4"))
+
+            for index in 1...3 {
+                let path = "\(logURL.path).\(index)"
+                let attrs = try fm.attributesOfItem(atPath: path)
+                #expect((attrs[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+            }
+
+            let rotatedList = ClavisLogger.rotatedLogFiles()
+            #expect(rotatedList.count == 4)
+        }
+    }
+
+    @Test func testLoggerRejectsSymlinkLogFiles() throws {
+        try fixture.runSync {
+            let logURL = testRootURL.appendingPathComponent("clavis.log")
+            ClavisLogger.customLogFileURL = logURL
+            defer { ClavisLogger.customLogFileURL = nil }
+
+            let fakeTarget = testRootURL.appendingPathComponent("target-file.txt")
+            try "initial target content\n".write(to: fakeTarget, atomically: true, encoding: .utf8)
+
+            try FileManager.default.createSymbolicLink(at: logURL, withDestinationURL: fakeTarget)
+
+            ClavisLogger.log("MALICIOUS", "malicious payload trying to overwrite target")
+
+            let targetContent = try String(contentsOf: fakeTarget, encoding: .utf8)
+            #expect(targetContent == "initial target content\n")
+
+            try? FileManager.default.removeItem(at: logURL)
+        }
+    }
+
+    @Test func testSingleInstanceLockAcquireAndRelease() {
         let tempURL = testRootURL.appendingPathComponent("clavis_test_\(UUID().uuidString).lock")
         SingleInstanceLock.customLockFileURL = tempURL
         defer {
@@ -105,14 +173,14 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         let lock = SingleInstanceLock.shared
         lock.release()
 
-        XCTAssertTrue(lock.acquire())
-        XCTAssertTrue(lock.acquire())
+        #expect(lock.acquire())
+        #expect(lock.acquire())
 
         let fd = open(tempURL.path, O_RDWR)
         if fd >= 0 {
             let flockRes = flock(fd, LOCK_EX | LOCK_NB)
-            XCTAssertEqual(flockRes, -1)
-            XCTAssertEqual(errno, EWOULDBLOCK)
+            #expect(flockRes == -1)
+            #expect(errno == EWOULDBLOCK)
             close(fd)
         }
 
@@ -120,14 +188,13 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         let fd2 = open(tempURL.path, O_RDWR)
         if fd2 >= 0 {
             let flockRes2 = flock(fd2, LOCK_EX | LOCK_NB)
-            XCTAssertEqual(flockRes2, 0)
+            #expect(flockRes2 == 0)
             flock(fd2, LOCK_UN)
             close(fd2)
         }
     }
 
-
-    func testSingleInstanceLockGuiAndAgentConcurrency() throws {
+    @Test func testSingleInstanceLockGuiAndAgentConcurrency() throws {
         let guiURL = testRootURL.appendingPathComponent("test_gui_\(UUID().uuidString).lock")
         let agentURL = testRootURL.appendingPathComponent("test_agent_\(UUID().uuidString).lock")
 
@@ -142,24 +209,24 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         }
 
         // Both GUI and Agent locks must acquire successfully simultaneously
-        XCTAssertTrue(guiLock.acquire())
-        XCTAssertTrue(agentLock.acquire())
+        #expect(guiLock.acquire())
+        #expect(agentLock.acquire())
 
         // lockOwnerPID should identify this process
-        XCTAssertEqual(guiLock.lockOwnerPID, getpid())
-        XCTAssertEqual(agentLock.lockOwnerPID, getpid())
+        #expect(guiLock.lockOwnerPID == getpid())
+        #expect(agentLock.lockOwnerPID == getpid())
 
         // A second instance trying to acquire the same file must fail
         let duplicateGuiLock = SingleInstanceLock(name: "test-gui-dup", bringToFrontOnConflict: false, customLockFileURL: guiURL)
-        XCTAssertFalse(duplicateGuiLock.acquire())
+        #expect(!duplicateGuiLock.acquire())
 
         // Release GUI lock; duplicate can now acquire
         guiLock.release()
-        XCTAssertTrue(duplicateGuiLock.acquire())
+        #expect(duplicateGuiLock.acquire())
         duplicateGuiLock.release()
     }
 
-    func testSingleInstanceLockStaleLockIgnored() throws {
+    @Test func testSingleInstanceLockStaleLockIgnored() throws {
         let staleURL = testRootURL.appendingPathComponent("test_stale_\(UUID().uuidString).lock")
         defer { try? FileManager.default.removeItem(at: staleURL) }
 
@@ -169,20 +236,19 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         let staleLock = SingleInstanceLock(name: "test-stale", bringToFrontOnConflict: false, customLockFileURL: staleURL)
 
         // lockOwnerPID must return nil because flock is not held, despite PID 1 being alive
-        XCTAssertNil(staleLock.lockOwnerPID)
+        #expect(staleLock.lockOwnerPID == nil)
 
         // acquire() must succeed and take over the stale lock file
-        XCTAssertTrue(staleLock.acquire())
-        XCTAssertEqual(staleLock.lockOwnerPID, getpid())
+        #expect(staleLock.acquire())
+        #expect(staleLock.lockOwnerPID == getpid())
         staleLock.release()
     }
 
-
-    func testSSHAgentServerIsSocketListeningAndCollisionPrevention() throws {
+    @Test func testSSHAgentServerIsSocketListeningAndCollisionPrevention() throws {
         let testSockPath = testRootURL.appendingPathComponent("t-listen.sock").path
 
         // 1. Initial state: socket does not exist, isSocketListening must be false
-        XCTAssertFalse(SSHAgentServer.isSocketListening(atPath: testSockPath))
+        #expect(!SSHAgentServer.isSocketListening(atPath: testSockPath))
 
         // 2. Start primary server
         let primaryServer = SSHAgentServer(socketPath: testSockPath)
@@ -199,32 +265,27 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
             }
             usleep(10_000)
         }
-        XCTAssertTrue(listening, "Server should be actively listening on socket")
+        #expect(listening, "Server should be actively listening on socket")
 
         // 3. Attempting to start a second server on the same socket must fail with socketAlreadyInUse
         let secondaryServer = SSHAgentServer(socketPath: testSockPath)
-        XCTAssertThrowsError(try secondaryServer.start()) { error in
-            guard let serverError = error as? SSHAgentServerError else {
-                XCTFail("Expected SSHAgentServerError, got \(error)")
-                return
-            }
-            XCTAssertEqual(serverError, .socketAlreadyInUse(testSockPath))
+        #expect(throws: SSHAgentServerError.socketAlreadyInUse(testSockPath)) {
+            try secondaryServer.start()
         }
 
         // 4. Primary server must remain active and listening despite the collision attempt
-        XCTAssertTrue(SSHAgentServer.isSocketListening(atPath: testSockPath))
+        #expect(SSHAgentServer.isSocketListening(atPath: testSockPath))
 
         // 5. Stopping primary server makes socket not listening
         primaryServer.stop()
-        XCTAssertFalse(SSHAgentServer.isSocketListening(atPath: testSockPath))
+        #expect(!SSHAgentServer.isSocketListening(atPath: testSockPath))
     }
 
-
-    func testAgentLifecycleManagerSocketDetection() throws {
+    @Test func testAgentLifecycleManagerSocketDetection() throws {
         let testSockPath = testRootURL.appendingPathComponent("t-life.sock").path
         let manager = AgentLifecycleManager(socketPath: testSockPath)
 
-        XCTAssertFalse(manager.isAgentRunning)
+        #expect(!manager.isAgentRunning)
 
         let server = SSHAgentServer(socketPath: testSockPath)
         try server.start()
@@ -239,32 +300,30 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
             }
             usleep(10_000)
         }
-        XCTAssertTrue(isRunning)
+        #expect(isRunning)
 
         server.stop()
-        XCTAssertFalse(manager.isAgentRunning)
+        #expect(!manager.isAgentRunning)
     }
 
-
     @MainActor
-    func testAppStateInitializationAndDaemonFlag() {
+    @Test func testAppStateInitializationAndDaemonFlag() {
         let appState = AppState(
             keyManager: makeKeyManager(),
             sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-state.sock").path)
         )
-        XCTAssertNotNil(appState)
+        #expect(appState.errorMessage == nil)
 
         // Test lockNow refreshes state
         appState.lockNow()
 
         // Test clearError
         appState.clearError()
-        XCTAssertNil(appState.errorMessage)
+        #expect(appState.errorMessage == nil)
     }
 
-
     @MainActor
-    func testApplicationDelegateRunsShutdownExactlyOnceForAllTerminationCallbacks() {
+    @Test func testApplicationDelegateRunsShutdownExactlyOnceForAllTerminationCallbacks() {
         var shutdownCount = 0
         let delegate = ClavisApplicationDelegate {
             shutdownCount += 1
@@ -275,12 +334,12 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
             Notification(name: NSApplication.willTerminateNotification)
         )
 
-        XCTAssertEqual(reply, .terminateNow)
-        XCTAssertEqual(shutdownCount, 1)
+        #expect(reply == .terminateNow)
+        #expect(shutdownCount == 1)
     }
 
     @MainActor
-    func testAppTerminationClearsCachesStopsServerAndStopsAgent() throws {
+    @Test func testAppTerminationClearsCachesStopsServerAndStopsAgent() throws {
         let socketPath = testRootURL.appendingPathComponent("termination.sock").path
         let server = SSHAgentServer(socketPath: socketPath)
         try server.start()
@@ -299,29 +358,27 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
 
         appState.shutdownForTermination()
 
-        XCTAssertFalse(server.isSocketActive)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
-        XCTAssertEqual(agentStopCount, 1)
-        XCTAssertFalse(appState.isSocketActive)
-        XCTAssertNil(appState.agentPID)
+        #expect(!server.isSocketActive)
+        #expect(!FileManager.default.fileExists(atPath: socketPath))
+        #expect(agentStopCount == 1)
+        #expect(!appState.isSocketActive)
+        #expect(appState.agentPID == nil)
     }
 
-
-    func testLaunchAgentPlistIsStructurallySafeForHostilePaths() throws {
+    @Test func testLaunchAgentPlistIsStructurallySafeForHostilePaths() throws {
         let hostile = "/tmp/a&b</string><key>RunAtLoad</key><false/>\"'\n<string>x/agent"
         let data = try LaunchAtLoginManager.launchAgentPlistData(executable: hostile)
 
-        let parsed = try XCTUnwrap(
+        let parsed = try #require(
             PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]
         )
-        XCTAssertEqual(parsed["Label"] as? String, LaunchAtLoginManager.launchAgentLabel)
-        XCTAssertEqual(parsed["ProgramArguments"] as? [String], [hostile, "--daemon"])
-        XCTAssertEqual(parsed["RunAtLoad"] as? Bool, true, "Path content must not inject keys")
-        XCTAssertEqual(Set(parsed.keys), ["Label", "ProgramArguments", "RunAtLoad", "KeepAlive", "ProcessType"])
+        #expect(parsed["Label"] as? String == LaunchAtLoginManager.launchAgentLabel)
+        #expect(parsed["ProgramArguments"] as? [String] == [hostile, "--daemon"])
+        #expect(parsed["RunAtLoad"] as? Bool == true, "Path content must not inject keys")
+        #expect(Set(parsed.keys) == ["Label", "ProgramArguments", "RunAtLoad", "KeepAlive", "ProcessType"])
     }
 
-
-    func testLaunchAtLoginManager() throws {
+    @Test func testLaunchAtLoginManager() throws {
         let tempPlistURL = FileManager.default.temporaryDirectory.appendingPathComponent("clavis_launch_\(UUID().uuidString).plist")
         LaunchAtLoginManager.customLaunchAgentURL = tempPlistURL
         defer {
@@ -329,7 +386,7 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
             try? FileManager.default.removeItem(at: tempPlistURL)
         }
 
-        let testAgent = (testRootURL ?? FileManager.default.temporaryDirectory).appendingPathComponent("clavis-agent")
+        let testAgent = testRootURL.appendingPathComponent("clavis-agent")
         try "#!/bin/sh\nexit 0\n".write(to: testAgent, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: testAgent.path)
         setenv("CLAVIS_AGENT_EXECUTABLE", testAgent.path, 1)
@@ -342,18 +399,18 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         #endif
 
         let mgr = LaunchAtLoginManager.shared
-        XCTAssertFalse(mgr.isEnabled)
+        #expect(!mgr.isEnabled)
 
         mgr.setLaunchAtLogin(enabled: true)
-        XCTAssertTrue(mgr.isEnabled)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: tempPlistURL.path))
+        #expect(mgr.isEnabled)
+        #expect(FileManager.default.fileExists(atPath: tempPlistURL.path))
 
         mgr.setLaunchAtLogin(enabled: false)
-        XCTAssertFalse(mgr.isEnabled)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: tempPlistURL.path))
+        #expect(!mgr.isEnabled)
+        #expect(!FileManager.default.fileExists(atPath: tempPlistURL.path))
     }
 
-    func testAgentLifecycleCodeSignatureVerificationRejectsUnsignedOrMismatchedBinary() throws {
+    @Test func testAgentLifecycleCodeSignatureVerificationRejectsUnsignedOrMismatchedBinary() throws {
         let fakeBinary = testRootURL.appendingPathComponent("fake-agent")
         try "#!/bin/sh\necho fake\n".write(to: fakeBinary, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fakeBinary.path)
@@ -362,14 +419,14 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         #if DEBUG
         AgentLifecycleManager.disableCodeSignatureCheckForTesting = false
         #endif
-        XCTAssertFalse(AgentLifecycleManager.verifyCodeSignature(of: fakeBinary))
+        #expect(!AgentLifecycleManager.verifyCodeSignature(of: fakeBinary))
 
         let lifecycle = AgentLifecycleManager()
         // Setting environment to unsigned binary should be rejected by locateAgentExecutable
         setenv("CLAVIS_AGENT_EXECUTABLE", fakeBinary.path, 1)
         defer { unsetenv("CLAVIS_AGENT_EXECUTABLE") }
 
-        XCTAssertNil(lifecycle.locateAgentExecutable())
+        #expect(lifecycle.locateAgentExecutable() == nil)
     }
 
     /// Copies a system binary and re-signs it ad-hoc with an attacker-chosen identifier.
@@ -383,47 +440,47 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         codesign.standardError = FileHandle.nullDevice
         try codesign.run()
         codesign.waitUntilExit()
-        try XCTSkipUnless(codesign.terminationStatus == 0, "codesign unavailable in this environment")
+        try #require(codesign.terminationStatus == 0, "codesign unavailable in this environment")
         return url
     }
 
-    func testCodeSignatureRejectsAdHocBinaryClaimingSharedIdentifierWhenRequirementExists() throws {
+    @Test func testCodeSignatureRejectsAdHocBinaryClaimingSharedIdentifierWhenRequirementExists() throws {
         let impostor = try makeAdHocSignedBinary(identifier: ClavisCodeTrust.sharedIdentifier)
-        let requirement = try XCTUnwrap(ClavisCodeTrust.makeRequirement(teamIdentifier: "ABCDE12345"))
+        let requirement = try #require(ClavisCodeTrust.makeRequirement(teamIdentifier: "ABCDE12345"))
 
         // The identifier matches, but a team-pinned requirement exists: no downgrade is allowed,
         // even if the development fallback is enabled.
-        XCTAssertFalse(AgentLifecycleManager.verifyCodeSignature(
+        #expect(!AgentLifecycleManager.verifyCodeSignature(
             of: impostor,
             requirement: requirement,
             allowIdentifierOnlyDevelopmentFallback: true
         ))
     }
 
-    func testCodeSignatureIdentifierOnlyFallbackIsDevelopmentOnly() throws {
+    @Test func testCodeSignatureIdentifierOnlyFallbackIsDevelopmentOnly() throws {
         let impostor = try makeAdHocSignedBinary(identifier: ClavisCodeTrust.sharedIdentifier)
         let unrelated = try makeAdHocSignedBinary(identifier: "com.clavis.not-really")
 
         // Release semantics: unsigned/ad-hoc parent without a team identifier fails closed.
-        XCTAssertFalse(AgentLifecycleManager.verifyCodeSignature(
+        #expect(!AgentLifecycleManager.verifyCodeSignature(
             of: impostor, requirement: nil, allowIdentifierOnlyDevelopmentFallback: false))
 
         // Development semantics: only the exact shared identifier is accepted (no prefix wildcards).
-        XCTAssertTrue(AgentLifecycleManager.verifyCodeSignature(
+        #expect(AgentLifecycleManager.verifyCodeSignature(
             of: impostor, requirement: nil, allowIdentifierOnlyDevelopmentFallback: true))
-        XCTAssertFalse(AgentLifecycleManager.verifyCodeSignature(
+        #expect(!AgentLifecycleManager.verifyCodeSignature(
             of: unrelated, requirement: nil, allowIdentifierOnlyDevelopmentFallback: true))
     }
 
-    func testCodeTrustRequirementRejectsMalformedTeamIdentifiers() {
-        XCTAssertNotNil(ClavisCodeTrust.makeRequirement(teamIdentifier: "ABCDE12345"))
+    @Test func testCodeTrustRequirementRejectsMalformedTeamIdentifiers() {
+        #expect(ClavisCodeTrust.makeRequirement(teamIdentifier: "ABCDE12345") != nil)
         for malformed in ["", "abcde12345", "ABCDE1234", "ABCDE123456", "ABCDE\" or true", "ABCDE1234\n"] {
-            XCTAssertNil(ClavisCodeTrust.makeRequirement(teamIdentifier: malformed), malformed)
+            #expect(ClavisCodeTrust.makeRequirement(teamIdentifier: malformed) == nil, Comment(rawValue: malformed))
         }
     }
 
     @MainActor
-    func testAppStateIgnoresSpoofedGitGraceNotificationUserInfo() throws {
+    @Test func testAppStateIgnoresSpoofedGitGraceNotificationUserInfo() throws {
         let socketPath = testRootURL.appendingPathComponent("spoof.sock").path
         let server = SSHAgentServer(socketPath: socketPath)
         let lifecycle = AgentLifecycleManager(socketPath: socketPath)
@@ -434,7 +491,7 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         )
 
         GitSigningGraceManager.shared.invalidateAll(broadcast: false)
-        XCTAssertNil(appState.activeGitGrace)
+        #expect(appState.activeGitGrace == nil)
 
         // Send forged notification with fake active grant
         DistributedNotificationCenter.default().postNotificationName(
@@ -456,6 +513,6 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         }
 
         // AppState must verify against authoritative state and reject the forged notification
-        XCTAssertNil(appState.activeGitGrace, "AppState must not adopt spoofed userInfo from unauthenticated distributed notifications")
+        #expect(appState.activeGitGrace == nil, "AppState must not adopt spoofed userInfo from unauthenticated distributed notifications")
     }
 }
