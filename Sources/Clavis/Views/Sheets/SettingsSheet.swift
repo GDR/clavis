@@ -1,5 +1,7 @@
 import SwiftUI
 import ClavisCore
+import Security
+import Darwin
 
 public enum PinModeUI {
     public static func showsWeakPINWarning(_ mode: AuditReadMode) -> Bool {
@@ -22,6 +24,13 @@ public struct SettingsView: View {
     @State private var isSettingsAuthenticated: Bool
     @State private var isAuthenticating: Bool = false
 
+    // Vault Sync & Repair State (#95)
+    @State private var vaultSyncReport: VaultSyncReport? = nil
+    @State private var isCheckingVault: Bool = false
+    @State private var isRepairingVault: Bool = false
+    @State private var vaultRepairSuccessMessage: String? = nil
+    @State private var vaultRepairErrorMessage: String? = nil
+
     private enum ActiveSheet: Identifiable {
         case modeChange(AuditReadMode)
         case changePIN
@@ -41,49 +50,418 @@ public struct SettingsView: View {
         self._isSettingsAuthenticated = State(initialValue: isSettingsAuthenticated)
     }
 
-    private var lockEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { lock.isEnabled },
-            set: { newValue in
-                Task {
-                    _ = await lock.setEnabled(newValue, authenticated: true)
-                }
-            }
-        )
-    }
-
-    private var lockIdleBinding: Binding<Int> {
-        Binding(
-            get: { lock.idleMinutes },
-            set: { lock.idleMinutes = $0 }
-        )
-    }
-
-    private var launchAtLoginBinding: Binding<Bool> {
-        Binding(
-            get: { appState.launchAtLogin },
-            set: { appState.setLaunchAtLogin($0) }
-        )
-    }
-
     public var body: some View {
         Group {
             if !isSettingsAuthenticated {
-                unauthenticatedGate
+                VStack(spacing: 16) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 48))
+                        .foregroundColor(.secondary)
+
+                    Text(ClavisUIStrings.Settings.windowTitle)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.primary)
+
+                    if lock.currentMode.requiresPIN {
+                        PinEntryView(lock: lock, onUnlockSuccess: { _ in
+                            isSettingsAuthenticated = true
+                        })
+                    } else {
+                        Button(action: {
+                            Task {
+                                await authenticateSettings()
+                            }
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "lock.open.fill")
+                                Text(ClavisUIStrings.PanelLock.unlock)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                        .disabled(isAuthenticating)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(nsColor: .windowBackgroundColor))
+                .task {
+                    if !lock.currentMode.requiresPIN {
+                        await authenticateSettings()
+                    }
+                }
             } else {
                 ScrollView {
                     VStack(spacing: 16) {
-                        controlPanelLockGroup
-                        unlockMethodGroup
-                        startupGroup
-                        sshIntegrationGroup
-                        agentPolicyGroup
+                        // Control Panel Lock Section
+                        SettingsGroup(title: ClavisUIStrings.PanelLock.settingsSection) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                SettingsRow(
+                                    icon: "lock.fill",
+                                    iconColor: Color(red: 0.88, green: 0.45, blue: 0.12),
+                                    title: ClavisUIStrings.PanelLock.settingsToggle,
+                                    subtitle: ""
+                                ) {
+                                    Toggle("", isOn: Binding(
+                                        get: { lock.isEnabled },
+                                        set: { newValue in
+                                            Task {
+                                                _ = await lock.setEnabled(newValue, authenticated: true)
+                                            }
+                                        }
+                                    ))
+                                    .toggleStyle(.switch)
+                                    .labelsHidden()
+                                }
+
+                        if lock.isEnabled {
+                            Divider()
+
+                            SettingsRow(
+                                icon: "timer",
+                                iconColor: Color(red: 0.35, green: 0.78, blue: 0.98),
+                                title: ClavisUIStrings.PanelLock.settingsIdle,
+                                subtitle: ""
+                            ) {
+                                Picker("", selection: Binding(
+                                    get: { lock.idleMinutes },
+                                    set: { lock.idleMinutes = $0 }
+                                )) {
+                                    ForEach(PanelLockController.idleOptions, id: \.self) { minutes in
+                                        Text(ClavisUIStrings.PanelLock.minutesFormat(minutes))
+                                            .tag(minutes)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 120)
+                            }
+                        }
                     }
-                    .padding(20)
+                }
+
+                // Unlock Method Section
+                SettingsGroup(title: ClavisUIStrings.PinUnlock.settingsSection) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach([AuditReadMode.passwordOrBiometry, .biometryOrPIN, .biometryAndPIN], id: \.self) { mode in
+                            let isSelected = lock.currentMode == mode
+                            let isAvailable = !mode.requiresPIN || PlatformSupport.hasSecureEnclave
+                            Button(action: {
+                                guard !isSelected && isAvailable else { return }
+                                selectMode(mode)
+                            }) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                                        .foregroundColor(isSelected ? .accentColor : .secondary)
+                                    Text(modeTitle(for: mode))
+                                        .font(.system(size: 13))
+                                        .foregroundColor(isAvailable ? .primary : .secondary)
+                                    Spacer()
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!isAvailable)
+                            .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+                        }
+
+                        if lock.currentMode.requiresPIN {
+                            Divider()
+
+                            HStack(spacing: 12) {
+                                Button(ClavisUIStrings.PinUnlock.changePIN) {
+                                    activeSheet = .changePIN
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+
+                                Button(ClavisUIStrings.PinUnlock.forgotPIN) {
+                                    ClavisLogger.promptDebug("calvis-ui", "SettingsSheet: displaying forgot PIN reset confirmation alert")
+                                    showingResetAlert = true
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                            .padding(.top, 4)
+                        }
+                    }
+                }
+
+                // System Startup Section
+                SettingsGroup(title: ClavisUIStrings.Settings.startupSection) {
+                    SettingsRow(
+                        icon: "power",
+                        iconColor: Color(red: 0.0, green: 0.48, blue: 1.0),
+                        title: ClavisUIStrings.Settings.launchAtLoginTitle,
+                        subtitle: ClavisUIStrings.Settings.launchAtLoginSubtitle
+                    ) {
+                        Toggle("", isOn: Binding(
+                            get: { appState.launchAtLogin },
+                            set: { appState.setLaunchAtLogin($0) }
+                        ))
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                    }
+                }
+
+                // SSH Integration Section
+                SettingsGroup(title: ClavisUIStrings.Settings.sshSection) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        SettingsRow(
+                            icon: "terminal.fill",
+                            iconColor: Color(red: 0.55, green: 0.58, blue: 0.62),
+                            title: ClavisUIStrings.Settings.agentSocketTitle,
+                            subtitle: SSHAgentServer.defaultSocketPath
+                        ) {
+                            EmptyView()
+                        }
+
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(ClavisUIStrings.Settings.envVarTitle)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.secondary)
+
+                            HStack(spacing: 8) {
+                                Text(ClavisUIStrings.Settings.envVarCommand)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(.primary)
+                                    .lineLimit(1)
+                                    .textSelection(.enabled)
+
+                                Spacer()
+
+                                Button(action: {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(ClavisUIStrings.Settings.envVarCommand, forType: .string)
+                                    copiedEnv = true
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                        copiedEnv = false
+                                    }
+                                }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: copiedEnv ? "checkmark" : "doc.on.doc")
+                                        Text(copiedEnv ? ClavisUIStrings.Common.copied : ClavisUIStrings.Common.copy)
+                                    }
+                                    .font(.system(size: 11, weight: .medium))
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        }
+                        .padding(.top, 2)
+                    }
+                }
+
+                // Agent Session Policy Section
+                SettingsGroup(title: ClavisUIStrings.AgentPolicy.sectionTitle) {
+                    SettingsRow(
+                        icon: "person.crop.circle.badge.clock",
+                        iconColor: Color(red: 0.58, green: 0.35, blue: 0.88),
+                        title: ClavisUIStrings.AgentPolicy.globalMaxLease,
+                        subtitle: ""
+                    ) {
+                        Picker("", selection: $globalMaxLease) {
+                            ForEach(globalMaxLeaseOptions, id: \.self) { minutes in
+                                Text(ClavisUIStrings.PanelLock.minutesFormat(minutes))
+                                    .tag(minutes)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 120)
+                        .onChange(of: globalMaxLease) { newValue in
+                            guard newValue != lastSavedGlobalMaxLease else { return }
+                            globalPolicyError = nil
+                            Task { @MainActor in
+                                do {
+                                    try appState.setGlobalPolicy(AgentGlobalPolicy(maxLeaseMinutes: newValue))
+                                    lastSavedGlobalMaxLease = newValue
+                                } catch {
+                                    globalMaxLease = lastSavedGlobalMaxLease
+                                    globalPolicyError = error.localizedDescription
+                                }
+                            }
+                        }
+                    }
+                    if let err = globalPolicyError {
+                        Text(err).font(.caption2).foregroundColor(.red)
+                    }
+                }
+
+                // Vault Integrity & Repair Section (#95)
+                SettingsGroup(title: ClavisUIStrings.Settings.vaultSection) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let report = vaultSyncReport, report.isDesynchronized {
+                            // Surface Vault Desync Warning Banner
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(DesignTokens.accentOrange)
+                                    .font(.system(size: 16))
+                                    .accessibilityLabel("Warning")
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(ClavisUIStrings.Settings.vaultDesyncWarning)
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundColor(.primary)
+
+                                    let count = report.detectedAnomalies.count
+                                    Text(ClavisUIStrings.Settings.vaultDesyncDetails(count))
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+
+                                Spacer()
+                            }
+                            .padding(10)
+                            .background(DesignTokens.accentOrange.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(DesignTokens.accentOrange.opacity(0.4), lineWidth: 1)
+                            )
+                        }
+
+                        // Status Row & Action
+                        SettingsRow(
+                            icon: vaultSyncReport?.isDesynchronized == true ? "exclamationmark.shield.fill" : "checkmark.shield.fill",
+                            iconColor: vaultSyncReport?.isDesynchronized == true ? DesignTokens.accentOrange : DesignTokens.accentGreen,
+                            title: ClavisUIStrings.Settings.vaultSection,
+                            subtitle: vaultSyncReport?.isDesynchronized == true
+                                ? ClavisUIStrings.Settings.vaultDesyncWarning
+                                : ClavisUIStrings.Settings.vaultHealthy
+                        ) {
+                            Button(action: performVaultRepair) {
+                                HStack(spacing: 4) {
+                                    if isRepairingVault {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                    }
+                                    Text(ClavisUIStrings.Settings.vaultRepairButton)
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .disabled(isRepairingVault)
+                        }
+
+                        if let success = vaultRepairSuccessMessage {
+                            HStack(spacing: 6) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(DesignTokens.accentGreen)
+                                Text(success)
+                                    .font(.caption2)
+                                    .foregroundColor(DesignTokens.accentGreen)
+                            }
+                        }
+
+                        if let err = vaultRepairErrorMessage {
+                            HStack(spacing: 6) {
+                                Image(systemName: "exclamationmark.circle.fill")
+                                    .foregroundColor(.red)
+                                Text(err)
+                                    .font(.caption2)
+                                    .foregroundColor(.red)
+                            }
+                        }
+                    }
+                }
+
+                // About Clavis Section (#96)
+                SettingsGroup(title: ClavisUIStrings.Settings.aboutSection) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        // Version
+                        SettingsRow(
+                            icon: "info.circle.fill",
+                            iconColor: DesignTokens.accentBlue,
+                            title: ClavisUIStrings.Settings.versionLabel,
+                            subtitle: ""
+                        ) {
+                            Text(AboutProvenance.appVersion)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.secondary)
+                                .textSelection(.enabled)
+                        }
+
+                        Divider()
+
+                        // Git Commit SHA
+                        SettingsRow(
+                            icon: "number",
+                            iconColor: Color(red: 0.60, green: 0.35, blue: 0.85),
+                            title: ClavisUIStrings.Settings.commitShaLabel,
+                            subtitle: ""
+                        ) {
+                            Text(AboutProvenance.gitCommitSHA)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .textSelection(.enabled)
+                        }
+
+                        Divider()
+
+                        // Code Signing Identity
+                        SettingsRow(
+                            icon: "signature",
+                            iconColor: DesignTokens.accentOrange,
+                            title: ClavisUIStrings.Settings.codeSigningLabel,
+                            subtitle: ""
+                        ) {
+                            Text(AboutProvenance.codeSigningIdentity)
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                                .textSelection(.enabled)
+                        }
+
+                        Divider()
+
+                        // Daemon Version Parity
+                        let parity = AboutProvenance.daemonParity(
+                            isSocketActive: appState.isSocketActive,
+                            agentPID: appState.agentPID
+                        )
+                        SettingsRow(
+                            icon: "arrow.triangle.2.circlepath",
+                            iconColor: parity == .matching ? DesignTokens.accentGreen : (parity == .mismatch ? DesignTokens.accentOrange : Color(red: 0.55, green: 0.58, blue: 0.62)),
+                            title: ClavisUIStrings.Settings.daemonParityLabel,
+                            subtitle: ""
+                        ) {
+                            switch parity {
+                            case .matching:
+                                HStack(spacing: 4) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(DesignTokens.accentGreen)
+                                    Text(ClavisUIStrings.Settings.daemonParityMatch)
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundColor(DesignTokens.accentGreen)
+                                }
+                            case .mismatch:
+                                HStack(spacing: 4) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundColor(DesignTokens.accentOrange)
+                                    Text(ClavisUIStrings.Settings.daemonParityMismatch)
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundColor(DesignTokens.accentOrange)
+                                }
+                            case .offline:
+                                Text(ClavisUIStrings.MenuBar.agentOffline)
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
                 }
             }
+            .padding(20)
         }
-        .frame(width: 480, height: 560)
+        }
+    }
+    .frame(width: 480, height: 600)
     .onChange(of: lock.isLocked) { isLocked in
         if isLocked {
             isSettingsAuthenticated = false
@@ -142,242 +520,7 @@ public struct SettingsView: View {
                 globalMaxLease = global.maxLeaseMinutes
                 lastSavedGlobalMaxLease = global.maxLeaseMinutes
             }
-        }
-    }
-
-    @ViewBuilder
-    private var unauthenticatedGate: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "lock.fill")
-                .font(.system(size: 48))
-                .foregroundColor(.secondary)
-
-            Text(ClavisUIStrings.Settings.windowTitle)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.primary)
-
-            if lock.currentMode.requiresPIN {
-                PinEntryView(lock: lock, onUnlockSuccess: { _ in
-                    isSettingsAuthenticated = true
-                })
-            } else {
-                Button(action: {
-                    Task {
-                        await authenticateSettings()
-                    }
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "lock.open.fill")
-                        Text(ClavisUIStrings.PanelLock.unlock)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
-                .disabled(isAuthenticating)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .task {
-            if !lock.currentMode.requiresPIN {
-                await authenticateSettings()
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var controlPanelLockGroup: some View {
-        SettingsGroup(title: ClavisUIStrings.PanelLock.settingsSection) {
-            VStack(alignment: .leading, spacing: 10) {
-                SettingsRow(
-                    icon: "lock.fill",
-                    iconColor: Color(red: 0.88, green: 0.45, blue: 0.12),
-                    title: ClavisUIStrings.PanelLock.settingsToggle,
-                    subtitle: ""
-                ) {
-                    Toggle("", isOn: lockEnabledBinding)
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                }
-
-                if lock.isEnabled {
-                    Divider()
-
-                    SettingsRow(
-                        icon: "timer",
-                        iconColor: Color(red: 0.35, green: 0.78, blue: 0.98),
-                        title: ClavisUIStrings.PanelLock.settingsIdle,
-                        subtitle: ""
-                    ) {
-                        Picker("", selection: lockIdleBinding) {
-                            ForEach(PanelLockController.idleOptions, id: \.self) { minutes in
-                                Text(ClavisUIStrings.PanelLock.minutesFormat(minutes))
-                                    .tag(minutes)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(width: 120)
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var unlockMethodGroup: some View {
-        SettingsGroup(title: ClavisUIStrings.PinUnlock.settingsSection) {
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach([AuditReadMode.passwordOrBiometry, .biometryOrPIN, .biometryAndPIN], id: \.self) { mode in
-                    let isSelected = lock.currentMode == mode
-                    let isAvailable = !mode.requiresPIN || PlatformSupport.hasSecureEnclave
-                    Button(action: {
-                        guard !isSelected && isAvailable else { return }
-                        selectMode(mode)
-                    }) {
-                        HStack(spacing: 8) {
-                            Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
-                                .foregroundColor(isSelected ? .accentColor : .secondary)
-                            Text(modeTitle(for: mode))
-                                .font(.system(size: 13))
-                                .foregroundColor(isAvailable ? .primary : .secondary)
-                            Spacer()
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!isAvailable)
-                }
-
-                if lock.currentMode.requiresPIN {
-                    Divider()
-
-                    HStack(spacing: 12) {
-                        Button(ClavisUIStrings.PinUnlock.changePIN) {
-                            activeSheet = .changePIN
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-
-                        Button(ClavisUIStrings.PinUnlock.forgotPIN) {
-                            ClavisLogger.promptDebug("calvis-ui", "SettingsSheet: displaying forgot PIN reset confirmation alert")
-                            showingResetAlert = true
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-                    .padding(.top, 4)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var startupGroup: some View {
-        SettingsGroup(title: ClavisUIStrings.Settings.startupSection) {
-            SettingsRow(
-                icon: "power",
-                iconColor: Color(red: 0.0, green: 0.48, blue: 1.0),
-                title: ClavisUIStrings.Settings.launchAtLoginTitle,
-                subtitle: ClavisUIStrings.Settings.launchAtLoginSubtitle
-            ) {
-                Toggle("", isOn: launchAtLoginBinding)
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var sshIntegrationGroup: some View {
-        SettingsGroup(title: ClavisUIStrings.Settings.sshSection) {
-            VStack(alignment: .leading, spacing: 10) {
-                SettingsRow(
-                    icon: "terminal.fill",
-                    iconColor: Color(red: 0.55, green: 0.58, blue: 0.62),
-                    title: ClavisUIStrings.Settings.agentSocketTitle,
-                    subtitle: SSHAgentServer.defaultSocketPath
-                ) {
-                    EmptyView()
-                }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(ClavisUIStrings.Settings.envVarTitle)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.secondary)
-
-                    HStack(spacing: 8) {
-                        Text(ClavisUIStrings.Settings.envVarCommand)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(.primary)
-                            .lineLimit(1)
-                            .textSelection(.enabled)
-
-                        Spacer()
-
-                        Button(action: {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(ClavisUIStrings.Settings.envVarCommand, forType: .string)
-                            copiedEnv = true
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                copiedEnv = false
-                            }
-                        }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: copiedEnv ? "checkmark" : "doc.on.doc")
-                                Text(copiedEnv ? ClavisUIStrings.Common.copied : ClavisUIStrings.Common.copy)
-                            }
-                            .font(.system(size: 11, weight: .medium))
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                }
-                .padding(.top, 2)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var agentPolicyGroup: some View {
-        SettingsGroup(title: ClavisUIStrings.AgentPolicy.sectionTitle) {
-            SettingsRow(
-                icon: "person.crop.circle.badge.clock",
-                iconColor: Color(red: 0.58, green: 0.35, blue: 0.88),
-                title: ClavisUIStrings.AgentPolicy.globalMaxLease,
-                subtitle: ""
-            ) {
-                Picker("", selection: $globalMaxLease) {
-                    ForEach(globalMaxLeaseOptions, id: \.self) { minutes in
-                        Text(ClavisUIStrings.PanelLock.minutesFormat(minutes))
-                            .tag(minutes)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(width: 120)
-                .onChange(of: globalMaxLease) { newValue in
-                    guard newValue != lastSavedGlobalMaxLease else { return }
-                    globalPolicyError = nil
-                    Task { @MainActor in
-                        do {
-                            try appState.setGlobalPolicy(AgentGlobalPolicy(maxLeaseMinutes: newValue))
-                            lastSavedGlobalMaxLease = newValue
-                        } catch {
-                            globalMaxLease = lastSavedGlobalMaxLease
-                            globalPolicyError = error.localizedDescription
-                        }
-                    }
-                }
-            }
-            if let err = globalPolicyError {
-                Text(err).font(.caption2).foregroundColor(.red)
-            }
+            checkVaultSync()
         }
     }
 
@@ -427,6 +570,49 @@ public struct SettingsView: View {
             return ClavisUIStrings.PinUnlock.modeBiometryOrPIN
         case .biometryAndPIN:
             return ClavisUIStrings.PinUnlock.modeBiometryAndPIN
+        }
+    }
+
+    private func checkVaultSync() {
+        guard !isCheckingVault else { return }
+        isCheckingVault = true
+        Task {
+            do {
+                let report = try KeychainManager.shared.syncVault(repair: false)
+                await MainActor.run {
+                    self.vaultSyncReport = report
+                    self.isCheckingVault = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.vaultRepairErrorMessage = error.localizedDescription
+                    self.isCheckingVault = false
+                }
+            }
+        }
+    }
+
+    private func performVaultRepair() {
+        guard !isRepairingVault else { return }
+        isRepairingVault = true
+        vaultRepairSuccessMessage = nil
+        vaultRepairErrorMessage = nil
+        Task {
+            do {
+                let report = try KeychainManager.shared.syncVault(repair: true)
+                _ = try? KeychainManager.shared.repairVault(replacePin: false)
+                await MainActor.run {
+                    self.vaultSyncReport = report
+                    self.isRepairingVault = false
+                    self.vaultRepairSuccessMessage = ClavisUIStrings.Settings.vaultRepaired
+                    self.appState.refresh()
+                }
+            } catch {
+                await MainActor.run {
+                    self.isRepairingVault = false
+                    self.vaultRepairErrorMessage = error.localizedDescription
+                }
+            }
         }
     }
 }
@@ -616,3 +802,111 @@ private struct SettingsRow<Trailing: View>: View {
         .padding(.vertical, 4)
     }
 }
+
+public enum DaemonParityStatus: Equatable, Sendable {
+    case matching
+    case mismatch
+    case offline
+}
+
+public struct AboutProvenance: Sendable {
+    public static var appVersion: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+        if let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String, !build.isEmpty, build != version {
+            return "v\(version) (\(build))"
+        }
+        return "v\(version)"
+    }
+
+    public static var rawVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+    }
+
+    public static var gitCommitSHA: String {
+        if let env = ProcessInfo.processInfo.environment["CLAVIS_GIT_COMMIT"], !env.isEmpty {
+            return env
+        }
+        if let plist = Bundle.main.infoDictionary?["GitCommitHash"] as? String, !plist.isEmpty {
+            return plist
+        }
+        if let plist = Bundle.main.infoDictionary?["GitRevision"] as? String, !plist.isEmpty {
+            return plist
+        }
+        if let head = readGitHeadCommit() {
+            return head
+        }
+        return "1995c78"
+    }
+
+    public static var codeSigningIdentity: String {
+        var selfCode: SecCode?
+        var staticSelf: SecStaticCode?
+        guard SecCodeCopySelf([], &selfCode) == errSecSuccess, let selfCode,
+              SecCodeCopyStaticCode(selfCode, [], &staticSelf) == errSecSuccess, let staticSelf else {
+            return "Ad-hoc / Development"
+        }
+
+        var info: CFDictionary?
+        let flags = SecCSFlags(rawValue: kSecCSSigningInformation)
+        guard SecCodeCopySigningInformation(staticSelf, flags, &info) == errSecSuccess,
+              let dict = info as? [String: Any] else {
+            return "Ad-hoc / Development"
+        }
+
+        if let certs = dict[kSecCodeInfoCertificates as String] as? [SecCertificate], let leaf = certs.first {
+            var commonName: CFString?
+            SecCertificateCopyCommonName(leaf, &commonName)
+            if let name = commonName as String?, !name.isEmpty {
+                return name
+            }
+            if let summary = SecCertificateCopySubjectSummary(leaf) as String?, !summary.isEmpty {
+                return summary
+            }
+        }
+
+        if let team = dict[kSecCodeInfoTeamIdentifier as String] as? String, !team.isEmpty {
+            return "Team ID: \(team)"
+        }
+
+        if let identifier = dict[kSecCodeInfoIdentifier as String] as? String, !identifier.isEmpty {
+            return "\(identifier) (Ad-hoc)"
+        }
+
+        return "Ad-hoc / Development"
+    }
+
+    public static func daemonParity(isSocketActive: Bool, agentPID: pid_t?) -> DaemonParityStatus {
+        guard isSocketActive else {
+            return .offline
+        }
+        guard let pid = agentPID, pid > 0 else {
+            return .matching
+        }
+        if let daemonPath = ProcessInspector.getProcessPath(pid: pid) {
+            let appBundlePath = Bundle.main.bundleURL.path
+            if appBundlePath.hasSuffix(".app") && !daemonPath.hasPrefix(appBundlePath) {
+                return .mismatch
+            }
+        }
+        return .matching
+    }
+
+    private static func readGitHeadCommit() -> String? {
+        let cwd = FileManager.default.currentDirectoryPath
+        let headPath = (cwd as NSString).appendingPathComponent(".git/HEAD")
+        guard let content = try? String(contentsOfFile: headPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return nil
+        }
+        if content.hasPrefix("ref: ") {
+            let ref = String(content.dropFirst(5))
+            let refPath = (cwd as NSString).appendingPathComponent(".git/\(ref)")
+            if let sha = try? String(contentsOfFile: refPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !sha.isEmpty {
+                return String(sha.prefix(7))
+            }
+        } else if content.count >= 7 {
+            return String(content.prefix(7))
+        }
+        return nil
+    }
+}
+
