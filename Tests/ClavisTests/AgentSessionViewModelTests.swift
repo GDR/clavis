@@ -3,29 +3,18 @@ import Foundation
 @testable import ClavisCore
 @testable import Clavis
 
-private final class CleanupHook: @unchecked Sendable {
-    private let action: () -> Void
-    init(action: @escaping () -> Void) {
-        self.action = action
-    }
-    deinit {
-        action()
-    }
-}
-
 @Suite
-struct AgentSessionViewModelTests {
+final class AgentSessionViewModelTests {
     private let fixture: ClavisTestFixture
     private let mockAgent: MockAgentController
-    private let _cleanup: CleanupHook
 
     init() throws {
-        let fixture = try ClavisTestFixture()
-        self.fixture = fixture
+        self.fixture = try ClavisTestFixture()
         self.mockAgent = MockAgentController()
-        self._cleanup = CleanupHook {
-            fixture.cleanup()
-        }
+    }
+
+    deinit {
+        fixture.cleanup()
     }
 
     @Test @MainActor

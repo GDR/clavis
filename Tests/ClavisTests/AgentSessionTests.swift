@@ -124,10 +124,10 @@ struct AgentSessionTests {
     }
 
     @Test
-    func test_F02_concurrentSigningsDoNotMutateLAContextLocalizedReason() async throws {
+    func test_F02_concurrentSigningsDoNotMutateLAContextLocalizedReason() throws {
         let fixture = try ClavisTestFixture()
         defer { fixture.cleanup() }
-        try await fixture.run {
+        try fixture.runSync {
             let store = InteractionCheckingPrivateKeyStore()
             let manager = fixture.makeKeyManager(
                 authenticator: AllowingAuthenticator(),
@@ -178,7 +178,7 @@ struct AgentSessionTests {
                 }
             }
 
-            group.wait()
+            #expect(group.wait(timeout: .now() + 5.0) == .success)
             #expect(failures.isEmpty, "Concurrent signings failed: \(failures.joined(separator: ", "))")
             #expect(store.loadCallCount == 1, "Concurrent signings must not re-query privateKeyStore")
         }

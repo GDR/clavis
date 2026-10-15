@@ -3,25 +3,14 @@ import CryptoKit
 import Foundation
 @testable import ClavisCore
 
-private final class CleanupHook: @unchecked Sendable {
-    private let action: () -> Void
-    init(action: @escaping () -> Void) {
-        self.action = action
-    }
-    deinit {
-        action()
-    }
-}
-
 @Suite("SigningPolicyEvaluatorTests")
-struct SigningPolicyEvaluatorTests {
+final class SigningPolicyEvaluatorTests {
 
     private let fixture: ClavisTestFixture
     private let recorder: InMemoryAuditRecorder
     private let keyManager: KeychainManager
     private let evaluator: SigningPolicyEvaluator
     private let graceManager: GitSigningGraceManager
-    private let _cleanup: CleanupHook
 
     init() throws {
         let fixture = try ClavisTestFixture()
@@ -42,9 +31,10 @@ struct SigningPolicyEvaluatorTests {
         self.graceManager = graceManager
         self.keyManager = keyManager
         self.evaluator = evaluator
-        self._cleanup = CleanupHook {
-            fixture.cleanup()
-        }
+    }
+
+    deinit {
+        fixture.cleanup()
     }
 
 

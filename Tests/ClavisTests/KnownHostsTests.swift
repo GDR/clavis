@@ -3,28 +3,17 @@ import Testing
 import CryptoKit
 @testable import ClavisCore
 
-private final class CleanupHook: @unchecked Sendable {
-    private let action: () -> Void
-    init(action: @escaping () -> Void) {
-        self.action = action
-    }
-    deinit {
-        action()
-    }
-}
-
 @Suite
-struct KnownHostsTests {
+final class KnownHostsTests {
     private let fixture: ClavisTestFixture
     private var testRootURL: URL { fixture.testRootURL }
-    private let _cleanup: CleanupHook
 
     init() throws {
-        let fixture = try ClavisTestFixture()
-        self.fixture = fixture
-        self._cleanup = CleanupHook {
-            fixture.cleanup()
-        }
+        self.fixture = try ClavisTestFixture()
+    }
+
+    deinit {
+        fixture.cleanup()
     }
 
     private func makeEd25519KeyBase64() -> (blob: Data, base64: String) {
