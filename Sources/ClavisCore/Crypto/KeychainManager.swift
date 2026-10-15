@@ -881,6 +881,97 @@ public class KeychainManager {
         }
     }
 
+    public func syncVault(repair: Bool = false) throws -> VaultSyncReport {
+        #if DEBUG
+        if let context = self.testContext, TestContextScope.current == nil {
+            return try TestContextScope.$current.withValue(context) {
+                try self.syncVault(repair: repair)
+            }
+        }
+        #endif
+
+        let publicKeys = try listKeys()
+        let publicLabels = Set(publicKeys.map { $0.label })
+        let privateLabels = Set(try privateKeyStore.allLabels())
+
+        var detected: [VaultAnomaly] = []
+        var repaired: [VaultAnomaly] = []
+
+        // 1. Detect orphaned public cache items (public key exists, but no private key in privateKeyStore or vaultStore)
+        for pubKey in publicKeys {
+            let label = pubKey.label
+            let hasPrivate = privateKeyStore.contains(label: label) || vaultStore.hasRecord(label: label)
+            if !hasPrivate {
+                detected.append(.orphanedPublicCache(label: label))
+                if repair {
+                    do {
+                        try PublicKeyStore.removeChecked(label: label)
+                        repaired.append(.orphanedPublicCache(label: label))
+                    } catch {
+                        ClavisLogger.log("VAULT_SYNC", "Failed to remove orphaned public key '\(label)': \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+
+        // 2. Detect missing public cache items (private key exists, but no public key in cache)
+        for privLabel in privateLabels.sorted() {
+            if !publicLabels.contains(privLabel) {
+                detected.append(.missingPublicCache(label: privLabel))
+                if repair {
+                    do {
+                        var rawRecordData: Data? = nil
+                        let emptyContext = LAContext()
+                        emptyContext.interactionNotAllowed = true
+                        do {
+                            rawRecordData = try privateKeyStore.load(label: privLabel, context: emptyContext, prompt: "")
+                        } catch {
+                            rawRecordData = try? privateKeyStore.load(label: privLabel, context: LAContext(), prompt: "")
+                        }
+
+                        var record: StoredPrivateKeyRecord? = nil
+                        if let rawRecordData {
+                            record = try? StoredPrivateKeyRecord.decode(from: rawRecordData)
+                        }
+                        if record == nil, vaultStore.hasRecord(label: privLabel) {
+                            record = try? vaultStore.loadRecord(label: privLabel, context: nil)
+                        }
+
+                        if var rec = record {
+                            defer { rec.wipe() }
+                            let signer = try signerRegistry.signer(for: rec.algorithm)
+                            let pubBlob = try signer.derivePublicKeyBlob(record: rec, context: nil, provider: activeSigningProvider)
+                            let openSSH = signer.formatOpenSSHPublicKey(publicKeyBlob: pubBlob, label: privLabel)
+                            let fingerprint = "SHA256:" + Data(SHA256.hash(data: pubBlob)).base64EncodedString().replacingOccurrences(of: "=", with: "")
+
+                            let restoredInfo = SSHKeyInfo(
+                                label: privLabel,
+                                publicKeyOpenSSH: openSSH,
+                                publicKeyBlob: pubBlob,
+                                fingerprint: fingerprint,
+                                createdAt: rec.createdAt,
+                                algorithmName: rec.algorithm.rawValue,
+                                storage: rec.storageType,
+                                biometricPolicy: rec.biometricPolicy ?? .userPresence,
+                                keyPurpose: rec.keyPurpose
+                            )
+                            try PublicKeyStore.saveChecked(restoredInfo)
+                            repaired.append(.missingPublicCache(label: privLabel))
+                        }
+                    } catch {
+                        ClavisLogger.log("VAULT_SYNC", "Failed to repair missing public key for '\(privLabel)': \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+
+        if repair {
+            PublicKeyStore.invalidateCache()
+        }
+
+        return VaultSyncReport(detectedAnomalies: detected, repairedAnomalies: repaired)
+    }
+
     private func validateLabel(_ label: String) throws {
         let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasControlCharacters = label.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
@@ -930,5 +1021,66 @@ public enum KeyDeletionError: LocalizedError, Equatable {
         case .partial(let label):
             return "Failed to safely remove vault record for key '\(label)': key mismatch detected. Public metadata and vault record preserved."
         }
+    }
+}
+
+public enum VaultAnomaly: Equatable, Hashable, Sendable {
+    case missingPublicCache(label: String)
+    case orphanedPublicCache(label: String)
+
+    public var label: String {
+        switch self {
+        case .missingPublicCache(let label): return label
+        case .orphanedPublicCache(let label): return label
+        }
+    }
+}
+
+public struct VaultSyncReport: Equatable, Sendable {
+    public let missingPublicCache: [String]
+    public let orphanedPublicCache: [String]
+    public let repairedCount: Int
+    public let detectedAnomalies: [VaultAnomaly]
+    public let repairedAnomalies: [VaultAnomaly]
+
+    public var isDesynchronized: Bool {
+        !missingPublicCache.isEmpty || !orphanedPublicCache.isEmpty
+    }
+
+    public init(
+        missingPublicCache: [String] = [],
+        orphanedPublicCache: [String] = [],
+        repairedCount: Int = 0,
+        detectedAnomalies: [VaultAnomaly]? = nil,
+        repairedAnomalies: [VaultAnomaly] = []
+    ) {
+        self.missingPublicCache = missingPublicCache
+        self.orphanedPublicCache = orphanedPublicCache
+        self.repairedCount = repairedCount
+        if let detectedAnomalies {
+            self.detectedAnomalies = detectedAnomalies
+        } else {
+            self.detectedAnomalies = missingPublicCache.map { .missingPublicCache(label: $0) }
+                + orphanedPublicCache.map { .orphanedPublicCache(label: $0) }
+        }
+        self.repairedAnomalies = repairedAnomalies
+    }
+
+    public init(detectedAnomalies: [VaultAnomaly], repairedAnomalies: [VaultAnomaly] = []) {
+        var missing: [String] = []
+        var orphaned: [String] = []
+        for anomaly in detectedAnomalies {
+            switch anomaly {
+            case .missingPublicCache(let label):
+                missing.append(label)
+            case .orphanedPublicCache(let label):
+                orphaned.append(label)
+            }
+        }
+        self.missingPublicCache = missing
+        self.orphanedPublicCache = orphaned
+        self.repairedCount = repairedAnomalies.count
+        self.detectedAnomalies = detectedAnomalies
+        self.repairedAnomalies = repairedAnomalies
     }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 public struct GlassCardModifier: ViewModifier {
     public var cornerRadius: CGFloat = 10
@@ -7,18 +8,59 @@ public struct GlassCardModifier: ViewModifier {
     public func body(content: Content) -> some View {
         content
             .background(
-                RoundedRectangle(cornerRadius: cornerRadius)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(Color(nsColor: NSColor.controlBackgroundColor).opacity(0.4))
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .stroke(strokeColor, lineWidth: 0.8)
             )
     }
 }
 
-@available(macOS 26.0, *)
+public struct AdaptiveGlassCapsuleModifier: ViewModifier {
+    public init() {}
+
+    @ViewBuilder
+    public func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .glassEffect(.regular.interactive(), in: .capsule)
+        } else {
+            content
+                .background(
+                    ZStack {
+                        VisualEffectView(material: .sidebar, blendingMode: .withinWindow)
+                        Color(nsColor: NSColor.controlBackgroundColor).opacity(0.5)
+                    }
+                    .clipShape(Capsule())
+                )
+                .overlay(
+                    Capsule()
+                        .stroke(DesignTokens.cardBorder, lineWidth: 0.8)
+                )
+        }
+    }
+}
+
+public struct AdaptiveGlassCapsule<Content: View>: View {
+    public var spacing: CGFloat
+    @ViewBuilder public let content: () -> Content
+
+    public init(spacing: CGFloat = 2, @ViewBuilder content: @escaping () -> Content) {
+        self.spacing = spacing
+        self.content = content
+    }
+
+    public var body: some View {
+        HStack(spacing: spacing) {
+            content()
+        }
+        .modifier(AdaptiveGlassCapsuleModifier())
+    }
+}
+
 public struct LiquidGlassButtonGroup<Content: View>: View {
     public var spacing: CGFloat
     @ViewBuilder let content: () -> Content
@@ -28,16 +70,34 @@ public struct LiquidGlassButtonGroup<Content: View>: View {
         self.content = content
     }
 
+    @ViewBuilder
     public var body: some View {
-        GlassEffectContainer(spacing: spacing) {
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) {
+                HStack(spacing: spacing) {
+                    content()
+                }
+            }
+        } else {
             HStack(spacing: spacing) {
                 content()
             }
+            .padding(4)
+            .background(
+                ZStack {
+                    VisualEffectView(material: .sidebar, blendingMode: .withinWindow)
+                    Color(nsColor: NSColor.controlBackgroundColor).opacity(0.4)
+                }
+                .clipShape(Capsule())
+            )
+            .overlay(
+                Capsule()
+                    .stroke(DesignTokens.cardBorder, lineWidth: 0.8)
+            )
         }
     }
 }
 
-@available(macOS 26.0, *)
 public struct LiquidGlassSegmentedBar<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
@@ -50,7 +110,7 @@ public struct LiquidGlassSegmentedBar<Content: View>: View {
             content()
         }
         .frame(height: 26)
-        .glassEffect(.regular.interactive(), in: .capsule)
+        .modifier(AdaptiveGlassCapsuleModifier())
     }
 }
 
@@ -59,7 +119,7 @@ public struct MacOSGlassSegmentDivider: View {
 
     public var body: some View {
         Rectangle()
-            .fill(Color.white.opacity(0.16))
+            .fill(DesignTokens.cardBorder)
             .frame(width: 1, height: 14)
     }
 }
@@ -73,7 +133,15 @@ public struct LiquidGlassSegmentModifier: ViewModifier {
             .frame(width: width, height: 26)
             .background(
                 Rectangle()
-                    .fill(isHovered ? Color.white.opacity(0.12) : Color.clear)
+                    .fill(
+                        isHovered
+                            ? Color(nsColor: NSColor(name: nil) { appearance in
+                                appearance.isDarkMode
+                                    ? NSColor(calibratedWhite: 1.0, alpha: 0.12)
+                                    : NSColor(calibratedWhite: 0.0, alpha: 0.08)
+                            })
+                            : Color.clear
+                    )
             )
             .contentShape(Rectangle())
             .onHover { isHovered = $0 }
@@ -83,6 +151,10 @@ public struct LiquidGlassSegmentModifier: ViewModifier {
 public extension View {
     func glassCard(cornerRadius: CGFloat = 10, strokeColor: Color = DesignTokens.cardBorder) -> some View {
         self.modifier(GlassCardModifier(cornerRadius: cornerRadius, strokeColor: strokeColor))
+    }
+
+    func adaptiveGlassCapsule() -> some View {
+        self.modifier(AdaptiveGlassCapsuleModifier())
     }
 
     func liquidGlassSegment(width: CGFloat = 30) -> some View {
@@ -97,15 +169,11 @@ public extension View {
         self.modifier(LiquidGlassRowSelectionModifier(isSelected: isSelected, isHovered: isHovered, cornerRadius: cornerRadius))
     }
 
-    @ViewBuilder
     func disableFocusEffect() -> some View {
-        if #available(macOS 14.0, *) {
-            self.focusable(false).focusEffectDisabled()
-        } else {
-            self.focusable(false)
-        }
+        self
     }
 }
+
 
 public struct LiquidGlassRowSelectionModifier: ViewModifier {
     public var isSelected: Bool
@@ -121,8 +189,16 @@ public struct LiquidGlassRowSelectionModifier: ViewModifier {
                             .fill(
                                 LinearGradient(
                                     colors: [
-                                        Color.white.opacity(isHovered ? 0.22 : 0.16),
-                                        Color.white.opacity(isHovered ? 0.10 : 0.05)
+                                        Color(nsColor: NSColor(name: nil) { appearance in
+                                            appearance.isDarkMode
+                                                ? NSColor(calibratedWhite: 1.0, alpha: isHovered ? 0.22 : 0.16)
+                                                : NSColor.selectedContentBackgroundColor.withAlphaComponent(isHovered ? 0.22 : 0.16)
+                                        }),
+                                        Color(nsColor: NSColor(name: nil) { appearance in
+                                            appearance.isDarkMode
+                                                ? NSColor(calibratedWhite: 1.0, alpha: isHovered ? 0.10 : 0.05)
+                                                : NSColor.selectedContentBackgroundColor.withAlphaComponent(isHovered ? 0.12 : 0.08)
+                                        })
                                     ],
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing
@@ -131,7 +207,13 @@ public struct LiquidGlassRowSelectionModifier: ViewModifier {
                             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                     } else if isHovered {
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .fill(Color.white.opacity(0.06))
+                            .fill(
+                                Color(nsColor: NSColor(name: nil) { appearance in
+                                    appearance.isDarkMode
+                                        ? NSColor(calibratedWhite: 1.0, alpha: 0.06)
+                                        : NSColor(calibratedWhite: 0.0, alpha: 0.05)
+                                })
+                            )
                     }
                 }
             )
@@ -142,8 +224,16 @@ public struct LiquidGlassRowSelectionModifier: ViewModifier {
                             .stroke(
                                 LinearGradient(
                                     colors: [
-                                        Color.white.opacity(isHovered ? 0.38 : 0.28),
-                                        Color.white.opacity(isHovered ? 0.14 : 0.08)
+                                        Color(nsColor: NSColor(name: nil) { appearance in
+                                            appearance.isDarkMode
+                                                ? NSColor(calibratedWhite: 1.0, alpha: isHovered ? 0.38 : 0.28)
+                                                : NSColor.selectedContentBackgroundColor.withAlphaComponent(isHovered ? 0.45 : 0.35)
+                                        }),
+                                        Color(nsColor: NSColor(name: nil) { appearance in
+                                            appearance.isDarkMode
+                                                ? NSColor(calibratedWhite: 1.0, alpha: isHovered ? 0.14 : 0.08)
+                                                : NSColor.selectedContentBackgroundColor.withAlphaComponent(isHovered ? 0.20 : 0.14)
+                                        })
                                     ],
                                     startPoint: .top,
                                     endPoint: .bottom
@@ -152,11 +242,30 @@ public struct LiquidGlassRowSelectionModifier: ViewModifier {
                             )
                     } else if isHovered {
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .stroke(Color.white.opacity(0.09), lineWidth: 0.8)
+                            .stroke(
+                                Color(nsColor: NSColor(name: nil) { appearance in
+                                    appearance.isDarkMode
+                                        ? NSColor(calibratedWhite: 1.0, alpha: 0.09)
+                                        : NSColor(calibratedWhite: 0.0, alpha: 0.08)
+                                }),
+                                lineWidth: 0.8
+                            )
                     }
                 }
             )
-            .shadow(color: isSelected ? Color.black.opacity(0.22) : .clear, radius: 4, x: 0, y: 1.5)
+            .shadow(
+                color: isSelected
+                    ? Color(nsColor: NSColor(name: nil) { appearance in
+                        appearance.isDarkMode
+                            ? NSColor(calibratedWhite: 0.0, alpha: 0.22)
+                            : NSColor(calibratedWhite: 0.0, alpha: 0.08)
+                    })
+                    : .clear,
+                radius: 4,
+                x: 0,
+                y: 1.5
+            )
     }
 }
+
 

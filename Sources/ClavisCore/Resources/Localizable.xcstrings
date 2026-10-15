@@ -840,13 +840,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Create or import an SSH key to start"
+            "value": "Create an SSH key to start"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Создайте или импортируйте SSH-ключ для начала работы"
+            "value": "Создайте SSH-ключ для начала работы"
           }
         }
       }
@@ -1323,57 +1323,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Сгенерировать ключ"
-          }
-        }
-      }
-    },
-    "create_key.software_title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Software Key (Ed25519)"
-          }
-        },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Программный ключ (Ed25519)"
-          }
-        }
-      }
-    },
-    "create_key.software_badge": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "KEYCHAIN"
-          }
-        },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "СВЯЗКА КЛЮЧЕЙ"
-          }
-        }
-      }
-    },
-    "create_key.software_subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Standard Edwards-curve key. Supported by age/agenix, SSH, and Git commit signing, with session TTL memory caching."
-          }
-        },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Стандартный ключ на кривой Эдвардса. Поддерживается age/agenix, SSH и подписью коммитов Git, с TTL кэшированием в памяти."
           }
         }
       }
@@ -2224,23 +2173,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Apple Secure Enclave (аппаратный чип)"
-          }
-        }
-      }
-    },
-    "inspector.storage_software_keychain": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "macOS Login Keychain (Software)"
-          }
-        },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Связка ключей macOS (программный)"
           }
         }
       }
@@ -5080,6 +5012,1502 @@
           "stringUnit": {
             "state": "translated",
             "value": "PIN-код легче подобрать, чем пароль учетной записи. Любой, кто узнает его, сможет разблокировать Clavis и прочитать историю."
+          }
+        }
+      }
+    },
+    "common.retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Повторить"
+          }
+        }
+      }
+    },
+    "menubar.show_all_keys": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show all %d keys…"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Показать все %d ключей…"
+          }
+        }
+      }
+    },
+    "menubar.show_all_keys_simple": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show all keys…"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Показать все ключи…"
+          }
+        }
+      }
+    },
+    "key_list.search_help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search keys (⌘F)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Поиск ключей (⌘F)"
+          }
+        }
+      }
+    },
+    "key_list.add_key_help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create New Key (⌘N)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Создать новый ключ (⌘N)"
+          }
+        }
+      }
+    },
+    "key_list.onboarding_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Welcome to Clavis"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Добро пожаловать в Clavis"
+          }
+        }
+      }
+    },
+    "key_list.onboarding_subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generate your first hardware-bound SSH key to get started."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Создайте свой первый аппаратный SSH-ключ для начала работы."
+          }
+        }
+      }
+    },
+    "key_list.onboarding_ssh_config_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH Configuration (~/.ssh/config)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Конфигурация SSH (~/.ssh/config)"
+          }
+        }
+      }
+    },
+    "key_list.onboarding_git_config_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Git Commit Signing Setup"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Настройка подписи коммитов в Git"
+          }
+        }
+      }
+    },
+    "key_list.onboarding_env_var_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terminal Environment Variable"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Переменная окружения терминала"
+          }
+        }
+      }
+    },
+    "key_list.context_menu_copy_public_key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy Public Key"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Скопировать открытый ключ"
+          }
+        }
+      }
+    },
+    "key_list.context_menu_copy_fingerprint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy Fingerprint"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Скопировать отпечаток"
+          }
+        }
+      }
+    },
+    "key_list.context_menu_delete_key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete Key…"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Удалить ключ…"
+          }
+        }
+      }
+    },
+    "panel_lock.clarification": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Locking the control panel does not disable background SSH authentication or agent signing."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Блокировка панели управления не отключает фоновую SSH-аутентификацию и подпись агента."
+          }
+        }
+      }
+    },
+    "panel_lock.enter_pin_to_unlock": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Press Return to unlock"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Нажмите Return для разблокировки"
+          }
+        }
+      }
+    },
+    "inspector.delete_alert_message_with_fingerprint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Are you sure you want to delete '%1$@' (%2$@)? This action cannot be undone."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Вы уверены, что хотите удалить «%1$@» (%2$@)? Это действие нельзя отменить."
+          }
+        }
+      }
+    },
+    "inspector.posture_general": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prompts Touch ID for each SSH authentication or Git signing request."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Запрашивает Touch ID для каждого запроса SSH-аутентификации или подписи Git."
+          }
+        }
+      }
+    },
+    "inspector.posture_git_signing_only": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prompts Touch ID once to begin a 5-minute Git signing session. Blocked from SSH login."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Запрашивает Touch ID один раз для начала 5-минутной сессии подписи Git. Заблокирован для входа по SSH."
+          }
+        }
+      }
+    },
+    "inspector.posture_agent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Controlled by agent policy. Signs automatically or prompts based on session rules."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Управляется политикой агента. Подписывает автоматически или запрашивает подтверждение по правилам сессии."
+          }
+        }
+      }
+    },
+    "inspector.socket_status_active": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Active"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Активен"
+          }
+        }
+      }
+    },
+    "inspector.socket_status_offline": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не активен"
+          }
+        }
+      }
+    },
+    "inspector.change_key_purpose": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change Key Purpose…"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Изменить назначение ключа…"
+          }
+        }
+      }
+    },
+    "inspector.change_key_purpose_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change Key Purpose"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Изменение назначения ключа"
+          }
+        }
+      }
+    },
+    "inspector.change_key_purpose_message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Are you sure you want to change the purpose of '%1$@' to %2$@? Confirmation with Touch ID is required."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Вы уверены, что хотите изменить назначение ключа «%1$@» на %2$@? Требуется подтверждение с помощью Touch ID."
+          }
+        }
+      }
+    },
+    "inspector.active_git_session_section": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ACTIVE GIT SIGNING SESSION"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "АКТИВНАЯ СЕССИЯ ПОДПИСИ GIT"
+          }
+        }
+      }
+    },
+    "inspector.revoke_git_session": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revoke Session"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Отозвать сессию"
+          }
+        }
+      }
+    },
+    "inspector.git_session_operations_left": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d operations remaining"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Осталось операций: %d"
+          }
+        }
+      }
+    },
+    "create_key.hardware_enclave_card_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apple Secure Enclave"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apple Secure Enclave"
+          }
+        }
+      }
+    },
+    "create_key.hardware_enclave_card_subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hardware-bound NIST P-256 identity protected by biometric authentication."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Аппаратный ключ NIST P-256 с биометрической защитой."
+          }
+        }
+      }
+    },
+    "settings.vault_section": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "VAULT INTEGRITY"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ЦЕЛОСТНОСТЬ ХРАНИЛИЩА"
+          }
+        }
+      }
+    },
+    "settings.vault_healthy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hardware vault cache is synchronized and healthy."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Кэш аппаратного хранилища синхронизирован и исправен."
+          }
+        }
+      }
+    },
+    "settings.vault_desync_warning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vault desynchronization detected"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Обнаружена рассинхронизация хранилища"
+          }
+        }
+      }
+    },
+    "settings.vault_desync_details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d anomalies detected between keychain and public key store."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Обнаружено аномалий: %d между связкой ключей и кэшем открытых ключей."
+          }
+        }
+      }
+    },
+    "settings.vault_repair_button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repair Vault"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Восстановить хранилище"
+          }
+        }
+      }
+    },
+    "settings.vault_repaired": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vault repaired successfully."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Хранилище успешно восстановлено."
+          }
+        }
+      }
+    },
+    "settings.about_section": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ABOUT CLAVIS"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "О ПРОГРАММЕ CLAVIS"
+          }
+        }
+      }
+    },
+    "settings.version_label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Версия"
+          }
+        }
+      }
+    },
+    "settings.commit_sha_label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Commit SHA"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Хеш коммита"
+          }
+        }
+      }
+    },
+    "settings.code_signing_label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Code Signing Identity"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Цифровая подпись кода"
+          }
+        }
+      }
+    },
+    "settings.daemon_parity_label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Daemon Version Parity"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Совпадение версий с демоном"
+          }
+        }
+      }
+    },
+    "settings.daemon_parity_match": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Matching"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Совпадает"
+          }
+        }
+      }
+    },
+    "settings.daemon_parity_mismatch": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version mismatch"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не совпадает"
+          }
+        }
+      }
+    },
+    "agent_policy.notification_permission_denied": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notifications are disabled in macOS System Settings. Notification banners will not be displayed."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Уведомления отключены в Системных настройках macOS. Баннеры уведомлений не будут отображаться."
+          }
+        }
+      }
+    },
+    "agent_policy.invalid_rate_limit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Max signatures per minute must be a positive integer greater than 0."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Максимум подписей в минуту должен быть положительным целым числом больше 0."
+          }
+        }
+      }
+    },
+    "agent_policy.invalid_host_pattern": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invalid host pattern. Enter a valid hostname, IP, or wildcard pattern."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Некорректный шаблон хоста. Введите имя хоста, IP-адрес или шаблон с подстановочными знаками."
+          }
+        }
+      }
+    },
+    "agent_policy.unsaved_changes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unsaved changes"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Несохраненные изменения"
+          }
+        }
+      }
+    },
+    "agent_policy.discard_changes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard Changes"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Отменить изменения"
+          }
+        }
+      }
+    },
+    "history.retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Повторить"
+          }
+        }
+      }
+    },
+    "history.refresh": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refresh"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Обновить"
+          }
+        }
+      }
+    },
+    "history.refresh_help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refresh History (⌘R)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Обновить историю (⌘R)"
+          }
+        }
+      }
+    },
+    "history.search_placeholder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search by key, host, or process..."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Поиск по ключу, хосту или процессу..."
+          }
+        }
+      }
+    },
+    "history.filter_host": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Host"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Хост"
+          }
+        }
+      }
+    },
+    "history.filter_process": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Process"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Процесс"
+          }
+        }
+      }
+    },
+    "history.load_more": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Load More Events"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Загрузить больше событий"
+          }
+        }
+      }
+    },
+    "history.loading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading…"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Загрузка…"
+          }
+        }
+      }
+    },
+    "history.showing_events": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Showing %1$d of %2$d events"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Показано %1$d из %2$d событий"
+          }
+        }
+      }
+    },
+    "history.event_details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Event Details"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Детали события"
+          }
+        }
+      }
+    },
+    "history.process_chain": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Process Chain"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Цепочка процессов"
+          }
+        }
+      }
+    },
+    "history.process_id": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Process ID"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ID процесса"
+          }
+        }
+      }
+    },
+    "history.record_hash": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Record SHA-256 Hash"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Хеш записи SHA-256"
+          }
+        }
+      }
+    },
+    "history.session_id": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Session ID"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ID сессии"
+          }
+        }
+      }
+    },
+    "history.copy_details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy Event Details"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Скопировать детали события"
+          }
+        }
+      }
+    },
+    "history.copy_hash": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy SHA-256 Hash"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Скопировать хеш SHA-256"
+          }
+        }
+      }
+    },
+    "accessibility.add_key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create new SSH key"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Создать новый SSH-ключ"
+          }
+        }
+      }
+    },
+    "accessibility.lock_all": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lock all active keys"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Заблокировать все активные ключи"
+          }
+        }
+      }
+    },
+    "accessibility.settings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Settings"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Настройки"
+          }
+        }
+      }
+    },
+    "accessibility.history": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signing history"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "История подписи"
+          }
+        }
+      }
+    },
+    "accessibility.status_active": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Status: active"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Статус: активен"
+          }
+        }
+      }
+    },
+    "accessibility.status_offline": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Status: offline"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Статус: отключен"
+          }
+        }
+      }
+    },
+    "accessibility.pin_digit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PIN digit entry"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ввод цифры PIN"
+          }
+        }
+      }
+    },
+    "accessibility.copy_public_key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy public key"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Скопировать открытый ключ"
+          }
+        }
+      }
+    },
+    "accessibility.copy_fingerprint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy SHA-256 fingerprint"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Скопировать отпечаток SHA-256"
+          }
+        }
+      }
+    },
+    "accessibility.agent_status": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent status"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Статус агента"
+          }
+        }
+      }
+    },
+    "accessibility.more_actions": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "More actions"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Дополнительные действия"
+          }
+        }
+      }
+    },
+    "accessibility.delete_host": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove allowed host"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Удалить разрешенный хост"
+          }
+        }
+      }
+    },
+    "accessibility.expand_details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expand details"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Развернуть детали"
+          }
+        }
+      }
+    },
+    "accessibility.collapse_details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collapse details"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Свернуть детали"
+          }
+        }
+      }
+    },
+    "accessibility.expanded": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expanded"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Развернуто"
+          }
+        }
+      }
+    },
+    "accessibility.collapsed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collapsed"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Свернуто"
+          }
+        }
+      }
+    },
+    "accessibility.copy_process_info": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy process path and PID"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Копировать путь процесса и PID"
+          }
+        }
+      }
+    },
+    "accessibility.copy_item": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy %@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Копировать %@"
+          }
+        }
+      }
+    },
+    "agent_session.extend_auth_reason": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "extend agent session for “%1$@” with key “%2$@” by %3$d minutes (requested by %4$@)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "продлить сессию агента для «%1$@» с ключом «%2$@» на %3$d мин (запрошено %4$@)"
+          }
+        }
+      }
+    },
+    "agent_session.ask_prompt_with_host": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "approve agent signature with “%1$@” for “%2$@” on %3$@ (requested by %4$@)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "разрешить подпись агента с «%1$@» для «%2$@» на %3$@ (запрошено %4$@)"
+          }
+        }
+      }
+    },
+    "agent_session.ask_prompt_requester": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "approve agent signature with “%1$@” for “%2$@” (requested by %3$@)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "разрешить подпись агента с «%1$@» для «%2$@» (запрошено %3$@)"
+          }
+        }
+      }
+    },
+    "agent_session.approve_prompt_detailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start agent session for “%1$@” with key “%2$@” for %3$d minutes%4$@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Запустить сессию агента для «%1$@» с ключом «%2$@» на %3$d мин%4$@"
+          }
+        }
+      }
+    },
+    "agent_policy.auth_reason_detailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "change agent session policy for “%1$@” to mode=%2$@, lease=%3$dm (requested by %4$@)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "изменить политику сессии агента для «%1$@» на режим=%2$@, срок=%3$dм (запрошено %4$@)"
+          }
+        }
+      }
+    },
+    "agent_policy.auth_reason_lease": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "change agent session policy for “%1$@” to maxLease=%2$dm (requested by %3$@)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "изменить политику сессии агента для «%1$@» на maxLease=%2$dм (запрошено %3$@)"
+          }
+        }
+      }
+    },
+    "agent_policy.auth_reason": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "change agent session policy for “%1$@” (requested by %2$@)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "изменить политику сессии агента для «%1$@» (запрошено %2$@)"
           }
         }
       }

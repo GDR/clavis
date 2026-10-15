@@ -1,5 +1,6 @@
 import SwiftUI
 import ClavisCore
+import AppKit
 
 public struct StatusDot: View {
     public let isActive: Bool
@@ -13,6 +14,9 @@ public struct StatusDot: View {
             .fill(isActive ? DesignTokens.accentGreen : Color.secondary.opacity(0.6))
             .frame(width: 8, height: 8)
             .shadow(color: isActive ? DesignTokens.accentGreen.opacity(0.6) : .clear, radius: 4)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(ClavisUIStrings.Accessibility.agentStatus)
+            .accessibilityValue(isActive ? ClavisUIStrings.Accessibility.statusActive : ClavisUIStrings.Accessibility.statusOffline)
     }
 }
 
@@ -24,7 +28,7 @@ public struct KeyBadge: View {
     }
 
     private var tintColor: Color {
-        Color(red: 0.30, green: 0.85, blue: 0.55)
+        DesignTokens.accentGreen
     }
 
     public var body: some View {
@@ -36,7 +40,11 @@ public struct KeyBadge: View {
 
             Text(ClavisUIStrings.Badges.hardware)
                 .font(.system(size: 10, weight: .medium))
-                .foregroundColor(Color.white.opacity(0.92))
+                .foregroundColor(Color(nsColor: NSColor(name: nil) { appearance in
+                    appearance.isDarkMode
+                        ? NSColor(calibratedWhite: 1.0, alpha: 0.92)
+                        : NSColor.labelColor
+                }))
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 2.5)
@@ -50,9 +58,17 @@ public struct KeyBadge: View {
                 .stroke(
                     LinearGradient(
                         colors: [
-                            Color.white.opacity(0.30),
+                            Color(nsColor: NSColor(name: nil) { appearance in
+                                appearance.isDarkMode
+                                    ? NSColor(calibratedWhite: 1.0, alpha: 0.30)
+                                    : NSColor(calibratedWhite: 0.0, alpha: 0.15)
+                            }),
                             tintColor.opacity(0.20),
-                            Color.white.opacity(0.08)
+                            Color(nsColor: NSColor(name: nil) { appearance in
+                                appearance.isDarkMode
+                                    ? NSColor(calibratedWhite: 1.0, alpha: 0.08)
+                                    : NSColor(calibratedWhite: 0.0, alpha: 0.05)
+                            })
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -60,7 +76,18 @@ public struct KeyBadge: View {
                     lineWidth: 0.8
                 )
         )
-        .shadow(color: Color.black.opacity(0.2), radius: 2, x: 0, y: 1)
+        .shadow(
+            color: Color(nsColor: NSColor(name: nil) { appearance in
+                appearance.isDarkMode
+                    ? NSColor(calibratedWhite: 0.0, alpha: 0.20)
+                    : NSColor(calibratedWhite: 0.0, alpha: 0.08)
+            }),
+            radius: 2,
+            x: 0,
+            y: 1
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(ClavisUIStrings.Badges.hardware)
     }
 }
 
@@ -72,30 +99,36 @@ public struct PurposeBadge: View {
     }
 
     public var body: some View {
-        if purpose == .gitSigningOnly {
-            HStack(spacing: 3) {
-                Image(systemName: "arrow.triangle.branch")
-                    .font(.system(size: 8, weight: .bold))
-                Text(ClavisUIStrings.Badges.gitOnly)
-                    .font(.system(size: 9, weight: .semibold))
+        Group {
+            if purpose == .gitSigningOnly {
+                HStack(spacing: 3) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 8, weight: .bold))
+                    Text(ClavisUIStrings.Badges.gitOnly)
+                        .font(.system(size: 9, weight: .semibold))
+                }
+                .foregroundColor(DesignTokens.accentOrange)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(DesignTokens.accentOrange.opacity(0.15))
+                .cornerRadius(4)
+            } else if purpose == .agent {
+                HStack(spacing: 3) {
+                    Image(systemName: "cpu")
+                        .font(.system(size: 8, weight: .bold))
+                    Text(ClavisUIStrings.Badges.agent)
+                        .font(.system(size: 9, weight: .semibold))
+                }
+                .foregroundColor(DesignTokens.accentPurple)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(DesignTokens.accentPurple.opacity(0.15))
+                .cornerRadius(4)
             }
-            .foregroundColor(.orange)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(Color.orange.opacity(0.15))
-            .cornerRadius(4)
-        } else if purpose == .agent {
-            HStack(spacing: 3) {
-                Image(systemName: "cpu")
-                    .font(.system(size: 8, weight: .bold))
-                Text(ClavisUIStrings.Badges.agent)
-                    .font(.system(size: 9, weight: .semibold))
-            }
-            .foregroundColor(.purple)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(Color.purple.opacity(0.15))
-            .cornerRadius(4)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(purpose.title)
     }
 }
+
+

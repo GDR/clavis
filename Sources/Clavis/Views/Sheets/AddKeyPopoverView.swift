@@ -1,6 +1,7 @@
 import SwiftUI
 import ClavisCore
 
+@available(*, deprecated, message: "CreateKeySheet is opened directly from toolbar (+). (Refs #87, #90)")
 public struct AddKeyPopoverView: View {
     public var onNewKey: () -> Void
 
@@ -75,7 +76,6 @@ private struct AddKeyPopoverRow: View {
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
-        .disableFocusEffect()
         .onHover { isHovered = $0 }
     }
 }

@@ -22,6 +22,7 @@ public enum ClavisUIStrings {
         public static var addKey: String { localized("common.add_key", "Add Key") }
         public static var error: String { localized("common.error", "Error") }
         public static var ok: String { localized("common.ok", "OK") }
+        public static var retry: String { localized("common.retry", "Retry") }
         public static func minRemaining(_ mins: Int) -> String {
             localizedFormat("common.min_remaining", "%d min remaining", mins)
         }
@@ -52,7 +53,11 @@ public enum ClavisUIStrings {
         public static var useNewKeyHint: String { localized("menubar.use_new_key_hint", "Use 'New Key…' to generate an identity.") }
         public static var searchPlaceholder: String { localized("menubar.search_placeholder", "Search keys...") }
         public static var noKeysFound: String { localized("menubar.no_keys_found", "No Keys Found") }
-        public static var noKeysHint: String { localized("menubar.no_keys_hint", "Create or import an SSH key to start") }
+        public static var noKeysHint: String { localized("menubar.no_keys_hint", "Create an SSH key to start") }
+        public static func showAllKeys(count: Int) -> String {
+            localizedFormat("menubar.show_all_keys", "Show all %d keys…", count)
+        }
+        public static var showAllKeysSimple: String { localized("menubar.show_all_keys_simple", "Show all keys…") }
         public static var preferences: String { localized("menubar.preferences", "Preferences...") }
         public static var settings: String { localized("menubar.settings", "Settings…") }
         public static var history: String { localized("menubar.history", "History…") }
@@ -89,6 +94,16 @@ public enum ClavisUIStrings {
         public static var noUnlockedKeysHelp: String { localized("key_list.no_unlocked_keys_help", "No Unlocked Keys") }
         public static var allCachedKeysLocked: String { localized("key_list.all_cached_keys_locked", "All cached keys locked.") }
         public static var settingsHelp: String { localized("key_list.settings_help", "Settings (Auto Start, Timeout, Nix)") }
+        public static var searchHelp: String { localized("key_list.search_help", "Search keys (⌘F)") }
+        public static var addKeyHelp: String { localized("key_list.add_key_help", "Create New Key (⌘N)") }
+        public static var onboardingTitle: String { localized("key_list.onboarding_title", "Welcome to Clavis") }
+        public static var onboardingSubtitle: String { localized("key_list.onboarding_subtitle", "Generate your first hardware-bound SSH key to get started.") }
+        public static var onboardingSshConfigTitle: String { localized("key_list.onboarding_ssh_config_title", "SSH Configuration (~/.ssh/config)") }
+        public static var onboardingGitConfigTitle: String { localized("key_list.onboarding_git_config_title", "Git Commit Signing Setup") }
+        public static var onboardingEnvVarTitle: String { localized("key_list.onboarding_env_var_title", "Terminal Environment Variable") }
+        public static var contextMenuCopyPublicKey: String { localized("key_list.context_menu_copy_public_key", "Copy Public Key") }
+        public static var contextMenuCopyFingerprint: String { localized("key_list.context_menu_copy_fingerprint", "Copy Fingerprint") }
+        public static var contextMenuDeleteKey: String { localized("key_list.context_menu_delete_key", "Delete Key…") }
         public static var filterAll: String { localized("key_list.filter_all", "All") }
         public static var filterPersonal: String { localized("key_list.filter_personal", "Personal") }
         public static var filterAgent: String { localized("key_list.filter_agent", "Agent") }
@@ -115,6 +130,9 @@ public enum ClavisUIStrings {
         public static var deleteAlertTitle: String { localized("inspector.delete_alert_title", "Delete Key") }
         public static func deleteAlertMessage(label: String) -> String {
             localizedFormat("inspector.delete_alert_message", "Are you sure you want to delete '%@'? This action cannot be undone.", label)
+        }
+        public static func deleteAlertMessage(label: String, fingerprint: String) -> String {
+            localizedFormat("inspector.delete_alert_message_with_fingerprint", "Are you sure you want to delete '%1$@' (%2$@)? This action cannot be undone.", label, fingerprint)
         }
 
         public static var copyDeployKey: String { KeyDetail.copyDeployKey }
@@ -152,11 +170,31 @@ public enum ClavisUIStrings {
         public static var securitySection: String { localized("inspector.security_section", "SECURITY") }
         public static var storageLabel: String { localized("inspector.storage_label", "Storage") }
         public static var storageHardwareEnclave: String { localized("inspector.storage_hardware_enclave", "Apple Secure Enclave (Hardware Chip)") }
-        public static var storageSoftwareKeychain: String { localized("inspector.storage_software_keychain", "macOS Login Keychain (Software)") }
         public static var authenticationLabel: String { localized("inspector.authentication_label", "Authentication") }
         public static var authTouchIdOnlyStrict: String { localized("inspector.auth_touch_id_only_strict", "Touch ID Only (Strict Current Set)") }
         public static var authUserPresence: String { localized("inspector.auth_user_presence", "User Presence (Touch ID / Watch / Password)") }
         public static var authTouchIdProtectedSeed: String { localized("inspector.auth_touch_id_protected_seed", "Touch ID (Protected Seed)") }
+
+        // Dynamic Security Posture & Socket
+        public static var postureGeneral: String { localized("inspector.posture_general", "Prompts Touch ID for each SSH authentication or Git signing request.") }
+        public static var postureGitSigningOnly: String { localized("inspector.posture_git_signing_only", "Prompts Touch ID once to begin a 5-minute Git signing session. Blocked from SSH login.") }
+        public static var postureAgent: String { localized("inspector.posture_agent", "Controlled by agent policy. Signs automatically or prompts based on session rules.") }
+        public static var socketStatusActive: String { localized("inspector.socket_status_active", "Active") }
+        public static var socketStatusOffline: String { localized("inspector.socket_status_offline", "Offline") }
+
+        // Change Key Purpose
+        public static var changeKeyPurpose: String { localized("inspector.change_key_purpose", "Change Key Purpose…") }
+        public static var changeKeyPurposeTitle: String { localized("inspector.change_key_purpose_title", "Change Key Purpose") }
+        public static func changeKeyPurposeMessage(label: String, purpose: String) -> String {
+            localizedFormat("inspector.change_key_purpose_message", "Are you sure you want to change the purpose of '%1$@' to %2$@? Confirmation with Touch ID is required.", label, purpose)
+        }
+
+        // Active Git Signing Grace Session
+        public static var activeGitSessionSection: String { localized("inspector.active_git_session_section", "ACTIVE GIT SIGNING SESSION") }
+        public static var revokeGitSession: String { localized("inspector.revoke_git_session", "Revoke Session") }
+        public static func gitSessionOperationsLeft(_ count: Int) -> String {
+            localizedFormat("inspector.git_session_operations_left", "%d operations remaining", count)
+        }
 
         // Hardware Isolation
         public static var hardwareIsolationStrictTitle: String { localized("inspector.hardware_isolation_strict_title", "Hardware Isolation (Strict Biometrics)") }
@@ -197,13 +235,11 @@ public enum ClavisUIStrings {
         public static var purposeLabel: String { localized("create_key.purpose_label", "Key Purpose & Scope") }
         public static var generateButton: String { localized("create_key.generate_button", "Generate Key") }
 
-        public static var softwareTitle: String { localized("create_key.software_title", "Software Key (Ed25519)") }
-        public static var softwareBadge: String { localized("create_key.software_badge", "KEYCHAIN") }
-        public static var softwareSubtitle: String { localized("create_key.software_subtitle", "Standard Edwards-curve key. Supported by SSH and Git commit signing.") }
-
         public static var hardwareTitle: String { localized("create_key.hardware_title", "Hardware Key (Secure Enclave)") }
         public static var hardwareBadge: String { localized("create_key.hardware_badge", "APPLE SILICON") }
         public static var hardwareSubtitle: String { localized("create_key.hardware_subtitle", "Hardware-bound NIST P-256 key isolated inside the Apple Silicon chip. Private key never leaves hardware. Always prompts Touch ID per operation.") }
+        public static var hardwareEnclaveCardTitle: String { localized("create_key.hardware_enclave_card_title", "Apple Secure Enclave") }
+        public static var hardwareEnclaveCardSubtitle: String { localized("create_key.hardware_enclave_card_subtitle", "Hardware-bound NIST P-256 identity protected by biometric authentication.") }
         public static var enclaveUnavailable: String { localized("create_key.enclave_unavailable", "Apple Secure Enclave is not available on this device.") }
         public static var tagSSH: String { localized("create_key.tag_ssh", "SSH") }
         public static var tagGitSigning: String { localized("create_key.tag_git_signing", "Git Signing") }
@@ -274,6 +310,22 @@ public enum ClavisUIStrings {
         public static var agentSocketTitle: String { localized("settings.agent_socket_title", "Agent Socket") }
         public static var envVarTitle: String { localized("settings.env_var_title", "Terminal Environment Variable") }
         public static var envVarCommand: String { "export SSH_AUTH_SOCK=~/.ssh/clavis.sock" }
+
+        public static var vaultSection: String { localized("settings.vault_section", "VAULT INTEGRITY") }
+        public static var vaultHealthy: String { localized("settings.vault_healthy", "Hardware vault cache is synchronized and healthy.") }
+        public static var vaultDesyncWarning: String { localized("settings.vault_desync_warning", "Vault desynchronization detected") }
+        public static func vaultDesyncDetails(_ count: Int) -> String {
+            localizedFormat("settings.vault_desync_details", "%d anomalies detected between keychain and public key store.", count)
+        }
+        public static var vaultRepairButton: String { localized("settings.vault_repair_button", "Repair Vault") }
+        public static var vaultRepaired: String { localized("settings.vault_repaired", "Vault repaired successfully.") }
+        public static var aboutSection: String { localized("settings.about_section", "ABOUT CLAVIS") }
+        public static var versionLabel: String { localized("settings.version_label", "Version") }
+        public static var commitShaLabel: String { localized("settings.commit_sha_label", "Commit SHA") }
+        public static var codeSigningLabel: String { localized("settings.code_signing_label", "Code Signing Identity") }
+        public static var daemonParityLabel: String { localized("settings.daemon_parity_label", "Daemon Version Parity") }
+        public static var daemonParityMatch: String { localized("settings.daemon_parity_match", "Matching") }
+        public static var daemonParityMismatch: String { localized("settings.daemon_parity_mismatch", "Version mismatch") }
     }
 
     public enum App {
@@ -289,6 +341,24 @@ public enum ClavisUIStrings {
     public enum History {
         public static var windowTitle: String { localized("history.window_title", "Signing History") }
         public static var showHistory: String { localized("history.show_history", "Show History") }
+        public static var retry: String { ClavisUIStrings.Common.retry }
+        public static var refresh: String { localized("history.refresh", "Refresh") }
+        public static var refreshHelp: String { localized("history.refresh_help", "Refresh History (⌘R)") }
+        public static var searchPlaceholder: String { localized("history.search_placeholder", "Search by key, host, or process...") }
+        public static var filterHost: String { localized("history.filter_host", "Host") }
+        public static var filterProcess: String { localized("history.filter_process", "Process") }
+        public static var loadMore: String { localized("history.load_more", "Load More Events") }
+        public static var loading: String { localized("history.loading", "Loading…") }
+        public static func showingEvents(count: Int, total: Int) -> String {
+            localizedFormat("history.showing_events", "Showing %1$d of %2$d events", count, total)
+        }
+        public static var eventDetails: String { localized("history.event_details", "Event Details") }
+        public static var processChain: String { localized("history.process_chain", "Process Chain") }
+        public static var processId: String { localized("history.process_id", "Process ID") }
+        public static var recordHash: String { localized("history.record_hash", "Record SHA-256 Hash") }
+        public static var sessionId: String { localized("history.session_id", "Session ID") }
+        public static var copyDetails: String { localized("history.copy_details", "Copy Event Details") }
+        public static var copyHash: String { localized("history.copy_hash", "Copy SHA-256 Hash") }
         public static var filterAllKeys: String { localized("history.filter_all_keys", "All Keys") }
         public static var filterAllKinds: String { localized("history.filter_all_kinds", "All Types") }
         public static var filterKindPersonal: String { localized("history.filter_kind_personal", "Personal") }
@@ -347,7 +417,9 @@ public enum ClavisUIStrings {
 
     public enum PanelLock {
         public static var title: String { localized("panel_lock.title", "Clavis is locked") }
+        public static var clarification: String { localized("panel_lock.clarification", "Locking the control panel does not disable background SSH authentication or agent signing.") }
         public static var unlock: String { localized("panel_lock.unlock", "Unlock") }
+        public static var enterPinToUnlock: String { localized("panel_lock.enter_pin_to_unlock", "Press Return to unlock") }
         public static var unlockMenu: String { localized("panel_lock.unlock_menu", "Unlock Clavis…") }
         public static var reason: String { localized("panel_lock.reason", "unlock Clavis") }
         public static var disableReason: String { localized("panel_lock.disable_reason", "Modify control panel lock settings") }
@@ -485,6 +557,11 @@ public enum ClavisUIStrings {
         public static var refillTitle: String { localized("agent_policy.refill_title", "Refill per minute") }
         public static var saveButton: String { localized("agent_policy.save_button", "Save Policy") }
         public static var savedFeedback: String { localized("agent_policy.saved_feedback", "Policy saved") }
+        public static var unsavedChanges: String { localized("agent_policy.unsaved_changes", "Unsaved changes") }
+        public static var discardChanges: String { localized("agent_policy.discard_changes", "Discard Changes") }
+        public static var notificationPermissionDenied: String { localized("agent_policy.notification_permission_denied", "Notifications are disabled in macOS System Settings. Notification banners will not be displayed.") }
+        public static var invalidRateLimit: String { localized("agent_policy.invalid_rate_limit", "Max signatures per minute must be a positive integer greater than 0.") }
+        public static var invalidHostPattern: String { localized("agent_policy.invalid_host_pattern", "Invalid host pattern. Enter a valid hostname, IP, or wildcard pattern.") }
         public static var globalMaxLease: String { localized("agent_policy.global_max_lease", "Maximum agent session length") }
         public static var changePrompt: String { localized("agent_policy.change_prompt", "Change agent session policy") }
         public static func authReason(
@@ -545,6 +622,30 @@ public enum ClavisUIStrings {
         public static var modeBiometryAndPIN: String { localized("pin_unlock.mode_biometry_and_pin", "Touch ID and PIN") }
         public static var setPinTitle: String { localized("pin_unlock.set_pin_title", "Set PIN") }
     }
+
+    public enum Accessibility {
+        public static var addKey: String { localized("accessibility.add_key", "Create new SSH key") }
+        public static var lockAll: String { localized("accessibility.lock_all", "Lock all active keys") }
+        public static var settings: String { localized("accessibility.settings", "Settings") }
+        public static var history: String { localized("accessibility.history", "Signing history") }
+        public static var statusActive: String { localized("accessibility.status_active", "Status: active") }
+        public static var statusOffline: String { localized("accessibility.status_offline", "Status: offline") }
+        public static var pinDigit: String { localized("accessibility.pin_digit", "PIN digit entry") }
+        public static var copyPublicKey: String { localized("accessibility.copy_public_key", "Copy public key") }
+        public static var copyFingerprint: String { localized("accessibility.copy_fingerprint", "Copy SHA-256 fingerprint") }
+        public static var agentStatus: String { localized("accessibility.agent_status", "Agent status") }
+        public static var moreActions: String { localized("accessibility.more_actions", "More actions") }
+        public static var deleteHost: String { localized("accessibility.delete_host", "Remove allowed host") }
+        public static var expandDetails: String { localized("accessibility.expand_details", "Expand details") }
+        public static var collapseDetails: String { localized("accessibility.collapse_details", "Collapse details") }
+        public static var expanded: String { localized("accessibility.expanded", "Expanded") }
+        public static var collapsed: String { localized("accessibility.collapsed", "Collapsed") }
+        public static var copyProcessInfo: String { localized("accessibility.copy_process_info", "Copy process path and PID") }
+        public static func copyItem(label: String) -> String {
+            localizedFormat("accessibility.copy_item", "Copy %@", label)
+        }
+    }
 }
+
 
 

@@ -1,3 +1,4 @@
+@testable import ClavisTestSupport
 import Foundation
 import Testing
 @testable import ClavisCore
@@ -13,7 +14,13 @@ import Testing
 
         #expect(!ClavisUIStrings.Inspector.securitySection.isEmpty)
         #expect(ClavisUIStrings.Inspector.storageHardwareEnclave == "Apple Secure Enclave (Hardware Chip)")
-        #expect(ClavisUIStrings.Inspector.storageSoftwareKeychain == "macOS Login Keychain (Software)")
+        #expect(ClavisUIStrings.Inspector.postureGeneral == "Prompts Touch ID for each SSH authentication or Git signing request.")
+        #expect(ClavisUIStrings.Inspector.socketStatusActive == "Active")
+        #expect(ClavisUIStrings.Inspector.socketStatusOffline == "Offline")
+        #expect(ClavisUIStrings.Inspector.changeKeyPurpose == "Change Key Purpose…")
+        #expect(ClavisUIStrings.Inspector.revokeGitSession == "Revoke Session")
+        #expect(ClavisUIStrings.Inspector.gitSessionOperationsLeft(5) == "5 operations remaining")
+        #expect(ClavisUIStrings.Inspector.deleteAlertMessage(label: "test", fingerprint: "SHA256:abc") == "Are you sure you want to delete 'test' (SHA256:abc)? This action cannot be undone.")
     }
 
     @Test func testFeedbackStrings() {
@@ -27,12 +34,22 @@ import Testing
         #expect(ClavisUIStrings.KeyList.noKeySelectedTitle == "No Key Selected")
         #expect(ClavisUIStrings.KeyList.deletedKey(label: "my-key") == "Deleted key 'my-key'.")
         #expect(ClavisUIStrings.KeyList.allCachedKeysLocked == "All cached keys locked.")
+        #expect(ClavisUIStrings.KeyList.searchHelp == "Search keys (⌘F)")
+        #expect(ClavisUIStrings.KeyList.addKeyHelp == "Create New Key (⌘N)")
+        #expect(ClavisUIStrings.KeyList.onboardingTitle == "Welcome to Clavis")
+        #expect(ClavisUIStrings.KeyList.onboardingSubtitle == "Generate your first hardware-bound SSH key to get started.")
+        #expect(ClavisUIStrings.KeyList.contextMenuCopyPublicKey == "Copy Public Key")
+        #expect(ClavisUIStrings.KeyList.contextMenuCopyFingerprint == "Copy Fingerprint")
+        #expect(ClavisUIStrings.KeyList.contextMenuDeleteKey == "Delete Key…")
     }
 
     @Test func testMenuBarQuitAlertStrings() {
         #expect(ClavisUIStrings.MenuBar.quitConfirmationTitle == "Quit Clavis?")
         #expect(!ClavisUIStrings.MenuBar.quitConfirmationDetailsWithAgent.isEmpty)
         #expect(!ClavisUIStrings.MenuBar.quitConfirmationDetailsSimple.isEmpty)
+        #expect(ClavisUIStrings.MenuBar.noKeysHint == "Create an SSH key to start")
+        #expect(ClavisUIStrings.MenuBar.showAllKeys(count: 6) == "Show all 6 keys…")
+        #expect(ClavisUIStrings.MenuBar.showAllKeysSimple == "Show all keys…")
     }
 
     @Test func testCommonMinRemaining() {
@@ -44,6 +61,7 @@ import Testing
         #expect(ClavisUIStrings.Common.copied == "Copied")
         #expect(ClavisUIStrings.Common.error == "Error")
         #expect(ClavisUIStrings.Common.ok == "OK")
+        #expect(ClavisUIStrings.Common.retry == "Retry")
     }
 
     @Test func testBadges() {
@@ -65,6 +83,8 @@ import Testing
         #expect(ClavisUIStrings.CreateKey.biometricPolicyLabel == "Biometric Authentication Policy")
         #expect(ClavisUIStrings.CreateKey.purposeLabel == "Key Purpose & Scope")
         #expect(ClavisUIStrings.CreateKey.generateButton == "Generate Key")
+        #expect(ClavisUIStrings.CreateKey.hardwareEnclaveCardTitle == "Apple Secure Enclave")
+        #expect(ClavisUIStrings.CreateKey.hardwareEnclaveCardSubtitle == "Hardware-bound NIST P-256 identity protected by biometric authentication.")
         #expect(ClavisUIStrings.CreateKey.enclaveUnavailable == "Apple Secure Enclave is not available on this device.")
         #expect(ClavisUIStrings.CreateKey.tagSSH == "SSH")
         #expect(ClavisUIStrings.CreateKey.tagGitSigning == "Git Signing")
@@ -98,6 +118,16 @@ import Testing
 
     @Test func testAppSettingsAndAuth() {
         #expect(ClavisUIStrings.Settings.windowTitle == "Settings")
+        #expect(ClavisUIStrings.Settings.vaultSection == "VAULT INTEGRITY")
+        #expect(ClavisUIStrings.Settings.vaultHealthy == "Hardware vault cache is synchronized and healthy.")
+        #expect(ClavisUIStrings.Settings.vaultDesyncWarning == "Vault desynchronization detected")
+        #expect(ClavisUIStrings.Settings.vaultDesyncDetails(3) == "3 anomalies detected between keychain and public key store.")
+        #expect(ClavisUIStrings.Settings.vaultRepairButton == "Repair Vault")
+        #expect(ClavisUIStrings.Settings.aboutSection == "ABOUT CLAVIS")
+        #expect(ClavisUIStrings.Settings.versionLabel == "Version")
+        #expect(ClavisUIStrings.Settings.commitShaLabel == "Commit SHA")
+        #expect(ClavisUIStrings.Settings.codeSigningLabel == "Code Signing Identity")
+        #expect(ClavisUIStrings.Settings.daemonParityLabel == "Daemon Version Parity")
         #expect(ClavisUIStrings.App.unsupportedTitle == "Clavis cannot run on this Mac")
         #expect(ClavisUIStrings.App.unsupportedMessage == "Clavis requires a Mac with Secure Enclave support.")
         #expect(ClavisUIStrings.Auth.errorTimedOut == "User authentication timed out")
@@ -171,163 +201,177 @@ import Testing
     }
 
     @Test func testHistoryLocalizedStrings() {
-        let expectedStrings: [(String, String)] = [
-            (ClavisUIStrings.History.windowTitle, "Signing History"),
-            (ClavisUIStrings.History.showHistory, "Show History"),
-            (ClavisUIStrings.History.filterAllKeys, "All Keys"),
-            (ClavisUIStrings.History.filterAllKinds, "All Types"),
-            (ClavisUIStrings.History.filterKindPersonal, "Personal"),
-            (ClavisUIStrings.History.filterKindAgent, "Agent"),
-            (ClavisUIStrings.History.filterAllResult, "All Results"),
-            (ClavisUIStrings.History.filterRangeHour, "Last Hour"),
-            (ClavisUIStrings.History.filterRangeDay, "Last 24 Hours"),
-            (ClavisUIStrings.History.filterRangeWeek, "Last 7 Days"),
-            (ClavisUIStrings.History.filterRangeAll, "All Time"),
-            (ClavisUIStrings.History.resultAllowed, "Allowed"),
-            (ClavisUIStrings.History.resultDenied, "Denied"),
-            (ClavisUIStrings.History.resultCancelled, "Cancelled"),
-            (ClavisUIStrings.History.resultFailed, "Failed"),
-            (ClavisUIStrings.History.resultInfo, "Info"),
-            (ClavisUIStrings.History.empty, "No audit events recorded"),
-            (ClavisUIStrings.History.export, "Export…"),
-            (ClavisUIStrings.History.suppressedCount(5), "5 similar events suppressed"),
-            (ClavisUIStrings.History.unreadable, "Unreadable (history key changed)"),
-            (ClavisUIStrings.History.omitted, "—"),
-            (ClavisUIStrings.History.omittedTooltip, "Details were not recorded"),
-            (ClavisUIStrings.History.checkIntegrity, "Check Integrity"),
-            (ClavisUIStrings.History.checkIntegrityTitle, "Audit History Integrity"),
-            (ClavisUIStrings.History.checkingIntegrity, "Checking history integrity…"),
-            (ClavisUIStrings.History.checkStatusOk, "History is intact"),
-            (ClavisUIStrings.History.checkStatusOkDesc, "No missing or altered records detected within the verification window."),
-            (ClavisUIStrings.History.checkStatusProblems, "Potential tampering detected"),
-            (ClavisUIStrings.History.checkStatusProblemsDesc, "Discrepancies found between local database and system witness records."),
-            (ClavisUIStrings.History.checkStatusUnavailable, "Integrity check unavailable"),
-            (ClavisUIStrings.History.checkCheckedRows(10), "Checked rows: 10"),
-            (ClavisUIStrings.History.checkMissingRows(2), "Missing rows: 2"),
-            (ClavisUIStrings.History.checkInconsistentRows(1), "Inconsistent rows: 1"),
-            (ClavisUIStrings.History.checkTruncatedTail, "History tail truncated: Yes"),
-            (ClavisUIStrings.History.checkProblemsHeader, "Detected Problems"),
-            (ClavisUIStrings.History.checkMissingRowFormat(seq: 5, witnessedAt: "2026-10-06"), "Missing sequence 5 (witnessed 2026-10-06)"),
-            (ClavisUIStrings.History.checkInconsistentRowFormat(seq: 3), "Inconsistent row sequence 3"),
-            (ClavisUIStrings.History.checkLearnMore, "Learn more"),
-            (ClavisUIStrings.History.gapBanner(count: 3), "3 entries missing (gap detected)"),
-        ]
-        for (actual, expected) in expectedStrings {
-            #expect(actual == expected)
-        }
+        #expect(ClavisUIStrings.History.windowTitle == "Signing History")
+        #expect(ClavisUIStrings.History.showHistory == "Show History")
+        #expect(ClavisUIStrings.History.retry == "Retry")
+        #expect(ClavisUIStrings.History.refresh == "Refresh")
+        #expect(ClavisUIStrings.History.refreshHelp == "Refresh History (⌘R)")
+        #expect(ClavisUIStrings.History.searchPlaceholder == "Search by key, host, or process...")
+        #expect(ClavisUIStrings.History.filterHost == "Host")
+        #expect(ClavisUIStrings.History.filterProcess == "Process")
+        #expect(ClavisUIStrings.History.loadMore == "Load More Events")
+        #expect(ClavisUIStrings.History.loading == "Loading…")
+        #expect(ClavisUIStrings.History.showingEvents(count: 5, total: 20) == "Showing 5 of 20 events")
+        #expect(ClavisUIStrings.History.eventDetails == "Event Details")
+        #expect(ClavisUIStrings.History.processChain == "Process Chain")
+        #expect(ClavisUIStrings.History.processId == "Process ID")
+        #expect(ClavisUIStrings.History.recordHash == "Record SHA-256 Hash")
+        #expect(ClavisUIStrings.History.sessionId == "Session ID")
+        #expect(ClavisUIStrings.History.copyDetails == "Copy Event Details")
+        #expect(ClavisUIStrings.History.copyHash == "Copy SHA-256 Hash")
+        #expect(ClavisUIStrings.History.filterAllKeys == "All Keys")
+        #expect(ClavisUIStrings.History.filterAllKinds == "All Types")
+        #expect(ClavisUIStrings.History.filterKindPersonal == "Personal")
+        #expect(ClavisUIStrings.History.filterKindAgent == "Agent")
+        #expect(ClavisUIStrings.History.filterAllResult == "All Results")
+        #expect(ClavisUIStrings.History.filterRangeHour == "Last Hour")
+        #expect(ClavisUIStrings.History.filterRangeDay == "Last 24 Hours")
+        #expect(ClavisUIStrings.History.filterRangeWeek == "Last 7 Days")
+        #expect(ClavisUIStrings.History.filterRangeAll == "All Time")
+        #expect(ClavisUIStrings.History.resultAllowed == "Allowed")
+        #expect(ClavisUIStrings.History.resultDenied == "Denied")
+        #expect(ClavisUIStrings.History.resultCancelled == "Cancelled")
+        #expect(ClavisUIStrings.History.resultFailed == "Failed")
+        #expect(ClavisUIStrings.History.resultInfo == "Info")
+        #expect(ClavisUIStrings.History.empty == "No audit events recorded")
+        #expect(ClavisUIStrings.History.export == "Export…")
+        #expect(ClavisUIStrings.History.suppressedCount(5) == "5 similar events suppressed")
+        #expect(ClavisUIStrings.History.unreadable == "Unreadable (history key changed)")
+        #expect(ClavisUIStrings.History.omitted == "—")
+        #expect(ClavisUIStrings.History.omittedTooltip == "Details were not recorded")
+        #expect(ClavisUIStrings.History.checkIntegrity == "Check Integrity")
+        #expect(ClavisUIStrings.History.checkIntegrityTitle == "Audit History Integrity")
+        #expect(ClavisUIStrings.History.checkingIntegrity == "Checking history integrity…")
+        #expect(ClavisUIStrings.History.checkStatusOk == "History is intact")
+        #expect(ClavisUIStrings.History.checkStatusOkDesc == "No missing or altered records detected within the verification window.")
+        #expect(ClavisUIStrings.History.checkStatusProblems == "Potential tampering detected")
+        #expect(ClavisUIStrings.History.checkStatusProblemsDesc == "Discrepancies found between local database and system witness records.")
+        #expect(ClavisUIStrings.History.checkStatusUnavailable == "Integrity check unavailable")
+        #expect(ClavisUIStrings.History.checkCheckedRows(10) == "Checked rows: 10")
+        #expect(ClavisUIStrings.History.checkMissingRows(2) == "Missing rows: 2")
+        #expect(ClavisUIStrings.History.checkInconsistentRows(1) == "Inconsistent rows: 1")
+        #expect(ClavisUIStrings.History.checkTruncatedTail == "History tail truncated: Yes")
+        #expect(ClavisUIStrings.History.checkProblemsHeader == "Detected Problems")
+        #expect(ClavisUIStrings.History.checkMissingRowFormat(seq: 5, witnessedAt: "2026-10-06") == "Missing sequence 5 (witnessed 2026-10-06)")
+        #expect(ClavisUIStrings.History.checkInconsistentRowFormat(seq: 3) == "Inconsistent row sequence 3")
         #expect(!ClavisUIStrings.History.checkRetentionExplanation.isEmpty)
+        #expect(ClavisUIStrings.History.checkLearnMore == "Learn more")
+        #expect(ClavisUIStrings.History.gapBanner(count: 3) == "3 entries missing (gap detected)")
     }
 
     @Test func testPanelLockLocalizedStrings() {
-        let expectedStrings: [(String, String)] = [
-            (ClavisUIStrings.PanelLock.title, "Clavis is locked"),
-            (ClavisUIStrings.PanelLock.unlock, "Unlock"),
-            (ClavisUIStrings.PanelLock.unlockMenu, "Unlock Clavis…"),
-            (ClavisUIStrings.PanelLock.reason, "unlock Clavis"),
-            (ClavisUIStrings.PanelLock.disableReason, "Modify control panel lock settings"),
-            (ClavisUIStrings.PanelLock.settingsSection, "Control Panel Lock"),
-            (ClavisUIStrings.PanelLock.settingsToggle, "Require authentication to open Clavis"),
-            (ClavisUIStrings.PanelLock.settingsIdle, "Lock after inactivity"),
-            (ClavisUIStrings.PanelLock.minutesFormat(5), "5 min"),
-            (ClavisUIStrings.PanelLock.agentSessionsCount(2), "2 agent sessions running"),
-        ]
-        for (actual, expected) in expectedStrings {
-            #expect(actual == expected)
-        }
+        #expect(ClavisUIStrings.PanelLock.title == "Clavis is locked")
+        #expect(ClavisUIStrings.PanelLock.clarification == "Locking the control panel does not disable background SSH authentication or agent signing.")
+        #expect(ClavisUIStrings.PanelLock.unlock == "Unlock")
+        #expect(ClavisUIStrings.PanelLock.enterPinToUnlock == "Press Return to unlock")
+        #expect(ClavisUIStrings.PanelLock.unlockMenu == "Unlock Clavis…")
+        #expect(ClavisUIStrings.PanelLock.reason == "unlock Clavis")
+        #expect(ClavisUIStrings.PanelLock.disableReason == "Modify control panel lock settings")
+        #expect(ClavisUIStrings.PanelLock.settingsSection == "Control Panel Lock")
+        #expect(ClavisUIStrings.PanelLock.settingsToggle == "Require authentication to open Clavis")
+        #expect(ClavisUIStrings.PanelLock.settingsIdle == "Lock after inactivity")
+        #expect(ClavisUIStrings.PanelLock.minutesFormat(5) == "5 min")
+        #expect(ClavisUIStrings.PanelLock.agentSessionsCount(2) == "2 agent sessions running")
     }
 
     @Test func testAgentKeyLocalizedStrings() {
-        let expectedStrings: [(String, String)] = [
-            (ClavisUIStrings.KeyPurposeStrings.agentTitle, "Agent"),
-            (ClavisUIStrings.KeyPurposeStrings.agentSubtitle, "Only usable by agents you start through Clavis. Never offered to your terminal."),
-            (ClavisUIStrings.KeyList.filterAll, "All"),
-            (ClavisUIStrings.KeyList.filterPersonal, "Personal"),
-            (ClavisUIStrings.KeyList.filterAgent, "Agent"),
-            (ClavisUIStrings.Badges.agent, "Agent"),
-            (ClavisUIStrings.KeyDetail.copyDeployKey, "Copy Deploy Key"),
-            (ClavisUIStrings.KeyDetail.changeKind, "Change Kind…"),
-            (ClavisUIStrings.KeyDetail.changeKindConfirm, "Change Kind"),
-        ]
-        for (actual, expected) in expectedStrings {
-            #expect(actual == expected)
-        }
+        #expect(ClavisUIStrings.KeyPurposeStrings.agentTitle == "Agent")
+        #expect(ClavisUIStrings.KeyPurposeStrings.agentSubtitle == "Only usable by agents you start through Clavis. Never offered to your terminal.")
+        #expect(ClavisUIStrings.KeyList.filterAll == "All")
+        #expect(ClavisUIStrings.KeyList.filterPersonal == "Personal")
+        #expect(ClavisUIStrings.KeyList.filterAgent == "Agent")
+        #expect(ClavisUIStrings.Badges.agent == "Agent")
+        #expect(ClavisUIStrings.KeyDetail.copyDeployKey == "Copy Deploy Key")
+        #expect(ClavisUIStrings.KeyDetail.changeKind == "Change Kind…")
+        #expect(ClavisUIStrings.KeyDetail.changeKindConfirm == "Change Kind")
         #expect(!ClavisUIStrings.KeyDetail.changeKindAlertMessage(label: "test-key", newPurpose: .agent).isEmpty)
     }
 
     @Test func testAgentSessionLocalizedStrings() {
-        let expectedStrings: [(String, String)] = [
-            (ClavisUIStrings.AgentSession.menuSection, "Agent Sessions"),
-            (ClavisUIStrings.AgentSession.end, "End"),
-            (ClavisUIStrings.AgentSession.remainingFormat(minutes: 12), "12 min remaining"),
-            (ClavisUIStrings.AgentSession.historyShowSession, "Show session"),
-            (ClavisUIStrings.AgentSession.historyEndSession, "End session"),
-            (ClavisUIStrings.AgentSession.extend, "Extend…"),
-            (ClavisUIStrings.AgentSession.extend30m, "+30 min"),
-            (ClavisUIStrings.AgentSession.extend1h, "+1 hour"),
-            (ClavisUIStrings.AgentSession.extend4h, "+4 hours"),
-            (ClavisUIStrings.AgentSession.extendPrompt, "Extend agent session"),
-            (ClavisUIStrings.AgentSession.askPrompt, "Approve agent signature"),
-            (ClavisUIStrings.AgentSession.revokeAll, "Revoke all agent sessions"),
-            (ClavisUIStrings.AgentSession.notificationSignedTitle, "Agent signed"),
-            (ClavisUIStrings.AgentSession.notificationRateLimitedTitle, "Agent rate limited"),
-        ]
-        for (actual, expected) in expectedStrings {
-            #expect(actual == expected)
-        }
+        #expect(ClavisUIStrings.AgentSession.menuSection == "Agent Sessions")
+        #expect(ClavisUIStrings.AgentSession.end == "End")
+        #expect(ClavisUIStrings.AgentSession.remainingFormat(minutes: 12) == "12 min remaining")
+        #expect(ClavisUIStrings.AgentSession.historyShowSession == "Show session")
+        #expect(ClavisUIStrings.AgentSession.historyEndSession == "End session")
+        #expect(ClavisUIStrings.AgentSession.extend == "Extend…")
+        #expect(ClavisUIStrings.AgentSession.extend30m == "+30 min")
+        #expect(ClavisUIStrings.AgentSession.extend1h == "+1 hour")
+        #expect(ClavisUIStrings.AgentSession.extend4h == "+4 hours")
+        #expect(ClavisUIStrings.AgentSession.extendPrompt == "Extend agent session")
+        #expect(ClavisUIStrings.AgentSession.askPrompt == "Approve agent signature")
+        #expect(ClavisUIStrings.AgentSession.revokeAll == "Revoke all agent sessions")
+        #expect(ClavisUIStrings.AgentSession.notificationSignedTitle == "Agent signed")
+        #expect(ClavisUIStrings.AgentSession.notificationRateLimitedTitle == "Agent rate limited")
     }
 
     @Test func testAgentPolicyLocalizedStrings() {
-        let expectedStrings: [(String, String)] = [
-            (ClavisUIStrings.AgentPolicy.sectionTitle, "Agent Session Policy"),
-            (ClavisUIStrings.AgentPolicy.modeTitle, "Approval Mode"),
-            (ClavisUIStrings.AgentPolicy.modeNone, "None (Silent)"),
-            (ClavisUIStrings.AgentPolicy.modeNotify, "Notify"),
-            (ClavisUIStrings.AgentPolicy.modeAsk, "Ask every time"),
-            (ClavisUIStrings.AgentPolicy.leaseTitle, "Session Length"),
-            (ClavisUIStrings.AgentPolicy.allowedHostsTitle, "Allowed Hosts"),
-            (ClavisUIStrings.AgentPolicy.allowedHostsAny, "Any host"),
-            (ClavisUIStrings.AgentPolicy.addHost, "Add host…"),
-            (ClavisUIStrings.AgentPolicy.addHostButton, "Add"),
-            (ClavisUIStrings.AgentPolicy.hostNotFound, "Host not found in known_hosts — connect once with ssh first"),
-            (ClavisUIStrings.AgentPolicy.rateLimitTitle, "Rate Limit"),
-            (ClavisUIStrings.AgentPolicy.burstTitle, "Burst"),
-            (ClavisUIStrings.AgentPolicy.refillTitle, "Refill per minute"),
-            (ClavisUIStrings.AgentPolicy.saveButton, "Save Policy"),
-            (ClavisUIStrings.AgentPolicy.savedFeedback, "Policy saved"),
-            (ClavisUIStrings.AgentPolicy.globalMaxLease, "Maximum agent session length"),
-            (ClavisUIStrings.AgentPolicy.changePrompt, "Change agent session policy"),
-        ]
-        for (actual, expected) in expectedStrings {
-            #expect(actual == expected)
-        }
+        #expect(ClavisUIStrings.AgentPolicy.sectionTitle == "Agent Session Policy")
+        #expect(ClavisUIStrings.AgentPolicy.modeTitle == "Approval Mode")
+        #expect(ClavisUIStrings.AgentPolicy.modeNone == "None (Silent)")
+        #expect(ClavisUIStrings.AgentPolicy.modeNotify == "Notify")
+        #expect(ClavisUIStrings.AgentPolicy.modeAsk == "Ask every time")
+        #expect(ClavisUIStrings.AgentPolicy.leaseTitle == "Session Length")
+        #expect(ClavisUIStrings.AgentPolicy.allowedHostsTitle == "Allowed Hosts")
+        #expect(ClavisUIStrings.AgentPolicy.allowedHostsAny == "Any host")
+        #expect(ClavisUIStrings.AgentPolicy.addHost == "Add host…")
+        #expect(ClavisUIStrings.AgentPolicy.addHostButton == "Add")
+        #expect(ClavisUIStrings.AgentPolicy.hostNotFound == "Host not found in known_hosts — connect once with ssh first")
+        #expect(ClavisUIStrings.AgentPolicy.rateLimitTitle == "Rate Limit")
+        #expect(ClavisUIStrings.AgentPolicy.burstTitle == "Burst")
+        #expect(ClavisUIStrings.AgentPolicy.refillTitle == "Refill per minute")
+        #expect(ClavisUIStrings.AgentPolicy.saveButton == "Save Policy")
+        #expect(ClavisUIStrings.AgentPolicy.savedFeedback == "Policy saved")
+        #expect(ClavisUIStrings.AgentPolicy.unsavedChanges == "Unsaved changes")
+        #expect(ClavisUIStrings.AgentPolicy.discardChanges == "Discard Changes")
+        #expect(ClavisUIStrings.AgentPolicy.notificationPermissionDenied == "Notifications are disabled in macOS System Settings. Notification banners will not be displayed.")
+        #expect(ClavisUIStrings.AgentPolicy.invalidRateLimit == "Max signatures per minute must be a positive integer greater than 0.")
+        #expect(ClavisUIStrings.AgentPolicy.invalidHostPattern == "Invalid host pattern. Enter a valid hostname, IP, or wildcard pattern.")
+        #expect(ClavisUIStrings.AgentPolicy.globalMaxLease == "Maximum agent session length")
+        #expect(ClavisUIStrings.AgentPolicy.changePrompt == "Change agent session policy")
     }
 
     @Test func testPinUnlockLocalizedStrings() {
-        let expectedStrings: [(String, String)] = [
-            (ClavisUIStrings.PinUnlock.pinLabel, "PIN"),
-            (ClavisUIStrings.PinUnlock.pinPlaceholder, "Enter PIN"),
-            (ClavisUIStrings.PinUnlock.confirmPinPlaceholder, "Confirm PIN"),
-            (ClavisUIStrings.PinUnlock.unlock, "Unlock"),
-            (ClavisUIStrings.PinUnlock.useTouchID, "Use Touch ID"),
-            (ClavisUIStrings.PinUnlock.usePassword, "Use login password…"),
-            (ClavisUIStrings.PinUnlock.wrongPIN, "Incorrect PIN"),
-            (ClavisUIStrings.PinUnlock.waitFormat(30), "Try again in 30 s"),
-            (ClavisUIStrings.PinUnlock.passwordRequired, "PIN is disabled. Login password required."),
-            (ClavisUIStrings.PinUnlock.historyBanner, "Enter PIN to read details"),
-            (ClavisUIStrings.PinUnlock.tooShort, "PIN must be at least 6 characters."),
-            (ClavisUIStrings.PinUnlock.pinMismatch, "PINs do not match."),
-            (ClavisUIStrings.PinUnlock.changePIN, "Change PIN…"),
-            (ClavisUIStrings.PinUnlock.forgotPIN, "Forgot PIN…"),
-            (ClavisUIStrings.PinUnlock.settingsSection, "Unlock Method"),
-            (ClavisUIStrings.PinUnlock.modePasswordOrBiometry, "Touch ID or password"),
-            (ClavisUIStrings.PinUnlock.modeBiometryOrPIN, "Touch ID or PIN"),
-            (ClavisUIStrings.PinUnlock.modeBiometryAndPIN, "Touch ID and PIN"),
-            (ClavisUIStrings.PinUnlock.setPinTitle, "Set PIN"),
-        ]
-        for (actual, expected) in expectedStrings {
-            #expect(actual == expected)
-        }
+        #expect(ClavisUIStrings.PinUnlock.pinLabel == "PIN")
+        #expect(ClavisUIStrings.PinUnlock.pinPlaceholder == "Enter PIN")
+        #expect(ClavisUIStrings.PinUnlock.confirmPinPlaceholder == "Confirm PIN")
+        #expect(ClavisUIStrings.PinUnlock.unlock == "Unlock")
+        #expect(ClavisUIStrings.PinUnlock.useTouchID == "Use Touch ID")
+        #expect(ClavisUIStrings.PinUnlock.usePassword == "Use login password…")
+        #expect(ClavisUIStrings.PinUnlock.wrongPIN == "Incorrect PIN")
+        #expect(ClavisUIStrings.PinUnlock.waitFormat(30) == "Try again in 30 s")
+        #expect(ClavisUIStrings.PinUnlock.passwordRequired == "PIN is disabled. Login password required.")
+        #expect(ClavisUIStrings.PinUnlock.historyBanner == "Enter PIN to read details")
         #expect(!ClavisUIStrings.PinUnlock.warningOrMode.isEmpty)
         #expect(!ClavisUIStrings.PinUnlock.resetWarning.isEmpty)
+        #expect(ClavisUIStrings.PinUnlock.tooShort == "PIN must be at least 6 characters.")
+        #expect(ClavisUIStrings.PinUnlock.pinMismatch == "PINs do not match.")
+        #expect(ClavisUIStrings.PinUnlock.changePIN == "Change PIN…")
+        #expect(ClavisUIStrings.PinUnlock.forgotPIN == "Forgot PIN…")
+        #expect(ClavisUIStrings.PinUnlock.settingsSection == "Unlock Method")
+        #expect(ClavisUIStrings.PinUnlock.modePasswordOrBiometry == "Touch ID or password")
+        #expect(ClavisUIStrings.PinUnlock.modeBiometryOrPIN == "Touch ID or PIN")
+        #expect(ClavisUIStrings.PinUnlock.modeBiometryAndPIN == "Touch ID and PIN")
+        #expect(ClavisUIStrings.PinUnlock.setPinTitle == "Set PIN")
+    }
+
+    @Test func testAccessibilityLocalizedStrings() {
+        #expect(ClavisUIStrings.Accessibility.addKey == "Create new SSH key")
+        #expect(ClavisUIStrings.Accessibility.lockAll == "Lock all active keys")
+        #expect(ClavisUIStrings.Accessibility.settings == "Settings")
+        #expect(ClavisUIStrings.Accessibility.history == "Signing history")
+        #expect(ClavisUIStrings.Accessibility.statusActive == "Status: active")
+        #expect(ClavisUIStrings.Accessibility.statusOffline == "Status: offline")
+        #expect(ClavisUIStrings.Accessibility.pinDigit == "PIN digit entry")
+        #expect(ClavisUIStrings.Accessibility.copyPublicKey == "Copy public key")
+        #expect(ClavisUIStrings.Accessibility.copyFingerprint == "Copy SHA-256 fingerprint")
+        #expect(ClavisUIStrings.Accessibility.agentStatus == "Agent status")
+        #expect(ClavisUIStrings.Accessibility.moreActions == "More actions")
+        #expect(ClavisUIStrings.Accessibility.deleteHost == "Remove allowed host")
+        #expect(ClavisUIStrings.Accessibility.expandDetails == "Expand details")
+        #expect(ClavisUIStrings.Accessibility.collapseDetails == "Collapse details")
+        #expect(ClavisUIStrings.Accessibility.expanded == "Expanded")
+        #expect(ClavisUIStrings.Accessibility.collapsed == "Collapsed")
+        #expect(ClavisUIStrings.Accessibility.copyProcessInfo == "Copy process path and PID")
+        #expect(ClavisUIStrings.Accessibility.copyItem(label: "Host") == "Copy Host")
     }
 }

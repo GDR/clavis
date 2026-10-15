@@ -6,6 +6,7 @@ import ClavisCore
 public class KeyManagementViewModel: ObservableObject {
     @Published public var keys: [SSHKeyInfo] = []
     @Published public var errorMessage: String? = nil
+    @Published public var vaultSyncReport: VaultSyncReport? = nil
 
     private let keyManager: KeychainManager
     private let agentLifecycle: any AgentControlling
@@ -67,6 +68,14 @@ public class KeyManagementViewModel: ObservableObject {
 
     public func clearError() {
         errorMessage = nil
+    }
+
+    @discardableResult
+    public func syncVault(repair: Bool = false) throws -> VaultSyncReport {
+        let report = try keyManager.syncVault(repair: repair)
+        self.vaultSyncReport = report
+        refresh()
+        return report
     }
 
     public func getAgentPolicy(fingerprint: String) -> AgentKeyPolicy? {

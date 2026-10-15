@@ -6,6 +6,7 @@ import ClavisCore
 public class SettingsViewModel: ObservableObject {
     @Published public var isSocketActive: Bool = false
     @Published public var agentPID: pid_t? = nil
+    @Published public var activeGitGraces: [ActiveGitGraceInfo] = []
     @Published public var activeGitGrace: ActiveGitGraceInfo? = nil
     @Published public var isDaemonMode: Bool = false
     @Published public var launchAtLogin: Bool = false
@@ -74,31 +75,30 @@ public class SettingsViewModel: ObservableObject {
     @MainActor
     public func updateGitGraceState() {
         if isDaemonMode || sshAgentServer.isSocketActive {
-            if let localGrant = GitSigningGraceManager.shared.currentActiveGrant {
-                self.activeGitGrace = ActiveGitGraceInfo(
-                    keyLabel: localGrant.keyLabel,
-                    remainingSeconds: localGrant.remainingSeconds,
-                    remainingOperations: localGrant.remainingOperations
+            let grants = GitSigningGraceManager.shared.allActiveGrants()
+            self.activeGitGraces = grants.map {
+                ActiveGitGraceInfo(
+                    keyLabel: $0.keyLabel,
+                    remainingSeconds: $0.remainingSeconds,
+                    remainingOperations: $0.remainingOperations
                 )
-            } else {
-                self.activeGitGrace = nil
             }
+            self.activeGitGrace = self.activeGitGraces.first
             return
         }
         let lifecycle = self.agentLifecycle
         Task.detached { [weak self] in
-            let remote = lifecycle.queryAgentGitGrace()
+            let remotes = lifecycle.queryAllAgentGitGraces()
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
-                if let remote = remote {
-                    self.activeGitGrace = ActiveGitGraceInfo(
-                        keyLabel: remote.keyLabel,
-                        remainingSeconds: remote.remainingSeconds,
-                        remainingOperations: remote.remainingOperations
+                self.activeGitGraces = remotes.map {
+                    ActiveGitGraceInfo(
+                        keyLabel: $0.keyLabel,
+                        remainingSeconds: $0.remainingSeconds,
+                        remainingOperations: $0.remainingOperations
                     )
-                } else {
-                    self.activeGitGrace = nil
                 }
+                self.activeGitGrace = self.activeGitGraces.first
             }
         }
     }
@@ -107,11 +107,32 @@ public class SettingsViewModel: ObservableObject {
         do {
             try agentLifecycle.sendLockAllToAgent()
             GitSigningGraceManager.shared.invalidateAll()
-            activeGitGrace = nil
+            activeGracesClear()
             refresh()
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    public func revokeGitGrace(for keyLabel: String) {
+        do {
+            try agentLifecycle.invalidateAgentGrant(label: keyLabel)
+            GitSigningGraceManager.shared.invalidate(keyLabel: keyLabel)
+            activeGitGraces.removeAll(where: { $0.keyLabel == keyLabel })
+            activeGitGrace = activeGitGraces.first
+            refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func revokeGitGrace(keyLabel: String) {
+        revokeGitGrace(for: keyLabel)
+    }
+
+    private func activeGracesClear() {
+        activeGitGraces = []
+        activeGitGrace = nil
     }
 
     public func startAgent() {
@@ -143,6 +164,7 @@ public class SettingsViewModel: ObservableObject {
             sshAgentServer.stop()
         }
         _ = terminationAgentStop()
+        activeGitGraces = []
         activeGitGrace = nil
         isSocketActive = false
         agentPID = nil
