@@ -88,8 +88,31 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         agentPIDProvider()
     }
 
-    public func locateAgentExecutable() -> URL? {
+    public func locateAgentExecutable(
+        explicitURL: URL? = nil,
+        environment: [String: String]? = nil,
+        skipCodeSignatureCheck: Bool? = nil
+    ) -> URL? {
+        let env = environment ?? TestContextScope.current?.environment ?? ProcessInfo.processInfo.environment
         let fileManager = FileManager.default
+
+        if let explicitURL {
+            let candidate = explicitURL.standardizedFileURL
+            if fileManager.isExecutableFile(atPath: candidate.path), isTrustedExecutable(candidate, skipCodeSignatureCheck: skipCodeSignatureCheck) {
+                return candidate.resolvingSymlinksInPath()
+            }
+            return nil
+        }
+
+        #if DEBUG
+        if let context = TestContextScope.current, let testAgentURL = context.agentExecutableURL {
+            let candidate = testAgentURL.standardizedFileURL
+            if fileManager.isExecutableFile(atPath: candidate.path), isTrustedExecutable(candidate, skipCodeSignatureCheck: skipCodeSignatureCheck) {
+                return candidate.resolvingSymlinksInPath()
+            }
+        }
+        #endif
+
         let selfExecURL = (Bundle.main.executableURL ?? CommandLine.arguments.first.map { URL(fileURLWithPath: $0) })?.resolvingSymlinksInPath()
 
         // Production: prefer the bundled helper app so macOS can associate
@@ -103,17 +126,17 @@ public final class AgentLifecycleManager: @unchecked Sendable {
                 helpersURL.appendingPathComponent("clavis-agent")
             ]
             for helperURL in helperURLs
-            where fileManager.isExecutableFile(atPath: helperURL.path) && isTrustedExecutable(helperURL) {
+            where fileManager.isExecutableFile(atPath: helperURL.path) && isTrustedExecutable(helperURL, skipCodeSignatureCheck: skipCodeSignatureCheck) {
                 return helperURL.resolvingSymlinksInPath()
             }
         }
 
         // Development and non-app packaging must opt in to one explicit path.
         // Never search inherited PATH or common mutable installation locations.
-        if let explicitPath = ProcessInfo.processInfo.environment["CLAVIS_AGENT_EXECUTABLE"],
+        if let explicitPath = env["CLAVIS_AGENT_EXECUTABLE"],
            explicitPath.hasPrefix("/") {
             let candidate = URL(fileURLWithPath: explicitPath).standardizedFileURL
-            if fileManager.isExecutableFile(atPath: candidate.path), isTrustedExecutable(candidate) {
+            if fileManager.isExecutableFile(atPath: candidate.path), isTrustedExecutable(candidate, skipCodeSignatureCheck: skipCodeSignatureCheck) {
                 return candidate.resolvingSymlinksInPath()
             }
         }
@@ -121,7 +144,7 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         // Sibling binary location (e.g. running directly from .build/release or bin directory)
         if let execURL = selfExecURL {
             let sibling = execURL.deletingLastPathComponent().appendingPathComponent("clavis-agent")
-            if fileManager.isExecutableFile(atPath: sibling.path), isTrustedExecutable(sibling) {
+            if fileManager.isExecutableFile(atPath: sibling.path), isTrustedExecutable(sibling, skipCodeSignatureCheck: skipCodeSignatureCheck) {
                 return sibling.resolvingSymlinksInPath()
             }
         }
@@ -135,7 +158,7 @@ public final class AgentLifecycleManager: @unchecked Sendable {
     public static var disableCodeSignatureCheckForTesting = false
     #endif
 
-    private func isTrustedExecutable(_ url: URL) -> Bool {
+    private func isTrustedExecutable(_ url: URL, skipCodeSignatureCheck: Bool? = nil) -> Bool {
         let resolved = url.resolvingSymlinksInPath()
         var info = stat()
         guard lstat(resolved.path, &info) == 0,
@@ -155,7 +178,7 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         }
 
         #if DEBUG
-        if Self.disableCodeSignatureCheckForTesting {
+        if skipCodeSignatureCheck ?? Self.disableCodeSignatureCheckForTesting {
             return true
         }
         #endif

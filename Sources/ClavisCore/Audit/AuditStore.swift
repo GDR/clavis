@@ -86,14 +86,30 @@ public struct AuditQuery: Equatable {
 }
 
 public final class AuditStore {
-    private static var customDefaultURL: URL?
+    private static let customDefaultURLLock = NSLock()
+    private static var _customDefaultURL: URL?
+
+    public static var customDefaultURL: URL? {
+        get {
+            customDefaultURLLock.withLock { _customDefaultURL }
+        }
+        set {
+            customDefaultURLLock.withLock { _customDefaultURL = newValue }
+        }
+    }
+
     public static var defaultURL: URL {
         get {
+            #if DEBUG
+            if let context = TestContextScope.current {
+                return context.auditDatabaseURL
+            }
+            #endif
             if let custom = customDefaultURL {
                 return custom
             }
             #if DEBUG
-            if NSClassFromString("XCTestCase") != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            if ClavisEnvironment.isTesting {
                 return FileManager.default.temporaryDirectory.appendingPathComponent("clavis-audit-test-\(getpid()).db")
             }
             #endif
@@ -103,6 +119,12 @@ public final class AuditStore {
         }
         set {
             customDefaultURL = newValue
+        }
+    }
+
+    public static func resetDefaultURLForTesting() {
+        customDefaultURLLock.withLock {
+            _customDefaultURL = nil
         }
     }
 

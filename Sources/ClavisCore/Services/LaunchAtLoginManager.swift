@@ -7,10 +7,34 @@ public final class LaunchAtLoginManager: @unchecked Sendable {
     public static let launchAgentLabel = "com.clavis.agent"
     public static var customLaunchAgentURL: URL? = nil
 
-    public static var launchAgentURL: URL {
-        if let custom = customLaunchAgentURL { return custom }
+    private let customInstanceLaunchAgentURL: URL?
+    private let agentLifecycle: AgentLifecycleManager
+    private let environment: [String: String]?
+
+    public init(
+        customLaunchAgentURL: URL? = nil,
+        agentLifecycle: AgentLifecycleManager = .shared,
+        environment: [String: String]? = nil
+    ) {
+        self.customInstanceLaunchAgentURL = customLaunchAgentURL
+        self.agentLifecycle = agentLifecycle
+        self.environment = environment
+    }
+
+    public var launchAgentURL: URL {
+        if let custom = customInstanceLaunchAgentURL { return custom }
+        #if DEBUG
+        if let context = TestContextScope.current, let url = context.launchAgentURL {
+            return url
+        }
+        #endif
+        if let custom = Self.customLaunchAgentURL { return custom }
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent("Library/LaunchAgents/\(launchAgentLabel).plist")
+        return home.appendingPathComponent("Library/LaunchAgents/\(Self.launchAgentLabel).plist")
+    }
+
+    public static var launchAgentURL: URL {
+        shared.launchAgentURL
     }
 
     public var isEnabled: Bool {
@@ -22,22 +46,22 @@ public final class LaunchAtLoginManager: @unchecked Sendable {
                 }
             }
             // Check LaunchAgent file
-            return FileManager.default.fileExists(atPath: Self.launchAgentURL.path)
+            return FileManager.default.fileExists(atPath: launchAgentURL.path)
         }
         set {
             setLaunchAtLogin(enabled: newValue)
         }
     }
 
-    public func setLaunchAtLogin(enabled: Bool) {
+    public func setLaunchAtLogin(enabled: Bool, environment: [String: String]? = nil) {
         if enabled {
-            enableLaunchAtLogin()
+            enableLaunchAtLogin(environment: environment)
         } else {
             disableLaunchAtLogin()
         }
     }
 
-    internal func enableLaunchAtLogin() {
+    internal func enableLaunchAtLogin(environment: [String: String]? = nil) {
         if Bundle.main.bundlePath.hasSuffix(".app") {
             do {
                 if SMAppService.mainApp.status != .enabled {
@@ -51,7 +75,8 @@ public final class LaunchAtLoginManager: @unchecked Sendable {
         }
 
         // Fallback: Create LaunchAgent plist in ~/Library/LaunchAgents/
-        guard let agentExecURL = AgentLifecycleManager.shared.locateAgentExecutable() else {
+        let env = environment ?? self.environment
+        guard let agentExecURL = agentLifecycle.locateAgentExecutable(environment: env) else {
             ClavisLogger.log("AUTO_START", "Refusing to write LaunchAgent: could not locate trusted agent executable.")
             return
         }
@@ -78,12 +103,12 @@ public final class LaunchAtLoginManager: @unchecked Sendable {
 
         do {
             let plistData = try Self.launchAgentPlistData(executable: agentExec)
-            let parentDir = Self.launchAgentURL.deletingLastPathComponent()
+            let parentDir = launchAgentURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
-            try plistData.write(to: Self.launchAgentURL, options: .atomic)
+            try plistData.write(to: launchAgentURL, options: .atomic)
             // launchd rejects agent plists that are writable by group or others.
-            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: Self.launchAgentURL.path)
-            ClavisLogger.log("AUTO_START", "Created LaunchAgent at \(Self.launchAgentURL.path)")
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: launchAgentURL.path)
+            ClavisLogger.log("AUTO_START", "Created LaunchAgent at \(launchAgentURL.path)")
         } catch {
             ClavisLogger.log("AUTO_START", "Failed to write LaunchAgent: \(error.localizedDescription)")
         }
@@ -106,9 +131,9 @@ public final class LaunchAtLoginManager: @unchecked Sendable {
         if Bundle.main.bundlePath.hasSuffix(".app") {
             try? SMAppService.mainApp.unregister()
         }
-        if FileManager.default.fileExists(atPath: Self.launchAgentURL.path) {
-            try? FileManager.default.removeItem(at: Self.launchAgentURL)
-            ClavisLogger.log("AUTO_START", "Removed LaunchAgent at \(Self.launchAgentURL.path)")
+        if FileManager.default.fileExists(atPath: launchAgentURL.path) {
+            try? FileManager.default.removeItem(at: launchAgentURL)
+            ClavisLogger.log("AUTO_START", "Removed LaunchAgent at \(launchAgentURL.path)")
         }
     }
 }

@@ -74,6 +74,9 @@ public class SSHAgentServer {
     private let signingPolicyEvaluator: SigningPolicyEvaluator
     private let controlDispatcher: AgentControlDispatcher
     private let keyManager: KeychainManager
+    #if DEBUG
+    public var testContext: TestContext?
+    #endif
 
     public var onPermanentListenerFailure: (() -> Void)? {
         get { socketServer.onPermanentListenerFailure }
@@ -114,11 +117,15 @@ public class SSHAgentServer {
                 userInfo: userInfo,
                 deliverImmediately: true
             )
-        }
+        },
+        testContext: TestContext? = nil
     ) {
         self.socketPath = socketPath
         self.role = role
         self.keyManager = keyManager
+        #if DEBUG
+        self.testContext = testContext ?? keyManager.testContext ?? TestContextScope.current
+        #endif
 
         let resolvedPeerValidator = peerProcessValidator ?? { SSHAgentServer.peerProcessUnchanged(pid: $0, path: $1, startTime: $2) }
 
@@ -166,6 +173,21 @@ public class SSHAgentServer {
             logger: { ClavisLogger.log("SSH_AGENT", $0) },
             requestHandler: { [weak self] payload, pid, path, start, sock, conn, isTrusted in
                 guard let self = self else { return Data([5]) }
+                #if DEBUG
+                if let context = self.testContext {
+                    return TestContextScope.$current.withValue(context) {
+                        self.processAgentRequest(
+                            payload: payload,
+                            clientPid: pid,
+                            clientExecutablePath: path,
+                            clientStartTime: start,
+                            clientSocket: sock,
+                            connection: conn,
+                            isTrustedControlPeer: isTrusted
+                        )
+                    }
+                }
+                #endif
                 return self.processAgentRequest(
                     payload: payload,
                     clientPid: pid,
@@ -213,9 +235,42 @@ public class SSHAgentServer {
         )
     }
 
-    /// - Parameter isTrustedControlPeer: lazily evaluated, only for control opcodes.
-    ///   Defaults to "untrusted" so a caller must opt in explicitly.
     internal func processAgentRequest(
+        payload: Data,
+        clientPid: pid_t? = nil,
+        clientExecutablePath: String? = nil,
+        clientStartTime: UInt64? = nil,
+        clientSocket: Int32? = nil,
+        connection: AgentConnectionState? = nil,
+        isTrustedControlPeer: () -> Bool = { false }
+    ) -> Data {
+        #if DEBUG
+        if let context = self.testContext, TestContextScope.current == nil {
+            return TestContextScope.$current.withValue(context) {
+                self.processAgentRequestInternal(
+                    payload: payload,
+                    clientPid: clientPid,
+                    clientExecutablePath: clientExecutablePath,
+                    clientStartTime: clientStartTime,
+                    clientSocket: clientSocket,
+                    connection: connection,
+                    isTrustedControlPeer: isTrustedControlPeer
+                )
+            }
+        }
+        #endif
+        return processAgentRequestInternal(
+            payload: payload,
+            clientPid: clientPid,
+            clientExecutablePath: clientExecutablePath,
+            clientStartTime: clientStartTime,
+            clientSocket: clientSocket,
+            connection: connection,
+            isTrustedControlPeer: isTrustedControlPeer
+        )
+    }
+
+    private func processAgentRequestInternal(
         payload: Data,
         clientPid: pid_t? = nil,
         clientExecutablePath: String? = nil,
@@ -288,6 +343,13 @@ public class SSHAgentServer {
         clientPid: pid_t? = nil,
         clientExecutablePath: String? = nil
     ) -> Data {
+        #if DEBUG
+        if let context = self.testContext, TestContextScope.current == nil {
+            return TestContextScope.$current.withValue(context) {
+                self.handleRequestIdentities(clientPid: clientPid, clientExecutablePath: clientExecutablePath)
+            }
+        }
+        #endif
         let clientDesc: String
         if let pid = clientPid, let path = clientExecutablePath ?? SSHAgentServer.getProcessPath(pid: pid) {
             clientDesc = "\(Self.safeProcessPath(path)) (PID \(pid))"
@@ -319,7 +381,21 @@ public class SSHAgentServer {
         clientSocket: Int32? = nil,
         connection: AgentConnectionState? = nil
     ) -> Data {
-        signingPolicyEvaluator.handleSignRequest(
+        #if DEBUG
+        if let context = self.testContext, TestContextScope.current == nil {
+            return TestContextScope.$current.withValue(context) {
+                self.handleSignRequest(
+                    payload: payload,
+                    clientPid: clientPid,
+                    clientExecutablePath: clientExecutablePath,
+                    clientStartTime: clientStartTime,
+                    clientSocket: clientSocket,
+                    connection: connection
+                )
+            }
+        }
+        #endif
+        return signingPolicyEvaluator.handleSignRequest(
             payload: payload,
             role: role,
             clientPid: clientPid,
@@ -416,12 +492,49 @@ public class SSHAgentServer {
         ProcessInspector.gitGrantCoversPeer(peer: peer, approved: approved)
     }
 
-    public static var gpgSSHProgramResolver: () -> String? = {
-        resolveGpgSSHProgram()
+    private static let resolverLock = NSLock()
+    private static var _customGpgSSHProgramResolver: (@Sendable () -> String?)?
+
+    public static var gpgSSHProgramResolver: @Sendable () -> String? {
+        get {
+            return {
+                #if DEBUG
+                if let context = TestContextScope.current, let resolver = context.gpgSSHProgramResolver {
+                    return resolver()
+                }
+                #endif
+                resolverLock.lock()
+                let custom = _customGpgSSHProgramResolver
+                resolverLock.unlock()
+                if let custom {
+                    return custom()
+                }
+                return resolveGpgSSHProgram()
+            }
+        }
+        set {
+            resolverLock.lock()
+            _customGpgSSHProgramResolver = newValue
+            resolverLock.unlock()
+        }
     }
 
-    static func resolveGpgSSHProgram(gitExecutablePath: String? = nil, timeout: TimeInterval = 2.0) -> String? {
-        ProcessInspector.resolveGpgSSHProgram(gitExecutablePath: gitExecutablePath, timeout: timeout)
+    public static func resetGpgSSHProgramResolverForTesting() {
+        resolverLock.lock()
+        _customGpgSSHProgramResolver = nil
+        resolverLock.unlock()
+    }
+
+    static func resolveGpgSSHProgram(
+        gitExecutablePath: String? = nil,
+        environment: [String: String]? = nil,
+        timeout: TimeInterval = 2.0
+    ) -> String? {
+        ProcessInspector.resolveGpgSSHProgram(
+            gitExecutablePath: gitExecutablePath,
+            environment: environment,
+            timeout: timeout
+        )
     }
 
     static func isSignerHelper(

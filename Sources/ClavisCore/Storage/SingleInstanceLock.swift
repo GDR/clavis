@@ -32,6 +32,11 @@ public final class SingleInstanceLock: @unchecked Sendable {
 
     public var lockFileURL: URL {
         if let custom = customLockFileURL { return custom }
+        #if DEBUG
+        if let context = TestContextScope.current, let lockURL = context.lockFileURL {
+            return lockURL
+        }
+        #endif
         if let staticCustom = Self.customLockFileURL { return staticCustom }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(".config/clavis", isDirectory: true)

@@ -39,7 +39,7 @@ public final class AuditRecorder: AuditRecording {
 
     public static func makeDefaultSealer() -> AuditSealer? {
         #if DEBUG
-        if NSClassFromString("XCTestCase") != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+        if ClavisEnvironment.isTesting {
             return nil
         }
         #endif
@@ -48,7 +48,7 @@ public final class AuditRecorder: AuditRecording {
 
     public static func makeDefaultWitness() -> AuditWitnessWriting? {
         #if DEBUG
-        if NSClassFromString("XCTestCase") != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+        if ClavisEnvironment.isTesting {
             return nil
         }
         #endif

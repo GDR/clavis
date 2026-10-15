@@ -48,10 +48,13 @@ public final class SystemEventMonitor: @unchecked Sendable {
     /// Defaults to `false` inside XCTest unless `customSessionActiveValidator` is configured.
     public static func isSessionLockedOrOffConsole() -> Bool {
         #if DEBUG
+        if let context = TestContextScope.current, let validator = context.mockSessionValidator {
+            return !validator()
+        }
         if let validator = SystemEventMonitor.customSessionActiveValidator {
             return !validator()
         }
-        if NSClassFromString("XCTestCase") != nil {
+        if ClavisEnvironment.isTesting {
             return false
         }
         #endif

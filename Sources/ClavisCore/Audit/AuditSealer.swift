@@ -29,12 +29,7 @@ public final class AuditSealer: @unchecked Sendable {
         self.maxEpochAge = maxEpochAge
         self.maxEpochRows = maxEpochRows
 
-        #if DEBUG
-        let isRunningUnderXCTest = NSClassFromString("XCTestCase") != nil ||
-            ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-        #else
-        let isRunningUnderXCTest = false
-        #endif
+        let isRunningUnderXCTest = ClavisEnvironment.isTesting
         if !isRunningUnderXCTest {
             self.observer = DistributedNotificationCenter.default().addObserver(
                 forName: KeychainAuditKeyring.notificationName,

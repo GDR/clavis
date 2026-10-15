@@ -21,27 +21,42 @@ public enum PublicKeyStoreError: LocalizedError {
 /// every use — so it needs neither a file nor its own integrity protection.
 public struct PublicKeyStore {
     private static var isRunningUnderXCTest: Bool {
-        #if DEBUG
-        NSClassFromString("XCTestCase") != nil ||
-        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-        #else
-        false
-        #endif
+        ClavisEnvironment.isTesting
     }
 
     private static var isKeychainAccessAllowed: Bool {
-        if !isRunningUnderXCTest {
+        if !ClavisEnvironment.isTesting {
             return true
         }
         return ProcessInfo.processInfo.environment["CLAVIS_RUN_KEYCHAIN_INTEGRATION_TESTS"] == "1"
     }
 
     /// Test-only: keep the index purely in memory and never touch the real Keychain.
-    static var disableKeychainMirrorForTesting: Bool = isRunningUnderXCTest
+    static var disableKeychainMirrorForTesting: Bool = ClavisEnvironment.isTesting
 
     #if DEBUG
+    private static let forcedSaveErrorLock = NSLock()
+    private static var _staticForcedSaveError: Error?
     /// Test-only: force saveChecked to throw this error instead of completing.
-    static var forcedSaveErrorForTesting: Error?
+    static var forcedSaveErrorForTesting: Error? {
+        get {
+            if let context = TestContextScope.current {
+                return context.forcedSaveErrorBox.override
+            }
+            forcedSaveErrorLock.lock()
+            defer { forcedSaveErrorLock.unlock() }
+            return _staticForcedSaveError
+        }
+        set {
+            if let context = TestContextScope.current {
+                context.forcedSaveErrorBox.override = newValue
+                return
+            }
+            forcedSaveErrorLock.lock()
+            defer { forcedSaveErrorLock.unlock() }
+            _staticForcedSaveError = newValue
+        }
+    }
     #endif
 
     /// How long a process trusts its in-memory copy. Other processes (e.g. the GUI creating a
@@ -57,6 +72,7 @@ public struct PublicKeyStore {
     private static var memoryOnlyKeys: [String: SSHKeyInfo] = [:]
 
     #if DEBUG
+    @TaskLocal public static var testKeychainLoader: (@Sendable () -> [SSHKeyInfo])?
     /// Test seam for loading keys without touching host Keychain.
     static var keychainLoader: () -> [SSHKeyInfo] = {
         guard isKeychainAccessAllowed else { return [] }
@@ -73,6 +89,30 @@ public struct PublicKeyStore {
     #endif
 
     public static func loadAll() -> [SSHKeyInfo] {
+        #if DEBUG
+        if let customLoader = testKeychainLoader {
+            stateLock.lock()
+            if let cachedKeys, Date().timeIntervalSince(cachedAt) < cacheTTL {
+                defer { stateLock.unlock() }
+                return cachedKeys
+            }
+            let capturedGeneration = generation
+            stateLock.unlock()
+
+            let keys = customLoader()
+
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            if generation == capturedGeneration {
+                cachedKeys = keys
+                cachedAt = Date()
+            }
+            return keys
+        }
+        if let context = TestContextScope.current {
+            return context.publicKeyStore.loadAll()
+        }
+        #endif
         stateLock.lock()
         if disableKeychainMirrorForTesting {
             defer { stateLock.unlock() }
@@ -109,6 +149,10 @@ public struct PublicKeyStore {
         if let forcedError = forcedSaveErrorForTesting {
             throw forcedError
         }
+        if let context = TestContextScope.current {
+            try context.publicKeyStore.saveChecked(info)
+            return
+        }
         #endif
         try saveToKeychainChecked(info)
     }
@@ -118,6 +162,12 @@ public struct PublicKeyStore {
     }
 
     public static func removeChecked(label: String) throws {
+        #if DEBUG
+        if let context = TestContextScope.current {
+            try context.publicKeyStore.removeChecked(label: label)
+            return
+        }
+        #endif
         try removeFromKeychainChecked(label: label)
     }
 
@@ -131,6 +181,9 @@ public struct PublicKeyStore {
 
     /// Test-only: forget everything held in memory (both the cache and the memory-only store).
     static func resetForTesting() {
+        #if DEBUG
+        TestContextScope.current?.publicKeyStore.reset()
+        #endif
         stateLock.lock(); defer { stateLock.unlock() }
         generation &+= 1
         cachedKeys = nil
@@ -153,6 +206,12 @@ public struct PublicKeyStore {
     }
 
     public static func saveToKeychainChecked(_ info: SSHKeyInfo) throws {
+        #if DEBUG
+        if let context = TestContextScope.current {
+            try context.publicKeyStore.saveChecked(info)
+            return
+        }
+        #endif
         if disableKeychainMirrorForTesting || !isKeychainAccessAllowed {
             stateLock.lock()
             memoryOnlyKeys[info.label] = info
@@ -193,6 +252,12 @@ public struct PublicKeyStore {
     }
 
     public static func removeFromKeychainChecked(label: String) throws {
+        #if DEBUG
+        if let context = TestContextScope.current {
+            try context.publicKeyStore.removeChecked(label: label)
+            return
+        }
+        #endif
         if disableKeychainMirrorForTesting || !isKeychainAccessAllowed {
             stateLock.lock()
             memoryOnlyKeys[label] = nil
