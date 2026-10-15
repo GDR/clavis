@@ -1,8 +1,9 @@
+@testable import ClavisTestSupport
 import Foundation
 import Testing
 import LocalAuthentication
+import SQLite3
 @testable import ClavisCore
-@testable import ClavisTestSupport
 @testable import Clavis
 
 @MainActor
@@ -22,6 +23,23 @@ final class HistoryViewModelTests {
     private func createTestStore() throws -> AuditStore {
         let storeURL = testRootURL.appendingPathComponent("audit-\(UUID().uuidString).db")
         return try AuditStore(url: storeURL)
+    }
+
+    private func createTestStoreWithURL() throws -> (store: AuditStore, dbURL: URL) {
+        let storeURL = testRootURL.appendingPathComponent("audit-\(UUID().uuidString).db")
+        let store = try AuditStore(url: storeURL)
+        return (store, storeURL)
+    }
+
+    private func executeSQL(on dbURL: URL, _ sql: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(dbURL.path, &db) == SQLITE_OK else {
+            throw AuditStoreError.openFailed(sqlite3_errcode(db))
+        }
+        defer { sqlite3_close(db) }
+        guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+            throw AuditStoreError.stepFailed(sqlite3_errcode(db))
+        }
     }
 
     @Test func test_002_AC3_viewModelAppliesFilters() async throws {
@@ -233,4 +251,409 @@ final class HistoryViewModelTests {
         }
         #expect(!viewModel.needsKeyContext)
     }
+
+    @Test func test_121_autoReloadsOnAuditNotification() async throws {
+        let store = try createTestStore()
+        let event1 = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "key-1"))
+        try store.insert(event1)
+
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
+        await viewModel.reload().value
+        #expect(viewModel.records.count == 1)
+
+        let event2 = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "key-2"))
+        try store.insert(event2)
+
+        notificationCenter.post(name: HistoryViewModel.didRecordAuditNotification, object: nil)
+
+        for _ in 0..<100 {
+            if viewModel.records.count == 2 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(viewModel.records.count == 2)
+    }
+
+    @Test func test_121_autoReloadsOnAgentSignedNotification() async throws {
+        let store = try createTestStore()
+        let event1 = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "key-1"))
+        try store.insert(event1)
+
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
+        await viewModel.reload().value
+        #expect(viewModel.records.count == 1)
+
+        let event2 = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "key-2"))
+        try store.insert(event2)
+
+        notificationCenter.post(name: NSNotification.Name("com.clavis.agentSigned"), object: nil)
+
+        for _ in 0..<100 {
+            if viewModel.records.count == 2 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(viewModel.records.count == 2)
+    }
+
+    @Test func test_122_searchFilteringByKeyLabel() async throws {
+        let store = try createTestStore()
+        let eventA = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "production-deploy-key"))
+        let eventB = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "staging-test-key"))
+        try store.insert(eventA)
+        try store.insert(eventB)
+
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
+        await viewModel.reload().value
+        #expect(viewModel.records.count == 2)
+
+        viewModel.searchText = "production"
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.sensitive.keyLabel == "production-deploy-key")
+
+        viewModel.searchText = "staging"
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.sensitive.keyLabel == "staging-test-key")
+
+        viewModel.searchText = ""
+        #expect(viewModel.records.count == 2)
+    }
+
+    @Test func test_122_searchFilteringByFingerprint() async throws {
+        let store = try createTestStore()
+        let eventA = AuditEvent(type: .signature, result: .allowed, keyFingerprint: "SHA256:alpha123", sensitive: AuditSensitive(keyLabel: "k1"))
+        let eventB = AuditEvent(type: .signature, result: .allowed, keyFingerprint: "SHA256:beta456", sensitive: AuditSensitive(keyLabel: "k2"))
+        try store.insert(eventA)
+        try store.insert(eventB)
+
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
+        await viewModel.reload().value
+        #expect(viewModel.records.count == 2)
+
+        viewModel.searchText = "alpha"
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.keyFingerprint == "SHA256:alpha123")
+
+        viewModel.searchText = "beta"
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.keyFingerprint == "SHA256:beta456")
+    }
+
+    @Test func test_122_searchFilteringByRemoteHost() async throws {
+        let store = try createTestStore()
+        let eventA = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k1", host: "github.com"))
+        let eventB = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k2", host: "gitlab.com"))
+        try store.insert(eventA)
+        try store.insert(eventB)
+
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
+        await viewModel.reload().value
+        #expect(viewModel.records.count == 2)
+
+        viewModel.searchText = "github"
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.sensitive.host == "github.com")
+
+        viewModel.searchText = "gitlab"
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.sensitive.host == "gitlab.com")
+    }
+
+    @Test func test_122_searchFilteringByProcessAndPID() async throws {
+        let store = try createTestStore()
+        let proc1 = AuditProcess(executablePath: "/usr/bin/ssh", pid: 12345)
+        let proc2 = AuditProcess(executablePath: "/opt/homebrew/bin/git", pid: 67890)
+        let eventA = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(processChain: [proc1]))
+        let eventB = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(processChain: [proc2]))
+        try store.insert(eventA)
+        try store.insert(eventB)
+
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
+        await viewModel.reload().value
+        #expect(viewModel.records.count == 2)
+
+        viewModel.searchText = "ssh"
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.sensitive.processChain.first?.executablePath == "/usr/bin/ssh")
+
+        viewModel.searchText = "67890"
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.sensitive.processChain.first?.pid == 67890)
+
+        viewModel.searchText = ""
+        viewModel.filterProcessOrPID = "12345"
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.sensitive.processChain.first?.pid == 12345)
+    }
+
+    @Test func test_123_paginationBeyond200Events() async throws {
+        let store = try createTestStore()
+        for i in 1...250 {
+            let event = AuditEvent(
+                type: .signature,
+                result: .allowed,
+                sensitive: AuditSensitive(keyLabel: "key-\(i)")
+            )
+            try store.insert(event)
+        }
+
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
+        #expect(viewModel.query.limit == 200)
+
+        await viewModel.reload().value
+        #expect(viewModel.records.count == 200)
+        #expect(viewModel.hasMore == true)
+        let oldestSeqInFirstPage = viewModel.records.last?.seq
+        #expect(oldestSeqInFirstPage == 51)
+
+        await viewModel.loadMore().value
+        #expect(viewModel.records.count == 250)
+        #expect(viewModel.hasMore == false)
+        let oldestSeqInSecondPage = viewModel.records.last?.seq
+        #expect(oldestSeqInSecondPage == 1)
+    }
+
+    @Test func test_124_recordDigestAndDetailInspection() async throws {
+        let store = try createTestStore()
+        let proc = AuditProcess(executablePath: "/usr/bin/git", pid: 4242)
+        let event = AuditEvent(
+            type: .signature,
+            result: .allowed,
+            keyFingerprint: "SHA256:fingerprintExample",
+            keyKind: .agent,
+            sessionID: "sess-9999",
+            sensitive: AuditSensitive(keyLabel: "agent-key", processChain: [proc], host: "git.internal")
+        )
+        try store.insert(event)
+
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
+        await viewModel.reload().value
+
+        #expect(viewModel.records.count == 1)
+        let record = viewModel.records[0]
+
+        let digest = AuditWitness.digest(for: record)
+        #expect(digest.count == 32)
+
+        if case .plaintext(let sens) = viewModel.sensitive[record.seq] {
+            #expect(sens.keyLabel == "agent-key")
+            #expect(sens.host == "git.internal")
+            #expect(sens.processChain.count == 1)
+            #expect(sens.processChain[0].executablePath == "/usr/bin/git")
+            #expect(sens.processChain[0].pid == 4242)
+        } else {
+            Issue.record("Expected unsealed plaintext sensitive fields")
+        }
+    }
+
+    @Test func testAdversarialPaginationOver600EventsNoGaps() async throws {
+        let store = try createTestStore()
+        let count = 600
+        for i in 1...count {
+            let event = AuditEvent(
+                type: .signature,
+                result: .allowed,
+                sensitive: AuditSensitive(
+                    keyLabel: "key-\(i % 10)",
+                    processChain: [AuditProcess(executablePath: "/usr/bin/ssh", pid: pid_t(1000 + i))],
+                    host: "host-\(i % 5).internal"
+                )
+            )
+            try store.insert(event)
+        }
+
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
+        #expect(viewModel.query.limit == 200)
+
+        // Page 1
+        let startReload = ContinuousClock.now
+        await viewModel.reload().value
+        let reloadDuration = ContinuousClock.now - startReload
+        #expect(reloadDuration < .milliseconds(500))
+
+        #expect(viewModel.records.count == 200)
+        #expect(viewModel.hasMore == true)
+        #expect(viewModel.records.first?.seq == 600)
+        #expect(viewModel.records.last?.seq == 401)
+        #expect(viewModel.items.count == 200)
+        #expect(!viewModel.items.contains(where: { $0.isGap }))
+
+        // Page 2
+        let startPage2 = ContinuousClock.now
+        await viewModel.loadMore().value
+        let page2Duration = ContinuousClock.now - startPage2
+        #expect(page2Duration < .milliseconds(500))
+
+        #expect(viewModel.records.count == 400)
+        #expect(viewModel.hasMore == true)
+        #expect(viewModel.records[199].seq == 401)
+        #expect(viewModel.records[200].seq == 400)
+        #expect(viewModel.records.last?.seq == 201)
+        #expect(viewModel.items.count == 400)
+        #expect(!viewModel.items.contains(where: { $0.isGap }))
+
+        // Page 3
+        let startPage3 = ContinuousClock.now
+        await viewModel.loadMore().value
+        let page3Duration = ContinuousClock.now - startPage3
+        #expect(page3Duration < .milliseconds(500))
+
+        #expect(viewModel.records.count == 600)
+        #expect(viewModel.hasMore == true) // Exact multiple of limit (200), so hasMore is true until next empty fetch
+        #expect(viewModel.records[399].seq == 201)
+        #expect(viewModel.records[400].seq == 200)
+        #expect(viewModel.records.last?.seq == 1)
+        #expect(viewModel.items.count == 600)
+        #expect(!viewModel.items.contains(where: { $0.isGap }))
+
+        // Page 4 (when reaching beyond the last record for exact multiples)
+        let startPage4 = ContinuousClock.now
+        await viewModel.loadMore().value
+        let page4Duration = ContinuousClock.now - startPage4
+        #expect(page4Duration < .milliseconds(500))
+
+        #expect(viewModel.records.count == 600)
+        #expect(viewModel.hasMore == false)
+        #expect(!viewModel.items.contains(where: { $0.isGap }))
+    }
+
+    @Test func testAdversarialPaginationOver550EventsNonMultiple() async throws {
+        let store = try createTestStore()
+        for _ in 1...550 {
+            try store.insert(AuditEvent(type: .signature, result: .allowed))
+        }
+
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
+        #expect(viewModel.query.limit == 200)
+
+        // Page 1
+        await viewModel.reload().value
+        #expect(viewModel.records.count == 200)
+        #expect(viewModel.hasMore == true)
+
+        // Page 2
+        await viewModel.loadMore().value
+        #expect(viewModel.records.count == 400)
+        #expect(viewModel.hasMore == true)
+
+        // Page 3: 150 events remaining (< 200)
+        await viewModel.loadMore().value
+        #expect(viewModel.records.count == 550)
+        #expect(viewModel.hasMore == false)
+        #expect(viewModel.items.count == 550)
+        #expect(!viewModel.items.contains(where: { $0.isGap }))
+    }
+
+
+    @Test func testAdversarialMultiFieldFilteringAndPerformanceOn600Events() async throws {
+        let store = try createTestStore()
+        for i in 1...600 {
+            let label: String
+            switch i % 4 {
+            case 0: label = "prod-deploy-key"
+            case 1: label = "staging-key"
+            case 2: label = "backup-key"
+            default: label = "alpha-test-key"
+            }
+
+            let host: String
+            switch i % 3 {
+            case 0: host = "github.com"
+            case 1: host = "gitlab.internal"
+            default: host = "bastion.prod.company.net"
+            }
+
+            let execPath = (i % 2 == 0) ? "/usr/bin/ssh" : "/opt/homebrew/bin/git"
+            let pid = pid_t(10000 + (i % 50))
+
+            let event = AuditEvent(
+                type: .signature,
+                result: (i % 5 == 0) ? .denied : .allowed,
+                keyFingerprint: "SHA256:fingerprint-\(label)",
+                sensitive: AuditSensitive(
+                    keyLabel: label,
+                    processChain: [AuditProcess(executablePath: execPath, pid: pid)],
+                    host: host
+                )
+            )
+            try store.insert(event)
+        }
+
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
+        viewModel.query.limit = 600
+        await viewModel.reload().value
+        #expect(viewModel.records.count == 600)
+
+        // 1. Search text filtering on host
+        let filterStart1 = ContinuousClock.now
+        viewModel.searchText = "bastion"
+        let filterDuration1 = ContinuousClock.now - filterStart1
+        #expect(filterDuration1 < .milliseconds(100))
+        #expect(viewModel.records.count == 200)
+        #expect(viewModel.records.allSatisfy { $0.event.sensitive.host == "bastion.prod.company.net" })
+        #expect(!viewModel.items.contains(where: { $0.isGap }))
+
+        // 2. Specific filterKeyLabel
+        viewModel.searchText = ""
+        viewModel.filterKeyLabel = "prod-deploy"
+        #expect(viewModel.records.count == 150)
+        #expect(viewModel.records.allSatisfy { $0.event.sensitive.keyLabel == "prod-deploy-key" })
+
+        // 3. Specific filterProcessOrPID
+        viewModel.filterKeyLabel = nil
+        viewModel.filterProcessOrPID = "homebrew"
+        #expect(viewModel.records.count == 300)
+        #expect(viewModel.records.allSatisfy { $0.event.sensitive.processChain.first?.executablePath.contains("homebrew") == true })
+
+        // 4. Combined multi-field filtering
+        viewModel.filterKeyLabel = "staging-key"
+        viewModel.filterRemoteHost = "gitlab.internal"
+        viewModel.filterProcessOrPID = "homebrew"
+        viewModel.searchText = "staging"
+        #expect(viewModel.records.allSatisfy { rec in
+            rec.event.sensitive.keyLabel == "staging-key" &&
+            rec.event.sensitive.host == "gitlab.internal" &&
+            rec.event.sensitive.processChain.first?.executablePath.contains("homebrew") == true
+        })
+
+        // 5. Clear all filters restores all 600
+        viewModel.searchText = ""
+        viewModel.filterKeyLabel = nil
+        viewModel.filterRemoteHost = nil
+        viewModel.filterProcessOrPID = nil
+        #expect(viewModel.records.count == 600)
+    }
+
+    @Test func testAdversarialArtificialGapDetectionWithPagination() async throws {
+        let (store, dbURL) = try createTestStoreWithURL()
+        // Insert 350 events (seq 1..350)
+        for _ in 1...350 {
+            _ = try store.insert(AuditEvent(type: .signature, result: .allowed))
+        }
+
+        // Delete rows 101..200 (gap of 100 rows)
+        try executeSQL(on: dbURL, "DELETE FROM events WHERE seq BETWEEN 101 AND 200;")
+
+        let viewModel = HistoryViewModel(store: { store }, keyring: nil, contextProvider: { nil })
+        viewModel.query.limit = 150
+        await viewModel.reload().value
+
+        #expect(viewModel.records.count == 150) // seqs 350 down to 201
+        #expect(!viewModel.items.contains(where: { $0.isGap })) // no gap in first page
+
+        await viewModel.loadMore().value
+        #expect(viewModel.records.count == 250) // all 250 remaining records
+
+        // Gap should now be detected between seq 201 and 100
+        let gaps = viewModel.items.compactMap { item -> (Int64, Int64, Int64)? in
+            if case .gap(let fromSeq, let toSeq, let missing) = item {
+                return (fromSeq, toSeq, missing)
+            }
+            return nil
+        }
+        #expect(gaps.count == 1)
+        #expect(gaps.first?.0 == 101)
+        #expect(gaps.first?.1 == 200)
+        #expect(gaps.first?.2 == 100)
+    }
 }
+
+

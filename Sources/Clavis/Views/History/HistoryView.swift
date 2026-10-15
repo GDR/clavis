@@ -82,6 +82,7 @@ public struct HistoryView: View {
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(ClavisUIStrings.Common.cancel)
 
                     Spacer()
 
@@ -125,7 +126,7 @@ public struct HistoryView: View {
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                     Button(action: { viewModel.reload() }) {
-                        Text(ClavisUIStrings.Common.appName)
+                        Text(retryButtonLabel)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -146,12 +147,37 @@ public struct HistoryView: View {
                         case .record(let record):
                             recordRow(for: record)
                                 .onAppear {
-                                    if record.seq == viewModel.records.last?.seq {
+                                    if record.seq == viewModel.records.last?.seq && viewModel.hasMore {
                                         viewModel.loadMore()
                                     }
                                 }
                         case .gap(let fromSeq, let toSeq, let count):
                             gapRow(fromSeq: fromSeq, toSeq: toSeq, count: count)
+                        }
+                    }
+
+                    if viewModel.hasMore {
+                        HStack {
+                            Spacer()
+                            if viewModel.isLoadingMore {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                    .padding(.vertical, 8)
+                            } else {
+                                Button(action: {
+                                    viewModel.loadMore()
+                                }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "arrow.down.circle")
+                                        Text(loadMoreButtonLabel)
+                                    }
+                                    .font(.system(size: 12, weight: .medium))
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundColor(.accentColor)
+                                .padding(.vertical, 8)
+                            }
+                            Spacer()
                         }
                     }
                 }
@@ -169,92 +195,168 @@ public struct HistoryView: View {
         }
     }
 
+    private var isRussian: Bool {
+        Locale.preferredLanguages.first?.hasPrefix("ru") == true
+            || Locale.current.language.languageCode?.identifier == "ru"
+    }
+
+    private var retryButtonLabel: String {
+        isRussian ? "Повторить" : "Retry"
+    }
+
+    private var refreshButtonLabel: String {
+        isRussian ? "Обновить" : "Refresh"
+    }
+
+    private var loadMoreButtonLabel: String {
+        isRussian ? "Загрузить ещё" : "Load More"
+    }
+
+    private var searchPlaceholder: String {
+        isRussian ? "Поиск (ключ, отпечаток, узел, процесс, PID)..." : "Search (key, fingerprint, host, process, PID)..."
+    }
+
+    private func eventCountLabel(count: Int) -> String {
+        isRussian ? "Событий: \(count)" : "\(count) events"
+    }
+
     private var filterToolbar: some View {
-        HStack(spacing: 10) {
-            // Key Picker
-            Picker("", selection: $selectedKeyFingerprint) {
-                Text(ClavisUIStrings.History.filterAllKeys).tag("")
-                ForEach(availableKeys, id: \.fingerprint) { key in
-                    Text(key.label).tag(key.fingerprint)
+        VStack(spacing: 8) {
+            // Row 1: Search field & Actions
+            HStack(spacing: 10) {
+                // Search Input Field
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                        .font(.system(size: 12))
+                    TextField(searchPlaceholder, text: $viewModel.searchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                    if !viewModel.searchText.isEmpty {
+                        Button(action: { viewModel.searchText = "" }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                                .font(.system(size: 11))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(ClavisUIStrings.Common.cancel)
+                    }
                 }
-            }
-            .labelsHidden()
-            .frame(width: 130)
-            .onChange(of: selectedKeyFingerprint) { newValue in
-                viewModel.query.keyFingerprint = newValue.isEmpty ? nil : newValue
-                viewModel.reload()
-            }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .cornerRadius(6)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                )
 
-            // Kind Picker
-            Picker("", selection: $selectedKind) {
-                Text(ClavisUIStrings.History.filterAllKinds).tag("all")
-                Text(ClavisUIStrings.History.filterKindPersonal).tag("personal")
-                Text(ClavisUIStrings.History.filterKindAgent).tag("agent")
-            }
-            .labelsHidden()
-            .frame(width: 100)
-            .onChange(of: selectedKind) { newValue in
-                switch newValue {
-                case "personal": viewModel.query.keyKind = .personal
-                case "agent": viewModel.query.keyKind = .agent
-                default: viewModel.query.keyKind = nil
+                Spacer()
+
+                // Refresh Button (⌘R)
+                Button(action: {
+                    viewModel.reload()
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise")
+                        Text(refreshButtonLabel)
+                    }
                 }
-                viewModel.reload()
-            }
+                .keyboardShortcut("r", modifiers: .command)
+                .help("Refresh (⌘R)")
 
-            // Result Picker
-            Picker("", selection: $selectedResult) {
-                Text(ClavisUIStrings.History.filterAllResult).tag("all")
-                Text(ClavisUIStrings.History.resultAllowed).tag("allowed")
-                Text(ClavisUIStrings.History.resultDenied).tag("denied")
-                Text(ClavisUIStrings.History.resultCancelled).tag("cancelled")
-                Text(ClavisUIStrings.History.resultFailed).tag("failed")
-            }
-            .labelsHidden()
-            .frame(width: 110)
-            .onChange(of: selectedResult) { newValue in
-                switch newValue {
-                case "allowed": viewModel.query.results = [.allowed]
-                case "denied": viewModel.query.results = [.denied]
-                case "cancelled": viewModel.query.results = [.cancelled]
-                case "failed": viewModel.query.results = [.failed]
-                default: viewModel.query.results = []
+                // Check Integrity Button
+                Button(action: {
+                    showingIntegritySheet = true
+                    viewModel.checkIntegrity()
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.shield")
+                        Text(ClavisUIStrings.History.checkIntegrity)
+                    }
                 }
-                viewModel.reload()
-            }
 
-            // Date Range Picker
-            Picker("", selection: $selectedTimeRange) {
-                ForEach(TimeRange.allCases) { range in
-                    Text(range.title).tag(range)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 120)
-            .onChange(of: selectedTimeRange) { newRange in
-                viewModel.query.from = newRange.startDate
-                viewModel.reload()
-            }
-
-            Spacer()
-
-            // Check Integrity Button
-            Button(action: {
-                showingIntegritySheet = true
-                viewModel.checkIntegrity()
-            }) {
-                HStack(spacing: 4) {
-                    Image(systemName: "checkmark.shield")
-                    Text(ClavisUIStrings.History.checkIntegrity)
+                // Export Button
+                Button(action: exportHistory) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "square.and.arrow.up")
+                        Text(ClavisUIStrings.History.export)
+                    }
                 }
             }
 
-            // Export Button
-            Button(action: exportHistory) {
-                HStack(spacing: 4) {
-                    Image(systemName: "square.and.arrow.up")
-                    Text(ClavisUIStrings.History.export)
+            // Row 2: Specific Filter Pickers & Counter
+            HStack(spacing: 10) {
+                // Key Picker
+                Picker("", selection: $selectedKeyFingerprint) {
+                    Text(ClavisUIStrings.History.filterAllKeys).tag("")
+                    ForEach(availableKeys, id: \.fingerprint) { key in
+                        Text(key.label).tag(key.fingerprint)
+                    }
                 }
+                .labelsHidden()
+                .frame(width: 130)
+                .onChange(of: selectedKeyFingerprint) { newValue in
+                    viewModel.query.keyFingerprint = newValue.isEmpty ? nil : newValue
+                    viewModel.reload()
+                }
+
+                // Kind Picker
+                Picker("", selection: $selectedKind) {
+                    Text(ClavisUIStrings.History.filterAllKinds).tag("all")
+                    Text(ClavisUIStrings.History.filterKindPersonal).tag("personal")
+                    Text(ClavisUIStrings.History.filterKindAgent).tag("agent")
+                }
+                .labelsHidden()
+                .frame(width: 100)
+                .onChange(of: selectedKind) { newValue in
+                    switch newValue {
+                    case "personal": viewModel.query.keyKind = .personal
+                    case "agent": viewModel.query.keyKind = .agent
+                    default: viewModel.query.keyKind = nil
+                    }
+                    viewModel.reload()
+                }
+
+                // Result Picker
+                Picker("", selection: $selectedResult) {
+                    Text(ClavisUIStrings.History.filterAllResult).tag("all")
+                    Text(ClavisUIStrings.History.resultAllowed).tag("allowed")
+                    Text(ClavisUIStrings.History.resultDenied).tag("denied")
+                    Text(ClavisUIStrings.History.resultCancelled).tag("cancelled")
+                    Text(ClavisUIStrings.History.resultFailed).tag("failed")
+                }
+                .labelsHidden()
+                .frame(width: 110)
+                .onChange(of: selectedResult) { newValue in
+                    switch newValue {
+                    case "allowed": viewModel.query.results = [.allowed]
+                    case "denied": viewModel.query.results = [.denied]
+                    case "cancelled": viewModel.query.results = [.cancelled]
+                    case "failed": viewModel.query.results = [.failed]
+                    default: viewModel.query.results = []
+                    }
+                    viewModel.reload()
+                }
+
+                // Date Range Picker
+                Picker("", selection: $selectedTimeRange) {
+                    ForEach(TimeRange.allCases) { range in
+                        Text(range.title).tag(range)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 120)
+                .onChange(of: selectedTimeRange) { newRange in
+                    viewModel.query.from = newRange.startDate
+                    viewModel.reload()
+                }
+
+                Spacer()
+
+                Text(eventCountLabel(count: viewModel.records.count))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
         }
     }
@@ -275,7 +377,25 @@ public struct HistoryView: View {
         }
 
         return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 12) {
+            HStack(spacing: 8) {
+                // Disclosure chevron button
+                Button(action: {
+                    if isExpanded {
+                        expandedSeqs.remove(record.seq)
+                    } else {
+                        expandedSeqs.insert(record.seq)
+                    }
+                }) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.secondary)
+                        .frame(width: 14, height: 14)
+                }
+                .buttonStyle(.plain)
+                .help(isExpanded ? (isRussian ? "Свернуть" : "Collapse") : (isRussian ? "Развернуть детали" : "Expand details"))
+                .accessibilityLabel(isExpanded ? ClavisUIStrings.Accessibility.collapseDetails : ClavisUIStrings.Accessibility.expandDetails)
+                .accessibilityValue(isExpanded ? ClavisUIStrings.Accessibility.expanded : ClavisUIStrings.Accessibility.collapsed)
+
                 // Timestamp
                 Text(relativeDateFormatter.localizedString(for: event.time, relativeTo: Date()))
                     .font(.caption)
@@ -302,34 +422,19 @@ public struct HistoryView: View {
                     }
                     .frame(width: 140, alignment: .leading)
 
-                    // Process Info with Chain Disclosure
+                    // Process Info
                     HStack(spacing: 4) {
                         if let firstProc = sensitive.processChain.first {
                             let procName = (firstProc.executablePath as NSString).lastPathComponent
                             Text(procName)
                                 .font(.system(size: 12, design: .monospaced))
-
-                            if sensitive.processChain.count > 1 {
-                                Button(action: {
-                                    if isExpanded {
-                                        expandedSeqs.remove(record.seq)
-                                    } else {
-                                        expandedSeqs.insert(record.seq)
-                                    }
-                                }) {
-                                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                                        .font(.system(size: 9))
-                                        .foregroundColor(.secondary)
-                                }
-                                .buttonStyle(.plain)
-                            }
                         } else {
                             Text("—")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
-                    .frame(width: 150, alignment: .leading)
+                    .frame(width: 140, alignment: .leading)
 
                     // Host
                     Text(sensitive.host ?? "—")
@@ -341,7 +446,7 @@ public struct HistoryView: View {
                     Text(ClavisUIStrings.History.unreadable)
                         .font(.caption)
                         .foregroundColor(.secondary)
-                        .frame(width: 380, alignment: .leading)
+                        .frame(width: 370, alignment: .leading)
 
                 case .omitted:
                     HStack(spacing: 6) {
@@ -359,7 +464,7 @@ public struct HistoryView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
-                    .frame(width: 380, alignment: .leading)
+                    .frame(width: 370, alignment: .leading)
                 }
 
                 Spacer()
@@ -379,33 +484,296 @@ public struct HistoryView: View {
                     .frame(width: 80, alignment: .trailing)
             }
 
-            // Expanded Process Chain
-            if isExpanded, case .plaintext(let sensitive) = unsealResult, sensitive.processChain.count > 1 {
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(Array(sensitive.processChain.enumerated()), id: \.offset) { idx, proc in
-                        HStack(spacing: 6) {
-                            Text(idx == 0 ? "├─" : "└─")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            Text("\(proc.executablePath) (PID \(proc.pid))")
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.leading, 120)
-                    }
-                }
-                .padding(.vertical, 2)
+            // Expanded Detail Inspection View (#124)
+            if isExpanded {
+                eventDetailInspectionView(for: record, unsealResult: unsealResult)
             }
         }
         .padding(.vertical, 4)
         .contextMenu {
+            let recordDigest = AuditWitness.digest(for: record)
+            Button(action: { copyToClipboard(recordDigest) }) {
+                Label(isRussian ? "Копировать хэш SHA-256" : "Copy SHA-256 Hash", systemImage: "doc.on.doc")
+            }
+
             if let sid = event.sessionID {
+                Button(action: { copyToClipboard(sid) }) {
+                    Label(isRussian ? "Копировать ID сессии" : "Copy Session ID", systemImage: "cpu")
+                }
                 Button(ClavisUIStrings.AgentSession.historyShowSession) {
                     viewModel.query.sessionID = sid
                     viewModel.reload()
                 }
             }
+
+            if let fp = event.keyFingerprint {
+                Button(action: { copyToClipboard(fp) }) {
+                    Label(isRussian ? "Копировать отпечаток" : "Copy Fingerprint", systemImage: "key")
+                }
+                Button(action: {
+                    viewModel.query.keyFingerprint = fp
+                    viewModel.reload()
+                }) {
+                    Label(isRussian ? "Фильтровать по этому ключу" : "Filter by this Key", systemImage: "line.3.horizontal.decrease.circle")
+                }
+            }
+
+            if case .plaintext(let sens) = unsealResult {
+                if let host = sens.host, !host.isEmpty {
+                    Button(action: { copyToClipboard(host) }) {
+                        Label(isRussian ? "Копировать узел" : "Copy Host", systemImage: "network")
+                    }
+                }
+                if let firstProc = sens.processChain.first {
+                    Button(action: { copyToClipboard(firstProc.executablePath) }) {
+                        Label(isRussian ? "Копировать путь процесса" : "Copy Process Path", systemImage: "terminal")
+                    }
+                }
+            }
+
+            Button(action: {
+                let summary = formatFullRecordSummary(record, unsealResult: unsealResult)
+                copyToClipboard(summary)
+            }) {
+                Label(isRussian ? "Копировать все данные строки" : "Copy Full Row Details", systemImage: "doc.text")
+            }
         }
+    }
+
+    private func eventDetailInspectionView(for record: AuditRecord, unsealResult: AuditUnsealResult) -> some View {
+        let event = record.event
+        let recordDigest = AuditWitness.digest(for: record)
+        let isoFormatter = ISO8601DateFormatter()
+        let timestampStr = isoFormatter.string(from: event.time)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Divider()
+                .padding(.vertical, 2)
+
+            VStack(alignment: .leading, spacing: 6) {
+                // Timestamp
+                detailItem(
+                    label: isRussian ? "Время" : "Timestamp",
+                    value: "\(absoluteDateFormatter.string(from: event.time)) (\(timestampStr))",
+                    copyValue: timestampStr
+                )
+
+                // SHA-256 Record Hash
+                detailItem(
+                    label: isRussian ? "Хэш SHA-256" : "SHA-256 Hash",
+                    value: recordDigest,
+                    copyValue: recordDigest,
+                    isMonospace: true
+                )
+
+                // Sequence & Event ID
+                HStack(spacing: 20) {
+                    detailItem(
+                        label: isRussian ? "Номер" : "Sequence",
+                        value: "\(record.seq)",
+                        copyValue: "\(record.seq)",
+                        isMonospace: true
+                    )
+                    detailItem(
+                        label: isRussian ? "ID события" : "Event ID",
+                        value: event.id.uuidString.lowercased(),
+                        copyValue: event.id.uuidString.lowercased(),
+                        isMonospace: true
+                    )
+                }
+
+                // Session ID (if present)
+                if let sessionID = event.sessionID {
+                    HStack(spacing: 8) {
+                        detailItem(
+                            label: isRussian ? "Сессия" : "Session ID",
+                            value: sessionID,
+                            copyValue: sessionID,
+                            isMonospace: true
+                        )
+                        Button(action: {
+                            viewModel.query.sessionID = sessionID
+                            viewModel.reload()
+                        }) {
+                            Text(ClavisUIStrings.AgentSession.historyShowSession)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.purple)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                // Key Label & Fingerprint
+                let keyLabelText: String? = {
+                    if case .plaintext(let sens) = unsealResult {
+                        return sens.keyLabel
+                    }
+                    return event.sensitive.keyLabel
+                }()
+                if let keyLabelText {
+                    detailItem(
+                        label: isRussian ? "Ключ" : "Key Label",
+                        value: keyLabelText,
+                        copyValue: keyLabelText
+                    )
+                }
+
+                if let fp = event.keyFingerprint {
+                    detailItem(
+                        label: isRussian ? "Отпечаток" : "Fingerprint",
+                        value: fp,
+                        copyValue: fp,
+                        isMonospace: true
+                    )
+                }
+
+                // Remote host (if present)
+                let hostText: String? = {
+                    if case .plaintext(let sens) = unsealResult {
+                        return sens.host
+                    }
+                    return event.sensitive.host
+                }()
+                if let hostText, !hostText.isEmpty {
+                    detailItem(
+                        label: isRussian ? "Узел" : "Remote Host",
+                        value: hostText,
+                        copyValue: hostText
+                    )
+                }
+
+                // Process chain & PIDs
+                let processChain: [AuditProcess] = {
+                    if case .plaintext(let sens) = unsealResult {
+                        return sens.processChain
+                    }
+                    return event.sensitive.processChain
+                }()
+
+                if !processChain.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(isRussian ? "Цепочка процессов:" : "Process Hierarchy:")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button(action: {
+                                let text = processChain.map { "\($0.executablePath) (PID \($0.pid))" }.joined(separator: "\n")
+                                copyToClipboard(text)
+                            }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "doc.on.doc")
+                                    Text(isRussian ? "Копировать цепочку" : "Copy Chain")
+                                }
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            ForEach(Array(processChain.enumerated()), id: \.offset) { idx, proc in
+                                HStack(spacing: 6) {
+                                    Text(idx == 0 ? "├─" : (idx == processChain.count - 1 ? "└─" : "├─"))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                    Text(proc.executablePath)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundColor(.primary)
+                                        .textSelection(.enabled)
+                                    Text("(PID \(proc.pid))")
+                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                    Button(action: {
+                                        copyToClipboard("\(proc.executablePath) (PID \(proc.pid))")
+                                    }) {
+                                        Image(systemName: "doc.on.doc")
+                                            .font(.system(size: 9))
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Copy process path and PID")
+                                    .accessibilityLabel(ClavisUIStrings.Accessibility.copyProcessInfo)
+                                }
+                                .padding(.leading, 8)
+                            }
+                        }
+                        .padding(6)
+                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
+                        .cornerRadius(6)
+                    }
+                }
+            }
+            .padding(.leading, 24)
+            .padding(.vertical, 4)
+        }
+    }
+
+    private func detailItem(label: String, value: String, copyValue: String? = nil, isMonospace: Bool = false) -> some View {
+        HStack(spacing: 6) {
+            Text("\(label):")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.secondary)
+                .frame(minWidth: 90, alignment: .leading)
+            Text(value)
+                .font(isMonospace ? .system(size: 11, design: .monospaced) : .system(size: 11))
+                .foregroundColor(.primary)
+                .textSelection(.enabled)
+            if let toCopy = copyValue ?? (value.isEmpty ? nil : value) {
+                Button(action: {
+                    copyToClipboard(toCopy)
+                }) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Copy \(label)")
+                .accessibilityLabel(ClavisUIStrings.Accessibility.copyItem(label: label))
+            }
+        }
+    }
+
+    private func copyToClipboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func formatFullRecordSummary(_ record: AuditRecord, unsealResult: AuditUnsealResult) -> String {
+        let event = record.event
+        let digest = AuditWitness.digest(for: record)
+        let isoFormatter = ISO8601DateFormatter()
+        var lines: [String] = []
+        lines.append("Sequence: \(record.seq)")
+        lines.append("Event ID: \(event.id.uuidString.lowercased())")
+        lines.append("Timestamp: \(isoFormatter.string(from: event.time))")
+        lines.append("Type: \(event.type.rawValue)")
+        lines.append("Result: \(event.result.rawValue)")
+        if let reason = event.reason {
+            lines.append("Reason: \(reason.rawValue)")
+        }
+        if let fp = event.keyFingerprint {
+            lines.append("Key Fingerprint: \(fp)")
+        }
+        if case .plaintext(let sens) = unsealResult {
+            if let label = sens.keyLabel {
+                lines.append("Key Label: \(label)")
+            }
+            if let host = sens.host {
+                lines.append("Host: \(host)")
+            }
+            if !sens.processChain.isEmpty {
+                lines.append("Processes:")
+                for proc in sens.processChain {
+                    lines.append("  - \(proc.executablePath) (PID \(proc.pid))")
+                }
+            }
+        }
+        if let sid = event.sessionID {
+            lines.append("Session ID: \(sid)")
+        }
+        lines.append("SHA-256 Digest: \(digest)")
+        return lines.joined(separator: "\n")
     }
 
     private func gapRow(fromSeq: Int64, toSeq: Int64, count: Int64) -> some View {

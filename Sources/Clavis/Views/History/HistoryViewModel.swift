@@ -45,10 +45,51 @@ public final class HistoryViewModel: ObservableObject {
     @Published public var integrityCheckError: String?
     @Published public var needsKeyContext: Bool = false
 
+    // #122: Search and filtering properties
+    @Published public var searchText: String = "" {
+        didSet {
+            if searchText != oldValue {
+                applyFiltering()
+            }
+        }
+    }
+    @Published public var filterKeyLabel: String? {
+        didSet {
+            if filterKeyLabel != oldValue {
+                applyFiltering()
+            }
+        }
+    }
+    @Published public var filterRemoteHost: String? {
+        didSet {
+            if filterRemoteHost != oldValue {
+                applyFiltering()
+            }
+        }
+    }
+    @Published public var filterProcessOrPID: String? {
+        didSet {
+            if filterProcessOrPID != oldValue {
+                applyFiltering()
+            }
+        }
+    }
+
+    // #123: Pagination properties
+    @Published public var hasMore: Bool = false
+    @Published public var isLoadingMore: Bool = false
+
+    // #121: Live audit event notification
+    public static let didRecordAuditNotification = NSNotification.Name("com.clavis.auditEventRecorded")
+
     private let storeFactory: () throws -> AuditStore
     private let keyring: AuditKeyring?
     private let contextProvider: @MainActor () -> LAContext?
     private var lockObserver: Any?
+    private var localObservers: [NSObjectProtocol] = []
+    private var distributedObservers: [NSObjectProtocol] = []
+    private var rawRecords: [AuditRecord] = []
+    private var lastPrunedSeq: Int64 = 0
 
     public nonisolated static func makeDefaultKeyring() -> AuditKeyring? {
         #if DEBUG
@@ -72,6 +113,7 @@ public final class HistoryViewModel: ObservableObject {
         self.keyring = keyring
         self.contextProvider = contextProvider
         self.notificationCenter = notificationCenter
+        self.query.limit = 200
         if let initialKeyFingerprint {
             self.query.keyFingerprint = initialKeyFingerprint
         }
@@ -85,11 +127,58 @@ public final class HistoryViewModel: ObservableObject {
                 self?.needsKeyContext = false
             }
         }
+
+        // #121: Live auto-reload observers
+        let localNames: [NSNotification.Name] = [
+            Self.didRecordAuditNotification,
+            NSNotification.Name("com.clavis.agentSigned"),
+            NSNotification.Name("com.clavis.agentRateLimited"),
+            NSNotification.Name("com.clavis.agentSessionsChanged")
+        ]
+        for name in localNames {
+            let obs = notificationCenter.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.reload()
+                }
+            }
+            self.localObservers.append(obs)
+        }
+
+        let distCenter = DistributedNotificationCenter.default()
+        let distNames: [NSNotification.Name] = [
+            Self.didRecordAuditNotification,
+            NSNotification.Name("com.clavis.agentSigned"),
+            NSNotification.Name("com.clavis.agentRateLimited"),
+            NSNotification.Name("com.clavis.agentSessionsChanged")
+        ]
+        for name in distNames {
+            let obs = distCenter.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.reload()
+                }
+            }
+            self.distributedObservers.append(obs)
+        }
     }
 
     deinit {
         if let lockObserver {
             notificationCenter.removeObserver(lockObserver)
+        }
+        for obs in localObservers {
+            notificationCenter.removeObserver(obs)
+        }
+        let distCenter = DistributedNotificationCenter.default()
+        for obs in distributedObservers {
+            distCenter.removeObserver(obs)
         }
     }
 
@@ -124,7 +213,134 @@ public final class HistoryViewModel: ObservableObject {
         Self.computeItems(
             from: records,
             prunedThroughSeq: prunedThroughSeq,
-            hasFilters: query.hasFiltersExceptTimeRange
+            hasFilters: query.hasFiltersExceptTimeRange || hasCustomFilters
+        )
+    }
+
+    private var hasCustomFilters: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || (filterKeyLabel != nil && !filterKeyLabel!.isEmpty)
+            || (filterRemoteHost != nil && !filterRemoteHost!.isEmpty)
+            || (filterProcessOrPID != nil && !filterProcessOrPID!.isEmpty)
+    }
+
+    public func recordMatchesFilter(_ record: AuditRecord) -> Bool {
+        let unsealed = sensitive[record.seq]
+        let eventSensitive = record.event.sensitive
+
+        // 1. Search text (matches key label, fingerprint, remote host, process or PID, session ID)
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !q.isEmpty {
+            var matched = false
+            // Fingerprint
+            if let fp = record.event.keyFingerprint, fp.localizedCaseInsensitiveContains(q) {
+                matched = true
+            }
+            // Session ID
+            if !matched, let sid = record.event.sessionID, sid.localizedCaseInsensitiveContains(q) {
+                matched = true
+            }
+            // Sensitive fields from unsealed result
+            if !matched, let unsealed, case .plaintext(let sens) = unsealed {
+                if let label = sens.keyLabel, label.localizedCaseInsensitiveContains(q) {
+                    matched = true
+                }
+                if !matched, let host = sens.host, host.localizedCaseInsensitiveContains(q) {
+                    matched = true
+                }
+                if !matched {
+                    for proc in sens.processChain {
+                        if proc.executablePath.localizedCaseInsensitiveContains(q)
+                            || (proc.executablePath as NSString).lastPathComponent.localizedCaseInsensitiveContains(q)
+                            || String(proc.pid).contains(q) {
+                            matched = true
+                            break
+                        }
+                    }
+                }
+            }
+            // Sensitive fields from event.sensitive fallback
+            if !matched {
+                if let label = eventSensitive.keyLabel, label.localizedCaseInsensitiveContains(q) {
+                    matched = true
+                }
+                if !matched, let host = eventSensitive.host, host.localizedCaseInsensitiveContains(q) {
+                    matched = true
+                }
+                if !matched {
+                    for proc in eventSensitive.processChain {
+                        if proc.executablePath.localizedCaseInsensitiveContains(q)
+                            || (proc.executablePath as NSString).lastPathComponent.localizedCaseInsensitiveContains(q)
+                            || String(proc.pid).contains(q) {
+                            matched = true
+                            break
+                        }
+                    }
+                }
+            }
+            if !matched {
+                return false
+            }
+        }
+
+        // 2. Specific key label filter
+        if let keyLabel = filterKeyLabel, !keyLabel.isEmpty {
+            let label: String? = {
+                if let unsealed, case .plaintext(let sens) = unsealed {
+                    return sens.keyLabel
+                }
+                return eventSensitive.keyLabel
+            }()
+            guard let l = label, l.localizedCaseInsensitiveContains(keyLabel) else {
+                return false
+            }
+        }
+
+        // 3. Specific remote host filter
+        if let remoteHost = filterRemoteHost, !remoteHost.isEmpty {
+            let host: String? = {
+                if let unsealed, case .plaintext(let sens) = unsealed {
+                    return sens.host
+                }
+                return eventSensitive.host
+            }()
+            guard let h = host, h.localizedCaseInsensitiveContains(remoteHost) else {
+                return false
+            }
+        }
+
+        // 4. Specific process or PID filter
+        if let processOrPID = filterProcessOrPID, !processOrPID.isEmpty {
+            let chain: [AuditProcess] = {
+                if let unsealed, case .plaintext(let sens) = unsealed {
+                    return sens.processChain
+                }
+                return eventSensitive.processChain
+            }()
+            let matched = chain.contains { proc in
+                proc.executablePath.localizedCaseInsensitiveContains(processOrPID)
+                    || (proc.executablePath as NSString).lastPathComponent.localizedCaseInsensitiveContains(processOrPID)
+                    || String(proc.pid).contains(processOrPID)
+            }
+            if !matched {
+                return false
+            }
+        }
+
+        return true
+    }
+
+    public func applyFiltering(prunedSeq: Int64? = nil) {
+        if let prunedSeq {
+            self.lastPrunedSeq = prunedSeq
+        }
+        let filtered = rawRecords.filter { recordMatchesFilter($0) }
+        self.records = filtered
+        let hasAnyFilter = query.hasFiltersExceptTimeRange || hasCustomFilters
+        self.items = HistoryViewModel.computeItems(
+            from: filtered,
+            prunedThroughSeq: self.lastPrunedSeq,
+            hasFilters: hasAnyFilter
         )
     }
 
@@ -151,17 +367,13 @@ public final class HistoryViewModel: ObservableObject {
                     unsealedMap[rec.seq] = unsealer.open(rec)
                 }
                 let finalMap = unsealedMap
-                let computedItems = HistoryViewModel.computeItems(
-                    from: fetched,
-                    prunedThroughSeq: prunedSeq,
-                    hasFilters: currentQuery.hasFiltersExceptTimeRange
-                )
                 await MainActor.run {
-                    self.records = fetched
-                    self.items = computedItems
+                    self.rawRecords = fetched
                     self.sensitive = finalMap
                     self.needsKeyContext = needsKey
+                    self.hasMore = fetched.count >= currentQuery.limit
                     self.isLoading = false
+                    self.applyFiltering(prunedSeq: prunedSeq)
                 }
             } catch {
                 await MainActor.run {
@@ -175,9 +387,14 @@ public final class HistoryViewModel: ObservableObject {
 
     @discardableResult
     public func loadMore() -> Task<Void, Never> {
-        guard let lastSeq = records.last?.seq else {
+        guard !isLoadingMore else {
             return Task {}
         }
+        guard let lastSeq = rawRecords.last?.seq else {
+            hasMore = false
+            return Task {}
+        }
+        isLoadingMore = true
         var currentQuery = query
         currentQuery.beforeSeq = lastSeq
 
@@ -196,19 +413,18 @@ public final class HistoryViewModel: ObservableObject {
                 }
                 let finalMap = unsealedMap
                 await MainActor.run {
-                    self.records.append(contentsOf: fetched)
+                    self.rawRecords.append(contentsOf: fetched)
                     for (seq, res) in finalMap {
                         self.sensitive[seq] = res
                     }
-                    self.items = HistoryViewModel.computeItems(
-                        from: self.records,
-                        prunedThroughSeq: prunedSeq,
-                        hasFilters: currentQuery.hasFiltersExceptTimeRange
-                    )
+                    self.hasMore = fetched.count >= currentQuery.limit
+                    self.isLoadingMore = false
+                    self.applyFiltering(prunedSeq: prunedSeq)
                 }
             } catch {
                 await MainActor.run {
                     self.errorMessage = error.localizedDescription
+                    self.isLoadingMore = false
                 }
             }
         }
