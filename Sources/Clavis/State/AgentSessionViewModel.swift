@@ -55,42 +55,44 @@ public class AgentSessionViewModel: ObservableObject {
             unCenter?.delegate = delegate
         }
 
-        let center = DistributedNotificationCenter.default()
+        if !Self.isRunningUnderXCTest {
+            let center = DistributedNotificationCenter.default()
 
-        let obsSessionsChanged = center.addObserver(
-            forName: AgentSessionRegistry.agentSessionsChangedNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor in
-                self.refreshAgentSessions()
+            let obsSessionsChanged = center.addObserver(
+                forName: AgentSessionRegistry.agentSessionsChangedNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                Task { @MainActor in
+                    self.refreshAgentSessions()
+                }
             }
-        }
 
-        let obsSigned = center.addObserver(
-            forName: NSNotification.Name("com.clavis.agentSigned"),
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            guard let self else { return }
-            Task { @MainActor in
-                self.handleAgentSignedNotification(note)
+            let obsSigned = center.addObserver(
+                forName: NSNotification.Name("com.clavis.agentSigned"),
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                guard let self else { return }
+                Task { @MainActor in
+                    self.handleAgentSignedNotification(note)
+                }
             }
-        }
 
-        let obsRateLimited = center.addObserver(
-            forName: NSNotification.Name("com.clavis.agentRateLimited"),
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            guard let self else { return }
-            Task { @MainActor in
-                self.handleAgentRateLimitedNotification(note)
+            let obsRateLimited = center.addObserver(
+                forName: NSNotification.Name("com.clavis.agentRateLimited"),
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                guard let self else { return }
+                Task { @MainActor in
+                    self.handleAgentRateLimitedNotification(note)
+                }
             }
-        }
 
-        self.notificationObservers = [obsSessionsChanged, obsSigned, obsRateLimited]
+            self.notificationObservers = [obsSessionsChanged, obsSigned, obsRateLimited]
+        }
         refreshAgentSessions()
     }
 

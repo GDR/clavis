@@ -148,24 +148,26 @@ public final class HistoryViewModel: ObservableObject {
             self.localObservers.append(obs)
         }
 
-        let distCenter = DistributedNotificationCenter.default()
-        let distNames: [NSNotification.Name] = [
-            Self.didRecordAuditNotification,
-            NSNotification.Name("com.clavis.agentSigned"),
-            NSNotification.Name("com.clavis.agentRateLimited"),
-            NSNotification.Name("com.clavis.agentSessionsChanged")
-        ]
-        for name in distNames {
-            let obs = distCenter.addObserver(
-                forName: name,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.reload()
+        if notificationCenter === NotificationCenter.default && !ClavisEnvironment.isTesting {
+            let distCenter = DistributedNotificationCenter.default()
+            let distNames: [NSNotification.Name] = [
+                Self.didRecordAuditNotification,
+                NSNotification.Name("com.clavis.agentSigned"),
+                NSNotification.Name("com.clavis.agentRateLimited"),
+                NSNotification.Name("com.clavis.agentSessionsChanged")
+            ]
+            for name in distNames {
+                let obs = distCenter.addObserver(
+                    forName: name,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        self?.reload()
+                    }
                 }
+                self.distributedObservers.append(obs)
             }
-            self.distributedObservers.append(obs)
         }
     }
 

@@ -44,7 +44,7 @@ import Testing
         // Delete row 3 to create a gap between 4 and 2
         try executeSQL(on: dbURL, "DELETE FROM events WHERE seq = 3;")
 
-        let viewModel = HistoryViewModel(store: { store }, keyring: nil, contextProvider: { nil })
+        let viewModel = HistoryViewModel(store: { store }, keyring: nil, contextProvider: { nil }, notificationCenter: NotificationCenter())
         await viewModel.reload().value
 
         #expect(viewModel.records.count == 4)
@@ -103,7 +103,7 @@ import Testing
         try executeSQL(on: dbURL, "DELETE FROM events WHERE seq <= 3;")
         try executeSQL(on: dbURL, "INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '3');")
 
-        let viewModel = HistoryViewModel(store: { store }, keyring: nil, contextProvider: { nil })
+        let viewModel = HistoryViewModel(store: { store }, keyring: nil, contextProvider: { nil }, notificationCenter: NotificationCenter())
         await viewModel.reload().value
 
         // Remaining records in DB: 6, 5, 4. Since none are missing between 6, 5, 4,
@@ -161,7 +161,7 @@ import Testing
         // Delete row 3
         try executeSQL(on: dbURL, "DELETE FROM events WHERE seq = 3;")
 
-        let viewModel = HistoryViewModel(store: { store }, keyring: nil, contextProvider: { nil })
+        let viewModel = HistoryViewModel(store: { store }, keyring: nil, contextProvider: { nil }, notificationCenter: NotificationCenter())
 
         // 1. Without filters: gap is flagged
         await viewModel.reload().value
