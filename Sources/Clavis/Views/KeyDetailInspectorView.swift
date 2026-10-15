@@ -97,14 +97,7 @@ public struct KeyDetailInspectorView: View {
     }
 
     private var postureIcon: String {
-        switch key.purpose {
-        case .agent:
-            return "cpu"
-        case .gitSigningOnly:
-            return "arrow.triangle.branch"
-        case .general:
-            return key.biometricPolicy == .biometryCurrentSet ? "touchid" : "lock.shield.fill"
-        }
+        Self.postureIcon(for: key)
     }
 
 
@@ -336,27 +329,6 @@ public struct KeyDetailInspectorView: View {
                     }
                 }
 
-                // Used By / Integrations
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(ClavisUIStrings.Inspector.usedBySection)
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(DesignTokens.textTertiary)
-                        Spacer()
-                    }
-
-                    VStack(spacing: 8) {
-                        IntegrationRow(
-                            name: socketInfo.name,
-                            detail: socketInfo.socketPath,
-                            status: socketInfo.status,
-                            isActive: socketInfo.isActive
-                        )
-                    }
-                    .padding(14)
-                    .glassCard(cornerRadius: 10)
-                }
-
                 // Security Inspector
                 VStack(alignment: .leading, spacing: 8) {
                     Text(ClavisUIStrings.Inspector.securitySection)
@@ -395,36 +367,34 @@ public struct KeyDetailInspectorView: View {
                                 .controlSize(.mini)
                             }
                         }
+                        Divider().background(DesignTokens.cardBorder)
+                        IntegrationRow(
+                            name: socketInfo.name,
+                            detail: socketInfo.socketPath,
+                            status: socketInfo.status,
+                            isActive: socketInfo.isActive
+                        )
                     }
                     .padding(14)
                     .glassCard(cornerRadius: 10)
+
+                    if key.isHardware {
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: postureIcon)
+                                .font(.caption)
+                                .foregroundColor(DesignTokens.accentGreen)
+                            Text(securityPosture.description)
+                                .font(.caption)
+                                .foregroundColor(DesignTokens.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.top, 2)
+                    }
                 }
 
                 if key.purpose == .agent {
                     AgentPolicyView(key: key, appState: appState)
-                }
-
-                if key.isHardware {
-                    let posture = securityPosture
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 12) {
-                            Image(systemName: postureIcon)
-                                .font(.system(size: 20))
-                                .foregroundColor(DesignTokens.accentGreen)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(posture.title)
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundColor(.primary)
-                                Text(posture.description)
-                                    .font(.caption)
-                                    .foregroundColor(DesignTokens.textSecondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            Spacer()
-                        }
-                        .padding(14)
-                        .glassCard(cornerRadius: 10)
-                    }
                 }
 
                 // Danger Zone (#102: Separate Delete from Copy Public Key, isolated at bottom)
@@ -540,17 +510,18 @@ private struct IntegrationRow: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(name)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
+                    .font(.caption)
+                    .foregroundColor(DesignTokens.textSecondary)
                 Text(detail)
                     .font(.caption2)
-                    .foregroundColor(DesignTokens.textSecondary)
+                    .foregroundColor(DesignTokens.textTertiary)
             }
             Spacer()
             HStack(spacing: 5) {
                 StatusDot(isActive: isActive)
                 Text(status)
                     .font(.caption)
+                    .fontWeight(.medium)
                     .foregroundColor(isActive ? DesignTokens.accentGreen : DesignTokens.textSecondary)
             }
         }
@@ -798,6 +769,116 @@ public extension KeyDetailInspectorView {
             label: ClavisUIStrings.Common.copy,
             accessibilityLabel: ClavisUIStrings.Accessibility.copyFingerprint,
             help: ClavisUIStrings.Inspector.copyFingerprintHelp
+        )
+    }
+
+    // MARK: - Security Posture & Card Consolidation (Milestone M3 / Refs clavis-cc3)
+
+    /// Returns the posture SF symbol icon matching the key's cryptographic purpose and policy.
+    static func postureIcon(for key: SSHKeyInfo) -> String {
+        switch key.purpose {
+        case .agent:
+            return "cpu"
+        case .gitSigningOnly:
+            return "arrow.triangle.branch"
+        case .general:
+            return key.biometricPolicy == .biometryCurrentSet ? "touchid" : "lock.shield.fill"
+        }
+    }
+
+    /// System icon associated with the compact security posture caption footnote.
+    static func securityPostureIcon(for key: SSHKeyInfo) -> String {
+        postureIcon(for: key)
+    }
+
+    /// Compact caption footnote text for hardware keys directly under the SECURITY card.
+    static func securityPostureFootnote(
+        for key: SSHKeyInfo,
+        agentPolicy: AgentKeyPolicy? = nil,
+        hasActiveGitGrace: Bool = false
+    ) -> String {
+        securityPostureInfo(for: key, agentPolicy: agentPolicy, hasActiveGitGrace: hasActiveGitGrace).description
+    }
+
+    /// Semantic attributes for the consolidated socket row inside the SECURITY card.
+    struct SecurityCardSocketRow: Equatable, Sendable {
+        public let name: String
+        public let socketPath: String
+        public let status: String
+        public let isActive: Bool
+
+        public init(name: String, socketPath: String, status: String, isActive: Bool) {
+            self.name = name
+            self.socketPath = socketPath
+            self.status = status
+            self.isActive = isActive
+        }
+    }
+
+    /// Returns the consolidated socket row attributes for placement in the SECURITY card.
+    static func securityCardSocketRow(for key: SSHKeyInfo, isSocketActive: Bool) -> SecurityCardSocketRow {
+        let info = socketStatusInfo(for: key, isSocketActive: isSocketActive)
+        return SecurityCardSocketRow(
+            name: info.name,
+            socketPath: info.socketPath,
+            status: info.status,
+            isActive: info.isActive
+        )
+    }
+
+    /// Semantic properties consolidated into the SECURITY card and caption footnote.
+    struct ConsolidatedSecurityInfo: Equatable, Sendable {
+        public let storageValue: String
+        public let authenticationValue: String
+        public let socketName: String
+        public let socketPath: String
+        public let socketStatus: String
+        public let isSocketActive: Bool
+        public let postureIcon: String
+        public let postureDescription: String
+
+        public init(
+            storageValue: String,
+            authenticationValue: String,
+            socketName: String,
+            socketPath: String,
+            socketStatus: String,
+            isSocketActive: Bool,
+            postureIcon: String,
+            postureDescription: String
+        ) {
+            self.storageValue = storageValue
+            self.authenticationValue = authenticationValue
+            self.socketName = socketName
+            self.socketPath = socketPath
+            self.socketStatus = socketStatus
+            self.isSocketActive = isSocketActive
+            self.postureIcon = postureIcon
+            self.postureDescription = postureDescription
+        }
+    }
+
+    /// Computes consolidated security properties and posture footnote for the inspector view.
+    static func consolidatedSecurityInfo(
+        for key: SSHKeyInfo,
+        isSocketActive: Bool,
+        agentPolicy: AgentKeyPolicy? = nil,
+        hasActiveGitGrace: Bool = false
+    ) -> ConsolidatedSecurityInfo {
+        let authValue = key.biometricPolicy == .biometryCurrentSet
+            ? ClavisUIStrings.Inspector.authTouchIdOnlyStrict
+            : ClavisUIStrings.Inspector.authUserPresence
+        let socket = socketStatusInfo(for: key, isSocketActive: isSocketActive)
+        let posture = securityPostureInfo(for: key, agentPolicy: agentPolicy, hasActiveGitGrace: hasActiveGitGrace)
+        return ConsolidatedSecurityInfo(
+            storageValue: ClavisUIStrings.Inspector.storageHardwareEnclave,
+            authenticationValue: authValue,
+            socketName: socket.name,
+            socketPath: socket.socketPath,
+            socketStatus: socket.status,
+            isSocketActive: socket.isActive,
+            postureIcon: postureIcon(for: key),
+            postureDescription: posture.description
         )
     }
 }
