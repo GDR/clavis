@@ -276,10 +276,13 @@ public struct KeyDetailInspectorView: View {
                             }
                             Spacer()
                             Button(action: copyFingerprint) {
-                                Image(systemName: "doc.on.doc")
-                                    .font(.caption)
+                                HStack(spacing: 4) {
+                                    Image(systemName: "doc.on.doc")
+                                    Text(ClavisUIStrings.Common.copy)
+                                }
                             }
-                            .buttonStyle(.borderless)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                             .accessibilityLabel(ClavisUIStrings.Accessibility.copyFingerprint)
                             .help(ClavisUIStrings.Inspector.copyFingerprintHelp)
                         }
@@ -739,6 +742,62 @@ public extension KeyDetailInspectorView {
         (
             title: key.label,
             subtitle: ClavisUIStrings.Inspector.keySubtitle(algorithm: key.algorithm, isHardware: key.isHardware)
+        )
+    }
+
+    // MARK: - Public Identity Copy Controls (Milestone M2 / Refs clavis-m46)
+
+    /// Semantic attributes for copy controls in the PUBLIC IDENTITY card.
+    struct PublicIdentityCopyControls: Equatable, Sendable {
+        public let publicKeyButtonTitle: String
+        public let publicKeyFeedback: String
+        public let fingerprintButtonLabel: String
+        public let fingerprintAccessibilityLabel: String
+        public let fingerprintHelp: String
+        public let fingerprintFeedback: String
+
+        public init(
+            publicKeyButtonTitle: String,
+            publicKeyFeedback: String,
+            fingerprintButtonLabel: String,
+            fingerprintAccessibilityLabel: String,
+            fingerprintHelp: String,
+            fingerprintFeedback: String
+        ) {
+            self.publicKeyButtonTitle = publicKeyButtonTitle
+            self.publicKeyFeedback = publicKeyFeedback
+            self.fingerprintButtonLabel = fingerprintButtonLabel
+            self.fingerprintAccessibilityLabel = fingerprintAccessibilityLabel
+            self.fingerprintHelp = fingerprintHelp
+            self.fingerprintFeedback = fingerprintFeedback
+        }
+    }
+
+    /// Computes the copy control attributes for the Public Identity card based on key purpose.
+    static func publicIdentityCopyControls(for key: SSHKeyInfo) -> PublicIdentityCopyControls {
+        PublicIdentityCopyControls(
+            publicKeyButtonTitle: key.purpose == .agent
+                ? ClavisUIStrings.KeyDetail.copyDeployKey
+                : ClavisUIStrings.Inspector.copySSHKeyButton,
+            publicKeyFeedback: ClavisUIStrings.Inspector.feedbackCopiedOpenSSH,
+            fingerprintButtonLabel: ClavisUIStrings.Common.copy,
+            fingerprintAccessibilityLabel: ClavisUIStrings.Accessibility.copyFingerprint,
+            fingerprintHelp: ClavisUIStrings.Inspector.copyFingerprintHelp,
+            fingerprintFeedback: ClavisUIStrings.Inspector.feedbackCopiedFingerprint
+        )
+    }
+
+    /// Localized button title for copying the public identity key.
+    static func publicKeyCopyButtonTitle(for key: SSHKeyInfo) -> String {
+        publicIdentityCopyControls(for: key).publicKeyButtonTitle
+    }
+
+    /// Localized attributes for the fingerprint copy button.
+    static func fingerprintCopyButtonAttributes() -> (label: String, accessibilityLabel: String, help: String) {
+        (
+            label: ClavisUIStrings.Common.copy,
+            accessibilityLabel: ClavisUIStrings.Accessibility.copyFingerprint,
+            help: ClavisUIStrings.Inspector.copyFingerprintHelp
         )
     }
 }
