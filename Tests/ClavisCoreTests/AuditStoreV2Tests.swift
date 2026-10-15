@@ -1,0 +1,200 @@
+import Testing
+import Foundation
+import SQLite3
+@testable import ClavisCore
+@testable import ClavisTestSupport
+
+@Suite struct AuditStoreV2Tests {
+
+    @Test func test_008_T3_freshDatabaseDirectlyInitializesV2() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-v2-test.db")
+
+        let store = try AuditStore(url: dbURL)
+        defer { store.close() }
+
+        // Verify user_version is 2
+        var rawDb: OpaquePointer?
+        #expect(sqlite3_open(dbURL.path, &rawDb) == SQLITE_OK)
+        var stmt: OpaquePointer?
+        #expect(sqlite3_prepare_v2(rawDb, "PRAGMA user_version;", -1, &stmt, nil) == SQLITE_OK)
+        #expect(sqlite3_step(stmt) == SQLITE_ROW)
+        let version = sqlite3_column_int(stmt, 0)
+        #expect(version == 2)
+        sqlite3_finalize(stmt)
+        sqlite3_close(rawDb)
+
+        // Verify epochs table exists
+        let epoch = AuditEpoch(
+            epochID: Data(repeating: 0x01, count: 16),
+            keyID: "testkeyid",
+            epk: Data(repeating: 0x02, count: 65),
+            wrappedDEK: Data(repeating: 0x03, count: 48)
+        )
+        #expect(throws: Never.self) {
+            try store.insertEpoch(epoch)
+        }
+        let retrieved = try store.epoch(id: epoch.epochID)
+        #expect(retrieved == epoch)
+    }
+
+    @Test func test_008_T3_refusesV1Database() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-v2-test.db")
+
+        var rawDb: OpaquePointer?
+        #expect(sqlite3_open(dbURL.path, &rawDb) == SQLITE_OK)
+        let db = try #require(rawDb)
+
+        let v1Schema = """
+        BEGIN IMMEDIATE;
+        CREATE TABLE events (
+          seq              INTEGER PRIMARY KEY AUTOINCREMENT,
+          event_id         TEXT    NOT NULL UNIQUE,
+          time             REAL    NOT NULL,
+          type             TEXT    NOT NULL,
+          result           TEXT    NOT NULL,
+          reason           TEXT,
+          key_fingerprint  TEXT,
+          key_kind         TEXT,
+          session_id       TEXT,
+          count            INTEGER NOT NULL DEFAULT 1,
+          sensitive_format INTEGER NOT NULL,
+          sensitive        BLOB    NOT NULL
+        ) STRICT;
+        CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+        PRAGMA user_version = 1;
+        COMMIT;
+        """
+        #expect(sqlite3_exec(db, v1Schema, nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+
+        // Open with AuditStore — should be rejected as unsupported version 1
+        #expect {
+            try AuditStore(url: dbURL)
+        } throws: { error in
+            error as? AuditStoreError == AuditStoreError.unsupportedVersion(1)
+        }
+    }
+
+    @Test func test_008_T3_epochRoundTrip() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-v2-test.db")
+
+        let store = try AuditStore(url: dbURL)
+        defer { store.close() }
+
+        let epochID = AuditCrypto.newEpochID()
+        let epoch = AuditEpoch(
+            epochID: epochID,
+            keyID: "key1234567890123",
+            epk: Data(repeating: 0xAA, count: 65),
+            wrappedDEK: Data(repeating: 0xBB, count: 60),
+            created: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+
+        try store.insertEpoch(epoch)
+
+        let fetched = try store.epoch(id: epochID)
+        #expect(fetched == epoch)
+
+        let allEpochs = try store.epochs()
+        #expect(allEpochs.count == 1)
+        #expect(allEpochs.first == epoch)
+
+        // Update wrap
+        let newEpk = Data(repeating: 0xCC, count: 65)
+        let newWrapped = Data(repeating: 0xDD, count: 60)
+        let newKeyID = "newkeyid98765432"
+        try store.updateEpochWrap(id: epochID, keyID: newKeyID, epk: newEpk, wrappedDEK: newWrapped)
+
+        let updated = try store.epoch(id: epochID)
+        #expect(updated?.keyID == newKeyID)
+        #expect(updated?.epk == newEpk)
+        #expect(updated?.wrappedDEK == newWrapped)
+    }
+
+    @Test func test_008_T3_replaceSensitiveIsConditional() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-v2-test.db")
+
+        let store = try AuditStore(url: dbURL)
+        defer { store.close() }
+
+        let event = AuditEvent(
+            type: .signature,
+            result: .allowed,
+            sensitive: AuditSensitive(keyLabel: "legacy_label", host: "legacy_host")
+        )
+        let seq = try store.insert(event)
+
+        let legacyRows = try store.legacyPlaintextRows(limit: 10)
+        #expect(legacyRows.count == 1)
+        #expect(legacyRows[0].seq == seq)
+        #expect(legacyRows[0].event.sensitive.keyLabel == "legacy_label")
+
+        let sealedBlob = Data([0x01, 0x02, 0x03, 0x04])
+        // First replace: expectedFormat = 0, newFormat = 1 -> true
+        let replacedFirst = try store.replaceSensitive(seq: seq, expectedFormat: 0, newFormat: 1, blob: sealedBlob)
+        #expect(replacedFirst)
+
+        // Second replace with expectedFormat = 0 -> false (already format 1)
+        let replacedSecond = try store.replaceSensitive(seq: seq, expectedFormat: 0, newFormat: 1, blob: sealedBlob)
+        #expect(!replacedSecond)
+
+        // Legacy rows should now be empty
+        let remainingLegacy = try store.legacyPlaintextRows(limit: 10)
+        #expect(remainingLegacy.isEmpty)
+
+        // Query row directly
+        let records = try store.query(AuditQuery())
+        #expect(records.count == 1)
+        #expect(records[0].sensitiveFormat == 1)
+        #expect(records[0].sealedSensitive == sealedBlob)
+    }
+
+    @Test func test_008_AC1_rawFileHasNoPlaintext() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-v2-test.db")
+
+        let store = try AuditStore(url: dbURL)
+
+        let secretLabel = "super_classified_key_label_v2"
+        let secretPath = "/very/private/daemon/path"
+        let secretHost = "super-secret.enterprise.internal"
+
+        let sensitive = AuditSensitive(
+            keyLabel: secretLabel,
+            processChain: [AuditProcess(executablePath: secretPath, pid: 100)],
+            host: secretHost
+        )
+
+        let epochID = AuditCrypto.newEpochID()
+        let dek = AuditCrypto.newDEK()
+        let event = AuditEvent(
+            type: .signature,
+            result: .allowed,
+            sensitive: sensitive
+        )
+        let aad = AuditCrypto.rowAAD(eventID: event.id, time: event.time, type: event.type, fingerprint: event.keyFingerprint)
+        let blob = try AuditCrypto.sealRow(sensitive, dek: dek, epochID: epochID, aad: aad)
+
+        _ = try store.insert(event, sensitiveFormat: 1, sensitiveBlob: blob)
+        try store.checkpoint()
+        store.close()
+
+        let fileData = try Data(contentsOf: dbURL)
+        func containsSubdata(_ data: Data, target: Data) -> Bool {
+            data.range(of: target) != nil
+        }
+
+        #expect(!containsSubdata(fileData, target: Data(secretLabel.utf8)))
+        #expect(!containsSubdata(fileData, target: Data(secretPath.utf8)))
+        #expect(!containsSubdata(fileData, target: Data(secretHost.utf8)))
+    }
+}

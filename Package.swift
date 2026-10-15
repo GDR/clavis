@@ -48,10 +48,27 @@ let package = Package(
             dependencies: ["ClavisCore"],
             path: "Sources/Clavis"
         ),
+        .target(
+            name: "ClavisTestSupport",
+            dependencies: ["ClavisCore"],
+            path: "Tests/ClavisTestSupport"
+        ),
         .testTarget(
-            name: "ClavisTests",
-            dependencies: ["ClavisCore", "ClavisCLI", "ClavisAgent", "Clavis"],
-            path: "Tests/ClavisTests"
+            name: "ClavisCoreTests",
+            dependencies: [
+                "ClavisCore",
+                "ClavisTestSupport"
+            ],
+            path: "Tests/ClavisCoreTests"
+        ),
+        .testTarget(
+            name: "ClavisAppTests",
+            dependencies: [
+                "Clavis",
+                "ClavisCore",
+                "ClavisTestSupport"
+            ],
+            path: "Tests/ClavisAppTests"
         )
     ]
 )
