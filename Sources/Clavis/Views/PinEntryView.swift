@@ -14,6 +14,16 @@ public struct PinEntryView: View {
     @State private var waitTimer: Timer?
     @State private var isSubmitting: Bool = false
 
+    /// Returns a bullet-masked representation of the given PIN.
+    public static func maskPIN(_ pin: String) -> String {
+        String(repeating: "•", count: pin.count)
+    }
+
+    /// Bullet-masked string of the currently entered PIN digits.
+    public var maskedPin: String {
+        Self.maskPIN(pin)
+    }
+
     public init(
         isInlineBanner: Bool = false,
         onUnlockSuccess: ((LAContext?) -> Void)? = nil
@@ -48,6 +58,8 @@ public struct PinEntryView: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: isInlineBanner ? 160 : 200)
                     .disabled(waitRemaining > 0 || isSubmitting)
+                    .accessibilityLabel(ClavisUIStrings.PinUnlock.pinLabel)
+                    .accessibilityValue(maskedPin)
                     .onSubmit {
                         submitPIN()
                     }
@@ -65,6 +77,7 @@ public struct PinEntryView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
+                .keyboardShortcut(.defaultAction)
                 .disabled(pin.count < 6 || waitRemaining > 0 || isSubmitting)
 
                 if lock.currentMode == .biometryOrPIN {
@@ -104,6 +117,8 @@ public struct PinEntryView: View {
                 .disabled(isSubmitting)
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(isInlineBanner ? ClavisUIStrings.PinUnlock.historyBanner : ClavisUIStrings.PinUnlock.pinLabel)
         .onDisappear {
             waitTimer?.invalidate()
             waitTimer = nil

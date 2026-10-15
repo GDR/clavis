@@ -7,12 +7,51 @@ struct KeyListView: View {
     @EnvironmentObject var appState: AppState
 
     @State private var selectedKeyId: String? = nil
-    @State private var showingAddPopover: Bool = false
     @State private var statusMessage: String? = nil
     @State private var kindFilter: KeyKindFilter = .all
+    @State private var searchText: String = ""
+    @State private var keyPendingDeletion: SSHKeyInfo? = nil
+    @FocusState private var isSearchFieldFocused: Bool
+
+    static func filterKeys(_ keys: [SSHKeyInfo], query: String, kind: KeyKindFilter) -> [SSHKeyInfo] {
+        let kindFiltered = KeyKindFilter.apply(kind, to: keys)
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return kindFiltered }
+        return kindFiltered.filter { key in
+            key.label.localizedCaseInsensitiveContains(trimmed) ||
+            key.algorithm.localizedCaseInsensitiveContains(trimmed) ||
+            key.fingerprint.localizedCaseInsensitiveContains(trimmed)
+        }
+    }
+
+    static func nextSelectedKeyId(keys: [SSHKeyInfo], currentId: String?) -> String? {
+        guard !keys.isEmpty else { return nil }
+        guard let currentId = currentId,
+              let currentIndex = keys.firstIndex(where: { $0.id == currentId }) else {
+            return keys.first?.id
+        }
+        if currentIndex < keys.count - 1 {
+            return keys[currentIndex + 1].id
+        } else {
+            return keys[currentIndex].id
+        }
+    }
+
+    static func previousSelectedKeyId(keys: [SSHKeyInfo], currentId: String?) -> String? {
+        guard !keys.isEmpty else { return nil }
+        guard let currentId = currentId,
+              let currentIndex = keys.firstIndex(where: { $0.id == currentId }) else {
+            return keys.first?.id
+        }
+        if currentIndex > 0 {
+            return keys[currentIndex - 1].id
+        } else {
+            return keys[currentIndex].id
+        }
+    }
 
     private var filteredKeys: [SSHKeyInfo] {
-        KeyKindFilter.apply(kindFilter, to: appState.keys)
+        Self.filterKeys(appState.keys, query: searchText, kind: kindFilter)
     }
 
     private var selectedKey: SSHKeyInfo? {
@@ -20,6 +59,18 @@ struct KeyListView: View {
             return filteredKeys.first(where: { $0.id == id })
         }
         return filteredKeys.first
+    }
+
+    private func selectNextKey() {
+        if let nextId = Self.nextSelectedKeyId(keys: filteredKeys, currentId: selectedKey?.id) {
+            selectedKeyId = nextId
+        }
+    }
+
+    private func selectPreviousKey() {
+        if let prevId = Self.previousSelectedKeyId(keys: filteredKeys, currentId: selectedKey?.id) {
+            selectedKeyId = prevId
+        }
     }
 
     var body: some View {
@@ -48,6 +99,38 @@ struct KeyListView: View {
                         .padding(.horizontal, 20)
                         .padding(.top, 44)
 
+                        // Search Box
+                        HStack(spacing: 6) {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundColor(DesignTokens.textTertiary)
+                                .font(.system(size: 12))
+                            TextField(ClavisUIStrings.MenuBar.searchPlaceholder, text: $searchText)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 12))
+                                .focused($isSearchFieldFocused)
+                                .accessibilityLabel(ClavisUIStrings.MenuBar.searchPlaceholder)
+                            if !searchText.isEmpty {
+                                Button(action: { searchText = "" }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundColor(DesignTokens.textTertiary)
+                                        .font(.system(size: 12))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(ClavisUIStrings.Common.cancel)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.white.opacity(0.06))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(isSearchFieldFocused ? DesignTokens.accentBlue.opacity(0.7) : Color.white.opacity(0.12), lineWidth: 1)
+                        )
+                        .padding(.horizontal, 20)
+
                         // Kind Filter Picker
                         Picker("", selection: $kindFilter) {
                             Text(ClavisUIStrings.KeyList.filterAll).tag(KeyKindFilter.all)
@@ -59,7 +142,21 @@ struct KeyListView: View {
 
                         // Key List
                         if filteredKeys.isEmpty {
-                            Spacer()
+                            if !searchText.isEmpty {
+                                VStack(spacing: 8) {
+                                    Spacer()
+                                    Image(systemName: "magnifyingglass")
+                                        .font(.system(size: 24))
+                                        .foregroundColor(DesignTokens.textTertiary)
+                                    Text(ClavisUIStrings.MenuBar.noKeysFound)
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundColor(DesignTokens.textSecondary)
+                                    Spacer()
+                                }
+                                .frame(maxWidth: .infinity)
+                            } else {
+                                Spacer()
+                            }
                         } else {
                             ScrollView {
                                 LazyVStack(spacing: 8) {
@@ -69,6 +166,15 @@ struct KeyListView: View {
                                             isSelected: (selectedKey?.id == key.id),
                                             onSelect: {
                                                 selectedKeyId = key.id
+                                            },
+                                            onCopyPublicKey: {
+                                                copyPublicKey(for: key)
+                                            },
+                                            onCopyFingerprint: {
+                                                copyFingerprint(for: key)
+                                            },
+                                            onDelete: {
+                                                keyPendingDeletion = key
                                             }
                                         )
                                     }
@@ -78,13 +184,38 @@ struct KeyListView: View {
                             }
                         }
 
+                        // Status feedback message if present (#92 Part 2)
+                        if let status = statusMessage {
+                            HStack(spacing: 8) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(DesignTokens.accentGreen)
+                                    .font(.system(size: 12))
+                                Text(status)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(DesignTokens.accentGreen)
+                                    .lineLimit(2)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(DesignTokens.accentGreen.opacity(0.12))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(DesignTokens.accentGreen.opacity(0.3), lineWidth: 0.8)
+                            )
+                            .padding(.horizontal, 16)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        }
+
                         // Bottom Toolbar: Unified 2x Liquid Glass Capsule placed bottom-right
                         HStack(spacing: 8) {
                             Spacer()
 
                             UnifiedGlassToolbarPill(
                                 appState: appState,
-                                showingAddPopover: $showingAddPopover,
                                 statusMessage: $statusMessage
                             )
                         }
@@ -161,15 +292,52 @@ struct KeyListView: View {
                 Text(msg)
             }
         }
+        .alert(
+            ClavisUIStrings.Inspector.deleteAlertTitle,
+            isPresented: Binding(
+                get: { keyPendingDeletion != nil },
+                set: { if !$0 { keyPendingDeletion = nil } }
+            )
+        ) {
+            Button(ClavisUIStrings.Common.delete, role: .destructive) {
+                if let key = keyPendingDeletion {
+                    deleteKey(label: key.label)
+                }
+                keyPendingDeletion = nil
+            }
+            Button(ClavisUIStrings.Common.cancel, role: .cancel) {
+                keyPendingDeletion = nil
+            }
+        } message: {
+            if let key = keyPendingDeletion {
+                Text(ClavisUIStrings.Inspector.deleteAlertMessage(label: key.label))
+            }
+        }
         .background {
             Group {
                 Button("") { appState.activeSheet = .create }
                     .keyboardShortcut("n", modifiers: .command)
                 Button("") { WindowManager.shared.openSettings() }
                     .keyboardShortcut(",", modifiers: .command)
+                Button("") { isSearchFieldFocused = true }
+                    .keyboardShortcut("f", modifiers: .command)
+                Button("") { selectPreviousKey() }
+                    .keyboardShortcut(.upArrow, modifiers: [])
+                Button("") { selectNextKey() }
+                    .keyboardShortcut(.downArrow, modifiers: [])
             }
             .opacity(0)
             .allowsHitTesting(false)
+        }
+        .onMoveCommand { direction in
+            switch direction {
+            case .up:
+                selectPreviousKey()
+            case .down:
+                selectNextKey()
+            default:
+                break
+            }
         }
         .onAppear {
             appState.refresh()
@@ -182,6 +350,28 @@ struct KeyListView: View {
                 selectedKeyId = newKeys.first?.id
             }
         }
+        .onChange(of: statusMessage) { newMessage in
+            guard let msg = newMessage, !msg.isEmpty else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                if statusMessage == msg {
+                    withAnimation {
+                        statusMessage = nil
+                    }
+                }
+            }
+        }
+    }
+
+    private func copyPublicKey(for key: SSHKeyInfo) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(key.publicKeyOpenSSH, forType: .string)
+        statusMessage = ClavisUIStrings.Inspector.feedbackCopiedOpenSSH
+    }
+
+    private func copyFingerprint(for key: SSHKeyInfo) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(key.fingerprint, forType: .string)
+        statusMessage = ClavisUIStrings.Inspector.feedbackCopiedFingerprint
     }
 
     private func deleteKey(label: String) {
@@ -197,10 +387,13 @@ struct KeyListView: View {
     }
 }
 
-private struct KeySidebarRowView: View {
+struct KeySidebarRowView: View {
     let key: SSHKeyInfo
     let isSelected: Bool
     let onSelect: () -> Void
+    var onCopyPublicKey: (() -> Void)? = nil
+    var onCopyFingerprint: (() -> Void)? = nil
+    var onDelete: (() -> Void)? = nil
 
     @State private var isHovered = false
 
@@ -239,6 +432,13 @@ private struct KeySidebarRowView: View {
         .background(FirstMouseView())
         .liquidGlassRowSelection(isSelected: isSelected, isHovered: isHovered)
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(key.label)
+        .accessibilityValue(key.algorithm)
+        .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : [.isButton])
+        .accessibilityAction {
+            onSelect()
+        }
         .onTapGesture {
             onSelect()
         }
@@ -247,14 +447,34 @@ private struct KeySidebarRowView: View {
                 isHovered = hovering
             }
         }
+        .contextMenu {
+            Button {
+                onCopyPublicKey?()
+            } label: {
+                Label(ClavisUIStrings.Inspector.copyPublicKey, systemImage: "doc.on.doc")
+            }
+
+            Button {
+                onCopyFingerprint?()
+            } label: {
+                Label(ClavisUIStrings.Inspector.copyFingerprintMenu, systemImage: "number")
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                onDelete?()
+            } label: {
+                Label(ClavisUIStrings.Inspector.deleteKeyMenu, systemImage: "trash")
+            }
+        }
     }
 }
 
 // MARK: - Unified 2x Liquid Glass Toolbar Capsule
 
-private struct UnifiedGlassToolbarPill: View {
+struct UnifiedGlassToolbarPill: View {
     @ObservedObject var appState: AppState
-    @Binding var showingAddPopover: Bool
     @Binding var statusMessage: String?
 
     var body: some View {
@@ -291,23 +511,16 @@ private struct UnifiedGlassToolbarPill: View {
 
     private var pillContent: some View {
         HStack(spacing: 2) {
-            // Add Key (+)
+            // Add Key (+) — opens CreateKeySheet directly (#87, #90)
             ToolbarCapsuleButton(
                 icon: "plus",
                 iconSize: 13,
                 iconColor: Color.white.opacity(0.90),
-                isActive: showingAddPopover,
+                isActive: appState.activeSheet == .create,
                 help: ClavisUIStrings.CreateKey.title,
-                action: { showingAddPopover.toggle() }
+                accessibilityLabelString: ClavisUIStrings.Accessibility.addKey,
+                action: { appState.activeSheet = .create }
             )
-            .popover(isPresented: $showingAddPopover, arrowEdge: .top) {
-                AddKeyPopoverView(
-                    onNewKey: {
-                        showingAddPopover = false
-                        appState.activeSheet = .create
-                    }
-                )
-            }
 
             // Lock All
             let hasActiveSessions = appState.activeGitGrace != nil || !appState.agentSessions.isEmpty
@@ -317,6 +530,8 @@ private struct UnifiedGlassToolbarPill: View {
                 iconColor: hasActiveSessions ? DesignTokens.accentGreen : Color.white.opacity(0.40),
                 isDisabled: !hasActiveSessions,
                 help: hasActiveSessions ? ClavisUIStrings.KeyList.lockAllKeysHelp : ClavisUIStrings.KeyList.noUnlockedKeysHelp,
+                accessibilityLabelString: ClavisUIStrings.Accessibility.lockAll,
+                accessibilityValueString: hasActiveSessions ? ClavisUIStrings.Accessibility.statusActive : ClavisUIStrings.Accessibility.statusOffline,
                 action: {
                     appState.lockNow()
                     statusMessage = ClavisUIStrings.KeyList.allCachedKeysLocked
@@ -329,6 +544,7 @@ private struct UnifiedGlassToolbarPill: View {
                 iconSize: 12,
                 iconColor: Color.white.opacity(0.90),
                 help: ClavisUIStrings.KeyList.settingsHelp,
+                accessibilityLabelString: ClavisUIStrings.Accessibility.settings,
                 action: { WindowManager.shared.openSettings() }
             )
         }
@@ -337,13 +553,15 @@ private struct UnifiedGlassToolbarPill: View {
     }
 }
 
-private struct ToolbarCapsuleButton: View {
+struct ToolbarCapsuleButton: View {
     let icon: String
     var iconSize: CGFloat = 12
     var iconColor: Color = Color.white.opacity(0.90)
     var isActive: Bool = false
     var isDisabled: Bool = false
     let help: String
+    var accessibilityLabelString: String? = nil
+    var accessibilityValueString: String? = nil
     let action: () -> Void
 
     @State private var isHovered: Bool = false
@@ -361,9 +579,11 @@ private struct ToolbarCapsuleButton: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .disableFocusEffect()
         .disabled(isDisabled)
         .help(help)
+        .accessibilityLabel(accessibilityLabelString ?? help)
+        .accessibilityValue(accessibilityValueString ?? "")
         .onHover { isHovered = $0 }
     }
 }
+

@@ -1,0 +1,194 @@
+@testable import ClavisTestSupport
+import Testing
+import SwiftUI
+import AppKit
+@testable import Clavis
+@testable import ClavisCore
+
+@Suite @MainActor
+final class PanelLockTests {
+    private let suiteName: String
+    nonisolated(unsafe) private let testDefaults: UserDefaults
+
+    init() {
+        let suite = "com.clavis.tests.panelLockTests.\(UUID().uuidString)"
+        self.suiteName = suite
+        self.testDefaults = UserDefaults(suiteName: suite)!
+    }
+
+    deinit {
+        testDefaults.removePersistentDomain(forName: suiteName)
+    }
+
+    // MARK: - #87: Empty-Vault Lock Bypass
+
+    @Test func test_emptyVault_bypassesLock_whenNoCustomPIN() {
+        let fakeAuth = FakePanelAuthenticator()
+        let controller = PanelLockController(
+            defaults: testDefaults,
+            authenticator: fakeAuth,
+            vaultKeyCount: { 0 }
+        )
+
+        // Fresh install with 0 keys and default mode (password/biometry, no PIN)
+        #expect(!controller.currentMode.requiresPIN)
+        #expect(controller.shouldBypassLock, "Lock should be bypassed when vault has 0 keys and no PIN is set")
+        #expect(controller.isBypassed)
+        #expect(!controller.isEffectivelyLocked)
+        #expect(controller.isLocked, "Controller state remains locked internally, but gate is bypassed")
+
+        // PanelLockGate with showsEmptyState=false should directly build content without requiring unlock
+        var buildCount = 0
+        let gate = PanelLockGate(lock: controller, showsEmptyState: false) {
+            buildCount += 1
+            return Text("Unlocked Content")
+        }
+
+        _ = gate.body
+        #expect(buildCount >= 1, "Content must be built when empty vault bypass is active")
+    }
+
+    @Test func test_emptyVault_surfacesOnboardingView_whenShowsEmptyStateTrue() {
+        let controller = PanelLockController(
+            defaults: testDefaults,
+            vaultKeyCount: { 0 }
+        )
+
+        #expect(controller.shouldBypassLock)
+
+        let gate = PanelLockGate(lock: controller, showsEmptyState: true) {
+            Text("Inner Content")
+        }
+
+        #expect(gate.showsEmptyState)
+        _ = gate.body
+    }
+
+    @Test func test_vaultWithKeys_doesNotBypassLock() {
+        let fakeAuth = FakePanelAuthenticator()
+        let controller = PanelLockController(
+            defaults: testDefaults,
+            authenticator: fakeAuth,
+            vaultKeyCount: { 1 }
+        )
+
+        #expect(!controller.shouldBypassLock, "Lock must not be bypassed when vault has keys")
+        #expect(!controller.isBypassed)
+        #expect(controller.isEffectivelyLocked)
+        #expect(controller.isLocked)
+
+        var buildCount = 0
+        let gate = PanelLockGate(lock: controller, showsEmptyState: false) {
+            buildCount += 1
+            return Text("Protected Content")
+        }
+
+        _ = gate.body
+        #expect(buildCount == 0, "Protected content must NOT be built when vault has keys and lock is active")
+    }
+
+    @Test func test_emptyVault_withCustomPIN_doesNotBypassLock() {
+        let fakeAuth = FakePanelAuthenticator()
+        let keyring = SoftwareAuditKeyring(requireContext: false)
+        _ = try? keyring.rotate(mode: .biometryOrPIN)
+
+        let controller = PanelLockController(
+            defaults: testDefaults,
+            authenticator: fakeAuth,
+            keyring: keyring,
+            vaultKeyCount: { 0 }
+        )
+
+        #expect(controller.currentMode.requiresPIN, "Keyring mode requires PIN")
+        #expect(!controller.shouldBypassLock, "Lock must NOT be bypassed when a custom PIN is configured")
+        #expect(!controller.isBypassed)
+        #expect(controller.isEffectivelyLocked)
+        #expect(controller.isLocked)
+
+        var buildCount = 0
+        let gate = PanelLockGate(lock: controller, showsEmptyState: false) {
+            buildCount += 1
+            return Text("Protected Content")
+        }
+
+        _ = gate.body
+        #expect(buildCount == 0, "Protected content must NOT be built when custom PIN is configured")
+    }
+
+    @Test func test_dynamicallyUpdatingKeyCount_updatesBypassState() {
+        var keysInVault = 0
+        let controller = PanelLockController(
+            defaults: testDefaults,
+            vaultKeyCount: { keysInVault }
+        )
+
+        #expect(controller.shouldBypassLock)
+        #expect(controller.isBypassed)
+
+        // Key is added to vault
+        keysInVault = 1
+        #expect(!controller.shouldBypassLock)
+        #expect(!controller.isBypassed)
+        #expect(controller.isEffectivelyLocked)
+
+        // Setter method also works dynamically
+        controller.setVaultKeyCountProvider { 0 }
+        #expect(controller.shouldBypassLock)
+    }
+
+    // MARK: - #87: Onboarding Snippets & Copy Actions
+
+    @Test func test_emptyVaultOnboardingView_snippetsAndCopyActions() {
+        let onboarding = EmptyVaultOnboardingView()
+
+        #expect(EmptyVaultOnboardingView.sshAuthSockCommand == "export SSH_AUTH_SOCK=~/.ssh/clavis.sock")
+        #expect(EmptyVaultOnboardingView.identityAgentConfig.contains("IdentityAgent ~/.ssh/clavis.sock"))
+        #expect(EmptyVaultOnboardingView.gitSigningCommand == "git config --global gpg.format ssh")
+
+        // Test copy to clipboard
+        onboarding.copyToClipboard(EmptyVaultOnboardingView.sshAuthSockCommand, snippetId: "sock")
+        #expect(NSPasteboard.general.string(forType: .string) == "export SSH_AUTH_SOCK=~/.ssh/clavis.sock")
+
+        onboarding.copyToClipboard(EmptyVaultOnboardingView.identityAgentConfig, snippetId: "agent")
+        #expect(NSPasteboard.general.string(forType: .string) == EmptyVaultOnboardingView.identityAgentConfig)
+
+        onboarding.copyToClipboard(EmptyVaultOnboardingView.gitSigningCommand, snippetId: "git")
+        #expect(NSPasteboard.general.string(forType: .string) == "git config --global gpg.format ssh")
+    }
+
+    // MARK: - #93: Lock Clarity
+
+    @Test func test_lockedPlaceholderView_clarificationNotice() {
+        let notice = LockedPlaceholderView.clarificationNotice
+        #expect(notice.contains("Locking the control panel does not disable background SSH signing"))
+        #expect(notice.contains("SSH") && notice.contains("Git"))
+
+        let placeholder = LockedPlaceholderView()
+        _ = placeholder.body
+    }
+
+    // MARK: - #99: PIN Masking & Default Action
+
+    @Test func test_pinEntryView_masksDigitsWithBullets() {
+        #expect(PinEntryView.maskPIN("") == "")
+        #expect(PinEntryView.maskPIN("1") == "•")
+        #expect(PinEntryView.maskPIN("123") == "•••")
+        #expect(PinEntryView.maskPIN("123456") == "••••••")
+        #expect(PinEntryView.maskPIN("secret_pin_99") == "•••••••••••••")
+
+        let pinView = PinEntryView()
+        #expect(pinView.maskedPin == "")
+    }
+
+    @Test func test_panelLockGate_rendersViews() {
+        let controller = PanelLockController(defaults: testDefaults)
+        let placeholder = LockedPlaceholderView(lock: controller)
+        _ = placeholder.body
+
+        let pinView = PinEntryView(lock: controller)
+        _ = pinView.body
+
+        let onboardingView = EmptyVaultOnboardingView(lock: controller)
+        _ = onboardingView.body
+    }
+}
