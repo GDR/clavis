@@ -2914,13 +2914,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Change Kind…"
+            "value": "Change Purpose…"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Сменить тип…"
+            "value": "Изменить назначение…"
           }
         }
       }
@@ -2931,13 +2931,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Change Kind"
+            "value": "Change Purpose"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Сменить тип"
+            "value": "Изменить назначение"
           }
         }
       }
@@ -2948,13 +2948,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Are you sure you want to change the kind of key '%1$@' to %2$@? This requires confirmation with user presence."
+            "value": "Are you sure you want to change the purpose of key '%1$@' to %2$@? This requires confirmation with user presence."
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Вы уверены, что хотите изменить тип ключа «%1$@» на %2$@? Это действие требует подтверждения присутствия пользователя."
+            "value": "Вы уверены, что хотите изменить назначение ключа «%1$@» на %2$@? Это действие требует подтверждения присутствия пользователя."
           }
         }
       }

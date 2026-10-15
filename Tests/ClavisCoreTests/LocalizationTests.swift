@@ -282,8 +282,15 @@ import Testing
         #expect(ClavisUIStrings.KeyList.filterAgent == "Agent")
         #expect(ClavisUIStrings.Badges.agent == "Agent")
         #expect(ClavisUIStrings.KeyDetail.copyDeployKey == "Copy Deploy Key")
-        #expect(ClavisUIStrings.KeyDetail.changeKind == "Change Kind…")
-        #expect(ClavisUIStrings.KeyDetail.changeKindConfirm == "Change Kind")
+        #expect(ClavisUIStrings.KeyDetail.changePurpose == "Change Purpose…")
+        #expect(ClavisUIStrings.KeyDetail.changeKind == "Change Purpose…")
+        #expect(ClavisUIStrings.KeyDetail.changePurposeConfirm == "Change Purpose")
+        #expect(ClavisUIStrings.KeyDetail.changeKindConfirm == "Change Purpose")
+        #expect(ClavisUIStrings.Inspector.changePurpose == "Change Purpose…")
+        #expect(ClavisUIStrings.Inspector.changeKind == "Change Purpose…")
+        #expect(ClavisUIStrings.Inspector.changePurposeConfirm == "Change Purpose")
+        #expect(ClavisUIStrings.Inspector.changeKindConfirm == "Change Purpose")
+        #expect(!ClavisUIStrings.KeyDetail.changePurposeAlertMessage(label: "test-key", newPurpose: .agent).isEmpty)
         #expect(!ClavisUIStrings.KeyDetail.changeKindAlertMessage(label: "test-key", newPurpose: .agent).isEmpty)
     }
 
