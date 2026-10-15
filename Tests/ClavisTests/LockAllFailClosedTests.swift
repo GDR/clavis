@@ -152,12 +152,16 @@ final class LockAllFailClosedTests: ClavisBaseTestCase {
         let stub = try StubAgentServer(socketPath: sockPath, behavior: .neverReply)
         defer { stub.stop() }
 
-        let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
+        let manager = AgentLifecycleManager(
+            socketPath: sockPath,
+            isTrustedServerPeer: { _ in true },
+            controlTimeout: 0.15
+        )
         let start = Date()
         XCTAssertThrowsError(try manager.sendLockAllToAgent())
         let elapsed = Date().timeIntervalSince(start)
-        XCTAssertGreaterThanOrEqual(elapsed, 2.8, "Should respect socket receive timeout")
-        XCTAssertLessThan(elapsed, 5.0, "Should timeout without hanging indefinitely")
+        XCTAssertGreaterThanOrEqual(elapsed, 0.12, "Should respect socket receive timeout")
+        XCTAssertLessThan(elapsed, 1.5, "Should timeout without hanging indefinitely")
     }
 
     func testCLIServiceLockFailsClosedWhenAgentRejects() throws {

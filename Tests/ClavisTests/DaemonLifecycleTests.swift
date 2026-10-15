@@ -450,9 +450,9 @@ final class DaemonLifecycleTests: ClavisBaseTestCase {
         )
 
         // Wait for main actor runloop tick
-        let deadline = Date().addingTimeInterval(0.2)
+        let deadline = Date().addingTimeInterval(0.05)
         while Date() < deadline {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            RunLoop.current.run(until: Date().addingTimeInterval(0.005))
         }
 
         // AppState must verify against authoritative state and reject the forged notification

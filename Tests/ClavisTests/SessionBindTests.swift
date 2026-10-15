@@ -880,17 +880,18 @@ final class SessionBindTests: ClavisBaseTestCase {
     // MARK: - F2 & F5 Security Audit Tests
 
     private func makeRSAHostKeyAndSig(
+        privKey existingPrivKey: SecKey? = nil,
         keyType: String = "ssh-rsa",
         sigType: String = "rsa-sha2-512",
         algorithm: SecKeyAlgorithm = .rsaSignatureMessagePKCS1v15SHA512,
         message: Data
-    ) throws -> (keyBlob: Data, sigBlob: Data) {
+    ) throws -> (privKey: SecKey, keyBlob: Data, sigBlob: Data) {
         let attributes: [CFString: Any] = [
             kSecAttrKeyType: kSecAttrKeyTypeRSA,
             kSecAttrKeySizeInBits: 2048
         ]
         var error: Unmanaged<CFError>?
-        guard let privKey = SecKeyCreateRandomKey(attributes as CFDictionary, &error),
+        guard let privKey = existingPrivKey ?? SecKeyCreateRandomKey(attributes as CFDictionary, &error),
               let pubKey = SecKeyCopyPublicKey(privKey),
               let derCFData = SecKeyCopyExternalRepresentation(pubKey, &error) else {
             throw NSError(domain: "SessionBindTests", code: 1)
@@ -910,7 +911,7 @@ final class SessionBindTests: ClavisBaseTestCase {
         sigBlob.appendWireString(sigType)
         sigBlob.appendWireData(rawSig)
 
-        return (keyBlob, sigBlob)
+        return (privKey, keyBlob, sigBlob)
     }
 
     private static func parsePKCS1RSAPublicKeyDER(_ der: Data) throws -> (n: Data, e: Data) {
@@ -954,7 +955,7 @@ final class SessionBindTests: ClavisBaseTestCase {
         let sessionID = Data("rsa-session-bind-challenge".utf8)
 
         // OpenSSH server with "ssh-rsa" key blob signing with "rsa-sha2-512"
-        let (key512, sig512) = try makeRSAHostKeyAndSig(
+        let (privKey, key512, sig512) = try makeRSAHostKeyAndSig(
             keyType: "ssh-rsa",
             sigType: "rsa-sha2-512",
             algorithm: .rsaSignatureMessagePKCS1v15SHA512,
@@ -969,7 +970,8 @@ final class SessionBindTests: ClavisBaseTestCase {
         XCTAssertEqual(state512.authBinding, binding512)
 
         // OpenSSH server with "ssh-rsa" key blob signing with "rsa-sha2-256"
-        let (key256, sig256) = try makeRSAHostKeyAndSig(
+        let (_, key256, sig256) = try makeRSAHostKeyAndSig(
+            privKey: privKey,
             keyType: "ssh-rsa",
             sigType: "rsa-sha2-256",
             algorithm: .rsaSignatureMessagePKCS1v15SHA256,

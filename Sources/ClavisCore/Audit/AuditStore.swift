@@ -94,7 +94,7 @@ public final class AuditStore {
             }
             #if DEBUG
             if NSClassFromString("XCTestCase") != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
-                return FileManager.default.temporaryDirectory.appendingPathComponent("clavis-audit-test.db")
+                return FileManager.default.temporaryDirectory.appendingPathComponent("clavis-audit-test-\(getpid()).db")
             }
             #endif
             return FileManager.default.homeDirectoryForCurrentUser

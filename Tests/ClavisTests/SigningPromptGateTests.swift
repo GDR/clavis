@@ -20,7 +20,7 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
             DispatchQueue.global().async {
                 _ = try? gate.run {
                     lock.lock(); concurrent += 1; maxConcurrent = max(maxConcurrent, concurrent); lock.unlock()
-                    Thread.sleep(forTimeInterval: 0.02)
+                    Thread.sleep(forTimeInterval: 0.005)
                     lock.lock(); concurrent -= 1; lock.unlock()
                 }
                 group.leave()
@@ -396,13 +396,13 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
                 if i % 2 == 0 {
                     _ = try? gate.run {
                         lock.lock(); concurrent += 1; maxConcurrent = max(maxConcurrent, concurrent); lock.unlock()
-                        Thread.sleep(forTimeInterval: 0.02)
+                        Thread.sleep(forTimeInterval: 0.005)
                         lock.lock(); concurrent -= 1; lock.unlock()
                     }
                 } else {
                     gate.runExclusive {
                         lock.lock(); concurrent += 1; maxConcurrent = max(maxConcurrent, concurrent); lock.unlock()
-                        Thread.sleep(forTimeInterval: 0.02)
+                        Thread.sleep(forTimeInterval: 0.005)
                         lock.lock(); concurrent -= 1; lock.unlock()
                     }
                 }

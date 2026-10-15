@@ -285,7 +285,13 @@ public final class SigningPolicyEvaluator {
             GitApprovedProcess(pid: pid, startTime: $0, path: processPath)
         }
 
-        let isPeerGitHelper = ProcessInspector.isSignerHelper(path: processPath) || ProcessInspector.isTrustedGitExecutable(path: processPath)
+        var cachedIsPeerGitHelper: Bool?
+        func isPeerGitHelper() -> Bool {
+            if let cached = cachedIsPeerGitHelper { return cached }
+            let result = ProcessInspector.isTrustedGitExecutable(path: processPath) || ProcessInspector.isSignerHelper(path: processPath)
+            cachedIsPeerGitHelper = result
+            return result
+        }
 
         // Security invariant: If key is restricted to Git signing, reject any non-Git payload or unverified peer
         if matchingKey.purpose == .gitSigningOnly {
@@ -295,7 +301,7 @@ public final class SigningPolicyEvaluator {
                 ClavisLogger.log("SECURITY_ALERT", "Key '\(matchingKey.label)' is restricted to Git signing. Refusing non-Git signature request from \(clientDesc).")
                 return .denied
             }
-            if !isPeerGitHelper {
+            if !isPeerGitHelper() {
                 audit.result = .denied
                 audit.reason = .wrongKeyKind
                 ClavisLogger.log("SECURITY_ALERT", "Key '\(matchingKey.label)' is restricted to Git signing. Refusing SSHSIG request from unverified peer \(clientDesc).")
@@ -390,7 +396,7 @@ public final class SigningPolicyEvaluator {
 
                     case .singleShot:
                         ClavisLogger.log("GIT_GRACE", "User chose single-shot signing.")
-                        let prompt = isPeerGitHelper
+                        let prompt = isPeerGitHelper()
                             ? Self.gitCommitSigningReason(keyLabel: matchingKey.label, requester: requester)
                             : Self.dataSigningReason(keyLabel: matchingKey.label, requester: requester)
                         sigBlob = try promptedSign(
@@ -405,7 +411,7 @@ public final class SigningPolicyEvaluator {
                     }
                 } else {
                     // Commit #1 (single commit / first in a potential sequence) -> standard Touch ID, no dialog
-                    let prompt = isPeerGitHelper
+                    let prompt = isPeerGitHelper()
                         ? Self.gitCommitSigningReason(keyLabel: matchingKey.label, requester: requester)
                         : Self.dataSigningReason(keyLabel: matchingKey.label, requester: requester)
                     sigBlob = try promptedSign(

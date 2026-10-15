@@ -621,11 +621,11 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
 
         let start = Date()
-        let result = ProcessInspector.resolveGpgSSHProgram(gitExecutablePath: scriptURL.path, timeout: 0.3)
+        let result = ProcessInspector.resolveGpgSSHProgram(gitExecutablePath: scriptURL.path, timeout: 0.08)
         let elapsed = Date().timeIntervalSince(start)
 
         XCTAssertNil(result, "resolveGpgSSHProgram must return nil on timeout")
-        XCTAssertGreaterThanOrEqual(elapsed, 0.28, "Must wait for the timeout duration")
+        XCTAssertGreaterThanOrEqual(elapsed, 0.06, "Must wait for the timeout duration")
         XCTAssertLessThan(elapsed, 2.0, "Must terminate child process without hanging until sleep completes")
     }
 

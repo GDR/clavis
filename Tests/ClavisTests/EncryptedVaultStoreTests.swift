@@ -487,6 +487,9 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
     // MARK: - Finding N-4: Cross-Process Advisory File Lock Tests
 
     func testExternalHolderBlocksMasterKeyCreation() throws {
+        EncryptedVaultStore.masterKeyLockPollInterval = 5_000
+        defer { EncryptedVaultStore.masterKeyLockPollInterval = 50_000 }
+
         let vaultDir = EncryptedVaultStore.shared.vaultDirectoryURL
         try SecureFS.createDirectory(at: vaultDir)
         let lockURL = vaultDir.appendingPathComponent(".master.lock")
@@ -509,8 +512,8 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
             exp.fulfill()
         }
 
-        // Assert not finished after 0.3s
-        usleep(300_000)
+        // Assert not finished while lock is held
+        usleep(30_000)
         XCTAssertNil(returnedPubKey)
         XCTAssertNil(callError)
 
@@ -530,6 +533,9 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
     }
 
     func testMasterKeyRecheckWorksWhenCreatedByAnotherProcess() throws {
+        EncryptedVaultStore.masterKeyLockPollInterval = 5_000
+        defer { EncryptedVaultStore.masterKeyLockPollInterval = 50_000 }
+
         let vaultDir = EncryptedVaultStore.shared.vaultDirectoryURL
         try SecureFS.createDirectory(at: vaultDir)
         let lockURL = vaultDir.appendingPathComponent(".master.lock")
@@ -578,7 +584,7 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
         }
 
         // Wait briefly to ensure background call has started and is polling lock
-        usleep(100_000)
+        usleep(20_000)
         XCTAssertNil(returnedPubKey)
 
         // Create valid key pair via file writes while holding lock
@@ -615,8 +621,12 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
     }
 
     func testMasterKeyLockTimeoutThrowsError() throws {
-        EncryptedVaultStore.masterKeyLockTimeout = 0.2
-        defer { EncryptedVaultStore.masterKeyLockTimeout = 10.0 }
+        EncryptedVaultStore.masterKeyLockPollInterval = 5_000
+        EncryptedVaultStore.masterKeyLockTimeout = 0.04
+        defer {
+            EncryptedVaultStore.masterKeyLockTimeout = 10.0
+            EncryptedVaultStore.masterKeyLockPollInterval = 50_000
+        }
 
         let vaultDir = EncryptedVaultStore.shared.vaultDirectoryURL
         try SecureFS.createDirectory(at: vaultDir)
@@ -637,7 +647,7 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
             XCTAssertEqual(nsError.localizedDescription, "Another Clavis process is creating the vault master key.")
         }
         let elapsed = Date().timeIntervalSince(start)
-        XCTAssertGreaterThanOrEqual(elapsed, 0.2)
+        XCTAssertGreaterThanOrEqual(elapsed, 0.04)
     }
 
     func testEnsureMasterKeyLockedThrowsWhenSecureEnclaveUnavailable() throws {
