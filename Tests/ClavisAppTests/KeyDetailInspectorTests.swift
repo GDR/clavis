@@ -413,4 +413,177 @@ struct KeyDetailInspectorTests {
         #expect(agentControls.publicKeyButtonTitle == ClavisUIStrings.KeyDetail.copyDeployKey)
         #expect(agentControls.publicKeyFeedback == ClavisUIStrings.Inspector.feedbackCopiedOpenSSH)
     }
+
+    // MARK: - Milestone M3 (PR 3): Consolidate Socket Status & Security Posture into SECURITY Card (Refs clavis-cc3)
+
+    @Test
+    func testConsolidatedSecurityInfoForGeneralKey() {
+        let generalKey = makeTestKey(purpose: .general, biometricPolicy: .userPresence)
+        let info = KeyDetailInspectorView.consolidatedSecurityInfo(for: generalKey, isSocketActive: true)
+
+        #expect(info.storageValue == ClavisUIStrings.Inspector.storageHardwareEnclave)
+        #expect(info.authenticationValue == ClavisUIStrings.Inspector.authUserPresence)
+        #expect(info.socketName == "ssh-agent socket")
+        #expect(info.socketPath == "~/.ssh/clavis.sock")
+        #expect(info.socketStatus == ClavisUIStrings.Inspector.statusActive)
+        #expect(info.isSocketActive == true)
+        #expect(info.postureIcon == "lock.shield.fill")
+        #expect(info.postureDescription.contains("Touch ID user presence per operation"))
+    }
+
+    @Test
+    func testConsolidatedSecurityInfoForStrictBiometricsGeneralKey() {
+        let strictKey = makeTestKey(purpose: .general, biometricPolicy: .biometryCurrentSet)
+        let info = KeyDetailInspectorView.consolidatedSecurityInfo(for: strictKey, isSocketActive: false)
+
+        #expect(info.authenticationValue == ClavisUIStrings.Inspector.authTouchIdOnlyStrict)
+        #expect(info.socketStatus == ClavisUIStrings.Inspector.statusOffline)
+        #expect(info.isSocketActive == false)
+        #expect(info.postureIcon == "touchid")
+        #expect(info.postureDescription.contains("current biometric enrollment"))
+    }
+
+    @Test
+    func testConsolidatedSecurityInfoForGitSigningOnlyKey() {
+        let gitKey = makeTestKey(purpose: .gitSigningOnly)
+        let info = KeyDetailInspectorView.consolidatedSecurityInfo(for: gitKey, isSocketActive: true)
+
+        #expect(info.socketName == "ssh-agent socket")
+        #expect(info.socketPath == "~/.ssh/clavis.sock")
+        #expect(info.postureIcon == "arrow.triangle.branch")
+        #expect(info.postureDescription.contains("Restricted strictly to local Git commit and tag signing"))
+    }
+
+    @Test
+    func testConsolidatedSecurityInfoForAgentKey() {
+        let agentKey = makeTestKey(purpose: .agent)
+        let policy = AgentKeyPolicy(mode: .notify, leaseMinutes: 120)
+        let info = KeyDetailInspectorView.consolidatedSecurityInfo(
+            for: agentKey,
+            isSocketActive: true,
+            agentPolicy: policy
+        )
+
+        #expect(info.socketName == "agent socket")
+        #expect(info.socketPath == "~/.ssh/clavis-agent.sock")
+        #expect(info.postureIcon == "cpu")
+        #expect(info.postureDescription.contains("post a notification on each signature"))
+        #expect(info.postureDescription.contains("2h"))
+    }
+
+    @Test
+    func testPostureIconMappingAcrossKeyPurposes() {
+        let generalKey = makeTestKey(purpose: .general, biometricPolicy: .userPresence)
+        #expect(KeyDetailInspectorView.postureIcon(for: generalKey) == "lock.shield.fill")
+        #expect(KeyDetailInspectorView.securityPostureIcon(for: generalKey) == "lock.shield.fill")
+
+        let strictKey = makeTestKey(purpose: .general, biometricPolicy: .biometryCurrentSet)
+        #expect(KeyDetailInspectorView.postureIcon(for: strictKey) == "touchid")
+        #expect(KeyDetailInspectorView.securityPostureIcon(for: strictKey) == "touchid")
+
+        let gitKey = makeTestKey(purpose: .gitSigningOnly)
+        #expect(KeyDetailInspectorView.postureIcon(for: gitKey) == "arrow.triangle.branch")
+        #expect(KeyDetailInspectorView.securityPostureIcon(for: gitKey) == "arrow.triangle.branch")
+
+        let agentKey = makeTestKey(purpose: .agent)
+        #expect(KeyDetailInspectorView.postureIcon(for: agentKey) == "cpu")
+        #expect(KeyDetailInspectorView.securityPostureIcon(for: agentKey) == "cpu")
+    }
+
+    @Test
+    func testSecurityCardSocketRowConsolidationAcrossKeyPurposes() {
+        let generalKey = makeTestKey(purpose: .general)
+        let gitKey = makeTestKey(purpose: .gitSigningOnly)
+        let agentKey = makeTestKey(purpose: .agent)
+
+        // General key active & offline
+        let generalActive = KeyDetailInspectorView.securityCardSocketRow(for: generalKey, isSocketActive: true)
+        #expect(generalActive.name == "ssh-agent socket")
+        #expect(generalActive.socketPath == "~/.ssh/clavis.sock")
+        #expect(generalActive.status == ClavisUIStrings.Inspector.statusActive)
+        #expect(generalActive.isActive == true)
+
+        let generalOffline = KeyDetailInspectorView.securityCardSocketRow(for: generalKey, isSocketActive: false)
+        #expect(generalOffline.status == ClavisUIStrings.Inspector.statusOffline)
+        #expect(generalOffline.isActive == false)
+
+        // Git signing only key active & offline
+        let gitActive = KeyDetailInspectorView.securityCardSocketRow(for: gitKey, isSocketActive: true)
+        #expect(gitActive.name == "ssh-agent socket")
+        #expect(gitActive.socketPath == "~/.ssh/clavis.sock")
+        #expect(gitActive.status == ClavisUIStrings.Inspector.statusActive)
+        #expect(gitActive.isActive == true)
+
+        // Agent key active & offline
+        let agentActive = KeyDetailInspectorView.securityCardSocketRow(for: agentKey, isSocketActive: true)
+        #expect(agentActive.name == "agent socket")
+        #expect(agentActive.socketPath == "~/.ssh/clavis-agent.sock")
+        #expect(agentActive.status == ClavisUIStrings.Inspector.statusActive)
+        #expect(agentActive.isActive == true)
+
+        let agentOffline = KeyDetailInspectorView.securityCardSocketRow(for: agentKey, isSocketActive: false)
+        #expect(agentOffline.name == "agent socket")
+        #expect(agentOffline.socketPath == "~/.ssh/clavis-agent.sock")
+        #expect(agentOffline.status == ClavisUIStrings.Inspector.statusOffline)
+        #expect(agentOffline.isActive == false)
+    }
+
+    @Test
+    func testSecurityPostureFootnoteFormattingAcrossKeyPurposes() {
+        // 1. General Key (User Presence)
+        let generalPresenceKey = makeTestKey(purpose: .general, biometricPolicy: .userPresence)
+        let presenceFootnote = KeyDetailInspectorView.securityPostureFootnote(for: generalPresenceKey)
+        #expect(presenceFootnote.contains("Touch ID user presence per operation"))
+        #expect(presenceFootnote.contains("5-minute process-scoped Git signing grace window"))
+        #expect(presenceFootnote.contains("Keys cannot be cached"))
+
+        // 2. General Key (Strict Biometrics)
+        let generalStrictKey = makeTestKey(purpose: .general, biometricPolicy: .biometryCurrentSet)
+        let strictFootnote = KeyDetailInspectorView.securityPostureFootnote(for: generalStrictKey)
+        #expect(strictFootnote.contains("current biometric enrollment"))
+        #expect(strictFootnote.contains("Device password fallback is disabled"))
+
+        // 3. Git Signing Only Key
+        let gitKey = makeTestKey(purpose: .gitSigningOnly)
+        let gitFootnote = KeyDetailInspectorView.securityPostureFootnote(for: gitKey)
+        #expect(gitFootnote.contains("Restricted strictly to local Git commit and tag signing"))
+        #expect(gitFootnote.contains("Forwarded agent requests are blocked"))
+
+        // 4. Agent Key Modes
+        let agentKey = makeTestKey(purpose: .agent)
+        let silentPolicy = AgentKeyPolicy(mode: .none, leaseMinutes: 480)
+        let silentFootnote = KeyDetailInspectorView.securityPostureFootnote(for: agentKey, agentPolicy: silentPolicy)
+        #expect(silentFootnote.contains("silently without prompts"))
+        #expect(silentFootnote.contains("Apple Secure Enclave"))
+
+        let notifyPolicy = AgentKeyPolicy(mode: .notify, leaseMinutes: 120)
+        let notifyFootnote = KeyDetailInspectorView.securityPostureFootnote(for: agentKey, agentPolicy: notifyPolicy)
+        #expect(notifyFootnote.contains("post a notification on each signature"))
+        #expect(notifyFootnote.contains("Apple Secure Enclave"))
+
+        let askPolicy = AgentKeyPolicy(mode: .ask, leaseMinutes: 60)
+        let askFootnote = KeyDetailInspectorView.securityPostureFootnote(for: agentKey, agentPolicy: askPolicy)
+        #expect(askFootnote.contains("explicit Touch ID user confirmation"))
+        #expect(askFootnote.contains("Apple Secure Enclave"))
+    }
+
+    @Test
+    func testSecurityPostureFootnoteActiveGitGraceIntegration() {
+        let generalKey = makeTestKey(purpose: .general)
+        let footnoteWithGrace = KeyDetailInspectorView.securityPostureFootnote(for: generalKey, hasActiveGitGrace: true)
+        #expect(footnoteWithGrace.contains("A 5-minute Git signing grace session is currently active for this key."))
+
+        let gitKey = makeTestKey(purpose: .gitSigningOnly)
+        let gitFootnoteWithGrace = KeyDetailInspectorView.securityPostureFootnote(for: gitKey, hasActiveGitGrace: true)
+        #expect(gitFootnoteWithGrace.contains("A 5-minute Git signing grace session is currently active for this key."))
+    }
+
+    @Test
+    func testPreservedLocalizationInvariantsForUsedBySection() {
+        #expect(!ClavisUIStrings.Inspector.usedBySection.isEmpty)
+        #expect(ClavisUIStrings.Inspector.usedBySection == "USED BY")
+        #expect(ClavisUIStrings.Inspector.socketStatusActive == "Active")
+        #expect(ClavisUIStrings.Inspector.socketStatusOffline == "Offline")
+        #expect(!ClavisUIStrings.Inspector.securitySection.isEmpty)
+    }
 }
