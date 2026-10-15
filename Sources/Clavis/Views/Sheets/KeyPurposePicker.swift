@@ -49,6 +49,7 @@ struct KeyPurposePicker: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .accessibilityAddTraits(selection == purpose ? [.isSelected] : [])
                 }
             }
         }
