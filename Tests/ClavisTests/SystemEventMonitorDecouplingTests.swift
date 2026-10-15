@@ -1,27 +1,42 @@
-import XCTest
+import Foundation
+import Testing
+import AppKit
 @testable import ClavisCore
 @testable import Clavis
 
 final class MockSleepObserver: SystemSleepObserving, @unchecked Sendable {
     private let lock = NSLock()
     private var callback: (@Sendable () -> Void)?
-    private(set) var isObserving: Bool = false
-    private(set) var startObservingCallCount: Int = 0
-    private(set) var stopObservingCallCount: Int = 0
+    private var _isObserving: Bool = false
+    private var _startObservingCallCount: Int = 0
+    private var _stopObservingCallCount: Int = 0
+
+    var isObserving: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _isObserving
+    }
+    var startObservingCallCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _startObservingCallCount
+    }
+    var stopObservingCallCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _stopObservingCallCount
+    }
 
     func startObserving(onSleep: @escaping @Sendable () -> Void) {
         lock.lock()
         defer { lock.unlock() }
-        isObserving = true
-        startObservingCallCount += 1
+        _isObserving = true
+        _startObservingCallCount += 1
         callback = onSleep
     }
 
     func stopObserving() {
         lock.lock()
         defer { lock.unlock() }
-        isObserving = false
-        stopObservingCallCount += 1
+        _isObserving = false
+        _stopObservingCallCount += 1
         callback = nil
     }
 
@@ -33,17 +48,10 @@ final class MockSleepObserver: SystemSleepObserving, @unchecked Sendable {
     }
 }
 
-final class SystemEventMonitorDecouplingTests: ClavisBaseTestCase {
+@Suite(.serialized)
+struct SystemEventMonitorDecouplingTests {
 
-    override func tearDownWithError() throws {
-        SystemEventMonitor.defaultSleepObserverFactory = nil
-        #if DEBUG
-        SystemEventMonitor.customSessionActiveValidator = nil
-        #endif
-        try super.tearDownWithError()
-    }
-
-    func testSystemEventMonitor_withConfiguredSleepObserver_firesHandlersOnSleep() {
+    @Test func testSystemEventMonitor_withConfiguredSleepObserver_firesHandlersOnSleep() {
         let mockObserver = MockSleepObserver()
         let monitor = SystemEventMonitor(
             observeDarwinEvents: false,
@@ -53,8 +61,8 @@ final class SystemEventMonitorDecouplingTests: ClavisBaseTestCase {
         )
         defer { monitor.stop() }
 
-        XCTAssertTrue(mockObserver.isObserving)
-        XCTAssertEqual(mockObserver.startObservingCallCount, 1)
+        #expect(mockObserver.isObserving)
+        #expect(mockObserver.startObservingCallCount == 1)
 
         var handlerCalled = false
         monitor.addHandler(id: "test-sleep-handler") {
@@ -62,10 +70,10 @@ final class SystemEventMonitorDecouplingTests: ClavisBaseTestCase {
         }
 
         mockObserver.triggerSleep()
-        XCTAssertTrue(handlerCalled, "SystemEventMonitor handlers should be invoked when sleep observer fires")
+        #expect(handlerCalled, "SystemEventMonitor handlers should be invoked when sleep observer fires")
     }
 
-    func testSystemEventMonitor_stop_stopsSleepObserver() {
+    @Test func testSystemEventMonitor_stop_stopsSleepObserver() {
         let mockObserver = MockSleepObserver()
         let monitor = SystemEventMonitor(
             observeDarwinEvents: false,
@@ -74,15 +82,15 @@ final class SystemEventMonitorDecouplingTests: ClavisBaseTestCase {
             sleepObserver: mockObserver
         )
 
-        XCTAssertTrue(mockObserver.isObserving)
+        #expect(mockObserver.isObserving)
 
         monitor.stop()
 
-        XCTAssertFalse(mockObserver.isObserving)
-        XCTAssertEqual(mockObserver.stopObservingCallCount, 1)
+        #expect(!mockObserver.isObserving)
+        #expect(mockObserver.stopObservingCallCount == 1)
     }
 
-    func testSystemEventMonitor_setSleepObserver_replacesPreviousObserver() {
+    @Test func testSystemEventMonitor_setSleepObserver_replacesPreviousObserver() {
         let mockObserver1 = MockSleepObserver()
         let mockObserver2 = MockSleepObserver()
 
@@ -94,14 +102,14 @@ final class SystemEventMonitorDecouplingTests: ClavisBaseTestCase {
         )
         defer { monitor.stop() }
 
-        XCTAssertTrue(mockObserver1.isObserving)
+        #expect(mockObserver1.isObserving)
 
         monitor.setSleepObserver(mockObserver2)
 
-        XCTAssertFalse(mockObserver1.isObserving)
-        XCTAssertEqual(mockObserver1.stopObservingCallCount, 1)
-        XCTAssertTrue(mockObserver2.isObserving)
-        XCTAssertEqual(mockObserver2.startObservingCallCount, 1)
+        #expect(!mockObserver1.isObserving)
+        #expect(mockObserver1.stopObservingCallCount == 1)
+        #expect(mockObserver2.isObserving)
+        #expect(mockObserver2.startObservingCallCount == 1)
 
         var handler2CallCount = 0
         monitor.addHandler(id: "handler-2") {
@@ -109,18 +117,19 @@ final class SystemEventMonitorDecouplingTests: ClavisBaseTestCase {
         }
 
         mockObserver2.triggerSleep()
-        XCTAssertEqual(handler2CallCount, 1)
+        #expect(handler2CallCount == 1)
 
         // Triggering old observer should do nothing since it was stopped and unreferenced
         mockObserver1.triggerSleep()
-        XCTAssertEqual(handler2CallCount, 1)
+        #expect(handler2CallCount == 1)
     }
 
-    func testSystemEventMonitor_defaultSleepObserverFactoryFallback() {
+    @Test func testSystemEventMonitor_defaultSleepObserverFactoryFallback() {
         let mockObserver = MockSleepObserver()
         SystemEventMonitor.defaultSleepObserverFactory = {
             mockObserver
         }
+        defer { SystemEventMonitor.defaultSleepObserverFactory = nil }
 
         let monitor = SystemEventMonitor(
             observeDarwinEvents: false,
@@ -130,11 +139,11 @@ final class SystemEventMonitorDecouplingTests: ClavisBaseTestCase {
         )
         defer { monitor.stop() }
 
-        XCTAssertTrue(mockObserver.isObserving)
-        XCTAssertEqual(mockObserver.startObservingCallCount, 1)
+        #expect(mockObserver.isObserving)
+        #expect(mockObserver.startObservingCallCount == 1)
     }
 
-    func testSystemEventMonitor_withoutSleepObserver_operatesNormally() {
+    @Test func testSystemEventMonitor_withoutSleepObserver_operatesNormally() {
         let monitor = SystemEventMonitor(
             observeDarwinEvents: false,
             observeIOKitPower: false,
@@ -149,45 +158,55 @@ final class SystemEventMonitorDecouplingTests: ClavisBaseTestCase {
         }
 
         monitor.notifyHandlers()
-        XCTAssertTrue(handlerCalled)
+        #expect(handlerCalled)
 
         handlerCalled = false
         monitor.removeHandler(id: "manual-notify")
         monitor.notifyHandlers()
-        XCTAssertFalse(handlerCalled)
+        #expect(!handlerCalled)
     }
 
-    func testAppKitSleepObserver_startAndStopObserving() {
+    @Test func testAppKitSleepObserver_startAndStopObserving() {
+        final class CounterBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var count = 0
+            func increment() {
+                lock.lock()
+                count += 1
+                lock.unlock()
+            }
+            func value() -> Int {
+                lock.lock()
+                defer { lock.unlock() }
+                return count
+            }
+        }
         let observer = AppKitSleepObserver()
-        let lock = NSLock()
-        var fireCount = 0
+        let counter = CounterBox()
         observer.startObserving {
-            lock.lock()
-            fireCount += 1
-            lock.unlock()
+            counter.increment()
         }
 
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.willSleepNotification, object: nil)
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
 
-        lock.lock()
-        let countAfterPosts = fireCount
-        lock.unlock()
-        XCTAssertEqual(countAfterPosts, 3, "AppKitSleepObserver must fire on sleep, display sleep, and session resign")
+        let countAfterPosts = counter.value()
+        #expect(countAfterPosts == 3, "AppKitSleepObserver must fire on sleep, display sleep, and session resign")
 
         observer.stopObserving()
         // Idempotent stop
         observer.stopObserving()
 
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
-        lock.lock()
-        let countAfterStop = fireCount
-        lock.unlock()
-        XCTAssertEqual(countAfterStop, 3)
+        let countAfterStop = counter.value()
+        #expect(countAfterStop == 3)
     }
 
-    func test_F8_customSessionActiveValidatorInvalidatesGrants() throws {
+    @Test func test_F8_customSessionActiveValidatorInvalidatesGrants() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+
         let graceManager = GitSigningGraceManager(observeSystemEvents: false)
         let myPid = getpid()
         let myStart = ProcessInspector.processStartTime(pid: myPid) ?? 100
@@ -204,7 +223,7 @@ final class SystemEventMonitorDecouplingTests: ClavisBaseTestCase {
         )
         graceManager.recordGitSignature(for: "f8-git-key", clientIdentity: "/usr/bin/git")
 
-        let keyMgr = makeKeyManager()
+        let keyMgr = fixture.makeKeyManager()
         let agentKey = try keyMgr.generateKey(label: "f8-agent-key", keyPurpose: .agent)
         let agentGrant = AgentSessionGrant(
             key: agentKey,
@@ -212,10 +231,10 @@ final class SystemEventMonitorDecouplingTests: ClavisBaseTestCase {
             hardwareSigner: { _ in Data("agent-sig".utf8) }
         )
 
-        XCTAssertTrue(gitGrant.isValid)
-        XCTAssertTrue(agentGrant.isValid)
-        XCTAssertNotNil(graceManager.getValidGrant(for: "f8-git-key"))
-        XCTAssertTrue(graceManager.hasRecentGitSignature(for: "f8-git-key", clientIdentity: "/usr/bin/git"))
+        #expect(gitGrant.isValid)
+        #expect(agentGrant.isValid)
+        #expect(graceManager.getValidGrant(for: "f8-git-key") != nil)
+        #expect(graceManager.hasRecentGitSignature(for: "f8-git-key", clientIdentity: "/usr/bin/git"))
 
         // Simulate locked / off-console session via customSessionActiveValidator
         #if DEBUG
@@ -224,24 +243,24 @@ final class SystemEventMonitorDecouplingTests: ClavisBaseTestCase {
         }
         #endif
         SystemEventMonitor.customSessionActiveValidator = { false }
-        XCTAssertTrue(SystemEventMonitor.isSessionLockedOrOffConsole())
+        #expect(SystemEventMonitor.isSessionLockedOrOffConsole())
 
-        XCTAssertFalse(gitGrant.isValid)
-        XCTAssertNil(graceManager.getValidGrant(for: "f8-git-key"))
-        XCTAssertFalse(graceManager.hasRecentGitSignature(for: "f8-git-key", clientIdentity: "/usr/bin/git"))
-        XCTAssertThrowsError(try gitGrant.sign(Data("payload".utf8))) { error in
-            XCTAssertEqual(error as? AgentSessionGrantError, .grantInvalidated)
+        #expect(!gitGrant.isValid)
+        #expect(graceManager.getValidGrant(for: "f8-git-key") == nil)
+        #expect(!graceManager.hasRecentGitSignature(for: "f8-git-key", clientIdentity: "/usr/bin/git"))
+        #expect(throws: AgentSessionGrantError.grantInvalidated) {
+            try gitGrant.sign(Data("payload".utf8))
         }
 
-        XCTAssertFalse(agentGrant.isValid)
-        XCTAssertThrowsError(try agentGrant.sign(Data("payload".utf8))) { error in
-            XCTAssertEqual(error as? AgentSessionGrantError, .grantInvalidated)
+        #expect(!agentGrant.isValid)
+        #expect(throws: AgentSessionGrantError.grantInvalidated) {
+            try agentGrant.sign(Data("payload".utf8))
         }
 
         // Restoring active session does not resurrect permanently invalidated grants
         SystemEventMonitor.customSessionActiveValidator = { true }
-        XCTAssertFalse(SystemEventMonitor.isSessionLockedOrOffConsole())
-        XCTAssertFalse(gitGrant.isValid)
-        XCTAssertFalse(agentGrant.isValid)
+        #expect(!SystemEventMonitor.isSessionLockedOrOffConsole())
+        #expect(!gitGrant.isValid)
+        #expect(!agentGrant.isValid)
     }
 }

@@ -1,4 +1,4 @@
-import XCTest
+import Testing
 import SwiftUI
 import CryptoKit
 @preconcurrency import LocalAuthentication
@@ -31,119 +31,128 @@ final class FakePanelAuthenticator: PanelAuthenticating {
     }
 }
 
-@MainActor
-final class PanelLockControllerTests: ClavisBaseTestCase {
-    private var testDefaults: UserDefaults!
-    private var suiteName: String!
+private final class CleanupHook: @unchecked Sendable {
+    private let action: () -> Void
+    init(action: @escaping () -> Void) {
+        self.action = action
+    }
+    deinit {
+        action()
+    }
+}
 
-    override func setUp() {
-        super.setUp()
-        MainActor.assumeIsolated {
-            suiteName = "com.clavis.tests.panelLock.\(UUID().uuidString)"
-            testDefaults = UserDefaults(suiteName: suiteName)!
+@Suite @MainActor
+struct PanelLockControllerTests {
+    private let fixture: ClavisTestFixture
+    private let suiteName: String
+    private let testDefaults: UserDefaults
+    private let _cleanup: CleanupHook
+
+    init() throws {
+        let fixture = try ClavisTestFixture()
+        self.fixture = fixture
+        let suite = "com.clavis.tests.panelLock.\(UUID().uuidString)"
+        self.suiteName = suite
+        let defaults = UserDefaults(suiteName: suite)!
+        self.testDefaults = defaults
+        self._cleanup = CleanupHook {
+            defaults.removePersistentDomain(forName: suite)
+            fixture.cleanup()
         }
     }
 
-    override func tearDown() {
-        MainActor.assumeIsolated {
-            testDefaults?.removePersistentDomain(forName: suiteName)
-            testDefaults = nil
-        }
-        super.tearDown()
-    }
-
-    func test_003_AC7_freshInstallIsLocked() {
+    @Test func test_003_AC7_freshInstallIsLocked() {
         let controller = PanelLockController(defaults: testDefaults)
-        XCTAssertTrue(controller.isEnabled)
-        XCTAssertEqual(controller.state, .locked)
-        XCTAssertTrue(controller.isLocked)
-        XCTAssertNil(controller.unlockContext)
-        XCTAssertEqual(controller.idleMinutes, 5)
+        #expect(controller.isEnabled)
+        #expect(controller.state == .locked)
+        #expect(controller.isLocked)
+        #expect(controller.unlockContext == nil)
+        #expect(controller.idleMinutes == 5)
     }
 
-    func test_003_AC1_unlockRequiresAuthentication() async {
+    @Test func test_003_AC1_unlockRequiresAuthentication() async {
         let fakeAuth = FakePanelAuthenticator()
         let mockContext = MockLAContext()
         fakeAuth.contextToReturn = mockContext
         let currentTime = Date(timeIntervalSince1970: 1000)
         let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth, now: { currentTime })
 
-        XCTAssertTrue(controller.isLocked)
+        #expect(controller.isLocked)
         await controller.unlock()
 
-        XCTAssertEqual(fakeAuth.authCount, 1)
-        XCTAssertEqual(fakeAuth.lastReason, ClavisUIStrings.PanelLock.reason)
-        XCTAssertEqual(controller.state, .unlocked(since: currentTime))
-        XCTAssertFalse(controller.isLocked)
-        XCTAssertIdentical(controller.unlockContext, mockContext)
+        #expect(fakeAuth.authCount == 1)
+        #expect(fakeAuth.lastReason == ClavisUIStrings.PanelLock.reason)
+        #expect(controller.state == .unlocked(since: currentTime))
+        #expect(!controller.isLocked)
+        #expect(controller.unlockContext === mockContext)
     }
 
-    func test_003_AC1_cancelledUnlockStaysLocked() async {
+    @Test func test_003_AC1_cancelledUnlockStaysLocked() async {
         let fakeAuth = FakePanelAuthenticator()
         fakeAuth.shouldFail = true
         fakeAuth.failureError = LAError(.userCancel)
         let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth)
 
-        XCTAssertTrue(controller.isLocked)
+        #expect(controller.isLocked)
         await controller.unlock()
 
-        XCTAssertEqual(fakeAuth.authCount, 1)
-        XCTAssertEqual(controller.state, .locked)
-        XCTAssertTrue(controller.isLocked)
-        XCTAssertNil(controller.unlockContext)
+        #expect(fakeAuth.authCount == 1)
+        #expect(controller.state == .locked)
+        #expect(controller.isLocked)
+        #expect(controller.unlockContext == nil)
     }
 
-    func test_003_AC4_lockInvalidatesContext() async {
+    @Test func test_003_AC4_lockInvalidatesContext() async {
         let fakeAuth = FakePanelAuthenticator()
         let mockContext = MockLAContext()
         fakeAuth.contextToReturn = mockContext
         let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth)
 
         await controller.unlock()
-        XCTAssertNotNil(controller.unlockContext)
-        XCTAssertFalse(mockContext.didInvalidate)
+        #expect(controller.unlockContext != nil)
+        #expect(!mockContext.didInvalidate)
 
         controller.lock(reason: .lockNow)
-        XCTAssertTrue(mockContext.didInvalidate)
-        XCTAssertNil(controller.unlockContext)
-        XCTAssertEqual(controller.state, .locked)
-        XCTAssertTrue(controller.isLocked)
-        XCTAssertEqual(controller.lastLockReason, .lockNow)
+        #expect(mockContext.didInvalidate)
+        #expect(controller.unlockContext == nil)
+        #expect(controller.state == .locked)
+        #expect(controller.isLocked)
+        #expect(controller.lastLockReason == .lockNow)
     }
 
-    func test_003_AC4_idleLocksAfterTimeout() async {
+    @Test func test_003_AC4_idleLocksAfterTimeout() async {
         let fakeAuth = FakePanelAuthenticator()
         var currentTime = Date(timeIntervalSince1970: 1000)
         let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth, now: { currentTime })
 
         await controller.unlock()
-        XCTAssertFalse(controller.isLocked)
+        #expect(!controller.isLocked)
 
         // 5 minutes - 1 second: should remain unlocked
         currentTime += (5 * 60 - 1)
         controller.tick()
-        XCTAssertFalse(controller.isLocked)
+        #expect(!controller.isLocked)
 
         // 2 seconds later (5 min + 1 sec total): should lock
         currentTime += 2
         controller.tick()
-        XCTAssertTrue(controller.isLocked)
-        XCTAssertEqual(controller.state, .locked)
-        XCTAssertEqual(controller.lastLockReason, .idle)
+        #expect(controller.isLocked)
+        #expect(controller.state == .locked)
+        #expect(controller.lastLockReason == .idle)
     }
 
-    func test_003_AC4_activityResetsIdle() async {
+    @Test func test_003_AC4_activityResetsIdle() async {
         let fakeAuth = FakePanelAuthenticator()
         var currentTime = Date(timeIntervalSince1970: 1000)
         let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth, now: { currentTime })
 
         await controller.unlock()
-        XCTAssertFalse(controller.isLocked)
+        #expect(!controller.isLocked)
 
         // 4 minutes pass
         currentTime += (4 * 60)
         controller.tick()
-        XCTAssertFalse(controller.isLocked)
+        #expect(!controller.isLocked)
 
         // User activity happens
         controller.noteActivity()
@@ -151,84 +160,84 @@ final class PanelLockControllerTests: ClavisBaseTestCase {
         // 2 more minutes pass (6 min since unlock, but only 2 min since activity)
         currentTime += (2 * 60)
         controller.tick()
-        XCTAssertFalse(controller.isLocked)
+        #expect(!controller.isLocked)
 
         // 3 more minutes pass (5 min since activity) -> should lock
         currentTime += (3 * 60)
         controller.tick()
-        XCTAssertTrue(controller.isLocked)
-        XCTAssertEqual(controller.lastLockReason, .idle)
+        #expect(controller.isLocked)
+        #expect(controller.lastLockReason == .idle)
     }
 
-    func test_003_AC6_disablingRequiresFreshAuthentication() async {
+    @Test func test_003_AC6_disablingRequiresFreshAuthentication() async {
         let fakeAuth = FakePanelAuthenticator()
         let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth)
 
         await controller.unlock()
-        XCTAssertEqual(fakeAuth.authCount, 1)
+        #expect(fakeAuth.authCount == 1)
 
         // Disabling while unlocked requires fresh authentication
         let success = await controller.setEnabled(false)
-        XCTAssertTrue(success)
-        XCTAssertEqual(fakeAuth.authCount, 2)
-        XCTAssertEqual(fakeAuth.lastReason, ClavisUIStrings.PanelLock.disableReason)
-        XCTAssertFalse(controller.isEnabled)
-        XCTAssertFalse(controller.isLocked)
+        #expect(success)
+        #expect(fakeAuth.authCount == 2)
+        #expect(fakeAuth.lastReason == ClavisUIStrings.PanelLock.disableReason)
+        #expect(!controller.isEnabled)
+        #expect(!controller.isLocked)
 
         // When disabled, isLocked is false regardless of state
         controller.lock(reason: .lockNow)
-        XCTAssertFalse(controller.isLocked)
+        #expect(!controller.isLocked)
 
         // Re-enabling does not require authentication
         let enabledSuccess = await controller.setEnabled(true)
-        XCTAssertTrue(enabledSuccess)
-        XCTAssertEqual(fakeAuth.authCount, 2)
-        XCTAssertTrue(controller.isEnabled)
-        XCTAssertTrue(controller.isLocked)
-        XCTAssertEqual(controller.lastLockReason, .disabledChange)
+        #expect(enabledSuccess)
+        #expect(fakeAuth.authCount == 2)
+        #expect(controller.isEnabled)
+        #expect(controller.isLocked)
+        #expect(controller.lastLockReason == .disabledChange)
 
         // Failed auth when disabling leaves lock enabled
         fakeAuth.shouldFail = true
         let failSuccess = await controller.setEnabled(false)
-        XCTAssertFalse(failSuccess)
-        XCTAssertEqual(fakeAuth.authCount, 3)
-        XCTAssertTrue(controller.isEnabled)
-        XCTAssertTrue(controller.isLocked)
+        #expect(!failSuccess)
+        #expect(fakeAuth.authCount == 3)
+        #expect(controller.isEnabled)
+        #expect(controller.isLocked)
     }
 
-    func test_003_T1_idleMinutesClampsToOptions() {
+    @Test func test_003_T1_idleMinutesClampsToOptions() {
         let controller = PanelLockController(defaults: testDefaults)
-        XCTAssertEqual(controller.idleMinutes, 5)
+        #expect(controller.idleMinutes == 5)
 
         controller.idleMinutes = 1
-        XCTAssertEqual(controller.idleMinutes, 1)
+        #expect(controller.idleMinutes == 1)
 
         controller.idleMinutes = 15
-        XCTAssertEqual(controller.idleMinutes, 15)
+        #expect(controller.idleMinutes == 15)
 
         controller.idleMinutes = 60
-        XCTAssertEqual(controller.idleMinutes, 60)
+        #expect(controller.idleMinutes == 60)
 
         controller.idleMinutes = 0
-        XCTAssertEqual(controller.idleMinutes, 1)
+        #expect(controller.idleMinutes == 1)
 
         controller.idleMinutes = 100
-        XCTAssertEqual(controller.idleMinutes, 60)
+        #expect(controller.idleMinutes == 60)
 
         controller.idleMinutes = 7
-        XCTAssertEqual(controller.idleMinutes, 5)
+        #expect(controller.idleMinutes == 5)
     }
 
-    func test_003_AC4_screenLockHandlerLocks() async {
+    @Test func test_003_AC4_screenLockHandlerLocks() async {
         let fakeAuth = FakePanelAuthenticator()
         let fakeMonitor = FakeSystemEventMonitor()
         let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth)
 
         await controller.unlock()
-        XCTAssertFalse(controller.isLocked)
+        #expect(!controller.isLocked)
 
         controller.installSystemEventHandler(monitor: fakeMonitor)
-        XCTAssertNotNil(fakeMonitor.handlers["panel.lock"])
+        #expect(fakeMonitor.handlers["panel.lock"] != nil)
 
         fakeMonitor.fire(id: "panel.lock")
         for _ in 0..<10 {
@@ -236,12 +245,12 @@ final class PanelLockControllerTests: ClavisBaseTestCase {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
 
-        XCTAssertTrue(controller.isLocked)
-        XCTAssertEqual(controller.state, .locked)
-        XCTAssertEqual(controller.lastLockReason, .screenLocked)
+        #expect(controller.isLocked)
+        #expect(controller.state == .locked)
+        #expect(controller.lastLockReason == .screenLocked)
     }
 
-    func test_003_T3_gateBuildsContentOnlyWhenUnlocked() async {
+    @Test func test_003_T3_gateBuildsContentOnlyWhenUnlocked() async {
         let fakeAuth = FakePanelAuthenticator()
         let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth)
         var buildCount = 0
@@ -251,75 +260,75 @@ final class PanelLockControllerTests: ClavisBaseTestCase {
             return Text("Secret Content")
         }
 
-        XCTAssertTrue(controller.isLocked)
+        #expect(controller.isLocked)
         let hostingView = NSHostingView(rootView: gate)
         hostingView.layout()
         _ = gate.body
-        XCTAssertEqual(buildCount, 0, "Content should not be built when locked")
+        #expect(buildCount == 0, "Content should not be built when locked")
 
         await controller.unlock()
-        XCTAssertFalse(controller.isLocked)
+        #expect(!controller.isLocked)
 
         _ = gate.body
         hostingView.layout()
-        XCTAssertGreaterThanOrEqual(buildCount, 1, "Content should be built when unlocked")
+        #expect(buildCount >= 1, "Content should be built when unlocked")
     }
 
-    func test_003_AC5_lockedMenuShowsOnlyLockNowRevokeAndCount() {
+    @Test func test_003_AC5_lockedMenuShowsOnlyLockNowRevokeAndCount() {
         let lockedWithSessions = MenuBarSections.visible(isLocked: true, hasSessions: true)
-        XCTAssertTrue(lockedWithSessions.contains(.lockNow))
-        XCTAssertTrue(lockedWithSessions.contains(.revokeAll))
-        XCTAssertTrue(lockedWithSessions.contains(.sessionCount))
-        XCTAssertTrue(lockedWithSessions.contains(.unlock))
-        XCTAssertTrue(lockedWithSessions.contains(.agentLifecycle))
-        XCTAssertTrue(lockedWithSessions.contains(.quit))
+        #expect(lockedWithSessions.contains(.lockNow))
+        #expect(lockedWithSessions.contains(.revokeAll))
+        #expect(lockedWithSessions.contains(.sessionCount))
+        #expect(lockedWithSessions.contains(.unlock))
+        #expect(lockedWithSessions.contains(.agentLifecycle))
+        #expect(lockedWithSessions.contains(.quit))
 
-        XCTAssertFalse(lockedWithSessions.contains(.identities))
-        XCTAssertFalse(lockedWithSessions.contains(.gitBanner))
-        XCTAssertFalse(lockedWithSessions.contains(.newKey))
-        XCTAssertFalse(lockedWithSessions.contains(.openKeyManager))
-        XCTAssertFalse(lockedWithSessions.contains(.history))
-        XCTAssertFalse(lockedWithSessions.contains(.settings))
+        #expect(!lockedWithSessions.contains(.identities))
+        #expect(!lockedWithSessions.contains(.gitBanner))
+        #expect(!lockedWithSessions.contains(.newKey))
+        #expect(!lockedWithSessions.contains(.openKeyManager))
+        #expect(!lockedWithSessions.contains(.history))
+        #expect(!lockedWithSessions.contains(.settings))
 
         let lockedNoSessions = MenuBarSections.visible(isLocked: true, hasSessions: false)
-        XCTAssertTrue(lockedNoSessions.contains(.lockNow))
-        XCTAssertFalse(lockedNoSessions.contains(.revokeAll))
-        XCTAssertFalse(lockedNoSessions.contains(.sessionCount))
+        #expect(lockedNoSessions.contains(.lockNow))
+        #expect(!lockedNoSessions.contains(.revokeAll))
+        #expect(!lockedNoSessions.contains(.sessionCount))
     }
 
-    func test_003_T4_unlockedMenuShowsEverything() {
+    @Test func test_003_T4_unlockedMenuShowsEverything() {
         let unlockedWithSessions = MenuBarSections.visible(isLocked: false, hasSessions: true)
-        XCTAssertTrue(unlockedWithSessions.contains(.identities))
-        XCTAssertTrue(unlockedWithSessions.contains(.gitBanner))
-        XCTAssertTrue(unlockedWithSessions.contains(.newKey))
-        XCTAssertTrue(unlockedWithSessions.contains(.openKeyManager))
-        XCTAssertTrue(unlockedWithSessions.contains(.agentLifecycle))
-        XCTAssertTrue(unlockedWithSessions.contains(.history))
-        XCTAssertTrue(unlockedWithSessions.contains(.settings))
-        XCTAssertTrue(unlockedWithSessions.contains(.quit))
-        XCTAssertTrue(unlockedWithSessions.contains(.lockNow))
-        XCTAssertTrue(unlockedWithSessions.contains(.revokeAll))
-        XCTAssertTrue(unlockedWithSessions.contains(.sessionCount))
-        XCTAssertFalse(unlockedWithSessions.contains(.unlock))
+        #expect(unlockedWithSessions.contains(.identities))
+        #expect(unlockedWithSessions.contains(.gitBanner))
+        #expect(unlockedWithSessions.contains(.newKey))
+        #expect(unlockedWithSessions.contains(.openKeyManager))
+        #expect(unlockedWithSessions.contains(.agentLifecycle))
+        #expect(unlockedWithSessions.contains(.history))
+        #expect(unlockedWithSessions.contains(.settings))
+        #expect(unlockedWithSessions.contains(.quit))
+        #expect(unlockedWithSessions.contains(.lockNow))
+        #expect(unlockedWithSessions.contains(.revokeAll))
+        #expect(unlockedWithSessions.contains(.sessionCount))
+        #expect(!unlockedWithSessions.contains(.unlock))
 
         let unlockedNoSessions = MenuBarSections.visible(isLocked: false, hasSessions: false)
-        XCTAssertTrue(unlockedNoSessions.contains(.identities))
-        XCTAssertTrue(unlockedNoSessions.contains(.gitBanner))
-        XCTAssertFalse(unlockedNoSessions.contains(.lockNow))
-        XCTAssertFalse(unlockedNoSessions.contains(.sessionCount))
-        XCTAssertFalse(unlockedNoSessions.contains(.revokeAll))
-        XCTAssertFalse(unlockedNoSessions.contains(.unlock))
+        #expect(unlockedNoSessions.contains(.identities))
+        #expect(unlockedNoSessions.contains(.gitBanner))
+        #expect(!unlockedNoSessions.contains(.lockNow))
+        #expect(!unlockedNoSessions.contains(.sessionCount))
+        #expect(!unlockedNoSessions.contains(.revokeAll))
+        #expect(!unlockedNoSessions.contains(.unlock))
     }
 
-    func test_003_C1_deleteStillPromptsWhenUnlocked() async throws {
+    @Test func test_003_C1_deleteStillPromptsWhenUnlocked() async throws {
         let fakeAuth = FakePanelAuthenticator()
         let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth)
         await controller.unlock()
-        XCTAssertFalse(controller.isLocked)
-        XCTAssertNotNil(controller.unlockContext)
+        #expect(!controller.isLocked)
+        #expect(controller.unlockContext != nil)
 
         let countingAuth = CountingAuthenticator()
-        let keyManager = makeKeyManager(authenticator: countingAuth)
+        let keyManager = fixture.makeKeyManager(authenticator: countingAuth)
         let testLabel = "c1-test-key-\(UUID().uuidString)"
         _ = try keyManager.generateKey(label: testLabel)
 
@@ -327,10 +336,10 @@ final class PanelLockControllerTests: ClavisBaseTestCase {
         try keyManager.deleteKey(label: testLabel)
         let countAfterDelete = countingAuth.authenticationCount
 
-        XCTAssertEqual(countAfterDelete, countBeforeDelete + 1, "Deleting a key must still require its own authentication prompt even when the control panel is unlocked")
+        #expect(countAfterDelete == countBeforeDelete + 1, "Deleting a key must still require its own authentication prompt even when the control panel is unlocked")
     }
 
-    func test_008_T5_unlockValidatesKeyringAndRotatesOnMismatch() async throws {
+    @Test func test_008_T5_unlockValidatesKeyringAndRotatesOnMismatch() async throws {
         let fakeAuth = FakePanelAuthenticator()
         let keyring = SoftwareAuditKeyring(requireContext: false)
         let recorder = InMemoryAuditRecorder()
@@ -352,15 +361,15 @@ final class PanelLockControllerTests: ClavisBaseTestCase {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
 
-        XCTAssertEqual(recorder.events.count, 1)
-        XCTAssertEqual(recorder.events.first?.type, .securityAlert)
-        XCTAssertEqual(recorder.events.first?.reason, .auditKeyMismatch)
+        #expect(recorder.events.count == 1)
+        #expect(recorder.events.first?.type == .securityAlert)
+        #expect(recorder.events.first?.reason == .auditKeyMismatch)
 
         let rotatedKey = try keyring.currentPublicKey()
-        XCTAssertNotEqual(rotatedKey.keyID, initialKey.keyID)
+        #expect(rotatedKey.keyID != initialKey.keyID)
     }
 
-    func test_008_T5_unlockRotatesOnMissingKey() async throws {
+    @Test func test_008_T5_unlockRotatesOnMissingKey() async throws {
         let fakeAuth = FakePanelAuthenticator()
         let keyring = SoftwareAuditKeyring(requireContext: false)
         let recorder = InMemoryAuditRecorder()
@@ -383,36 +392,32 @@ final class PanelLockControllerTests: ClavisBaseTestCase {
         }
 
         let rotatedKey = try keyring.currentPublicKey()
-        XCTAssertNotEqual(rotatedKey.keyID, initialKey.keyID)
-        XCTAssertTrue(recorder.events.isEmpty)
+        #expect(rotatedKey.keyID != initialKey.keyID)
+        #expect(recorder.events.isEmpty)
     }
 
-    func test_setEnabled_false_whenAuthenticated_doesNotPrompt() async {
+    @Test func test_setEnabled_false_whenAuthenticated_doesNotPrompt() async {
         let fakeAuth = FakePanelAuthenticator()
         let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth)
 
         await controller.unlock()
-        XCTAssertEqual(fakeAuth.authCount, 1)
+        #expect(fakeAuth.authCount == 1)
 
         // Disabling with authenticated: true should NOT invoke authenticator again
         let success = await controller.setEnabled(false, authenticated: true)
-        XCTAssertTrue(success)
-        XCTAssertEqual(fakeAuth.authCount, 1)
-        XCTAssertFalse(controller.isEnabled)
-        XCTAssertFalse(controller.isLocked)
+        #expect(success)
+        #expect(fakeAuth.authCount == 1)
+        #expect(!controller.isEnabled)
+        #expect(!controller.isLocked)
     }
 
-    func test_authenticateUser_success_appliesUnlock() async throws {
+    @Test func test_authenticateUser_success_appliesUnlock() async throws {
         let fakeAuth = FakePanelAuthenticator()
         let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth)
-        XCTAssertTrue(controller.isLocked)
+        #expect(controller.isLocked)
 
-        let context = try await controller.authenticateUser()
-        XCTAssertNotNil(context)
-        XCTAssertEqual(fakeAuth.authCount, 1)
-        XCTAssertFalse(controller.isLocked)
+        _ = try await controller.authenticateUser()
+        #expect(fakeAuth.authCount == 1)
+        #expect(!controller.isLocked)
     }
 }
-
-
-

@@ -1,16 +1,23 @@
+import Foundation
+import Testing
 import CryptoKit
-import XCTest
 @testable import ClavisCore
 
-final class AuditWitnessTests: ClavisBaseTestCase {
-    private final class MockWitnessWriter: AuditWitnessWriting {
-        var entries: [AuditWitnessEntry] = []
+@Suite struct AuditWitnessTests {
+    private final class MockWitnessWriter: AuditWitnessWriting, @unchecked Sendable {
+        private let lock = NSLock()
+        private var _entries: [AuditWitnessEntry] = []
+        var entries: [AuditWitnessEntry] {
+            lock.lock(); defer { lock.unlock() }
+            return _entries
+        }
         func write(_ e: AuditWitnessEntry) {
-            entries.append(e)
+            lock.lock(); defer { lock.unlock() }
+            _entries.append(e)
         }
     }
 
-    func test_007_T1_digestIsStable() {
+    @Test func test_007_T1_digestIsStable() {
         let fixedEventID = UUID(uuidString: "e1e1e1e1-e1e1-e1e1-e1e1-e1e1e1e1e1e1")!
         let fixedTime = Date(timeIntervalSinceReferenceDate: 123456789.0)
         let blob = Data([0x01, 0x02, 0x03, 0x04])
@@ -31,7 +38,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         )
 
         // Verify digest length is 32 hex chars
-        XCTAssertEqual(digest.count, 32)
+        #expect(digest.count == 32)
 
         // Run again to ensure determinism
         let digest2 = AuditWitness.digest(
@@ -48,16 +55,16 @@ final class AuditWitnessTests: ClavisBaseTestCase {
             sensitiveFormat: 1,
             sensitiveBlob: blob
         )
-        XCTAssertEqual(digest, digest2)
+        #expect(digest == digest2)
 
         // Golden check: verify matches expected SHA-256 prefix
         let bitPatternStr = String(fixedTime.timeIntervalSinceReferenceDate.bitPattern)
         let expectedPayload = "w1|1|e1e1e1e1-e1e1-e1e1-e1e1-e1e1e1e1e1e1|\(bitPatternStr)|signature|allowed|via_prompt|SHA256:abc123def456|personal|sess-999|1|1|\(blob.base64EncodedString())"
         let expectedHash = CryptoKitDigestHelper.sha256Hex16(expectedPayload)
-        XCTAssertEqual(digest, expectedHash)
+        #expect(digest == expectedHash)
     }
 
-    func test_007_T1_digestChangesWithEveryField() {
+    @Test func test_007_T1_digestChangesWithEveryField() {
         let eventID = UUID(uuidString: "e1e1e1e1-e1e1-e1e1-e1e1-e1e1e1e1e1e1")!
         let time = Date(timeIntervalSinceReferenceDate: 123456789.0)
         let blob = Data([0x01, 0x02, 0x03, 0x04])
@@ -78,7 +85,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         )
 
         // Change seq
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 2,
             eventID: eventID,
             time: time,
@@ -94,7 +101,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         ))
 
         // Change eventID
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 1,
             eventID: UUID(),
             time: time,
@@ -110,7 +117,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         ))
 
         // Change time
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 1,
             eventID: eventID,
             time: time.addingTimeInterval(1.0),
@@ -126,7 +133,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         ))
 
         // Change type
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 1,
             eventID: eventID,
             time: time,
@@ -142,7 +149,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         ))
 
         // Change result
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 1,
             eventID: eventID,
             time: time,
@@ -158,7 +165,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         ))
 
         // Change reason
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 1,
             eventID: eventID,
             time: time,
@@ -172,7 +179,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
             sensitiveFormat: 1,
             sensitiveBlob: blob
         ))
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 1,
             eventID: eventID,
             time: time,
@@ -188,7 +195,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         ))
 
         // Change fingerprint
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 1,
             eventID: eventID,
             time: time,
@@ -202,7 +209,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
             sensitiveFormat: 1,
             sensitiveBlob: blob
         ))
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 1,
             eventID: eventID,
             time: time,
@@ -218,7 +225,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         ))
 
         // Change kind
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 1,
             eventID: eventID,
             time: time,
@@ -232,7 +239,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
             sensitiveFormat: 1,
             sensitiveBlob: blob
         ))
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 1,
             eventID: eventID,
             time: time,
@@ -248,7 +255,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         ))
 
         // Change session
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 1,
             eventID: eventID,
             time: time,
@@ -262,7 +269,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
             sensitiveFormat: 1,
             sensitiveBlob: blob
         ))
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 1,
             eventID: eventID,
             time: time,
@@ -278,7 +285,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         ))
 
         // Change count
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 1,
             eventID: eventID,
             time: time,
@@ -294,7 +301,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         ))
 
         // Change sensitiveFormat
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 1,
             eventID: eventID,
             time: time,
@@ -310,7 +317,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         ))
 
         // Change sensitiveBlob (when format == 1)
-        XCTAssertNotEqual(base, AuditWitness.digest(
+        #expect(base != AuditWitness.digest(
             seq: 1,
             eventID: eventID,
             time: time,
@@ -326,7 +333,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         ))
     }
 
-    func test_007_C2_lineHasNoSensitiveFields() {
+    @Test func test_007_C2_lineHasNoSensitiveFields() {
         let sensitive = AuditSensitive(
             keyLabel: "super-secret-key-label",
             processChain: [
@@ -350,14 +357,14 @@ final class AuditWitnessTests: ClavisBaseTestCase {
 
         let line = AuditWitness.line(entry)
 
-        XCTAssertFalse(line.contains("super-secret-key-label"))
-        XCTAssertFalse(line.contains("/Users/alice/bin/secret-deploy"))
-        XCTAssertFalse(line.contains("secret-deploy"))
-        XCTAssertFalse(line.contains("9999"))
-        XCTAssertFalse(line.contains("production.cluster.internal"))
+        #expect(!line.contains("super-secret-key-label"))
+        #expect(!line.contains("/Users/alice/bin/secret-deploy"))
+        #expect(!line.contains("secret-deploy"))
+        #expect(!line.contains("9999"))
+        #expect(!line.contains("production.cluster.internal"))
     }
 
-    func test_007_T1_lineParseRoundTrip() {
+    @Test func test_007_T1_lineParseRoundTrip() {
         let entryWithFP = AuditWitnessEntry(
             seq: 123,
             eventID: UUID(uuidString: "a1b2c3d4-e5f6-7890-abcd-ef1234567890")!,
@@ -368,7 +375,7 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         )
         let lineWithFP = AuditWitness.line(entryWithFP)
         let parsedWithFP = AuditWitness.parse(line: lineWithFP)
-        XCTAssertEqual(parsedWithFP, entryWithFP)
+        #expect(parsedWithFP == entryWithFP)
 
         let entryWithoutFP = AuditWitnessEntry(
             seq: 124,
@@ -379,36 +386,38 @@ final class AuditWitnessTests: ClavisBaseTestCase {
             digest: "123456789abcdef0123456789abcdef0"
         )
         let lineWithoutFP = AuditWitness.line(entryWithoutFP)
-        XCTAssertTrue(lineWithoutFP.contains("fp=-"))
+        #expect(lineWithoutFP.contains("fp=-"))
         let parsedWithoutFP = AuditWitness.parse(line: lineWithoutFP)
-        XCTAssertEqual(parsedWithoutFP, entryWithoutFP)
+        #expect(parsedWithoutFP == entryWithoutFP)
     }
 
-    func test_007_T1_parseRejectsGarbage() {
+    @Test func test_007_T1_parseRejectsGarbage() {
         // Empty
-        XCTAssertNil(AuditWitness.parse(line: ""))
+        #expect(AuditWitness.parse(line: "") == nil)
         // Unsupported version
-        XCTAssertNil(AuditWitness.parse(line: "w2 seq=1 eid=a1b2c3d4-e5f6-7890-abcd-ef1234567890 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef"))
+        #expect(AuditWitness.parse(line: "w2 seq=1 eid=a1b2c3d4-e5f6-7890-abcd-ef1234567890 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef") == nil)
         // Free text
-        XCTAssertNil(AuditWitness.parse(line: "hello world"))
+        #expect(AuditWitness.parse(line: "hello world") == nil)
         // Invalid seq
-        XCTAssertNil(AuditWitness.parse(line: "w1 seq=abc eid=a1b2c3d4-e5f6-7890-abcd-ef1234567890 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef"))
+        #expect(AuditWitness.parse(line: "w1 seq=abc eid=a1b2c3d4-e5f6-7890-abcd-ef1234567890 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef") == nil)
         // Invalid UUID
-        XCTAssertNil(AuditWitness.parse(line: "w1 seq=1 eid=not-a-uuid type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef"))
+        #expect(AuditWitness.parse(line: "w1 seq=1 eid=not-a-uuid type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef") == nil)
         // Missing field
-        XCTAssertNil(AuditWitness.parse(line: "w1 seq=1 eid=a1b2c3d4-e5f6-7890-abcd-ef1234567890 type=signature result=allowed fp=-"))
+        #expect(AuditWitness.parse(line: "w1 seq=1 eid=a1b2c3d4-e5f6-7890-abcd-ef1234567890 type=signature result=allowed fp=-") == nil)
         // Extra field
-        XCTAssertNil(AuditWitness.parse(line: "w1 seq=1 eid=a1b2c3d4-e5f6-7890-abcd-ef1234567890 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef extra=foo"))
+        #expect(AuditWitness.parse(line: "w1 seq=1 eid=a1b2c3d4-e5f6-7890-abcd-ef1234567890 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef extra=foo") == nil)
         // Double equals in token
-        XCTAssertNil(AuditWitness.parse(line: "w1 seq==1 eid=a1b2c3d4-e5f6-7890-abcd-ef1234567890 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef"))
+        #expect(AuditWitness.parse(line: "w1 seq==1 eid=a1b2c3d4-e5f6-7890-abcd-ef1234567890 type=signature result=allowed fp=- h=0123456789abcdef0123456789abcdef") == nil)
         // Short digest
-        XCTAssertNil(AuditWitness.parse(line: "w1 seq=1 eid=a1b2c3d4-e5f6-7890-abcd-ef1234567890 type=signature result=allowed fp=- h=012345"))
+        #expect(AuditWitness.parse(line: "w1 seq=1 eid=a1b2c3d4-e5f6-7890-abcd-ef1234567890 type=signature result=allowed fp=- h=012345") == nil)
         // Non-hex digest
-        XCTAssertNil(AuditWitness.parse(line: "w1 seq=1 eid=a1b2c3d4-e5f6-7890-abcd-ef1234567890 type=signature result=allowed fp=- h=zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"))
+        #expect(AuditWitness.parse(line: "w1 seq=1 eid=a1b2c3d4-e5f6-7890-abcd-ef1234567890 type=signature result=allowed fp=- h=zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz") == nil)
     }
 
-    func test_007_T1_recorderWritesOneWitnessPerInsert() throws {
-        let testDirURL = testRootURL.appendingPathComponent("witness-rec-test-\(UUID().uuidString)", isDirectory: true)
+    @Test func test_007_T1_recorderWritesOneWitnessPerInsert() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let testDirURL = fixture.testRootURL.appendingPathComponent("witness-rec-test-\(UUID().uuidString)", isDirectory: true)
         try SecureFS.createDirectory(at: testDirURL)
         defer { try? FileManager.default.removeItem(at: testDirURL) }
         let dbURL = testDirURL.appendingPathComponent("audit.db")
@@ -457,12 +466,12 @@ final class AuditWitnessTests: ClavisBaseTestCase {
         let dbCount = try store.count()
 
         // 5 keyCreate + 5 signature (in threshold) + 1 suppressed = 11 rows
-        XCTAssertEqual(dbCount, 11)
-        XCTAssertEqual(mockWriter.entries.count, 11)
+        #expect(dbCount == 11)
+        #expect(mockWriter.entries.count == 11)
 
         // Seqs must match 1...11
         let witnessedSeqs = mockWriter.entries.map(\.seq)
-        XCTAssertEqual(witnessedSeqs, Array(Int64(1)...Int64(11)))
+        #expect(witnessedSeqs == Array(Int64(1)...Int64(11)))
     }
 }
 
