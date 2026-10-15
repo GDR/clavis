@@ -1,4 +1,4 @@
-import XCTest
+import Foundation
 import CryptoKit
 import LocalAuthentication
 @testable import ClavisCore
@@ -95,13 +95,18 @@ final class InMemoryPrivateKeyStore: PrivateKeyStoring {
     }
 }
 
-final class InMemoryAuditRecorder: AuditRecording {
+final class InMemoryAuditRecorder: AuditRecording, @unchecked Sendable {
     private let lock = NSLock()
-    private(set) var events: [AuditEvent] = []
+    private var _events: [AuditEvent] = []
+    var events: [AuditEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _events
+    }
     func record(_ event: AuditEvent) {
         lock.lock()
-        events.append(event)
-        lock.unlock()
+        defer { lock.unlock() }
+        _events.append(event)
     }
 }
 
@@ -137,66 +142,77 @@ final class InMemoryPinAttemptStore: PinAttemptStoring, @unchecked Sendable {
     }
 }
 
-class ClavisBaseTestCase: XCTestCase {
+struct ClavisTestFixture: Sendable {
+    let context: TestContext
+    var testRootURL: URL { context.testRootURL }
 
-    var testRootURL: URL!
-
-    override func setUpWithError() throws {
-        try super.setUpWithError()
-        testRootURL = URL(fileURLWithPath: "/tmp", isDirectory: true)
+    init() throws {
+        let rootURL = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("clavis-tests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: testRootURL, withIntermediateDirectories: true)
-
-        PublicKeyStore.disableKeychainMirrorForTesting = true
-        PublicKeyStore.resetForTesting()
-        EncryptedVaultStore.customVaultDirectoryURL = testRootURL.appendingPathComponent("vault", isDirectory: true)
-        EncryptedVaultStore.customKeyAgreementProvider = InMemorySecureEnclaveKeyAgreementProvider()
-        KeychainManager.customSigningProvider = InMemorySecureEnclaveSigningProvider()
-        SSHAgentServer.gpgSSHProgramResolver = { nil }
-        AuditStore.defaultURL = testRootURL.appendingPathComponent("audit.db")
-        #if DEBUG
-        SystemEventMonitor.customSessionActiveValidator = nil
-        #endif
-        ClavisLogger.customLogFileURL = testRootURL.appendingPathComponent("clavis.log")
-        ClavisLogger.customMaximumLogFileSize = nil
-        ClavisLogger.customVerbose = nil
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        self.context = TestContext(testRootURL: rootURL)
     }
 
-    override func tearDownWithError() throws {
-        PublicKeyStore.resetForTesting()
-        PublicKeyStore.disableKeychainMirrorForTesting = true
-        EncryptedVaultStore.customVaultDirectoryURL = nil
-        EncryptedVaultStore.customKeyAgreementProvider = nil
-        KeychainManager.customSigningProvider = nil
-        SSHAgentServer.gpgSSHProgramResolver = { SSHAgentServer.resolveGpgSSHProgram() }
-        AuditStore.defaultURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("clavis-audit-test-\(getpid()).db")
-        #if DEBUG
-        SystemEventMonitor.customSessionActiveValidator = nil
-        #endif
-        ClavisLogger.customLogFileURL = nil
-        ClavisLogger.customMaximumLogFileSize = nil
-        ClavisLogger.customVerbose = nil
-        if let testRootURL {
-            try? FileManager.default.removeItem(at: testRootURL)
+    init(testRootURL: URL) {
+        self.context = TestContext(testRootURL: testRootURL)
+    }
+
+    init(context: TestContext) {
+        self.context = context
+    }
+
+    func run<T>(_ operation: () async throws -> T) async rethrows -> T {
+        try await TestContextScope.$current.withValue(context) {
+            try await operation()
         }
-        try super.tearDownWithError()
+    }
+
+    func run<T>(_ operation: (TestContext) async throws -> T) async rethrows -> T {
+        try await TestContextScope.$current.withValue(context) {
+            try await operation(context)
+        }
+    }
+
+    func runSync<T>(_ operation: () throws -> T) rethrows -> T {
+        try TestContextScope.$current.withValue(context) {
+            try operation()
+        }
+    }
+
+    func runSync<T>(_ operation: (TestContext) throws -> T) rethrows -> T {
+        try TestContextScope.$current.withValue(context) {
+            try operation(context)
+        }
+    }
+
+    func cleanup() {
+        try? FileManager.default.removeItem(at: context.testRootURL)
     }
 
     func makeKeyManager(
         authenticator: UserAuthenticating = AllowingAuthenticator(),
         privateKeyStore: PrivateKeyStoring = InMemoryPrivateKeyStore(),
+        vaultStore: EncryptedVaultStore? = nil,
+        agentGrantRevoker: @escaping (String) throws -> Void = { _ in },
         auditRecorder: AuditRecording = InMemoryAuditRecorder(),
         signingProvider: SecureEnclaveSigningProviding? = nil,
-        gitSigningGraceManager: GitSigningGraceManager = .shared
+        gitSigningGraceManager: GitSigningGraceManager = .shared,
+        signerRegistry: KeySignerRegistry = .shared
     ) -> KeychainManager {
         KeychainManager(
             authenticator: authenticator,
             privateKeyStore: privateKeyStore,
-            agentGrantRevoker: { _ in },
+            vaultStore: vaultStore ?? EncryptedVaultStore(
+                vaultDirectoryURL: context.vaultDirectoryURL,
+                pinStore: context.inMemoryPinStore,
+                keyAgreementProvider: context.keyAgreementProvider
+            ),
+            agentGrantRevoker: agentGrantRevoker,
             auditRecorder: auditRecorder,
-            signingProvider: signingProvider,
-            gitSigningGraceManager: gitSigningGraceManager
+            signingProvider: signingProvider ?? context.signingProvider,
+            gitSigningGraceManager: gitSigningGraceManager,
+            signerRegistry: signerRegistry,
+            testContext: context
         )
     }
 
@@ -258,6 +274,12 @@ final class TestContextPinRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return pins[ObjectIdentifier(context)]
+    }
+
+    func removePIN(for context: LAContext) {
+        lock.lock()
+        defer { lock.unlock() }
+        pins.removeValue(forKey: ObjectIdentifier(context))
     }
 
     func clear() {
@@ -403,7 +425,7 @@ final class SoftwareAuditKeyring: AuditKeyring, @unchecked Sendable {
         )
         keys[keyID] = (priv, item, nil)
         currentKeyID = keyID
-        if NSClassFromString("XCTestCase") == nil {
+        if !ClavisEnvironment.isTesting {
             DistributedNotificationCenter.default().postNotificationName(
                 KeychainAuditKeyring.notificationName,
                 object: nil,
