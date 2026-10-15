@@ -1,65 +1,93 @@
-import XCTest
+import Foundation
+import Testing
 import CryptoKit
 import LocalAuthentication
 @testable import ClavisCore
 @testable import Clavis
 
-final class CLIServiceTests: ClavisBaseTestCase {
+@Suite
+final class CLIServiceTests {
+    private let fixture: ClavisTestFixture
+    private var testRootURL: URL { fixture.testRootURL }
 
-    func testCLIServiceHelpCommand() {
-        let keyManager = makeKeyManager()
-        let resHelp = CLIService.handle(args: ["clavis", "help"], keyManager: keyManager)
-        XCTAssertNotNil(resHelp)
-        XCTAssertEqual(resHelp?.exitCode, 0)
-        XCTAssertTrue(resHelp?.output.contains("Clavis") ?? false)
-
-        let resDashH = CLIService.handle(args: ["clavis", "-h"], keyManager: keyManager)
-        XCTAssertEqual(resDashH?.exitCode, 0)
-
-        let resNoArgs = CLIService.handle(args: ["clavis"], keyManager: keyManager)
-        XCTAssertNil(resNoArgs)
+    init() throws {
+        self.fixture = try ClavisTestFixture()
     }
 
-    func testCLIServiceHelpIncludesAllSupportedCommands() {
+    deinit {
+        fixture.cleanup()
+    }
+
+    private func makeKeyManager(
+        authenticator: UserAuthenticating = AllowingAuthenticator(),
+        privateKeyStore: PrivateKeyStoring = InMemoryPrivateKeyStore(),
+        vaultStore: EncryptedVaultStore? = nil,
+        auditRecorder: AuditRecording = InMemoryAuditRecorder(),
+        signingProvider: SecureEnclaveSigningProviding? = nil,
+        gitSigningGraceManager: GitSigningGraceManager = .shared
+    ) -> KeychainManager {
+        fixture.makeKeyManager(
+            authenticator: authenticator,
+            privateKeyStore: privateKeyStore,
+            vaultStore: vaultStore,
+            auditRecorder: auditRecorder,
+            signingProvider: signingProvider,
+            gitSigningGraceManager: gitSigningGraceManager
+        )
+    }
+
+    @Test func testCLIServiceHelpCommand() {
         let keyManager = makeKeyManager()
         let resHelp = CLIService.handle(args: ["clavis", "help"], keyManager: keyManager)
-        XCTAssertEqual(resHelp?.exitCode, 0)
+        #expect(resHelp != nil)
+        #expect(resHelp?.exitCode == 0)
+        #expect(resHelp?.output.contains("Clavis") ?? false)
+
+        let resDashH = CLIService.handle(args: ["clavis", "-h"], keyManager: keyManager)
+        #expect(resDashH?.exitCode == 0)
+
+        let resNoArgs = CLIService.handle(args: ["clavis"], keyManager: keyManager)
+        #expect(resNoArgs == nil)
+    }
+
+    @Test func testCLIServiceHelpIncludesAllSupportedCommands() {
+        let keyManager = makeKeyManager()
+        let resHelp = CLIService.handle(args: ["clavis", "help"], keyManager: keyManager)
+        #expect(resHelp?.exitCode == 0)
         let helpOutput = resHelp?.output ?? ""
-        XCTAssertEqual(helpOutput, CLIMessages.help)
+        #expect(helpOutput == CLIMessages.help)
 
         for command in ["generate", "list", "export", "delete", "lock", "vault repair", "daemon"] {
-            XCTAssertTrue(CLIMessages.help.contains(command), "CLIMessages.help missing '\(command)'")
-            XCTAssertTrue(helpOutput.contains(command), "Help output missing '\(command)'")
+            #expect(CLIMessages.help.contains(command), "CLIMessages.help missing '\(command)'")
+            #expect(helpOutput.contains(command), "Help output missing '\(command)'")
         }
-        XCTAssertTrue(
+        #expect(
             CLIMessages.help.contains("kind") || CLIMessages.help.contains("key set-kind"),
             "CLIMessages.help missing kind command"
         )
-        XCTAssertTrue(
+        #expect(
             CLIMessages.help.localizedCaseInsensitiveContains("run"),
             "CLIMessages.help missing run reference"
         )
-        XCTAssertTrue(
+        #expect(
             CLIMessages.usage(for: .run).contains("run"),
             "CLIMessages.usage(for: .run) missing 'run'"
         )
     }
 
-
-    func testCLIServiceMissingGenerateArgs() {
+    @Test func testCLIServiceMissingGenerateArgs() {
         let keyManager = makeKeyManager()
         let missingArgsRes = CLIService.handle(args: ["clavis", "generate"], keyManager: keyManager)
-        XCTAssertEqual(missingArgsRes?.exitCode, 1)
-        XCTAssertEqual(missingArgsRes?.error, CLIMessages.usage(for: .generate))
+        #expect(missingArgsRes?.exitCode == 1)
+        #expect(missingArgsRes?.error == CLIMessages.usage(for: .generate))
     }
 
-    func testCLIDeleteRequiresYesAndFreshAuthentication() throws {
+    @Test func testCLIDeleteRequiresYesAndFreshAuthentication() throws {
         let store = InMemoryPrivateKeyStore()
         let authenticator = CountingAuthenticator()
-        let manager = KeychainManager(
+        let manager = makeKeyManager(
             authenticator: authenticator,
-            privateKeyStore: store,
-            agentGrantRevoker: { _ in }
+            privateKeyStore: store
         )
         let label = "delete-auth-\(UUID().uuidString)"
         _ = try manager.generateKey(label: label)
@@ -68,17 +96,17 @@ final class CLIServiceTests: ClavisBaseTestCase {
             args: ["clavis", "delete", label],
             keyManager: manager
         )
-        XCTAssertEqual(refused?.exitCode, 1)
-        XCTAssertEqual(refused?.error, "Usage: clavis delete <label> --yes")
-        XCTAssertEqual(authenticator.authenticationCount, 0)
-        XCTAssertTrue(store.contains(label: label))
+        #expect(refused?.exitCode == 1)
+        #expect(refused?.error == "Usage: clavis delete <label> --yes")
+        #expect(authenticator.authenticationCount == 0)
+        #expect(store.contains(label: label))
 
         let deleted = CLIService.handle(
             args: ["clavis", "delete", label, "--yes"],
             keyManager: manager
         )
-        XCTAssertEqual(deleted?.exitCode, 0)
-        XCTAssertEqual(authenticator.authenticationCount, 1)
-        XCTAssertFalse(store.contains(label: label))
+        #expect(deleted?.exitCode == 0)
+        #expect(authenticator.authenticationCount == 1)
+        #expect(!store.contains(label: label))
     }
 }
