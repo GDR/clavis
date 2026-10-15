@@ -378,7 +378,7 @@ import LocalAuthentication
     @Test func testKeychainManagerUsesInjectedRegistry() async throws {
         let fixture = try ClavisTestFixture()
         defer { fixture.cleanup() }
-        try await fixture.run {
+        await fixture.run {
             let customRegistry = KeySignerRegistry()
             let manager = fixture.makeKeyManager(
                 signerRegistry: customRegistry
@@ -562,7 +562,7 @@ import LocalAuthentication
     @Test func testKeychainManagerFailsClosedOnUnsupportedAlgorithm() async throws {
         let fixture = try ClavisTestFixture()
         defer { fixture.cleanup() }
-        try await fixture.run {
+        await fixture.run {
             let manager = fixture.makeKeyManager()
             #expect {
                 try manager.generateKey(

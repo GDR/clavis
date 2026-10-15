@@ -13,9 +13,9 @@ struct AgentLifecycleManagerTests {
     }
 
     @Test
-    func testStopAgentReturnsFalseAndPreservesSocketWhenProcessSurvivesSigkill() async throws {
+    func testStopAgentReturnsFalseAndPreservesSocketWhenProcessSurvivesSigkill() async {
         defer { fixture.cleanup() }
-        try await fixture.run {
+        await fixture.run {
             let sockPath = fixture.testRootURL.appendingPathComponent("agent-survive.sock").path
             FileManager.default.createFile(atPath: sockPath, contents: Data())
             #expect(FileManager.default.fileExists(atPath: sockPath))
@@ -40,9 +40,9 @@ struct AgentLifecycleManagerTests {
     }
 
     @Test
-    func testSendLockAllThrowsAgentStopFailedWhenProcessSurvivesSigkill() async throws {
+    func testSendLockAllThrowsAgentStopFailedWhenProcessSurvivesSigkill() async {
         defer { fixture.cleanup() }
-        try await fixture.run {
+        await fixture.run {
             let sockPath = fixture.testRootURL.appendingPathComponent("agent-lockall-survive.sock").path
             FileManager.default.createFile(atPath: sockPath, contents: Data())
             #expect(FileManager.default.fileExists(atPath: sockPath))

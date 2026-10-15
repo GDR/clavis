@@ -14,7 +14,7 @@ struct KeyLifecycleAndTamperTests {
         try await fixture.run {
             let keyManager = fixture.makeKeyManager()
             let keys = try keyManager.listKeys()
-            #expect(keys != nil)
+            #expect(keys.isEmpty)
 
             let dummyKeyInfo = SSHKeyInfo(label: "dummy", publicKeyOpenSSH: "ssh-ed25519 AAA dummy", publicKeyBlob: Data(), fingerprint: "SHA256:dummy")
             let encodedData = try JSONEncoder().encode(dummyKeyInfo)
@@ -139,7 +139,7 @@ struct KeyLifecycleAndTamperTests {
     @Test func testUnsupportedKeyConfigurationsFailClosed() async throws {
         let fixture = try ClavisTestFixture()
         defer { fixture.cleanup() }
-        try await fixture.run {
+        await fixture.run {
             let keyManager = fixture.makeKeyManager()
 
             #expect(throws: (any Error).self) {
@@ -162,7 +162,7 @@ struct KeyLifecycleAndTamperTests {
     @Test func testKeyManagerRejectsControlCharactersInLabel() async throws {
         let fixture = try ClavisTestFixture()
         defer { fixture.cleanup() }
-        try await fixture.run {
+        await fixture.run {
             let keyManager = fixture.makeKeyManager()
             #expect(throws: (any Error).self) {
                 try keyManager.generateKey(label: "trusted\n[AUTH] forged")
@@ -452,7 +452,7 @@ struct KeyLifecycleAndTamperTests {
     func testPublicIndexRoundTripsThroughKeychainWithoutAFile() async throws {
         let fixture = try ClavisTestFixture()
         defer { fixture.cleanup() }
-        try await fixture.run {
+        await fixture.run {
             PublicKeyStore.disableKeychainMirrorForTesting = false
             defer { PublicKeyStore.disableKeychainMirrorForTesting = true }
             let keyInfo = SSHKeyInfo(
@@ -931,7 +931,7 @@ struct KeyLifecycleAndTamperTests {
     @Test func testGenerateKeyRollsBackPrivateAndVaultRecordsWhenPublicStoreSaveFails() async throws {
         let fixture = try ClavisTestFixture()
         defer { fixture.cleanup() }
-        try await fixture.run {
+        await fixture.run {
             let backing = ScriptedKeychainItems()
             let keyStore = backing.makeStore(serviceName: "com.clavis.tests.save-rollback.\(UUID().uuidString)")
             let manager = fixture.makeKeyManager(

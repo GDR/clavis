@@ -128,7 +128,7 @@ final class SSHAgentServerTests {
             gitSigningGraceManager: graceManager
         )
 
-        var invalidate = Data([SSHAgentServer.invalidateKeyRequest])
+        let invalidate = Data([SSHAgentServer.invalidateKeyRequest])
         requestLoop: for request in [invalidate, Data([SSHAgentServer.queryGitGraceRequest]), Data([SSHAgentServer.lockAllRequest])] {
             var req = request
             if req == invalidate {

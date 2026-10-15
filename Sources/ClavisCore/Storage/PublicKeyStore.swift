@@ -1,6 +1,17 @@
 import Foundation
 import Security
 
+#if os(macOS)
+// Public key metadata lives in the legacy file-based login keychain so CLI, GUI, and
+// agent executables can share it without Data Protection Keychain entitlement groups.
+@_silgen_name("SecAccessCreate")
+private func clavisSecAccessCreate(
+    _ descriptor: CFString,
+    _ trustedList: CFArray?,
+    _ accessRef: UnsafeMutablePointer<SecAccess?>
+) -> OSStatus
+#endif
+
 public enum PublicKeyStoreError: LocalizedError {
     case keychain(OSStatus)
 
@@ -233,7 +244,7 @@ public struct PublicKeyStore {
         ]
         #if os(macOS)
         var access: SecAccess?
-        if SecAccessCreate("Clavis public key metadata" as CFString, nil, &access) == errSecSuccess, let access {
+        if clavisSecAccessCreate("Clavis public key metadata" as CFString, nil, &access) == errSecSuccess, let access {
             attributes[kSecAttrAccess as String] = access
         }
         #endif

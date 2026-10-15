@@ -79,7 +79,7 @@ import LocalAuthentication
     @Test func test_002_T5_lockAllRecordsLock() async throws {
         let fixture = try ClavisTestFixture()
         defer { fixture.cleanup() }
-        try await fixture.run {
+        await fixture.run {
             let recorder = InMemoryAuditRecorder()
             let server = SSHAgentServer(
                 keyManager: fixture.makeKeyManager(),

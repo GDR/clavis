@@ -191,9 +191,9 @@ struct AgentSessionProtocolTests {
     }
 
     @Test
-    func test_001_T3_malformedPayloadsFail() async throws {
+    func test_001_T3_malformedPayloadsFail() async {
         defer { fixture.cleanup() }
-        try await fixture.run {
+        await fixture.run {
             let server = makeServer()
 
             // Empty payload
