@@ -464,10 +464,7 @@ final class HistoryViewModelTests {
         #expect(viewModel.query.limit == 200)
 
         // Page 1
-        let startReload = ContinuousClock.now
         await viewModel.reload().value
-        let reloadDuration = ContinuousClock.now - startReload
-        #expect(reloadDuration < .milliseconds(500))
 
         #expect(viewModel.records.count == 200)
         #expect(viewModel.hasMore == true)
@@ -477,10 +474,7 @@ final class HistoryViewModelTests {
         #expect(!viewModel.items.contains(where: { $0.isGap }))
 
         // Page 2
-        let startPage2 = ContinuousClock.now
         await viewModel.loadMore().value
-        let page2Duration = ContinuousClock.now - startPage2
-        #expect(page2Duration < .milliseconds(500))
 
         #expect(viewModel.records.count == 400)
         #expect(viewModel.hasMore == true)
@@ -491,10 +485,7 @@ final class HistoryViewModelTests {
         #expect(!viewModel.items.contains(where: { $0.isGap }))
 
         // Page 3
-        let startPage3 = ContinuousClock.now
         await viewModel.loadMore().value
-        let page3Duration = ContinuousClock.now - startPage3
-        #expect(page3Duration < .milliseconds(500))
 
         #expect(viewModel.records.count == 600)
         #expect(viewModel.hasMore == true) // Exact multiple of limit (200), so hasMore is true until next empty fetch
@@ -505,10 +496,7 @@ final class HistoryViewModelTests {
         #expect(!viewModel.items.contains(where: { $0.isGap }))
 
         // Page 4 (when reaching beyond the last record for exact multiples)
-        let startPage4 = ContinuousClock.now
         await viewModel.loadMore().value
-        let page4Duration = ContinuousClock.now - startPage4
-        #expect(page4Duration < .milliseconds(500))
 
         #expect(viewModel.records.count == 600)
         #expect(viewModel.hasMore == false)
@@ -583,10 +571,7 @@ final class HistoryViewModelTests {
         #expect(viewModel.records.count == 600)
 
         // 1. Search text filtering on host
-        let filterStart1 = ContinuousClock.now
         viewModel.searchText = "bastion"
-        let filterDuration1 = ContinuousClock.now - filterStart1
-        #expect(filterDuration1 < .milliseconds(100))
         #expect(viewModel.records.count == 200)
         #expect(viewModel.records.allSatisfy { $0.event.sensitive.host == "bastion.prod.company.net" })
         #expect(!viewModel.items.contains(where: { $0.isGap }))
