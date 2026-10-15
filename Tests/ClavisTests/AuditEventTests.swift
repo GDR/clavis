@@ -1,9 +1,11 @@
-import XCTest
+import Testing
+import Foundation
 import LocalAuthentication
 @testable import ClavisCore
 
-final class AuditEventTests: ClavisBaseTestCase {
-    func test_002_C1_eventHasNoFreeTextFields() {
+@Suite struct AuditEventTests {
+
+    @Test func test_002_C1_eventHasNoFreeTextFields() {
         let event = AuditEvent(
             type: .signature,
             result: .allowed
@@ -22,7 +24,7 @@ final class AuditEventTests: ClavisBaseTestCase {
             "count",
             "sensitive"
         ]
-        XCTAssertEqual(eventProperties, expectedEventProperties)
+        #expect(eventProperties == expectedEventProperties)
 
         let sensitive = AuditSensitive(keyLabel: nil, processChain: [], host: nil)
         let sensitiveMirror = Mirror(reflecting: sensitive)
@@ -32,51 +34,51 @@ final class AuditEventTests: ClavisBaseTestCase {
             "processChain",
             "host"
         ]
-        XCTAssertEqual(sensitiveProperties, expectedSensitiveProperties)
+        #expect(sensitiveProperties == expectedSensitiveProperties)
     }
 
-    func test_002_T1_reasonRawValuesAreStable() {
-        XCTAssertEqual(AuditEventType.signature.rawValue, "signature")
-        XCTAssertEqual(AuditEventType.sessionStart.rawValue, "session_start")
-        XCTAssertEqual(AuditEventType.sessionExtend.rawValue, "session_extend")
-        XCTAssertEqual(AuditEventType.sessionRevoke.rawValue, "session_revoke")
-        XCTAssertEqual(AuditEventType.sessionEnd.rawValue, "session_end")
-        XCTAssertEqual(AuditEventType.keyCreate.rawValue, "key_create")
-        XCTAssertEqual(AuditEventType.keyImport.rawValue, "key_import")
-        XCTAssertEqual(AuditEventType.keyDelete.rawValue, "key_delete")
-        XCTAssertEqual(AuditEventType.keyKindChange.rawValue, "key_kind_change")
-        XCTAssertEqual(AuditEventType.lock.rawValue, "lock")
-        XCTAssertEqual(AuditEventType.securityAlert.rawValue, "security_alert")
-        XCTAssertEqual(AuditEventType.suppressed.rawValue, "suppressed")
+    @Test func test_002_T1_reasonRawValuesAreStable() {
+        #expect(AuditEventType.signature.rawValue == "signature")
+        #expect(AuditEventType.sessionStart.rawValue == "session_start")
+        #expect(AuditEventType.sessionExtend.rawValue == "session_extend")
+        #expect(AuditEventType.sessionRevoke.rawValue == "session_revoke")
+        #expect(AuditEventType.sessionEnd.rawValue == "session_end")
+        #expect(AuditEventType.keyCreate.rawValue == "key_create")
+        #expect(AuditEventType.keyImport.rawValue == "key_import")
+        #expect(AuditEventType.keyDelete.rawValue == "key_delete")
+        #expect(AuditEventType.keyKindChange.rawValue == "key_kind_change")
+        #expect(AuditEventType.lock.rawValue == "lock")
+        #expect(AuditEventType.securityAlert.rawValue == "security_alert")
+        #expect(AuditEventType.suppressed.rawValue == "suppressed")
 
-        XCTAssertEqual(AuditReason.malformedRequest.rawValue, "malformed_request")
-        XCTAssertEqual(AuditReason.unknownKey.rawValue, "unknown_key")
-        XCTAssertEqual(AuditReason.noPeerAttribution.rawValue, "no_peer_attribution")
-        XCTAssertEqual(AuditReason.gitOnlyKeyNonGitPayload.rawValue, "git_only_key_non_git_payload")
-        XCTAssertEqual(AuditReason.gitAnchorUnavailable.rawValue, "git_anchor_unavailable")
-        XCTAssertEqual(AuditReason.peerChanged.rawValue, "peer_changed")
-        XCTAssertEqual(AuditReason.userCancelled.rawValue, "user_cancelled")
-        XCTAssertEqual(AuditReason.authenticationFailed.rawValue, "authentication_failed")
-        XCTAssertEqual(AuditReason.signingError.rawValue, "signing_error")
-        XCTAssertEqual(AuditReason.viaPrompt.rawValue, "via_prompt")
-        XCTAssertEqual(AuditReason.viaGitGrant.rawValue, "via_git_grant")
-        XCTAssertEqual(AuditReason.lockNow.rawValue, "lock_now")
-        XCTAssertEqual(AuditReason.screenLocked.rawValue, "screen_locked")
-        XCTAssertEqual(AuditReason.partialDeletion.rawValue, "partial_deletion")
-        XCTAssertEqual(AuditReason.noAgentSession.rawValue, "no_agent_session")
-        XCTAssertEqual(AuditReason.auditKeyMismatch.rawValue, "audit_key_mismatch")
-        XCTAssertEqual(AuditReason.viaAgentSession.rawValue, "via_agent_session")
-        XCTAssertEqual(AuditReason.outsideSessionTree.rawValue, "outside_session_tree")
-        XCTAssertEqual(AuditReason.rootExited.rawValue, "root_exited")
-        XCTAssertEqual(AuditReason.lockAll.rawValue, "lock_all")
-        XCTAssertEqual(AuditReason.revokedByUser.rawValue, "revoked_by_user")
-        XCTAssertEqual(AuditReason.leaseExpired.rawValue, "lease_expired")
-        XCTAssertEqual(AuditReason.keyChanged.rawValue, "key_changed")
-        XCTAssertEqual(AuditReason.daemonStopping.rawValue, "daemon_stopping")
-        XCTAssertEqual(AuditReason.sessionApproved.rawValue, "session_approved")
+        #expect(AuditReason.malformedRequest.rawValue == "malformed_request")
+        #expect(AuditReason.unknownKey.rawValue == "unknown_key")
+        #expect(AuditReason.noPeerAttribution.rawValue == "no_peer_attribution")
+        #expect(AuditReason.gitOnlyKeyNonGitPayload.rawValue == "git_only_key_non_git_payload")
+        #expect(AuditReason.gitAnchorUnavailable.rawValue == "git_anchor_unavailable")
+        #expect(AuditReason.peerChanged.rawValue == "peer_changed")
+        #expect(AuditReason.userCancelled.rawValue == "user_cancelled")
+        #expect(AuditReason.authenticationFailed.rawValue == "authentication_failed")
+        #expect(AuditReason.signingError.rawValue == "signing_error")
+        #expect(AuditReason.viaPrompt.rawValue == "via_prompt")
+        #expect(AuditReason.viaGitGrant.rawValue == "via_git_grant")
+        #expect(AuditReason.lockNow.rawValue == "lock_now")
+        #expect(AuditReason.screenLocked.rawValue == "screen_locked")
+        #expect(AuditReason.partialDeletion.rawValue == "partial_deletion")
+        #expect(AuditReason.noAgentSession.rawValue == "no_agent_session")
+        #expect(AuditReason.auditKeyMismatch.rawValue == "audit_key_mismatch")
+        #expect(AuditReason.viaAgentSession.rawValue == "via_agent_session")
+        #expect(AuditReason.outsideSessionTree.rawValue == "outside_session_tree")
+        #expect(AuditReason.rootExited.rawValue == "root_exited")
+        #expect(AuditReason.lockAll.rawValue == "lock_all")
+        #expect(AuditReason.revokedByUser.rawValue == "revoked_by_user")
+        #expect(AuditReason.leaseExpired.rawValue == "lease_expired")
+        #expect(AuditReason.keyChanged.rawValue == "key_changed")
+        #expect(AuditReason.daemonStopping.rawValue == "daemon_stopping")
+        #expect(AuditReason.sessionApproved.rawValue == "session_approved")
     }
 
-    func test_002_T1_sanitizedPathStripsControlAndBidi() {
+    @Test func test_002_T1_sanitizedPathStripsControlAndBidi() {
         // Construct string with newline, control chars, bidi override (\u{202E}), and >512 length
         let bidiChar = "\u{202E}"
         let controlChar = "\u{0007}"
@@ -86,21 +88,21 @@ final class AuditEventTests: ClavisBaseTestCase {
 
         let sanitized = AuditEvent.sanitizedPath(rawPath)
 
-        XCTAssertLessThanOrEqual(sanitized.count, 512)
-        XCTAssertFalse(sanitized.contains("\n"))
-        XCTAssertFalse(sanitized.contains("\r"))
-        XCTAssertFalse(sanitized.contains(bidiChar))
-        XCTAssertFalse(sanitized.contains(controlChar))
+        #expect(sanitized.count <= 512)
+        #expect(!sanitized.contains("\n"))
+        #expect(!sanitized.contains("\r"))
+        #expect(!sanitized.contains(bidiChar))
+        #expect(!sanitized.contains(controlChar))
     }
 
-    func test_002_T1_isUserCancellation() {
+    @Test func test_002_T1_isUserCancellation() {
         let cancelError = LAError(.userCancel)
-        XCTAssertTrue(AuditEvent.isUserCancellation(cancelError))
-        XCTAssertTrue(AuditEvent.isUserCancellation(UserAuthenticationError.rejected(cancelError)))
-        XCTAssertTrue(AuditEvent.isUserCancellation(UserAuthenticationError.timedOut))
+        #expect(AuditEvent.isUserCancellation(cancelError))
+        #expect(AuditEvent.isUserCancellation(UserAuthenticationError.rejected(cancelError)))
+        #expect(AuditEvent.isUserCancellation(UserAuthenticationError.timedOut))
 
         let authFailedError = LAError(.authenticationFailed)
-        XCTAssertFalse(AuditEvent.isUserCancellation(authFailedError))
-        XCTAssertFalse(AuditEvent.isUserCancellation(UserAuthenticationError.rejected(authFailedError)))
+        #expect(!AuditEvent.isUserCancellation(authFailedError))
+        #expect(!AuditEvent.isUserCancellation(UserAuthenticationError.rejected(authFailedError)))
     }
 }

@@ -1,9 +1,13 @@
-import XCTest
+import Testing
+import Foundation
 @testable import ClavisCore
 
-final class SecureFSTests: ClavisBaseTestCase {
+@Suite(.serialized) struct SecureFSTests {
 
-    func testWithUmaskSetsAndRestoresUmask() {
+    @Test func testWithUmaskSetsAndRestoresUmask() {
+        SecureFS.umaskLock.lock()
+        defer { SecureFS.umaskLock.unlock() }
+
         let original = umask(0o022)
         _ = umask(original)
 
@@ -14,45 +18,51 @@ final class SecureFSTests: ClavisBaseTestCase {
             _ = umask(temp)
         }
 
-        XCTAssertEqual(insideMask, 0o077)
+        #expect(insideMask == 0o077)
         let restored = umask(0)
         _ = umask(restored)
-        XCTAssertEqual(restored, original)
+        #expect(restored == original)
     }
 
-    func testCreateDirectoryEnforces0700Permissions() throws {
-        guard let testRoot = testRootURL else { return }
+    @Test func testCreateDirectoryEnforces0700Permissions() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let testRoot = fixture.testRootURL
         let secureDir = testRoot.appendingPathComponent("secure-dir-\(UUID().uuidString)")
         try SecureFS.createDirectory(at: secureDir)
 
-        XCTAssertTrue(FileManager.default.fileExists(atPath: secureDir.path))
-        XCTAssertTrue(SecureFS.isDirectorySecure(at: secureDir))
+        #expect(FileManager.default.fileExists(atPath: secureDir.path))
+        #expect(SecureFS.isDirectorySecure(at: secureDir))
 
         var info = stat()
-        XCTAssertEqual(lstat(secureDir.path, &info), 0)
-        XCTAssertEqual(info.st_mode & 0o777, 0o700)
+        #expect(lstat(secureDir.path, &info) == 0)
+        #expect((info.st_mode & 0o777) == 0o700)
     }
 
-    func testDirectoryModeVerificationRejectsInsecurePermissions() throws {
-        guard let testRoot = testRootURL else { return }
+    @Test func testDirectoryModeVerificationRejectsInsecurePermissions() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let testRoot = fixture.testRootURL
         let permissiveDir = testRoot.appendingPathComponent("permissive-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: permissiveDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o777])
         try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: permissiveDir.path)
 
         // Initially insecure (group/other have permissions)
-        XCTAssertFalse(SecureFS.isDirectorySecure(at: permissiveDir))
+        #expect(!SecureFS.isDirectorySecure(at: permissiveDir))
 
         // Enforcement tightens it to 0700
         try SecureFS.verifyAndEnforceDirectoryPermissions(at: permissiveDir)
-        XCTAssertTrue(SecureFS.isDirectorySecure(at: permissiveDir))
+        #expect(SecureFS.isDirectorySecure(at: permissiveDir))
 
         var info = stat()
-        XCTAssertEqual(lstat(permissiveDir.path, &info), 0)
-        XCTAssertEqual(info.st_mode & 0o777, 0o700)
+        #expect(lstat(permissiveDir.path, &info) == 0)
+        #expect((info.st_mode & 0o777) == 0o700)
     }
 
-    func testOpenLockFileRejectsSymlinkWithELOOP() throws {
-        guard let testRoot = testRootURL else { return }
+    @Test func testOpenLockFileRejectsSymlinkWithELOOP() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let testRoot = fixture.testRootURL
         let targetFile = testRoot.appendingPathComponent("real-target.txt")
         try "content".write(to: targetFile, atomically: true, encoding: .utf8)
 
@@ -61,19 +71,21 @@ final class SecureFSTests: ClavisBaseTestCase {
 
         // Opening through openLockFile must fail because O_NOFOLLOW is enforced
         let fd = SecureFS.openLockFile(path: symlinkPath, flags: O_RDONLY)
-        XCTAssertEqual(fd, -1)
-        XCTAssertEqual(errno, ELOOP)
+        #expect(fd == -1)
+        #expect(errno == ELOOP)
     }
 
-    func testOpenLockFileCreatesRegularFileSecurely() throws {
-        guard let testRoot = testRootURL else { return }
+    @Test func testOpenLockFileCreatesRegularFileSecurely() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let testRoot = fixture.testRootURL
         let lockPath = testRoot.appendingPathComponent("test.lock").path
         let fd = SecureFS.openLockFile(path: lockPath, flags: O_CREAT | O_RDWR, mode: 0o600)
-        XCTAssertGreaterThanOrEqual(fd, 0)
+        #expect(fd >= 0)
         close(fd)
 
         var info = stat()
-        XCTAssertEqual(lstat(lockPath, &info), 0)
-        XCTAssertEqual(info.st_mode & 0o777, 0o600)
+        #expect(lstat(lockPath, &info) == 0)
+        #expect((info.st_mode & 0o777) == 0o600)
     }
 }

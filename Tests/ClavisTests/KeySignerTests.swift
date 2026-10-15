@@ -1,11 +1,11 @@
-import XCTest
+import Testing
 import Foundation
 import CryptoKit
 import Security
 import LocalAuthentication
 @testable import ClavisCore
 
-final class KeySignerTests: ClavisBaseTestCase {
+@Suite struct KeySignerTests {
 
     // MARK: - Mock KeySigner
 
@@ -71,69 +71,71 @@ final class KeySignerTests: ClavisBaseTestCase {
 
     // MARK: - 1. KeySignerRegistry Tests
 
-    func testKeySignerRegistryReturnsDefaultP256() throws {
+    @Test func testKeySignerRegistryReturnsDefaultP256() throws {
         let signer = try KeySignerRegistry.shared.signer(for: .ecdsaP256)
-        XCTAssertEqual(signer.algorithm, .ecdsaP256)
-        XCTAssertEqual(signer.sshKeyType, "ecdsa-sha2-nistp256")
-        XCTAssertTrue(signer is ECDSAP256KeySigner)
+        #expect(signer.algorithm == .ecdsaP256)
+        #expect(signer.sshKeyType == "ecdsa-sha2-nistp256")
+        #expect(signer is ECDSAP256KeySigner)
     }
 
-    func testKeySignerRegistryResolvesByString() throws {
+    @Test func testKeySignerRegistryResolvesByString() throws {
         let signerByName = try KeySignerRegistry.shared.signer(forAlgorithmName: "ECDSA P-256")
-        XCTAssertEqual(signerByName.algorithm, .ecdsaP256)
+        #expect(signerByName.algorithm == .ecdsaP256)
 
         let signerByRawValue = try KeySignerRegistry.shared.signer(forAlgorithmName: KeyAlgorithm.ecdsaP256.rawValue)
-        XCTAssertEqual(signerByRawValue.algorithm, .ecdsaP256)
+        #expect(signerByRawValue.algorithm == .ecdsaP256)
     }
 
-    func testKeySignerRegistryRejectsUnsupportedAlgorithms() {
-        XCTAssertThrowsError(try KeySignerRegistry.shared.signer(forAlgorithmName: "Ed25519")) { error in
+    @Test func testKeySignerRegistryRejectsUnsupportedAlgorithms() {
+        #expect {
+            try KeySignerRegistry.shared.signer(forAlgorithmName: "Ed25519")
+        } throws: { error in
             guard case KeychainManagerError.unsupportedConfiguration(let algo, let storage) = error else {
-                XCTFail("Expected unsupportedConfiguration error, got: \(error)")
-                return
+                return false
             }
-            XCTAssertEqual(algo, "Ed25519")
-            XCTAssertEqual(storage, KeyStorageType.secureEnclave.rawValue)
+            return algo == "Ed25519" && storage == KeyStorageType.secureEnclave.rawValue
         }
 
-        XCTAssertThrowsError(try KeySignerRegistry.shared.signer(forAlgorithmName: "RSA 4096")) { error in
+        #expect {
+            try KeySignerRegistry.shared.signer(forAlgorithmName: "RSA 4096")
+        } throws: { error in
             guard case KeychainManagerError.unsupportedConfiguration(let algo, _) = error else {
-                XCTFail("Expected unsupportedConfiguration error, got: \(error)")
-                return
+                return false
             }
-            XCTAssertEqual(algo, "RSA 4096")
+            return algo == "RSA 4096"
         }
 
-        XCTAssertThrowsError(try KeySignerRegistry.shared.signer(forAlgorithmName: "UnknownAlgorithm")) { error in
+        #expect {
+            try KeySignerRegistry.shared.signer(forAlgorithmName: "UnknownAlgorithm")
+        } throws: { error in
             guard case KeychainManagerError.unsupportedConfiguration(let algo, _) = error else {
-                XCTFail("Expected unsupportedConfiguration error, got: \(error)")
-                return
+                return false
             }
-            XCTAssertEqual(algo, "UnknownAlgorithm")
+            return algo == "UnknownAlgorithm"
         }
     }
 
-    func testKeySignerRegistryCustomSignerRegistrationAndReset() throws {
+    @Test func testKeySignerRegistryCustomSignerRegistrationAndReset() throws {
         let registry = KeySignerRegistry()
         let mockSigner = MockKeySigner()
 
         registry.register(mockSigner)
         let resolved = try registry.signer(for: .ecdsaP256)
-        XCTAssertEqual(resolved.sshKeyType, "mock-key-type")
+        #expect(resolved.sshKeyType == "mock-key-type")
 
         registry.resetToDefaults()
         let defaultSigner = try registry.signer(for: .ecdsaP256)
-        XCTAssertEqual(defaultSigner.sshKeyType, "ecdsa-sha2-nistp256")
+        #expect(defaultSigner.sshKeyType == "ecdsa-sha2-nistp256")
     }
 
-    func testKeySignerRegistryRegisteredAlgorithms() {
+    @Test func testKeySignerRegistryRegisteredAlgorithms() {
         let registry = KeySignerRegistry.shared
-        XCTAssertTrue(registry.registeredAlgorithms.contains(.ecdsaP256))
+        #expect(registry.registeredAlgorithms.contains(.ecdsaP256))
     }
 
     // MARK: - 2. ECDSAP256KeySigner Key Generation & Public Key Derivation
 
-    func testECDSAP256KeyGenerationAndDerivationConsistency() throws {
+    @Test func testECDSAP256KeyGenerationAndDerivationConsistency() throws {
         let provider = InMemorySecureEnclaveSigningProvider()
         let signer = ECDSAP256KeySigner.shared
         let accessControl = try PrivateKeyAccessControl.make(flags: [.privateKeyUsage])
@@ -143,8 +145,8 @@ final class KeySignerTests: ClavisBaseTestCase {
             accessControl: accessControl,
             provider: provider
         )
-        XCTAssertFalse(keyPair.keyData.isEmpty)
-        XCTAssertFalse(keyPair.publicKeyBlob.isEmpty)
+        #expect(!keyPair.keyData.isEmpty)
+        #expect(!keyPair.publicKeyBlob.isEmpty)
 
         var record = StoredPrivateKeyRecord(
             label: "test-consistency",
@@ -161,20 +163,20 @@ final class KeySignerTests: ClavisBaseTestCase {
             context: nil,
             provider: provider
         )
-        XCTAssertEqual(derivedBlob, keyPair.publicKeyBlob)
+        #expect(derivedBlob == keyPair.publicKeyBlob)
     }
 
-    func testECDSAP256FormatOpenSSHPublicKey() {
+    @Test func testECDSAP256FormatOpenSSHPublicKey() {
         let signer = ECDSAP256KeySigner.shared
         let dummyBlob = Data([0x01, 0x02, 0x03, 0x04])
         let label = "user@example.com"
 
         let openSSH = signer.formatOpenSSHPublicKey(publicKeyBlob: dummyBlob, label: label)
         let expected = "ecdsa-sha2-nistp256 \(dummyBlob.base64EncodedString()) \(label)"
-        XCTAssertEqual(openSSH, expected)
+        #expect(openSSH == expected)
     }
 
-    func testECDSAP256VerifyPublicKeyMatchesAuthenticRecord() throws {
+    @Test func testECDSAP256VerifyPublicKeyMatchesAuthenticRecord() throws {
         let provider = InMemorySecureEnclaveSigningProvider()
         let signer = ECDSAP256KeySigner.shared
         let accessControl = try PrivateKeyAccessControl.make(flags: [.privateKeyUsage])
@@ -205,15 +207,17 @@ final class KeySignerTests: ClavisBaseTestCase {
             keyPurpose: .general
         )
 
-        XCTAssertNoThrow(try signer.verifyPublicKey(
-            record: record,
-            against: keyInfo,
-            context: LAContext(),
-            provider: provider
-        ))
+        #expect(throws: Never.self) {
+            try signer.verifyPublicKey(
+                record: record,
+                against: keyInfo,
+                context: LAContext(),
+                provider: provider
+            )
+        }
     }
 
-    func testECDSAP256VerifyPublicKeyThrowsOnTamperedBlob() throws {
+    @Test func testECDSAP256VerifyPublicKeyThrowsOnTamperedBlob() throws {
         let provider = InMemorySecureEnclaveSigningProvider()
         let signer = ECDSAP256KeySigner.shared
         let accessControl = try PrivateKeyAccessControl.make(flags: [.privateKeyUsage])
@@ -247,20 +251,20 @@ final class KeySignerTests: ClavisBaseTestCase {
             keyPurpose: .general
         )
 
-        XCTAssertThrowsError(try signer.verifyPublicKey(
-            record: record,
-            against: keyInfo,
-            context: LAContext(),
-            provider: provider
-        )) { error in
-            guard case PrivateKeyRecordError.publicKeyMismatch = error else {
-                XCTFail("Expected publicKeyMismatch, got \(error)")
-                return
-            }
+        #expect {
+            try signer.verifyPublicKey(
+                record: record,
+                against: keyInfo,
+                context: LAContext(),
+                provider: provider
+            )
+        } throws: { error in
+            guard case PrivateKeyRecordError.publicKeyMismatch = error else { return false }
+            return true
         }
     }
 
-    func testECDSAP256DerivePublicKeyBlobRejectsCorruptedStorage() throws {
+    @Test func testECDSAP256DerivePublicKeyBlobRejectsCorruptedStorage() throws {
         let provider = InMemorySecureEnclaveSigningProvider()
         let signer = ECDSAP256KeySigner.shared
 
@@ -275,16 +279,18 @@ final class KeySignerTests: ClavisBaseTestCase {
         )
         defer { record.wipe() }
 
-        XCTAssertThrowsError(try signer.derivePublicKeyBlob(
-            record: record,
-            context: nil,
-            provider: provider
-        ))
+        #expect(throws: (any Error).self) {
+            try signer.derivePublicKeyBlob(
+                record: record,
+                context: nil,
+                provider: provider
+            )
+        }
     }
 
     // MARK: - 3. Signature Wire Formatting & RFC 4251 MPINT Encoding
 
-    func testECDSAP256FormatSSHSignatureBlobWireStructure() throws {
+    @Test func testECDSAP256FormatSSHSignatureBlobWireStructure() throws {
         let signer = ECDSAP256KeySigner.shared
 
         // Construct 64-byte raw signature: r has MSB unset (0x01), s has MSB set (0x82)
@@ -293,55 +299,53 @@ final class KeySignerTests: ClavisBaseTestCase {
         var s = Data(repeating: 0x82, count: 32)
         s[0] = 0x82
         let rawSig = r + s
-        XCTAssertEqual(rawSig.count, 64)
+        #expect(rawSig.count == 64)
 
         let sigBlob = try signer.formatSSHSignatureBlob(rawSignature: rawSig)
 
         var reader = DataReader(data: sigBlob)
         let keyType = reader.readWireString()
-        XCTAssertEqual(keyType, "ecdsa-sha2-nistp256")
+        #expect(keyType == "ecdsa-sha2-nistp256")
 
-        guard let innerData = reader.readWireData() else {
-            XCTFail("Failed to read inner signature data")
-            return
-        }
-        XCTAssertTrue(reader.isEOF)
+        let rawInner = reader.readWireData()
+        let innerData = try #require(rawInner)
+        #expect(reader.isEOF)
 
         var innerReader = DataReader(data: innerData)
-        guard let rEncoded = innerReader.readWireData(),
-              let sEncoded = innerReader.readWireData() else {
-            XCTFail("Failed to read r and s mpints from inner signature")
-            return
-        }
-        XCTAssertTrue(innerReader.isEOF)
+        let rawR = innerReader.readWireData()
+        let rEncoded = try #require(rawR)
+        let rawS = innerReader.readWireData()
+        let sEncoded = try #require(rawS)
+        #expect(innerReader.isEOF)
 
         // r has high bit 0, so mpint length is 32 bytes without prefix
-        XCTAssertEqual(rEncoded.count, 32)
-        XCTAssertEqual(rEncoded, r)
+        #expect(rEncoded.count == 32)
+        #expect(rEncoded == r)
 
         // s has high bit 1 (0x82), so RFC 4251 requires 0x00 padding byte -> 33 bytes
-        XCTAssertEqual(sEncoded.count, 33)
-        XCTAssertEqual(sEncoded.first, 0x00)
-        XCTAssertEqual(sEncoded.dropFirst(), s)
+        #expect(sEncoded.count == 33)
+        #expect(sEncoded.first == 0x00)
+        #expect(sEncoded.dropFirst() == s)
     }
 
-    func testECDSAP256FormatSSHSignatureBlobRejectsInvalidLengths() {
+    @Test func testECDSAP256FormatSSHSignatureBlobRejectsInvalidLengths() {
         let signer = ECDSAP256KeySigner.shared
 
         let lengths = [0, 32, 63, 65, 128]
         for len in lengths {
             let buffer = Data(repeating: 0x55, count: len)
-            XCTAssertThrowsError(try signer.formatSSHSignatureBlob(rawSignature: buffer)) { error in
+            #expect {
+                try signer.formatSSHSignatureBlob(rawSignature: buffer)
+            } throws: { error in
                 guard case KeychainManagerError.invalidSignatureLength(let count) = error else {
-                    XCTFail("Expected invalidSignatureLength, got \(error)")
-                    return
+                    return false
                 }
-                XCTAssertEqual(count, len)
+                return count == len
             }
         }
     }
 
-    func testECDSAP256SignSSHProducesValidOpenSSHWireSignature() throws {
+    @Test func testECDSAP256SignSSHProducesValidOpenSSHWireSignature() throws {
         let provider = InMemorySecureEnclaveSigningProvider()
         let signer = ECDSAP256KeySigner.shared
         let accessControl = try PrivateKeyAccessControl.make(flags: [.privateKeyUsage])
@@ -362,213 +366,220 @@ final class KeySignerTests: ClavisBaseTestCase {
 
         var reader = DataReader(data: sigBlob)
         let keyType = reader.readWireString()
-        XCTAssertEqual(keyType, "ecdsa-sha2-nistp256")
+        #expect(keyType == "ecdsa-sha2-nistp256")
 
         let innerData = reader.readWireData()
-        XCTAssertNotNil(innerData)
-        XCTAssertTrue(reader.isEOF)
+        #expect(innerData != nil)
+        #expect(reader.isEOF)
     }
 
     // MARK: - 4. KeychainManager Integration & Strategy Dispatch
 
-    func testKeychainManagerUsesInjectedRegistry() throws {
-        let customRegistry = KeySignerRegistry()
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: InMemoryPrivateKeyStore(),
-            agentGrantRevoker: { _ in },
-            auditRecorder: InMemoryAuditRecorder(),
-            signingProvider: InMemorySecureEnclaveSigningProvider(),
-            signerRegistry: customRegistry
-        )
+    @Test func testKeychainManagerUsesInjectedRegistry() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let customRegistry = KeySignerRegistry()
+            let manager = fixture.makeKeyManager(
+                signerRegistry: customRegistry
+            )
 
-        XCTAssertTrue(manager.signerRegistry === customRegistry)
-    }
-
-    func testKeychainManagerStrategyDispatchToCustomKeySigner() throws {
-        let mockSigner = MockKeySigner()
-        let customRegistry = KeySignerRegistry()
-        customRegistry.register(mockSigner)
-
-        let provider = InMemorySecureEnclaveSigningProvider()
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: InMemoryPrivateKeyStore(),
-            agentGrantRevoker: { _ in },
-            auditRecorder: InMemoryAuditRecorder(),
-            signingProvider: provider,
-            signerRegistry: customRegistry
-        )
-
-        let keyInfo = try manager.generateKey(
-            label: "mock-dispatch-key",
-            algorithm: "ECDSA P-256",
-            storageType: .secureEnclave,
-            biometricPolicy: .userPresence,
-            keyPurpose: .general
-        )
-
-        XCTAssertTrue(mockSigner.generateKeyPairCalled, "generateKey must dispatch to registered KeySigner")
-        XCTAssertEqual(keyInfo.publicKeyBlob, Data("mock-public-blob".utf8))
-
-        let payload = Data("challenge-data".utf8)
-        let signature = try manager.signSSH(
-            key: keyInfo,
-            data: payload,
-            prompt: "Sign",
-            useCache: false
-        )
-        XCTAssertTrue(mockSigner.verifyPublicKeyCalled, "verifyPublicKey must dispatch to registered KeySigner")
-        XCTAssertTrue(mockSigner.signSSHCalled, "signSSH must dispatch to registered KeySigner")
-
-        var reader = DataReader(data: signature)
-        XCTAssertEqual(reader.readWireString(), "mock-key-type")
-        XCTAssertEqual(reader.readWireData(), Data("mock-signature".utf8))
-    }
-
-    func testKeychainManagerSignSSHDispatchesThroughSigner() throws {
-        let provider = InMemorySecureEnclaveSigningProvider()
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: InMemoryPrivateKeyStore(),
-            agentGrantRevoker: { _ in },
-            auditRecorder: InMemoryAuditRecorder(),
-            signingProvider: provider
-        )
-
-        let keyInfo = try manager.generateKey(
-            label: "dispatch-sign-key",
-            algorithm: "ECDSA P-256",
-            storageType: .secureEnclave,
-            biometricPolicy: .userPresence,
-            keyPurpose: .general
-        )
-
-        let payload = Data("ssh-agent-challenge".utf8)
-        let signature = try manager.signSSH(
-            key: keyInfo,
-            data: payload,
-            prompt: "Sign SSH challenge",
-            useCache: false
-        )
-
-        var reader = DataReader(data: signature)
-        XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
-        XCTAssertNotNil(reader.readWireData())
-        XCTAssertTrue(reader.isEOF)
-    }
-
-    func testKeychainManagerAuthorizeGitSigningGrantDispatchesThroughSigner() throws {
-        let provider = InMemorySecureEnclaveSigningProvider()
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: InMemoryPrivateKeyStore(),
-            agentGrantRevoker: { _ in },
-            auditRecorder: InMemoryAuditRecorder(),
-            signingProvider: provider
-        )
-
-        let keyInfo = try manager.generateKey(
-            label: "dispatch-git-key",
-            algorithm: "ECDSA P-256",
-            storageType: .secureEnclave,
-            biometricPolicy: .userPresence,
-            keyPurpose: .gitSigningOnly
-        )
-
-        let grant = try manager.authorizeGitSigningGrant(
-            key: keyInfo,
-            prompt: "Authorize Git signing",
-            clientIdentity: "git-test"
-        )
-
-        let payload = Data("commit-payload-data".utf8)
-        let signature = try grant.sign(payload)
-
-        var reader = DataReader(data: signature)
-        XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
-        XCTAssertNotNil(reader.readWireData())
-        XCTAssertTrue(reader.isEOF)
-    }
-
-    func testKeychainManagerAuthorizeAgentSessionDispatchesThroughSigner() throws {
-        let provider = InMemorySecureEnclaveSigningProvider()
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: InMemoryPrivateKeyStore(),
-            agentGrantRevoker: { _ in },
-            auditRecorder: InMemoryAuditRecorder(),
-            signingProvider: provider
-        )
-
-        let keyInfo = try manager.generateKey(
-            label: "dispatch-agent-key",
-            algorithm: "ECDSA P-256",
-            storageType: .secureEnclave,
-            biometricPolicy: .userPresence,
-            keyPurpose: .agent
-        )
-
-        let grant = try manager.authorizeAgentSession(
-            key: keyInfo,
-            prompt: "Authorize agent session"
-        )
-
-        let payload = Data("agent-session-challenge".utf8)
-        let signature = try grant.sign(payload)
-
-        var reader = DataReader(data: signature)
-        XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
-        XCTAssertNotNil(reader.readWireData())
-        XCTAssertTrue(reader.isEOF)
-    }
-
-    func testKeychainManagerDerivePublicKeyBlobInstanceAndStatic() throws {
-        let provider = InMemorySecureEnclaveSigningProvider()
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: InMemoryPrivateKeyStore(),
-            agentGrantRevoker: { _ in },
-            auditRecorder: InMemoryAuditRecorder(),
-            signingProvider: provider
-        )
-
-        let keyInfo = try manager.generateKey(label: "derive-both-key")
-        let accessControl = try PrivateKeyAccessControl.make(flags: [.privateKeyUsage])
-        let (keyData, _) = try provider.generateKey(accessControl: accessControl)
-
-        var record = StoredPrivateKeyRecord(
-            label: keyInfo.label,
-            algorithm: .ecdsaP256,
-            storageType: .secureEnclave,
-            biometricPolicy: .userPresence,
-            keyPurpose: .general,
-            keyData: keyData
-        )
-        defer { record.wipe() }
-
-        let instanceBlob = try manager.derivePublicKeyBlob(record: record)
-        let staticBlob = try KeychainManager.derivePublicKeyBlob(record: record, provider: provider)
-        XCTAssertEqual(instanceBlob, staticBlob)
-    }
-
-    func testKeychainManagerFailsClosedOnUnsupportedAlgorithm() {
-        let manager = makeKeyManager()
-        XCTAssertThrowsError(try manager.generateKey(
-            label: "unsupported-key",
-            algorithm: "Ed25519",
-            storageType: .secureEnclave
-        )) { error in
-            guard case KeychainManagerError.unsupportedConfiguration(let algo, let storage) = error else {
-                XCTFail("Expected unsupportedConfiguration error, got \(error)")
-                return
-            }
-            XCTAssertEqual(algo, "Ed25519")
-            XCTAssertEqual(storage, KeyStorageType.secureEnclave.rawValue)
+            #expect(manager.signerRegistry === customRegistry)
         }
     }
 
-    func testKeychainManagerStaticFormatECDSASignatureBlobForwarding() throws {
+    @Test func testKeychainManagerStrategyDispatchToCustomKeySigner() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let mockSigner = MockKeySigner()
+            let customRegistry = KeySignerRegistry()
+            customRegistry.register(mockSigner)
+
+            let provider = InMemorySecureEnclaveSigningProvider()
+            let manager = fixture.makeKeyManager(
+                signingProvider: provider,
+                signerRegistry: customRegistry
+            )
+
+            let keyInfo = try manager.generateKey(
+                label: "mock-dispatch-key",
+                algorithm: "ECDSA P-256",
+                storageType: .secureEnclave,
+                biometricPolicy: .userPresence,
+                keyPurpose: .general
+            )
+
+            #expect(mockSigner.generateKeyPairCalled, "generateKey must dispatch to registered KeySigner")
+            #expect(keyInfo.publicKeyBlob == Data("mock-public-blob".utf8))
+
+            let payload = Data("challenge-data".utf8)
+            let signature = try manager.signSSH(
+                key: keyInfo,
+                data: payload,
+                prompt: "Sign",
+                useCache: false
+            )
+            #expect(mockSigner.verifyPublicKeyCalled, "verifyPublicKey must dispatch to registered KeySigner")
+            #expect(mockSigner.signSSHCalled, "signSSH must dispatch to registered KeySigner")
+
+            var reader = DataReader(data: signature)
+            #expect(reader.readWireString() == "mock-key-type")
+            let wireSig = reader.readWireData()
+            #expect(wireSig == Data("mock-signature".utf8))
+        }
+    }
+
+    @Test func testKeychainManagerSignSSHDispatchesThroughSigner() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let provider = InMemorySecureEnclaveSigningProvider()
+            let manager = fixture.makeKeyManager(
+                signingProvider: provider
+            )
+
+            let keyInfo = try manager.generateKey(
+                label: "dispatch-sign-key",
+                algorithm: "ECDSA P-256",
+                storageType: .secureEnclave,
+                biometricPolicy: .userPresence,
+                keyPurpose: .general
+            )
+
+            let payload = Data("ssh-agent-challenge".utf8)
+            let signature = try manager.signSSH(
+                key: keyInfo,
+                data: payload,
+                prompt: "Sign SSH challenge",
+                useCache: false
+            )
+
+            var reader = DataReader(data: signature)
+            #expect(reader.readWireString() == "ecdsa-sha2-nistp256")
+            let wireData = reader.readWireData()
+            #expect(wireData != nil)
+            #expect(reader.isEOF)
+        }
+    }
+
+    @Test func testKeychainManagerAuthorizeGitSigningGrantDispatchesThroughSigner() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let provider = InMemorySecureEnclaveSigningProvider()
+            let manager = fixture.makeKeyManager(
+                signingProvider: provider
+            )
+
+            let keyInfo = try manager.generateKey(
+                label: "dispatch-git-key",
+                algorithm: "ECDSA P-256",
+                storageType: .secureEnclave,
+                biometricPolicy: .userPresence,
+                keyPurpose: .gitSigningOnly
+            )
+
+            let grant = try manager.authorizeGitSigningGrant(
+                key: keyInfo,
+                prompt: "Authorize Git signing",
+                clientIdentity: "git-test"
+            )
+
+            let payload = Data("commit-payload-data".utf8)
+            let signature = try grant.sign(payload)
+
+            var reader = DataReader(data: signature)
+            #expect(reader.readWireString() == "ecdsa-sha2-nistp256")
+            let wireData = reader.readWireData()
+            #expect(wireData != nil)
+            #expect(reader.isEOF)
+        }
+    }
+
+    @Test func testKeychainManagerAuthorizeAgentSessionDispatchesThroughSigner() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let provider = InMemorySecureEnclaveSigningProvider()
+            let manager = fixture.makeKeyManager(
+                signingProvider: provider
+            )
+
+            let keyInfo = try manager.generateKey(
+                label: "dispatch-agent-key",
+                algorithm: "ECDSA P-256",
+                storageType: .secureEnclave,
+                biometricPolicy: .userPresence,
+                keyPurpose: .agent
+            )
+
+            let grant = try manager.authorizeAgentSession(
+                key: keyInfo,
+                prompt: "Authorize agent session"
+            )
+
+            let payload = Data("agent-session-challenge".utf8)
+            let signature = try grant.sign(payload)
+
+            var reader = DataReader(data: signature)
+            #expect(reader.readWireString() == "ecdsa-sha2-nistp256")
+            let wireData = reader.readWireData()
+            #expect(wireData != nil)
+            #expect(reader.isEOF)
+        }
+    }
+
+    @Test func testKeychainManagerDerivePublicKeyBlobInstanceAndStatic() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let provider = InMemorySecureEnclaveSigningProvider()
+            let manager = fixture.makeKeyManager(
+                signingProvider: provider
+            )
+
+            let keyInfo = try manager.generateKey(label: "derive-both-key")
+            let accessControl = try PrivateKeyAccessControl.make(flags: [.privateKeyUsage])
+            let (keyData, _) = try provider.generateKey(accessControl: accessControl)
+
+            var record = StoredPrivateKeyRecord(
+                label: keyInfo.label,
+                algorithm: .ecdsaP256,
+                storageType: .secureEnclave,
+                biometricPolicy: .userPresence,
+                keyPurpose: .general,
+                keyData: keyData
+            )
+            defer { record.wipe() }
+
+            let instanceBlob = try manager.derivePublicKeyBlob(record: record)
+            let staticBlob = try KeychainManager.derivePublicKeyBlob(record: record, provider: provider)
+            #expect(instanceBlob == staticBlob)
+        }
+    }
+
+    @Test func testKeychainManagerFailsClosedOnUnsupportedAlgorithm() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let manager = fixture.makeKeyManager()
+            #expect {
+                try manager.generateKey(
+                    label: "unsupported-key",
+                    algorithm: "Ed25519",
+                    storageType: .secureEnclave
+                )
+            } throws: { error in
+                guard case KeychainManagerError.unsupportedConfiguration(let algo, let storage) = error else {
+                    return false
+                }
+                return algo == "Ed25519" && storage == KeyStorageType.secureEnclave.rawValue
+            }
+        }
+    }
+
+    @Test func testKeychainManagerStaticFormatECDSASignatureBlobForwarding() throws {
         let p256Key = P256.Signing.PrivateKey()
         let testData = Data("forwarding-test-data".utf8)
         let sig = try p256Key.signature(for: testData)
@@ -576,6 +587,6 @@ final class KeySignerTests: ClavisBaseTestCase {
         let managerFormatted = KeychainManager.formatECDSASignatureBlob(sig)
         let signerFormatted = try ECDSAP256KeySigner.shared.formatSSHSignatureBlob(rawSignature: sig.rawRepresentation)
 
-        XCTAssertEqual(managerFormatted, signerFormatted)
+        #expect(managerFormatted == signerFormatted)
     }
 }

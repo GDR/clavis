@@ -1,8 +1,9 @@
-import XCTest
+import Testing
+import Foundation
 import LocalAuthentication
 @testable import ClavisCore
 
-final class KeyLifecycleAuditTests: ClavisBaseTestCase {
+@Suite struct KeyLifecycleAuditTests {
 
     private struct RejectingAuthenticator: UserAuthenticating {
         func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) throws -> LAContext {
@@ -14,70 +15,88 @@ final class KeyLifecycleAuditTests: ClavisBaseTestCase {
         }
     }
 
-    func test_002_T5_generateRecordsKeyCreate() throws {
-        let recorder = InMemoryAuditRecorder()
-        let keyManager = makeKeyManager(auditRecorder: recorder)
+    @Test func test_002_T5_generateRecordsKeyCreate() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let recorder = InMemoryAuditRecorder()
+            let keyManager = fixture.makeKeyManager(auditRecorder: recorder)
 
-        let keyInfo = try keyManager.generateKey(label: "create-key")
+            let keyInfo = try keyManager.generateKey(label: "create-key")
 
-        XCTAssertEqual(recorder.events.count, 1)
-        let event = recorder.events[0]
-        XCTAssertEqual(event.type, .keyCreate)
-        XCTAssertEqual(event.result, .allowed)
-        XCTAssertNil(event.reason)
-        XCTAssertEqual(event.keyFingerprint, keyInfo.fingerprint)
-        XCTAssertEqual(event.sensitive.keyLabel, "create-key")
+            #expect(recorder.events.count == 1)
+            let event = recorder.events[0]
+            #expect(event.type == .keyCreate)
+            #expect(event.result == .allowed)
+            #expect(event.reason == nil)
+            #expect(event.keyFingerprint == keyInfo.fingerprint)
+            #expect(event.sensitive.keyLabel == "create-key")
+        }
     }
 
-    func test_002_T5_deleteRecordsKeyDeleteWithFingerprint() throws {
-        let recorder = InMemoryAuditRecorder()
-        let keyManager = makeKeyManager(auditRecorder: recorder)
+    @Test func test_002_T5_deleteRecordsKeyDeleteWithFingerprint() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let recorder = InMemoryAuditRecorder()
+            let keyManager = fixture.makeKeyManager(auditRecorder: recorder)
 
-        let keyInfo = try keyManager.generateKey(label: "delete-key")
-        try keyManager.deleteKey(label: "delete-key")
+            let keyInfo = try keyManager.generateKey(label: "delete-key")
+            try keyManager.deleteKey(label: "delete-key")
 
-        let deleteEvents = recorder.events.filter { $0.type == .keyDelete }
-        XCTAssertEqual(deleteEvents.count, 1)
-        let event = deleteEvents[0]
-        XCTAssertEqual(event.result, .allowed)
-        XCTAssertNil(event.reason)
-        XCTAssertEqual(event.keyFingerprint, keyInfo.fingerprint)
-        XCTAssertEqual(event.sensitive.keyLabel, "delete-key")
+            let deleteEvents = recorder.events.filter { $0.type == .keyDelete }
+            #expect(deleteEvents.count == 1)
+            let event = deleteEvents[0]
+            #expect(event.result == .allowed)
+            #expect(event.reason == nil)
+            #expect(event.keyFingerprint == keyInfo.fingerprint)
+            #expect(event.sensitive.keyLabel == "delete-key")
+        }
     }
 
-    func test_002_T5_deleteAuthFailureRecordsDenied() throws {
-        let recorder = InMemoryAuditRecorder()
-        let keyManager = makeKeyManager(authenticator: RejectingAuthenticator(), auditRecorder: recorder)
+    @Test func test_002_T5_deleteAuthFailureRecordsDenied() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let recorder = InMemoryAuditRecorder()
+            let keyManager = fixture.makeKeyManager(authenticator: RejectingAuthenticator(), auditRecorder: recorder)
 
-        let keyInfo = try keyManager.generateKey(label: "fail-delete-key")
-        XCTAssertThrowsError(try keyManager.deleteKey(label: "fail-delete-key"))
+            let keyInfo = try keyManager.generateKey(label: "fail-delete-key")
+            #expect(throws: (any Error).self) {
+                try keyManager.deleteKey(label: "fail-delete-key")
+            }
 
-        let deleteEvents = recorder.events.filter { $0.type == .keyDelete }
-        XCTAssertEqual(deleteEvents.count, 1)
-        let event = deleteEvents[0]
-        XCTAssertEqual(event.result, .denied)
-        XCTAssertEqual(event.reason, .authenticationFailed)
-        XCTAssertEqual(event.keyFingerprint, keyInfo.fingerprint)
-        XCTAssertEqual(event.sensitive.keyLabel, "fail-delete-key")
+            let deleteEvents = recorder.events.filter { $0.type == .keyDelete }
+            #expect(deleteEvents.count == 1)
+            let event = deleteEvents[0]
+            #expect(event.result == .denied)
+            #expect(event.reason == .authenticationFailed)
+            #expect(event.keyFingerprint == keyInfo.fingerprint)
+            #expect(event.sensitive.keyLabel == "fail-delete-key")
+        }
     }
 
-    func test_002_T5_lockAllRecordsLock() throws {
-        let recorder = InMemoryAuditRecorder()
-        let server = SSHAgentServer(
-            keyManager: makeKeyManager(),
-            auditRecorder: recorder
-        )
+    @Test func test_002_T5_lockAllRecordsLock() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let recorder = InMemoryAuditRecorder()
+            let server = SSHAgentServer(
+                keyManager: fixture.makeKeyManager(),
+                auditRecorder: recorder
+            )
 
-        let response = server.processAgentRequest(
-            payload: Data([SSHAgentServer.lockAllRequest]),
-            isTrustedControlPeer: { true }
-        )
+            let response = server.processAgentRequest(
+                payload: Data([SSHAgentServer.lockAllRequest]),
+                isTrustedControlPeer: { true }
+            )
 
-        XCTAssertEqual(response, Data([6]))
-        XCTAssertEqual(recorder.events.count, 1)
-        let event = recorder.events[0]
-        XCTAssertEqual(event.type, .lock)
-        XCTAssertEqual(event.result, .info)
-        XCTAssertEqual(event.reason, .lockNow)
+            #expect(response == Data([6]))
+            #expect(recorder.events.count == 1)
+            let event = recorder.events[0]
+            #expect(event.type == .lock)
+            #expect(event.result == .info)
+            #expect(event.reason == .lockNow)
+        }
     }
 }

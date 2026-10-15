@@ -1,24 +1,17 @@
+import Testing
+import Foundation
 import SQLite3
-import XCTest
 @testable import ClavisCore
 
-final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
-    private var testDirURL: URL!
-    private var dbURL: URL!
+@Suite struct AuditIntegrityCheckerTests {
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
-        testDirURL = testRootURL.appendingPathComponent("checker-test-\(UUID().uuidString)", isDirectory: true)
+    private func makeTestDB(fixture: ClavisTestFixture) throws -> URL {
+        let testDirURL = fixture.testRootURL.appendingPathComponent("checker-test-\(UUID().uuidString)", isDirectory: true)
         try SecureFS.createDirectory(at: testDirURL)
-        dbURL = testDirURL.appendingPathComponent("audit.db")
+        return testDirURL.appendingPathComponent("audit.db")
     }
 
-    override func tearDownWithError() throws {
-        try? FileManager.default.removeItem(at: testDirURL)
-        try super.tearDownWithError()
-    }
-
-    private func executeSQL(_ sql: String) throws {
+    private func executeSQL(_ sql: String, dbURL: URL) throws {
         var db: OpaquePointer?
         guard sqlite3_open(dbURL.path, &db) == SQLITE_OK else {
             throw AuditStoreError.openFailed(sqlite3_errcode(db))
@@ -29,7 +22,11 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         }
     }
 
-    func test_007_AC1_intactHistoryIsOK() throws {
+    @Test func test_007_AC1_intactHistoryIsOK() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
@@ -76,16 +73,20 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
             days: 7
         )
 
-        XCTAssertEqual(report.status, .ok)
-        XCTAssertTrue(report.missingRows.isEmpty)
-        XCTAssertTrue(report.inconsistentRows.isEmpty)
-        XCTAssertTrue(report.unwitnessedRows.isEmpty)
-        XCTAssertFalse(report.truncatedTail)
-        XCTAssertTrue(report.gapsOutsideWindow.isEmpty)
-        XCTAssertEqual(report.checkedRows, 5)
+        #expect(report.status == .ok)
+        #expect(report.missingRows.isEmpty)
+        #expect(report.inconsistentRows.isEmpty)
+        #expect(report.unwitnessedRows.isEmpty)
+        #expect(!report.truncatedTail)
+        #expect(report.gapsOutsideWindow.isEmpty)
+        #expect(report.checkedRows == 5)
     }
 
-    func test_007_AC2_deletedRowIsReportedWithTime() throws {
+    @Test func test_007_AC2_deletedRowIsReportedWithTime() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
@@ -127,7 +128,7 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         }
 
         // Delete row 3 via C API
-        try executeSQL("DELETE FROM events WHERE seq = 3;")
+        try executeSQL("DELETE FROM events WHERE seq = 3;", dbURL: dbURL)
 
         let report = try AuditIntegrityChecker.check(
             store: store,
@@ -136,14 +137,18 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
             days: 7
         )
 
-        XCTAssertEqual(report.status, .problems)
-        XCTAssertEqual(report.missingRows.count, 1)
-        XCTAssertEqual(report.missingRows[0].seq, 3)
-        XCTAssertEqual(report.missingRows[0].loggedAt, loggedTime)
-        XCTAssertTrue(report.inconsistentRows.isEmpty)
+        #expect(report.status == .problems)
+        #expect(report.missingRows.count == 1)
+        #expect(report.missingRows[0].seq == 3)
+        #expect(report.missingRows[0].loggedAt == loggedTime)
+        #expect(report.inconsistentRows.isEmpty)
     }
 
-    func test_007_AC3_alteredRowIsInconsistent() throws {
+    @Test func test_007_AC3_alteredRowIsInconsistent() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
@@ -184,7 +189,7 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         }
 
         // Alter row 2 result to denied
-        try executeSQL("UPDATE events SET result = 'denied' WHERE seq = 2;")
+        try executeSQL("UPDATE events SET result = 'denied' WHERE seq = 2;", dbURL: dbURL)
 
         let report = try AuditIntegrityChecker.check(
             store: store,
@@ -193,12 +198,16 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
             days: 7
         )
 
-        XCTAssertEqual(report.status, .problems)
-        XCTAssertEqual(report.inconsistentRows, [2])
-        XCTAssertTrue(report.missingRows.isEmpty)
+        #expect(report.status == .problems)
+        #expect(report.inconsistentRows == [2])
+        #expect(report.missingRows.isEmpty)
     }
 
-    func test_007_AC3_alteredSealedBlobIsInconsistent() throws {
+    @Test func test_007_AC3_alteredSealedBlobIsInconsistent() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
@@ -236,7 +245,7 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         )
 
         // Alter the sealed sensitive blob in the database
-        try executeSQL("UPDATE events SET sensitive = X'ffee1122' WHERE seq = \(seq);")
+        try executeSQL("UPDATE events SET sensitive = X'ffee1122' WHERE seq = \(seq);", dbURL: dbURL)
 
         let report = try AuditIntegrityChecker.check(
             store: store,
@@ -245,12 +254,16 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
             days: 7
         )
 
-        XCTAssertEqual(report.status, .problems)
-        XCTAssertEqual(report.inconsistentRows, [seq])
-        XCTAssertTrue(report.missingRows.isEmpty)
+        #expect(report.status == .problems)
+        #expect(report.inconsistentRows == [seq])
+        #expect(report.missingRows.isEmpty)
     }
 
-    func test_007_T3_tailTruncationDetected() throws {
+    @Test func test_007_T3_tailTruncationDetected() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
@@ -300,12 +313,16 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
             days: 7
         )
 
-        XCTAssertEqual(report.status, .problems)
-        XCTAssertTrue(report.truncatedTail)
-        XCTAssertEqual(report.missingRows.map(\.seq), [4, 5])
+        #expect(report.status == .problems)
+        #expect(report.truncatedTail)
+        #expect(report.missingRows.map(\.seq) == [4, 5])
     }
 
-    func test_007_T3_prunedRowsAreIgnored() throws {
+    @Test func test_007_T3_prunedRowsAreIgnored() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
@@ -349,8 +366,8 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
 
         // Prune rows older than cutoff (deletes rows 1..10, sets pruned_through_seq to 10)
         let prunedCount = try store.prune(olderThan: now.addingTimeInterval(-700_000), maxRows: 100)
-        XCTAssertEqual(prunedCount, 10)
-        XCTAssertEqual(try store.meta("pruned_through_seq"), "10")
+        #expect(prunedCount == 10)
+        #expect(try store.meta("pruned_through_seq") == "10")
 
         let report = try AuditIntegrityChecker.check(
             store: store,
@@ -359,13 +376,17 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
             days: 7
         )
 
-        XCTAssertEqual(report.status, .ok)
-        XCTAssertTrue(report.missingRows.isEmpty)
-        XCTAssertTrue(report.inconsistentRows.isEmpty)
-        XCTAssertFalse(report.truncatedTail)
+        #expect(report.status == .ok)
+        #expect(report.missingRows.isEmpty)
+        #expect(report.inconsistentRows.isEmpty)
+        #expect(!report.truncatedTail)
     }
 
-    func test_007_T3_unwitnessedIsWarningOnly() throws {
+    @Test func test_007_T3_unwitnessedIsWarningOnly() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
@@ -415,13 +436,17 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         )
 
         // Status is still .ok because unwitnessed is warning-only
-        XCTAssertEqual(report.status, .ok)
-        XCTAssertEqual(report.unwitnessedRows, [5])
-        XCTAssertTrue(report.missingRows.isEmpty)
-        XCTAssertTrue(report.inconsistentRows.isEmpty)
+        #expect(report.status == .ok)
+        #expect(report.unwitnessedRows == [5])
+        #expect(report.missingRows.isEmpty)
+        #expect(report.inconsistentRows.isEmpty)
     }
 
-    func test_007_T3_unavailableWitnessIsNotOK() throws {
+    @Test func test_007_T3_unavailableWitnessIsNotOK() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
@@ -432,50 +457,64 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
             days: 7
         )
 
-        XCTAssertEqual(report.status, .unavailable("log show failed"))
+        #expect(report.status == .unavailable("log show failed"))
     }
 
-    func test_007_T4_parseHistoryCheckArgs() throws {
+    @Test func test_007_T4_parseHistoryCheckArgs() throws {
         // Defaults
         let defaultArgs = try CLIService.parseHistoryCheckArgs(["history", "check"])
-        XCTAssertEqual(defaultArgs, HistoryCheckArgs(days: 7, dbPath: nil))
+        #expect(defaultArgs == HistoryCheckArgs(days: 7, dbPath: nil))
 
         let fullArgv = try CLIService.parseHistoryCheckArgs(["clavis", "history", "check"])
-        XCTAssertEqual(fullArgv, HistoryCheckArgs(days: 7, dbPath: nil))
+        #expect(fullArgv == HistoryCheckArgs(days: 7, dbPath: nil))
 
         // Custom days
         let customDays = try CLIService.parseHistoryCheckArgs(["history", "check", "--days", "14"])
-        XCTAssertEqual(customDays, HistoryCheckArgs(days: 14, dbPath: nil))
+        #expect(customDays == HistoryCheckArgs(days: 14, dbPath: nil))
 
         // Custom db
         let customDb = try CLIService.parseHistoryCheckArgs(["history", "check", "--db", "/tmp/copy.db"])
-        XCTAssertEqual(customDb, HistoryCheckArgs(days: 7, dbPath: "/tmp/copy.db"))
+        #expect(customDb == HistoryCheckArgs(days: 7, dbPath: "/tmp/copy.db"))
 
         // Both in either order
         let both1 = try CLIService.parseHistoryCheckArgs(["clavis", "history", "check", "--days", "30", "--db", "/tmp/audit.db"])
-        XCTAssertEqual(both1, HistoryCheckArgs(days: 30, dbPath: "/tmp/audit.db"))
+        #expect(both1 == HistoryCheckArgs(days: 30, dbPath: "/tmp/audit.db"))
 
         let both2 = try CLIService.parseHistoryCheckArgs(["history", "check", "--db", "/tmp/audit.db", "--days", "1"])
-        XCTAssertEqual(both2, HistoryCheckArgs(days: 1, dbPath: "/tmp/audit.db"))
+        #expect(both2 == HistoryCheckArgs(days: 1, dbPath: "/tmp/audit.db"))
 
         // Errors: invalid days (> 30, <= 0, non-int)
-        XCTAssertThrowsError(try CLIService.parseHistoryCheckArgs(["history", "check", "--days", "31"]))
-        XCTAssertThrowsError(try CLIService.parseHistoryCheckArgs(["history", "check", "--days", "0"]))
-        XCTAssertThrowsError(try CLIService.parseHistoryCheckArgs(["history", "check", "--days", "-5"]))
-        XCTAssertThrowsError(try CLIService.parseHistoryCheckArgs(["history", "check", "--days", "seven"]))
+        #expect(throws: (any Error).self) {
+            try CLIService.parseHistoryCheckArgs(["history", "check", "--days", "31"])
+        }
+        #expect(throws: (any Error).self) {
+            try CLIService.parseHistoryCheckArgs(["history", "check", "--days", "0"])
+        }
+        #expect(throws: (any Error).self) {
+            try CLIService.parseHistoryCheckArgs(["history", "check", "--days", "-5"])
+        }
+        #expect(throws: (any Error).self) {
+            try CLIService.parseHistoryCheckArgs(["history", "check", "--days", "seven"])
+        }
 
         // Errors: missing argument values
-        XCTAssertThrowsError(try CLIService.parseHistoryCheckArgs(["history", "check", "--days"]))
-        XCTAssertThrowsError(try CLIService.parseHistoryCheckArgs(["history", "check", "--db"]))
+        #expect(throws: (any Error).self) {
+            try CLIService.parseHistoryCheckArgs(["history", "check", "--days"])
+        }
+        #expect(throws: (any Error).self) {
+            try CLIService.parseHistoryCheckArgs(["history", "check", "--db"])
+        }
 
         // Errors: unknown argument
-        XCTAssertThrowsError(try CLIService.parseHistoryCheckArgs(["history", "check", "--unknown"]))
+        #expect(throws: (any Error).self) {
+            try CLIService.parseHistoryCheckArgs(["history", "check", "--unknown"])
+        }
 
         // Test format report exit codes
         let okReport = AuditIntegrityReport(status: .ok, checkedFrom: Date(), checkedRows: 10)
         let (okOut, okCode) = CLIService.formatHistoryCheckReport(okReport)
-        XCTAssertEqual(okCode, 0)
-        XCTAssertTrue(okOut.contains("History integrity check: OK"))
+        #expect(okCode == 0)
+        #expect(okOut.contains("History integrity check: OK"))
 
         let probReport = AuditIntegrityReport(
             status: .problems,
@@ -486,23 +525,27 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
             checkedRows: 10
         )
         let (probOut, probCode) = CLIService.formatHistoryCheckReport(probReport)
-        XCTAssertEqual(probCode, 2)
-        XCTAssertTrue(probOut.contains("PROBLEMS DETECTED"))
-        XCTAssertTrue(probOut.contains("Missing: seq 3"))
-        XCTAssertTrue(probOut.contains("Inconsistent: seq 4"))
-        XCTAssertTrue(probOut.contains("Truncated tail"))
+        #expect(probCode == 2)
+        #expect(probOut.contains("PROBLEMS DETECTED"))
+        #expect(probOut.contains("Missing: seq 3"))
+        #expect(probOut.contains("Inconsistent: seq 4"))
+        #expect(probOut.contains("Truncated tail"))
 
         let unavailReport = AuditIntegrityReport(status: .unavailable("log show failed"), checkedFrom: Date())
         let (unavailOut, unavailCode) = CLIService.formatHistoryCheckReport(unavailReport)
-        XCTAssertEqual(unavailCode, 1)
-        XCTAssertTrue(unavailOut.contains("UNAVAILABLE"))
+        #expect(unavailCode == 1)
+        #expect(unavailOut.contains("UNAVAILABLE"))
     }
 
-    func test_007_T4_readOnlyAuditStore() throws {
+    @Test func test_007_T4_readOnlyAuditStore() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         // Create store normally
         let store = try AuditStore(url: dbURL)
         let event = AuditEvent(type: .signature, result: .allowed)
-        try store.insert(event)
+        _ = try store.insert(event)
         store.close()
 
         // Open read-only
@@ -510,11 +553,15 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         defer { roStore.close() }
 
         let records = try roStore.records(fromSeq: 1)
-        XCTAssertEqual(records.count, 1)
-        XCTAssertEqual(records[0].seq, 1)
+        #expect(records.count == 1)
+        #expect(records[0].seq == 1)
     }
 
-    func test_F08_prunedThroughSeqCannotHideMissingRowsWithinCheckWindow() throws {
+    @Test func test_F08_prunedThroughSeqCannotHideMissingRowsWithinCheckWindow() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
@@ -555,10 +602,10 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         }
 
         // Delete row 3 from the database (simulating tampering)
-        try executeSQL("DELETE FROM events WHERE seq = 3;")
+        try executeSQL("DELETE FROM events WHERE seq = 3;", dbURL: dbURL)
 
         // Artificially update meta.pruned_through_seq to 3 to conceal the deletion
-        try executeSQL("INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '3');")
+        try executeSQL("INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '3');", dbURL: dbURL)
 
         let report = try AuditIntegrityChecker.check(
             store: store,
@@ -567,21 +614,24 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
             days: 7
         )
 
-        // The check must detect row 3 as missing because its witness timestamp falls within the 7-day check window,
-        // despite meta.pruned_through_seq claiming row 3 was pruned.
-        XCTAssertEqual(report.status, .problems)
-        XCTAssertEqual(report.missingRows.count, 1)
-        XCTAssertEqual(report.missingRows.first?.seq, 3)
+        // The check must detect row 3 as missing because its witness timestamp falls within the 7-day check window
+        #expect(report.status == .problems)
+        #expect(report.missingRows.count == 1)
+        #expect(report.missingRows.first?.seq == 3)
     }
 
-    func test_F08_prunedThroughSeqInt64MaxDoesNotCrash() throws {
+    @Test func test_F08_prunedThroughSeqInt64MaxDoesNotCrash() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
         let now = Date()
         let event = AuditEvent(time: now, type: .signature, result: .allowed, keyFingerprint: "SHA256:key1")
         let seq = try store.insert(event)
-        let record = (try store.records(fromSeq: seq)).first!
+        let record = try #require((try store.records(fromSeq: seq)).first)
         let digest = AuditWitness.digest(for: record)
         let witness = AuditWitnessEntry(
             seq: seq,
@@ -594,7 +644,7 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         )
 
         // Set pruned_through_seq to Int64.max to test integer overflow boundary condition
-        try executeSQL("INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '\(Int64.max)');")
+        try executeSQL("INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '\(Int64.max)');", dbURL: dbURL)
 
         // Must not trap / crash with SIGTRAP on integer overflow
         let report = try AuditIntegrityChecker.check(
@@ -604,19 +654,23 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
             days: 7
         )
 
-        XCTAssertEqual(report.status, AuditIntegrityReport.Status.ok)
-        XCTAssertFalse(report.truncatedTail)
-        XCTAssertTrue(report.missingRows.isEmpty)
+        #expect(report.status == AuditIntegrityReport.Status.ok)
+        #expect(!report.truncatedTail)
+        #expect(report.missingRows.isEmpty)
     }
 
-    func test_F08_negativePrunedThroughSeqDoesNotGenerateSpuriousGaps() throws {
+    @Test func test_F08_negativePrunedThroughSeqDoesNotGenerateSpuriousGaps() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
         let now = Date()
         let event = AuditEvent(time: now, type: .signature, result: .allowed, keyFingerprint: "SHA256:key1")
         let seq = try store.insert(event)
-        let record = (try store.records(fromSeq: seq)).first!
+        let record = try #require((try store.records(fromSeq: seq)).first)
         let digest = AuditWitness.digest(for: record)
         let witness = AuditWitnessEntry(
             seq: seq,
@@ -629,7 +683,7 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         )
 
         // Set negative pruned_through_seq
-        try executeSQL("INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '-1');")
+        try executeSQL("INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '-1');", dbURL: dbURL)
 
         let report = try AuditIntegrityChecker.check(
             store: store,
@@ -638,11 +692,15 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
             days: 7
         )
 
-        XCTAssertEqual(report.status, AuditIntegrityReport.Status.ok)
-        XCTAssertTrue(report.gapsOutsideWindow.isEmpty, "Spurious gaps generated: \(report.gapsOutsideWindow)")
+        #expect(report.status == AuditIntegrityReport.Status.ok)
+        #expect(report.gapsOutsideWindow.isEmpty, "Spurious gaps generated: \(report.gapsOutsideWindow)")
     }
 
-    func test_F08_legitimatePruningDoesNotTriggerTruncatedTail() throws {
+    @Test func test_F08_legitimatePruningDoesNotTriggerTruncatedTail() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
@@ -650,7 +708,7 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         let pastTime = now.addingTimeInterval(-800_000)
         let event = AuditEvent(time: pastTime, type: .signature, result: .allowed, keyFingerprint: "SHA256:key1")
         let seq = try store.insert(event)
-        let record = (try store.records(fromSeq: seq)).first!
+        let record = try #require((try store.records(fromSeq: seq)).first)
         let digest = AuditWitness.digest(for: record)
         let witness = AuditWitnessEntry(
             seq: seq,
@@ -663,8 +721,8 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         )
 
         // Legitimate pruning deletes row 1 and advances pruned_through_seq
-        try executeSQL("DELETE FROM events WHERE seq = 1;")
-        try executeSQL("INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '1');")
+        try executeSQL("DELETE FROM events WHERE seq = 1;", dbURL: dbURL)
+        try executeSQL("INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '1');", dbURL: dbURL)
 
         let report = try AuditIntegrityChecker.check(
             store: store,
@@ -674,12 +732,16 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         )
 
         // Should be .ok, truncatedTail should be false because seq 1 <= pruned
-        XCTAssertEqual(report.status, AuditIntegrityReport.Status.ok)
-        XCTAssertFalse(report.truncatedTail)
-        XCTAssertTrue(report.missingRows.isEmpty)
+        #expect(report.status == AuditIntegrityReport.Status.ok)
+        #expect(!report.truncatedTail)
+        #expect(report.missingRows.isEmpty)
     }
 
-    func test_F08_gapsOutsideWindowExpectedSeqDoesNotStartBelowOne() throws {
+    @Test func test_F08_gapsOutsideWindowExpectedSeqDoesNotStartBelowOne() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
@@ -688,9 +750,9 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
             let event = AuditEvent(time: now.addingTimeInterval(Double(i) * 10), type: .signature, result: .allowed, keyFingerprint: "SHA256:key\(i)")
             _ = try store.insert(event)
         }
-        try executeSQL("DELETE FROM events WHERE seq < 5;")
+        try executeSQL("DELETE FROM events WHERE seq < 5;", dbURL: dbURL)
 
-        let record = (try store.records(fromSeq: 5)).first!
+        let record = try #require((try store.records(fromSeq: 5)).first)
         let digest = AuditWitness.digest(for: record)
         let witness = AuditWitnessEntry(
             seq: 5,
@@ -703,7 +765,7 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
         )
 
         // Set negative pruned_through_seq
-        try executeSQL("INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '-5');")
+        try executeSQL("INSERT OR REPLACE INTO meta (key, value) VALUES ('pruned_through_seq', '-5');", dbURL: dbURL)
 
         let report = try AuditIntegrityChecker.check(
             store: store,
@@ -712,9 +774,9 @@ final class AuditIntegrityCheckerTests: ClavisBaseTestCase {
             days: 7
         )
 
-        XCTAssertFalse(report.gapsOutsideWindow.isEmpty)
+        #expect(!report.gapsOutsideWindow.isEmpty)
         for gap in report.gapsOutsideWindow {
-            XCTAssertGreaterThanOrEqual(gap.lowerBound, 1, "Gap lower bound cannot start below 1: \(gap)")
+            #expect(gap.lowerBound >= 1, "Gap lower bound cannot start below 1: \(gap)")
         }
     }
 }

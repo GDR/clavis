@@ -1,4 +1,5 @@
-import XCTest
+import Foundation
+import Testing
 import CryptoKit
 import LocalAuthentication
 @testable import ClavisCore
@@ -33,16 +34,16 @@ private final class FailingAuditKeyring: AuditKeyring, @unchecked Sendable {
     }
 }
 
-final class AuditSealingTests: ClavisBaseTestCase {
-    private var dbURL: URL {
-        testRootURL.appendingPathComponent("audit-sealing-test.db")
-    }
+@Suite struct AuditSealingTests {
+    @Test func test_008_AC4_recordingNeedsNoContextOrPrompt() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-sealing-test.db")
 
-    func test_008_AC4_recordingNeedsNoContextOrPrompt() throws {
         let keyring = SoftwareAuditKeyring(requireContext: true)
         let sealer = AuditSealer(keyring: keyring)
         let recorder = AuditRecorder(
-            storeFactory: { try AuditStore(url: self.dbURL) },
+            storeFactory: { try AuditStore(url: dbURL) },
             sealer: sealer
         )
 
@@ -57,16 +58,20 @@ final class AuditSealingTests: ClavisBaseTestCase {
         recorder.flush()
 
         // Recording 100 events must require 0 agree calls (no context, no Touch ID)
-        XCTAssertEqual(keyring.agreeCalls, 0)
+        #expect(keyring.agreeCalls == 0)
 
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
         let records = try store.query(AuditQuery(limit: 200))
-        XCTAssertEqual(records.count, 100)
-        XCTAssertTrue(records.allSatisfy { $0.sensitiveFormat == 1 && $0.sealedSensitive != nil })
+        #expect(records.count == 100)
+        #expect(records.allSatisfy { $0.sensitiveFormat == 1 && $0.sealedSensitive != nil })
     }
 
-    func test_008_T4_rotatesEpochByRowsAndAge() throws {
+    @Test func test_008_T4_rotatesEpochByRowsAndAge() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-sealing-test.db")
+
         var currentTime = Date(timeIntervalSince1970: 1_700_000_000)
         let keyring = SoftwareAuditKeyring(requireContext: true)
         let sealer = AuditSealer(
@@ -82,33 +87,37 @@ final class AuditSealingTests: ClavisBaseTestCase {
         for _ in 0..<3 {
             let event = AuditEvent(type: .signature, result: .allowed)
             let (fmt, blob) = sealer.seal(event, store: store)
-            XCTAssertEqual(fmt, 1)
-            XCTAssertFalse(blob.isEmpty)
+            #expect(fmt == 1)
+            #expect(!blob.isEmpty)
         }
         var epochs = try store.epochs()
-        XCTAssertEqual(epochs.count, 1)
+        #expect(epochs.count == 1)
 
         // Seal row 4 -> maxEpochRows is 3, so must rotate to epoch 2
         let (fmt4, blob4) = sealer.seal(AuditEvent(type: .signature, result: .allowed), store: store)
-        XCTAssertEqual(fmt4, 1)
-        XCTAssertFalse(blob4.isEmpty)
+        #expect(fmt4 == 1)
+        #expect(!blob4.isEmpty)
         epochs = try store.epochs()
-        XCTAssertEqual(epochs.count, 2)
+        #expect(epochs.count == 2)
 
         // Advance time by 11s -> exceeds maxEpochAge (10s), so must rotate to epoch 3
         currentTime = currentTime.addingTimeInterval(11.0)
         let (fmt5, blob5) = sealer.seal(AuditEvent(type: .signature, result: .allowed), store: store)
-        XCTAssertEqual(fmt5, 1)
-        XCTAssertFalse(blob5.isEmpty)
+        #expect(fmt5 == 1)
+        #expect(!blob5.isEmpty)
         epochs = try store.epochs()
-        XCTAssertEqual(epochs.count, 3)
+        #expect(epochs.count == 3)
     }
 
-    func test_008_T4_keyringErrorWritesFormat2() throws {
+    @Test func test_008_T4_keyringErrorWritesFormat2() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-sealing-test.db")
+
         let failingKeyring = FailingAuditKeyring()
         let sealer = AuditSealer(keyring: failingKeyring)
         let recorder = AuditRecorder(
-            storeFactory: { try AuditStore(url: self.dbURL) },
+            storeFactory: { try AuditStore(url: dbURL) },
             sealer: sealer
         )
 
@@ -125,19 +134,23 @@ final class AuditSealingTests: ClavisBaseTestCase {
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
         let records = try store.query(AuditQuery())
-        XCTAssertEqual(records.count, 1)
+        #expect(records.count == 1)
         let record = records[0]
-        XCTAssertEqual(record.sensitiveFormat, 2)
-        XCTAssertNil(record.sealedSensitive)
+        #expect(record.sensitiveFormat == 2)
+        #expect(record.sealedSensitive == nil)
         // Filter columns are still recorded intact
-        XCTAssertEqual(record.event.type, .signature)
-        XCTAssertEqual(record.event.result, .denied)
-        XCTAssertEqual(record.event.reason, .unknownKey)
-        XCTAssertEqual(record.event.keyFingerprint, "SHA256:victimKey")
-        XCTAssertEqual(record.event.sensitive, AuditSensitive())
+        #expect(record.event.type == .signature)
+        #expect(record.event.result == .denied)
+        #expect(record.event.reason == .unknownKey)
+        #expect(record.event.keyFingerprint == "SHA256:victimKey")
+        #expect(record.event.sensitive == AuditSensitive())
     }
 
-    func test_008_T4_resealerConvertsLegacyRows() throws {
+    @Test func test_008_T4_resealerConvertsLegacyRows() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-sealing-test.db")
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
@@ -152,24 +165,24 @@ final class AuditSealingTests: ClavisBaseTestCase {
         }
 
         let legacyRowsBefore = try store.legacyPlaintextRows(limit: 10)
-        XCTAssertEqual(legacyRowsBefore.count, 5)
+        #expect(legacyRowsBefore.count == 5)
 
         let keyring = SoftwareAuditKeyring(requireContext: true)
         let sealer = AuditSealer(keyring: keyring)
         let resealer = AuditResealer(
-            storeFactory: { try AuditStore(url: self.dbURL) },
+            storeFactory: { try AuditStore(url: dbURL) },
             sealer: sealer,
             batchSize: 10
         )
 
         let converted = resealer.runBatch()
-        XCTAssertEqual(converted, 5)
+        #expect(converted == 5)
 
         let legacyRowsAfter = try store.legacyPlaintextRows(limit: 10)
-        XCTAssertEqual(legacyRowsAfter.count, 0)
+        #expect(legacyRowsAfter.count == 0)
 
         let allRecords = try store.query(AuditQuery(limit: 10))
-        XCTAssertEqual(allRecords.count, 5)
-        XCTAssertTrue(allRecords.allSatisfy { $0.sensitiveFormat == 1 && $0.sealedSensitive != nil })
+        #expect(allRecords.count == 5)
+        #expect(allRecords.allSatisfy { $0.sensitiveFormat == 1 && $0.sealedSensitive != nil })
     }
 }

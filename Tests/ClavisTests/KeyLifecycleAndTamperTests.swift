@@ -1,70 +1,78 @@
-import XCTest
+import Testing
+import Foundation
 import CryptoKit
 import LocalAuthentication
 @testable import ClavisCore
 @testable import Clavis
 
-final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
+struct KeyLifecycleAndTamperTests {
 
-    func testKeychainManagerListKeysSingleItemHandling() throws {
-        let keyManager = makeKeyManager()
-        let keys = try keyManager.listKeys()
-        XCTAssertNotNil(keys)
 
-        let dummyKeyInfo = SSHKeyInfo(label: "dummy", publicKeyOpenSSH: "ssh-ed25519 AAA dummy", publicKeyBlob: Data(), fingerprint: "SHA256:dummy")
-        let encodedData = try JSONEncoder().encode(dummyKeyInfo)
+    @Test func testKeychainManagerListKeysSingleItemHandling() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let keyManager = fixture.makeKeyManager()
+            let keys = try keyManager.listKeys()
+            #expect(keys != nil)
 
-        let itemsSingle: AnyObject = encodedData as AnyObject
-        let itemsArray: AnyObject = [encodedData] as AnyObject
+            let dummyKeyInfo = SSHKeyInfo(label: "dummy", publicKeyOpenSSH: "ssh-ed25519 AAA dummy", publicKeyBlob: Data(), fingerprint: "SHA256:dummy")
+            let encodedData = try JSONEncoder().encode(dummyKeyInfo)
 
-        if let singleData = itemsSingle as? Data {
-            let decoded = try JSONDecoder().decode(SSHKeyInfo.self, from: singleData)
-            XCTAssertEqual(decoded.label, "dummy")
-        }
-        if let array = itemsArray as? [Data] {
-            let decoded = try JSONDecoder().decode(SSHKeyInfo.self, from: array[0])
-            XCTAssertEqual(decoded.label, "dummy")
-        }
+            let itemsSingle: AnyObject = encodedData as AnyObject
+            let itemsArray: AnyObject = [encodedData] as AnyObject
 
-        let label = "list-and-tamper-\(UUID().uuidString)"
-        let generatedKey = try keyManager.generateKey(label: label, keyPurpose: .agent)
-        defer {
-            PublicKeyStore.save(generatedKey)
-            try? keyManager.deleteKey(label: label)
-        }
+            if let singleData = itemsSingle as? Data {
+                let decoded = try JSONDecoder().decode(SSHKeyInfo.self, from: singleData)
+                #expect(decoded.label == "dummy")
+            }
+            if let array = itemsArray as? [Data] {
+                let decoded = try JSONDecoder().decode(SSHKeyInfo.self, from: array[0])
+                #expect(decoded.label == "dummy")
+            }
 
-        let listedKeys = try keyManager.listKeys()
-        XCTAssertTrue(listedKeys.contains(where: { $0.label == label }))
+            let label = "list-and-tamper-\(UUID().uuidString)"
+            let generatedKey = try keyManager.generateKey(label: label, keyPurpose: .agent)
+            defer {
+                PublicKeyStore.save(generatedKey)
+                try? keyManager.deleteKey(label: label)
+            }
 
-        var tamperedBlob = generatedKey.publicKeyBlob
-        tamperedBlob[tamperedBlob.count - 1] ^= 0xFF
-        let tamperedKey = SSHKeyInfo(
-            label: generatedKey.label,
-            publicKeyOpenSSH: generatedKey.publicKeyOpenSSH,
-            publicKeyBlob: tamperedBlob,
-            fingerprint: generatedKey.fingerprint,
-            createdAt: generatedKey.createdAt,
-            algorithmName: generatedKey.algorithmName,
-            storage: generatedKey.storage,
-            biometricPolicy: generatedKey.biometricPolicy,
-            keyPurpose: .agent
-        )
-        PublicKeyStore.save(tamperedKey)
+            let listedKeys = try keyManager.listKeys()
+            #expect(listedKeys.contains(where: { $0.label == label }))
 
-        XCTAssertThrowsError(try keyManager.authorizeAgentSession(key: tamperedKey, prompt: "Authorize agent session")) { error in
-            XCTAssertTrue(error is PrivateKeyRecordError, "Expected PrivateKeyRecordError, got \(error)")
-        }
+            var tamperedBlob = generatedKey.publicKeyBlob
+            tamperedBlob[tamperedBlob.count - 1] ^= 0xFF
+            let tamperedKey = SSHKeyInfo(
+                label: generatedKey.label,
+                publicKeyOpenSSH: generatedKey.publicKeyOpenSSH,
+                publicKeyBlob: tamperedBlob,
+                fingerprint: generatedKey.fingerprint,
+                createdAt: generatedKey.createdAt,
+                algorithmName: generatedKey.algorithmName,
+                storage: generatedKey.storage,
+                biometricPolicy: generatedKey.biometricPolicy,
+                keyPurpose: .agent
+            )
+            PublicKeyStore.save(tamperedKey)
 
-        XCTAssertThrowsError(try keyManager.changeKind(label: label, to: .general, prompt: "Change key kind")) { error in
-            XCTAssertTrue(error is PrivateKeyRecordError, "Expected PrivateKeyRecordError, got \(error)")
+            #expect {
+                try keyManager.authorizeAgentSession(key: tamperedKey, prompt: "Authorize agent session")
+            } throws: { error in
+                error is PrivateKeyRecordError
+            }
+
+            #expect {
+                try keyManager.changeKind(label: label, to: .general, prompt: "Change key kind")
+            } throws: { error in
+                error is PrivateKeyRecordError
+            }
         }
     }
 
-
-
-    func testBiometricPolicyAccessControlAndSerialization() throws {
-        XCTAssertEqual(BiometricPolicy.userPresence.accessControlFlags, [.privateKeyUsage, .userPresence])
-        XCTAssertEqual(BiometricPolicy.biometryCurrentSet.accessControlFlags, [.privateKeyUsage, .biometryCurrentSet])
+    @Test func testBiometricPolicyAccessControlAndSerialization() throws {
+        #expect(BiometricPolicy.userPresence.accessControlFlags == [.privateKeyUsage, .userPresence])
+        #expect(BiometricPolicy.biometryCurrentSet.accessControlFlags == [.privateKeyUsage, .biometryCurrentSet])
 
         let keyWithPolicy = SSHKeyInfo(
             label: "test-policy-\(UUID().uuidString)",
@@ -77,13 +85,13 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             biometricPolicy: .biometryCurrentSet
         )
 
-        XCTAssertEqual(keyWithPolicy.biometricPolicy, .biometryCurrentSet)
-        XCTAssertEqual(keyWithPolicy.effectiveBiometricPolicy, .biometryCurrentSet)
+        #expect(keyWithPolicy.biometricPolicy == .biometryCurrentSet)
+        #expect(keyWithPolicy.effectiveBiometricPolicy == .biometryCurrentSet)
 
         let encoded = try JSONEncoder().encode(keyWithPolicy)
         let decoded = try JSONDecoder().decode(SSHKeyInfo.self, from: encoded)
-        XCTAssertEqual(decoded.biometricPolicy, .biometryCurrentSet)
-        XCTAssertEqual(decoded.effectiveBiometricPolicy, .biometryCurrentSet)
+        #expect(decoded.biometricPolicy == .biometryCurrentSet)
+        #expect(decoded.effectiveBiometricPolicy == .biometryCurrentSet)
 
         let legacyKey = SSHKeyInfo(
             label: "legacy-\(UUID().uuidString)",
@@ -94,66 +102,75 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             algorithmName: "ECDSA P-256",
             storage: .secureEnclave
         )
-        XCTAssertNil(legacyKey.biometricPolicy)
-        XCTAssertEqual(legacyKey.effectiveBiometricPolicy, .userPresence)
+        #expect(legacyKey.biometricPolicy == nil)
+        #expect(legacyKey.effectiveBiometricPolicy == .userPresence)
     }
 
-    func testP256KeyGenerationAndSSHSigning() throws {
-        let keyManager = makeKeyManager()
-        let testLabel = "test_p256_\(UUID().uuidString)"
-        defer {
-            try? keyManager.deleteKey(label: testLabel)
+    @Test func testP256KeyGenerationAndSSHSigning() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let keyManager = fixture.makeKeyManager()
+            let testLabel = "test_p256_\(UUID().uuidString)"
+            defer {
+                try? keyManager.deleteKey(label: testLabel)
+            }
+
+            let storage: KeyStorageType = .secureEnclave
+            let keyInfo = try keyManager.generateKey(label: testLabel, algorithm: "ECDSA P-256", storageType: storage)
+
+            #expect(keyInfo.algorithm == "ECDSA P-256")
+            #expect(keyInfo.isHardware == true)
+            #expect(keyInfo.publicKeyOpenSSH.hasPrefix("ecdsa-sha2-nistp256"))
+
+            let testData = "Test SSH challenge payload".data(using: .utf8)!
+            let sigBlob = try keyManager.signSSH(key: keyInfo, data: testData, prompt: "Test prompt")
+
+            // Parse wire format: wire string "ecdsa-sha2-nistp256" + wire data
+            var reader = DataReader(data: sigBlob)
+            let sigAlgo = reader.readWireString()
+            #expect(sigAlgo == "ecdsa-sha2-nistp256")
+            let innerData = reader.readWireData()
+            #expect(innerData != nil)
+            #expect((innerData?.count ?? 0) > 64)
         }
-
-        let storage: KeyStorageType = .secureEnclave
-        let keyInfo = try keyManager.generateKey(label: testLabel, algorithm: "ECDSA P-256", storageType: storage)
-
-        XCTAssertEqual(keyInfo.algorithm, "ECDSA P-256")
-        XCTAssertEqual(keyInfo.isHardware, true)
-        XCTAssertTrue(keyInfo.publicKeyOpenSSH.hasPrefix("ecdsa-sha2-nistp256"))
-
-        let testData = "Test SSH challenge payload".data(using: .utf8)!
-        let sigBlob = try keyManager.signSSH(key: keyInfo, data: testData, prompt: "Test prompt")
-
-        // Parse wire format: wire string "ecdsa-sha2-nistp256" + wire data
-        var reader = DataReader(data: sigBlob)
-        let sigAlgo = reader.readWireString()
-        XCTAssertEqual(sigAlgo, "ecdsa-sha2-nistp256")
-        let innerData = reader.readWireData()
-        XCTAssertNotNil(innerData)
-        XCTAssertGreaterThan(innerData?.count ?? 0, 64)
     }
 
-    func testUnsupportedKeyConfigurationsFailClosed() throws {
-        let keyManager = makeKeyManager()
+    @Test func testUnsupportedKeyConfigurationsFailClosed() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let keyManager = fixture.makeKeyManager()
 
-        XCTAssertThrowsError(
-            try keyManager.generateKey(
-                label: "unsupported-rsa-\(UUID().uuidString)",
-                algorithm: "RSA 4096",
-                storageType: .secureEnclave
-            )
-        )
-        XCTAssertThrowsError(
-            try keyManager.generateKey(
-                label: "unsupported-ed25519-\(UUID().uuidString)",
-                algorithm: "Ed25519",
-                storageType: .secureEnclave
-            )
-        )
+            #expect(throws: (any Error).self) {
+                try keyManager.generateKey(
+                    label: "unsupported-rsa-\(UUID().uuidString)",
+                    algorithm: "RSA 4096",
+                    storageType: .secureEnclave
+                )
+            }
+            #expect(throws: (any Error).self) {
+                try keyManager.generateKey(
+                    label: "unsupported-ed25519-\(UUID().uuidString)",
+                    algorithm: "Ed25519",
+                    storageType: .secureEnclave
+                )
+            }
+        }
     }
 
-
-
-
-
-    func testKeyManagerRejectsControlCharactersInLabel() {
-        let keyManager = makeKeyManager()
-        XCTAssertThrowsError(try keyManager.generateKey(label: "trusted\n[AUTH] forged"))
+    @Test func testKeyManagerRejectsControlCharactersInLabel() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let keyManager = fixture.makeKeyManager()
+            #expect(throws: (any Error).self) {
+                try keyManager.generateKey(label: "trusted\n[AUTH] forged")
+            }
+        }
     }
 
-
-    func testStoredPrivateKeyRecordSerializationAndWipe() throws {
+    @Test func testStoredPrivateKeyRecordSerializationAndWipe() throws {
         let dummyKeyData = Data([0x01, 0x02, 0x03, 0x04, 0x05])
         var record = StoredPrivateKeyRecord(
             version: StoredPrivateKeyRecord.currentVersion,
@@ -166,20 +183,20 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         )
 
         let encoded = try record.encode()
-        XCTAssertTrue(encoded.starts(with: Data("CLVPKR02".utf8)))
+        #expect(encoded.starts(with: Data("CLVPKR02".utf8)))
         let decoded = try StoredPrivateKeyRecord.decode(from: encoded)
 
-        XCTAssertEqual(decoded.version, StoredPrivateKeyRecord.currentVersion)
-        XCTAssertEqual(decoded.label, "test-record")
-        XCTAssertEqual(decoded.algorithm, .ecdsaP256)
-        XCTAssertEqual(decoded.storageType, .secureEnclave)
-        XCTAssertNil(decoded.biometricPolicy)
-        XCTAssertEqual(decoded.keyPurpose, .general)
-        XCTAssertEqual(decoded.keyData, dummyKeyData)
+        #expect(decoded.version == StoredPrivateKeyRecord.currentVersion)
+        #expect(decoded.label == "test-record")
+        #expect(decoded.algorithm == .ecdsaP256)
+        #expect(decoded.storageType == .secureEnclave)
+        #expect(decoded.biometricPolicy == nil)
+        #expect(decoded.keyPurpose == .general)
+        #expect(decoded.keyData == dummyKeyData)
 
         // Test wiping
         record.wipe()
-        XCTAssertEqual(record.keyData.count, 0)
+        #expect(record.keyData.count == 0)
 
         // Test unsupported version encode rejection
         let futureRecord = StoredPrivateKeyRecord(
@@ -190,34 +207,35 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             keyPurpose: .general,
             keyData: Data([0xAA])
         )
-        XCTAssertThrowsError(try futureRecord.encode()) { error in
-            guard case PrivateKeyRecordError.unsupportedVersion(let v) = error else {
-                return XCTFail("Expected unsupportedVersion error, got \(error)")
-            }
-            XCTAssertEqual(v, 999)
+        #expect {
+            try futureRecord.encode()
+        } throws: { error in
+            guard case PrivateKeyRecordError.unsupportedVersion(let v) = error else { return false }
+            return v == 999
         }
 
         // Test binary decode version check
         var futureBinaryData = Data("CLVPKR02".utf8)
         futureBinaryData.append(99)
         futureBinaryData.append(contentsOf: encoded.dropFirst(9))
-        XCTAssertThrowsError(try StoredPrivateKeyRecord.decode(from: futureBinaryData)) { error in
-            guard case PrivateKeyRecordError.unsupportedVersion(let v) = error else {
-                return XCTFail("Expected unsupportedVersion error, got \(error)")
-            }
-            XCTAssertEqual(v, 99)
+        #expect {
+            try StoredPrivateKeyRecord.decode(from: futureBinaryData)
+        } throws: { error in
+            guard case PrivateKeyRecordError.unsupportedVersion(let v) = error else { return false }
+            return v == 99
         }
 
         // Test non-binary data is rejected as corruptedRecord
         let legacyJSON = "{\"version\":1}".data(using: .utf8)!
-        XCTAssertThrowsError(try StoredPrivateKeyRecord.decode(from: legacyJSON)) { error in
-            guard case PrivateKeyRecordError.corruptedRecord = error else {
-                return XCTFail("Expected corruptedRecord error, got \(error)")
-            }
+        #expect {
+            try StoredPrivateKeyRecord.decode(from: legacyJSON)
+        } throws: { error in
+            guard case PrivateKeyRecordError.corruptedRecord = error else { return false }
+            return true
         }
     }
 
-    func testStoredPrivateKeyRecordV2UsesStrictBinaryEnvelope() throws {
+    @Test func testStoredPrivateKeyRecordV2UsesStrictBinaryEnvelope() throws {
         let keyData = Data(repeating: 0xA5, count: 32)
         let record = StoredPrivateKeyRecord(
             label: "binary-record",
@@ -230,56 +248,61 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         )
 
         let encoded = try record.encode()
-        XCTAssertTrue(encoded.starts(with: Data("CLVPKR02".utf8)))
-        XCTAssertNotEqual(encoded.first, Character("{").asciiValue)
+        #expect(encoded.starts(with: Data("CLVPKR02".utf8)))
+        #expect(encoded.first != Character("{").asciiValue)
         let decoded = try StoredPrivateKeyRecord.decode(from: encoded)
-        XCTAssertEqual(decoded, record)
+        #expect(decoded == record)
 
         var trailingGarbage = encoded
         trailingGarbage.append(0x00)
-        XCTAssertThrowsError(try StoredPrivateKeyRecord.decode(from: trailingGarbage)) { error in
-            guard case PrivateKeyRecordError.corruptedRecord = error else {
-                return XCTFail("Expected corruptedRecord, got \(error)")
+        #expect {
+            try StoredPrivateKeyRecord.decode(from: trailingGarbage)
+        } throws: { error in
+            guard case PrivateKeyRecordError.corruptedRecord = error else { return false }
+            return true
+        }
+    }
+
+    @Test func testTamperedAlgorithmInKeysJsonRefusesSigning() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let keyStore = InMemoryPrivateKeyStore()
+            let keyManager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: keyStore
+            )
+
+            let label = "tamper-algo-\(UUID().uuidString)"
+            let originalKey = try keyManager.generateKey(label: label, algorithm: "ECDSA P-256", storageType: .secureEnclave)
+
+            // Attacker tampers with keys.json, claiming this ECDSA P-256 key is actually Ed25519
+            let tamperedKey = SSHKeyInfo(
+                label: originalKey.label,
+                publicKeyOpenSSH: originalKey.publicKeyOpenSSH,
+                publicKeyBlob: originalKey.publicKeyBlob,
+                fingerprint: originalKey.fingerprint,
+                createdAt: originalKey.createdAt,
+                algorithmName: "Ed25519",
+                storage: originalKey.storage,
+                biometricPolicy: originalKey.biometricPolicy
+            )
+            PublicKeyStore.save(tamperedKey)
+
+            // Attempting to sign with tampered metadata MUST fail closed with algorithmMismatch
+            let testData = "payload".data(using: .utf8)!
+            #expect {
+                try keyManager.signSSH(key: tamperedKey, data: testData, prompt: "Sign")
+            } throws: { error in
+                guard case PrivateKeyRecordError.algorithmMismatch(let expected, let actual) = error else {
+                    return false
+                }
+                return expected == "Ed25519" && actual == "ECDSA P-256"
             }
         }
     }
 
-
-    func testTamperedAlgorithmInKeysJsonRefusesSigning() throws {
-        let keyStore = InMemoryPrivateKeyStore()
-        let keyManager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore
-        )
-
-        let label = "tamper-algo-\(UUID().uuidString)"
-        let originalKey = try keyManager.generateKey(label: label, algorithm: "ECDSA P-256", storageType: .secureEnclave)
-
-        // Attacker tampers with keys.json, claiming this ECDSA P-256 key is actually Ed25519
-        let tamperedKey = SSHKeyInfo(
-            label: originalKey.label,
-            publicKeyOpenSSH: originalKey.publicKeyOpenSSH,
-            publicKeyBlob: originalKey.publicKeyBlob,
-            fingerprint: originalKey.fingerprint,
-            createdAt: originalKey.createdAt,
-            algorithmName: "Ed25519",
-            storage: originalKey.storage,
-            biometricPolicy: originalKey.biometricPolicy
-        )
-        PublicKeyStore.save(tamperedKey)
-
-        // Attempting to sign with tampered metadata MUST fail closed with algorithmMismatch
-        let testData = "payload".data(using: .utf8)!
-        XCTAssertThrowsError(try keyManager.signSSH(key: tamperedKey, data: testData, prompt: "Sign")) { error in
-            guard case PrivateKeyRecordError.algorithmMismatch(let expected, let actual) = error else {
-                return XCTFail("Expected algorithmMismatch, got \(error)")
-            }
-            XCTAssertEqual(expected, "Ed25519")
-            XCTAssertEqual(actual, "ECDSA P-256")
-        }
-    }
-
-    func testStoredPrivateKeyRecordRejectsLegacySoftwareStorage() throws {
+    @Test func testStoredPrivateKeyRecordRejectsLegacySoftwareStorage() throws {
         let fakeSEData = Data(repeating: 0xEE, count: 32)
         let record = StoredPrivateKeyRecord(
             version: StoredPrivateKeyRecord.currentVersion,
@@ -292,175 +315,192 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
         )
         var encoded = try record.encode()
         encoded[10] = 0x01
-        XCTAssertThrowsError(try StoredPrivateKeyRecord.decode(from: encoded)) { error in
-            guard case PrivateKeyRecordError.corruptedRecord = error else {
-                return XCTFail("Expected corruptedRecord, got \(error)")
+        #expect {
+            try StoredPrivateKeyRecord.decode(from: encoded)
+        } throws: { error in
+            guard case PrivateKeyRecordError.corruptedRecord = error else { return false }
+            return true
+        }
+    }
+
+    @Test func testDowngradedBiometricPolicyInKeysJsonRefusesSigning() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let keyStore = InMemoryPrivateKeyStore()
+            let keyManager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: keyStore
+            )
+
+            let label = "tamper-policy-\(UUID().uuidString)"
+            let record = StoredPrivateKeyRecord(
+                version: StoredPrivateKeyRecord.currentVersion,
+                label: label,
+                algorithm: .ecdsaP256,
+                storageType: .secureEnclave,
+                biometricPolicy: .biometryCurrentSet,
+                keyPurpose: .general,
+                keyData: Data(repeating: 0xEE, count: 64)
+            )
+            try keyStore.save(label: label, data: try record.encode())
+
+            // Attacker edits keys.json to claim the key only needs the weaker default policy
+            let downgraded = SSHKeyInfo(
+                label: label,
+                publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA... \(label)",
+                publicKeyBlob: Data([1, 2, 3]),
+                fingerprint: "SHA256:fake",
+                createdAt: Date(),
+                algorithmName: "ECDSA P-256",
+                storage: .secureEnclave,
+                biometricPolicy: .userPresence
+            )
+
+            #expect {
+                try keyManager.signSSH(key: downgraded, data: Data("payload".utf8), prompt: "Sign")
+            } throws: { error in
+                guard case PrivateKeyRecordError.metadataMismatch(let field, let expected, let actual) = error else {
+                    return false
+                }
+                return field == "biometricPolicy" &&
+                    expected == BiometricPolicy.userPresence.rawValue &&
+                    actual == BiometricPolicy.biometryCurrentSet.rawValue
             }
         }
     }
 
+    @Test func testStrengthenedBiometricPolicyInKeysJsonAlsoFailsClosed() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let keyManager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: InMemoryPrivateKeyStore()
+            )
+            let original = try keyManager.generateKey(
+                label: "tamper-policy-up-\(UUID().uuidString)",
+                algorithm: "ECDSA P-256",
+                storageType: .secureEnclave
+            )
+            let tampered = SSHKeyInfo(
+                label: original.label,
+                publicKeyOpenSSH: original.publicKeyOpenSSH,
+                publicKeyBlob: original.publicKeyBlob,
+                fingerprint: original.fingerprint,
+                createdAt: original.createdAt,
+                algorithmName: original.algorithmName,
+                storage: original.storage,
+                biometricPolicy: .biometryCurrentSet
+            )
 
-    func testDowngradedBiometricPolicyInKeysJsonRefusesSigning() throws {
-        let keyStore = InMemoryPrivateKeyStore()
-        let keyManager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore
-        )
-
-        let label = "tamper-policy-\(UUID().uuidString)"
-        let record = StoredPrivateKeyRecord(
-            version: StoredPrivateKeyRecord.currentVersion,
-            label: label,
-            algorithm: .ecdsaP256,
-            storageType: .secureEnclave,
-            biometricPolicy: .biometryCurrentSet,
-            keyPurpose: .general,
-            keyData: Data(repeating: 0xEE, count: 64)
-        )
-        try keyStore.save(label: label, data: try record.encode())
-
-        // Attacker edits keys.json to claim the key only needs the weaker default policy,
-        // which would make Clavis prompt with a weaker LocalAuthentication policy.
-        let downgraded = SSHKeyInfo(
-            label: label,
-            publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA... \(label)",
-            publicKeyBlob: Data([1, 2, 3]),
-            fingerprint: "SHA256:fake",
-            createdAt: Date(),
-            algorithmName: "ECDSA P-256",
-            storage: .secureEnclave,
-            biometricPolicy: .userPresence
-        )
-
-        XCTAssertThrowsError(try keyManager.signSSH(key: downgraded, data: Data("payload".utf8), prompt: "Sign")) { error in
-            guard case PrivateKeyRecordError.metadataMismatch(let field, let expected, let actual) = error else {
-                return XCTFail("Expected metadataMismatch, got \(error)")
+            #expect {
+                try keyManager.signSSH(key: tampered, data: Data("payload".utf8), prompt: "Sign")
+            } throws: { error in
+                guard case PrivateKeyRecordError.metadataMismatch(let field, _, _) = error else {
+                    return false
+                }
+                return field == "biometricPolicy"
             }
-            XCTAssertEqual(field, "biometricPolicy")
-            XCTAssertEqual(expected, BiometricPolicy.userPresence.rawValue)
-            XCTAssertEqual(actual, BiometricPolicy.biometryCurrentSet.rawValue)
-        }
-    }
-
-    func testStrengthenedBiometricPolicyInKeysJsonAlsoFailsClosed() throws {
-        let keyManager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: InMemoryPrivateKeyStore()
-        )
-        let original = try keyManager.generateKey(
-            label: "tamper-policy-up-\(UUID().uuidString)",
-            algorithm: "ECDSA P-256",
-            storageType: .secureEnclave
-        )
-        let tampered = SSHKeyInfo(
-            label: original.label,
-            publicKeyOpenSSH: original.publicKeyOpenSSH,
-            publicKeyBlob: original.publicKeyBlob,
-            fingerprint: original.fingerprint,
-            createdAt: original.createdAt,
-            algorithmName: original.algorithmName,
-            storage: original.storage,
-            biometricPolicy: .biometryCurrentSet
-        )
-
-        XCTAssertThrowsError(try keyManager.signSSH(key: tampered, data: Data("payload".utf8), prompt: "Sign")) { error in
-            guard case PrivateKeyRecordError.metadataMismatch(let field, _, _) = error else {
-                return XCTFail("Expected metadataMismatch, got \(error)")
-            }
-            XCTAssertEqual(field, "biometricPolicy")
-        }
-        // The untampered key still signs: legacy nil policy == userPresence.
-        XCTAssertNoThrow(try keyManager.signSSH(key: original, data: Data("payload".utf8), prompt: "Sign"))
-    }
-
-    func testTamperedPublicKeyBlobInKeysJsonRefusesSigning() throws {
-        let keyStore = InMemoryPrivateKeyStore()
-        let keyManager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore
-        )
-
-        let label = "tamper-pubblob-\(UUID().uuidString)"
-        let originalKey = try keyManager.generateKey(label: label, algorithm: "ECDSA P-256", storageType: .secureEnclave)
-
-        // Attacker tampers keys.json, replacing the public key blob with spoofed bytes
-        var spoofedBlob = originalKey.publicKeyBlob
-        spoofedBlob[20] ^= 0xFF
-        let tamperedKey = SSHKeyInfo(
-            label: originalKey.label,
-            publicKeyOpenSSH: originalKey.publicKeyOpenSSH,
-            publicKeyBlob: spoofedBlob,
-            fingerprint: originalKey.fingerprint,
-            createdAt: originalKey.createdAt,
-            algorithmName: originalKey.algorithmName,
-            storage: originalKey.storage,
-            biometricPolicy: originalKey.biometricPolicy
-        )
-        PublicKeyStore.save(tamperedKey)
-
-        // signSSH MUST fail closed with publicKeyMismatch
-        let testData = "payload".data(using: .utf8)!
-        XCTAssertThrowsError(try keyManager.signSSH(key: tamperedKey, data: testData, prompt: "Sign")) { error in
-            guard case PrivateKeyRecordError.publicKeyMismatch = error else {
-                return XCTFail("Expected publicKeyMismatch, got \(error)")
+            // The untampered key still signs: legacy nil policy == userPresence.
+            #expect(throws: Never.self) {
+                _ = try keyManager.signSSH(key: original, data: Data("payload".utf8), prompt: "Sign")
             }
         }
     }
 
-    func testPublicIndexRoundTripsThroughKeychainWithoutAFile() throws {
-        guard ProcessInfo.processInfo.environment["CLAVIS_RUN_KEYCHAIN_INTEGRATION_TESTS"] == "1" else {
-            throw XCTSkip("Set CLAVIS_RUN_KEYCHAIN_INTEGRATION_TESTS=1 to run tests against the real user Keychain.")
+    @Test func testTamperedPublicKeyBlobInKeysJsonRefusesSigning() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let keyStore = InMemoryPrivateKeyStore()
+            let keyManager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: keyStore
+            )
+
+            let label = "tamper-pubblob-\(UUID().uuidString)"
+            let originalKey = try keyManager.generateKey(label: label, algorithm: "ECDSA P-256", storageType: .secureEnclave)
+
+            // Attacker tampers keys.json, replacing the public key blob with spoofed bytes
+            var spoofedBlob = originalKey.publicKeyBlob
+            spoofedBlob[20] ^= 0xFF
+            let tamperedKey = SSHKeyInfo(
+                label: originalKey.label,
+                publicKeyOpenSSH: originalKey.publicKeyOpenSSH,
+                publicKeyBlob: spoofedBlob,
+                fingerprint: originalKey.fingerprint,
+                createdAt: originalKey.createdAt,
+                algorithmName: originalKey.algorithmName,
+                storage: originalKey.storage,
+                biometricPolicy: originalKey.biometricPolicy
+            )
+            PublicKeyStore.save(tamperedKey)
+
+            // signSSH MUST fail closed with publicKeyMismatch
+            let testData = "payload".data(using: .utf8)!
+            #expect {
+                try keyManager.signSSH(key: tamperedKey, data: testData, prompt: "Sign")
+            } throws: { error in
+                guard case PrivateKeyRecordError.publicKeyMismatch = error else { return false }
+                return true
+            }
         }
-        PublicKeyStore.disableKeychainMirrorForTesting = false
-        defer { PublicKeyStore.disableKeychainMirrorForTesting = true }
-        let keyInfo = SSHKeyInfo(
-            label: "test-rebuild-\(UUID().uuidString)",
-            publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAA test",
-            publicKeyBlob: Data(repeating: 0x11, count: 65),
-            fingerprint: "SHA256:testfingerprint",
-            createdAt: Date(),
-            algorithmName: "ECDSA P-256",
-            storage: .secureEnclave
-        )
-        defer { PublicKeyStore.remove(label: keyInfo.label) }
-
-        PublicKeyStore.save(keyInfo)
-        XCTAssertTrue(PublicKeyStore.loadAll().contains(where: { $0.label == keyInfo.label }))
-
-        // A fresh process has an empty in-memory copy; it must find the key in the Keychain.
-        PublicKeyStore.invalidateCache()
-        XCTAssertTrue(PublicKeyStore.loadAll().contains(where: { $0.label == keyInfo.label }))
-
-        PublicKeyStore.remove(label: keyInfo.label)
-        XCTAssertFalse(PublicKeyStore.loadAll().contains(where: { $0.label == keyInfo.label }))
     }
 
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["CLAVIS_RUN_KEYCHAIN_INTEGRATION_TESTS"] == "1"))
+    func testPublicIndexRoundTripsThroughKeychainWithoutAFile() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            PublicKeyStore.disableKeychainMirrorForTesting = false
+            defer { PublicKeyStore.disableKeychainMirrorForTesting = true }
+            let keyInfo = SSHKeyInfo(
+                label: "test-rebuild-\(UUID().uuidString)",
+                publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAA test",
+                publicKeyBlob: Data(repeating: 0x11, count: 65),
+                fingerprint: "SHA256:testfingerprint",
+                createdAt: Date(),
+                algorithmName: "ECDSA P-256",
+                storage: .secureEnclave
+            )
+            defer { PublicKeyStore.remove(label: keyInfo.label) }
 
+            PublicKeyStore.save(keyInfo)
+            #expect(PublicKeyStore.loadAll().contains(where: { $0.label == keyInfo.label }))
+
+            // A fresh process has an empty in-memory copy; it must find the key in the Keychain.
+            PublicKeyStore.invalidateCache()
+            #expect(PublicKeyStore.loadAll().contains(where: { $0.label == keyInfo.label }))
+
+            PublicKeyStore.remove(label: keyInfo.label)
+            #expect(!PublicKeyStore.loadAll().contains(where: { $0.label == keyInfo.label }))
+        }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["CLAVIS_RUN_KEYCHAIN_INTEGRATION_TESTS"] == "1"))
     func testKeychainPrivateKeyStoreLifecycle() throws {
-        guard ProcessInfo.processInfo.environment["CLAVIS_RUN_KEYCHAIN_INTEGRATION_TESTS"] == "1" else {
-            throw XCTSkip("Set CLAVIS_RUN_KEYCHAIN_INTEGRATION_TESTS=1 to run tests against the real user Keychain.")
-        }
         let store = KeychainPrivateKeyStore(serviceName: "com.clavis.tests.\(UUID().uuidString)")
         let label = "test-store-lifecycle-\(UUID().uuidString)"
         let dummySecret = "SecurePayload_\(UUID().uuidString)".data(using: .utf8)!
 
         defer { try? store.remove(label: label) }
 
-        XCTAssertFalse(store.contains(label: label))
+        #expect(!store.contains(label: label))
 
         // This opt-in integration test must preserve the requested access control.
         try store.save(label: label, data: dummySecret, accessControlFlags: [.privateKeyUsage, .userPresence])
-        XCTAssertTrue(store.contains(label: label))
+        #expect(store.contains(label: label))
 
         let context = LAContext()
         let loaded = try store.load(label: label, context: context, prompt: "Test prompt")
-        XCTAssertEqual(loaded, dummySecret)
+        #expect(loaded == dummySecret)
 
         try store.remove(label: label)
-        XCTAssertFalse(store.contains(label: label))
+        #expect(!store.contains(label: label))
     }
 
-    func testKeychainPrivateKeyStoreFailsClosedWhenProtectedAddIsUnavailable() throws {
+    @Test func testKeychainPrivateKeyStoreFailsClosedWhenProtectedAddIsUnavailable() throws {
         var addedItems: [CFDictionary] = []
         var deleteCallCount = 0
         let store = KeychainPrivateKeyStore(
@@ -476,27 +516,25 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             updateItem: { _, _ in errSecItemNotFound }
         )
 
-        XCTAssertThrowsError(
+        #expect {
             try store.save(
                 label: "protected",
                 data: Data([0x01, 0x02]),
                 accessControlFlags: [.privateKeyUsage, .userPresence]
             )
-        ) { error in
-            guard case PrivateKeyStoreError.protectionUnavailable(let status) = error else {
-                return XCTFail("Expected protectionUnavailable, got \(error)")
-            }
-            XCTAssertEqual(status, errSecMissingEntitlement)
+        } throws: { error in
+            guard case PrivateKeyStoreError.protectionUnavailable(let status) = error else { return false }
+            return status == errSecMissingEntitlement
         }
 
-        XCTAssertEqual(deleteCallCount, 0)
-        XCTAssertEqual(addedItems.count, 1, "A protected add failure must never retry with weaker attributes")
+        #expect(deleteCallCount == 0)
+        #expect(addedItems.count == 1, "A protected add failure must never retry with weaker attributes")
         let added = addedItems[0] as NSDictionary
-        XCTAssertNotNil(added[kSecAttrAccessControl as String])
-        XCTAssertNil(added[kSecAttrAccessible as String])
+        #expect(added[kSecAttrAccessControl as String] != nil)
+        #expect(added[kSecAttrAccessible as String] == nil)
     }
 
-    func testKeychainPrivateKeyStoreRejectsMissingAuthenticationConstraint() throws {
+    @Test func testKeychainPrivateKeyStoreRejectsMissingAuthenticationConstraint() throws {
         var addCallCount = 0
         let store = KeychainPrivateKeyStore(
             serviceName: "com.clavis.tests.missing-auth",
@@ -506,26 +544,25 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             },
             deleteItem: { _ in errSecItemNotFound },
             updateItem: { _, _ in
-                XCTFail("Update must not be attempted without an authentication constraint")
+                Issue.record("Update must not be attempted without an authentication constraint")
                 return errSecSuccess
             }
         )
 
-        XCTAssertThrowsError(
+        #expect {
             try store.save(
                 label: "unprotected",
                 data: Data([0x01]),
                 accessControlFlags: [.privateKeyUsage]
             )
-        ) { error in
-            guard case PrivateKeyStoreError.accessControlCreation = error else {
-                return XCTFail("Expected accessControlCreation, got \(error)")
-            }
+        } throws: { error in
+            guard case PrivateKeyStoreError.accessControlCreation = error else { return false }
+            return true
         }
-        XCTAssertEqual(addCallCount, 0)
+        #expect(addCallCount == 0)
     }
 
-    func testKeychainPrivateKeyStoreFailedUpdateNeverDeletesExistingItem() throws {
+    @Test func testKeychainPrivateKeyStoreFailedUpdateNeverDeletesExistingItem() throws {
         var addCallCount = 0
         var deleteCallCount = 0
         var updateCallCount = 0
@@ -545,19 +582,19 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             }
         )
 
-        XCTAssertThrowsError(
+        #expect(throws: (any Error).self) {
             try store.save(
                 label: "existing",
                 data: Data([0x01]),
                 accessControlFlags: [.userPresence]
             )
-        )
-        XCTAssertEqual(updateCallCount, 1)
-        XCTAssertEqual(addCallCount, 0)
-        XCTAssertEqual(deleteCallCount, 0, "A failed update must leave the existing item intact")
+        }
+        #expect(updateCallCount == 1)
+        #expect(addCallCount == 0)
+        #expect(deleteCallCount == 0, "A failed update must leave the existing item intact")
     }
 
-    func testKeychainPrivateKeyStoreWritesProtectedLoginKeychainItem() throws {
+    @Test func testKeychainPrivateKeyStoreWritesProtectedLoginKeychainItem() throws {
         var addedItems: [CFDictionary] = []
         let store = KeychainPrivateKeyStore(
             serviceName: "com.clavis.tests.shared-group",
@@ -571,15 +608,15 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
         try store.save(label: "shared-key", data: Data([0xDE, 0xAD]), accessControlFlags: [.userPresence])
 
-        XCTAssertEqual(addedItems.count, 1)
+        #expect(addedItems.count == 1)
         let added = addedItems[0] as NSDictionary
-        XCTAssertNotNil(added[kSecAttrAccessControl as String])
-        XCTAssertNil(added[kSecUseDataProtectionKeychain as String])
-        XCTAssertNil(added[kSecAttrAccessGroup as String])
-        XCTAssertNil(added[kSecAttrAccess as String])
+        #expect(added[kSecAttrAccessControl as String] != nil)
+        #expect(added[kSecUseDataProtectionKeychain as String] == nil)
+        #expect(added[kSecAttrAccessGroup as String] == nil)
+        #expect(added[kSecAttrAccess as String] == nil)
     }
 
-    func testKeychainPrivateKeyStoreStoresSecureEnclaveReferenceAsDeviceBoundMetadata() throws {
+    @Test func testKeychainPrivateKeyStoreStoresSecureEnclaveReferenceAsDeviceBoundMetadata() throws {
         var addedItems: [CFDictionary] = []
         let store = KeychainPrivateKeyStore(
             serviceName: "com.clavis.tests.secure-enclave-reference",
@@ -593,15 +630,15 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
         try store.save(label: "hardware-key", data: Data([0xCA, 0xFE]), accessControlFlags: [.userPresence])
 
-        XCTAssertEqual(addedItems.count, 1)
+        #expect(addedItems.count == 1)
         let added = addedItems[0] as NSDictionary
-        XCTAssertNotNil(added[kSecAttrAccessControl as String])
-        XCTAssertNil(added[kSecAttrAccessible as String])
-        XCTAssertNil(added[kSecUseDataProtectionKeychain as String])
-        XCTAssertNil(added[kSecAttrAccessGroup as String])
+        #expect(added[kSecAttrAccessControl as String] != nil)
+        #expect(added[kSecAttrAccessible as String] == nil)
+        #expect(added[kSecUseDataProtectionKeychain as String] == nil)
+        #expect(added[kSecAttrAccessGroup as String] == nil)
     }
 
-    func testKeychainPrivateKeyStoreLoadsExistingItemWithoutRewritingIt() throws {
+    @Test func testKeychainPrivateKeyStoreLoadsExistingItemWithoutRewritingIt() throws {
         let encoded = Data([0x01, 0x02, 0x03])
         var addCallCount = 0
         var deleteCallCount = 0
@@ -625,18 +662,16 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
 
         let loaded = try store.load(label: "existing-key", context: LAContext(), prompt: "Use key")
 
-        XCTAssertEqual(loaded, encoded)
-        XCTAssertEqual(copyQueries.count, 1)
-        XCTAssertEqual(addCallCount, 0)
-        XCTAssertEqual(deleteCallCount, 0)
+        #expect(loaded == encoded)
+        #expect(copyQueries.count == 1)
+        #expect(addCallCount == 0)
+        #expect(deleteCallCount == 0)
         let query = copyQueries[0] as NSDictionary
-        XCTAssertNil(query[kSecUseDataProtectionKeychain as String])
-        XCTAssertNil(query[kSecAttrAccessGroup as String])
+        #expect(query[kSecUseDataProtectionKeychain as String] == nil)
+        #expect(query[kSecAttrAccessGroup as String] == nil)
     }
 
-
-
-    func testKeychainPrivateKeyStoreLoadFailureDoesNotRewriteOrDeleteItem() throws {
+    @Test func testKeychainPrivateKeyStoreLoadFailureDoesNotRewriteOrDeleteItem() throws {
         var addCallCount = 0
         var deleteCallCount = 0
         let store = KeychainPrivateKeyStore(
@@ -653,280 +688,314 @@ final class KeyLifecycleAndTamperTests: ClavisBaseTestCase {
             copyItem: { _ in (errSecAuthFailed, nil) }
         )
 
-        XCTAssertThrowsError(
+        #expect {
             try store.load(label: "existing-key", context: LAContext(), prompt: "Use key")
-        ) { error in
-            guard case PrivateKeyStoreError.keychain(let status) = error else {
-                return XCTFail("Expected keychain error, got \(error)")
+        } throws: { error in
+            guard case PrivateKeyStoreError.keychain(let status) = error else { return false }
+            return status == errSecAuthFailed
+        }
+        #expect(addCallCount == 0)
+        #expect(deleteCallCount == 0)
+    }
+
+    @Test func testRestoreKeyFromEncryptedVaultWhenKeychainDeleted() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let keyStore = InMemoryPrivateKeyStore()
+            let manager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: keyStore
+            )
+
+            let label = "shadow-restore-\(UUID().uuidString)"
+            let keyInfo = try manager.generateKey(label: label)
+            #expect(keyStore.contains(label: label))
+            #expect(EncryptedVaultStore.shared.containsRecord(label: label))
+
+            // Simulate third-party unauthenticated SecItemDelete bypassing Clavis
+            try keyStore.remove(label: label, context: nil, prompt: "")
+            #expect(!keyStore.contains(label: label))
+
+            // Subsequent sign operation must transparently recover key from EncryptedVaultStore
+            let payload = Data("audit-message".utf8)
+            let sigBlob = try manager.signSSH(key: keyInfo, data: payload, prompt: "Sign with restored key")
+            #expect(!sigBlob.isEmpty)
+
+            // Verify key was restored back to Keychain
+            #expect(keyStore.contains(label: label))
+
+            // Verify signature against public key
+            var reader = DataReader(data: sigBlob)
+            #expect(reader.readWireString() == "ecdsa-sha2-nistp256")
+            let rawSig = reader.readWireData()
+            let signature = try #require(rawSig)
+            #expect(signature.count > 64)
+
+            // Legitimate deletion must remove from both Keychain and EncryptedVaultStore
+            try manager.deleteKey(label: label)
+            #expect(!keyStore.contains(label: label))
+            #expect(!EncryptedVaultStore.shared.containsRecord(label: label))
+        }
+    }
+
+    @Test func testRestoreKeyFromEncryptedVaultWhenKeychainCorrupted() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let keyStore = InMemoryPrivateKeyStore()
+            let manager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: keyStore
+            )
+
+            let label = "shadow-corrupt-\(UUID().uuidString)"
+            let keyInfo = try manager.generateKey(label: label)
+            #expect(keyStore.contains(label: label))
+
+            // Overwrite Keychain with garbage data
+            try keyStore.save(label: label, data: Data("tampered-garbage-data".utf8))
+
+            // Subsequent sign operation must recover key from EncryptedVaultStore
+            let payload = Data("corrupted-key-test".utf8)
+            let sigBlob = try manager.signSSH(key: keyInfo, data: payload, prompt: "Sign with restored key")
+            #expect(!sigBlob.isEmpty)
+
+            // Verify key was restored in Keychain
+            let restoredData = try keyStore.load(label: label, context: LAContext(), prompt: "")
+            #expect(restoredData != nil)
+            let record = try StoredPrivateKeyRecord.decode(from: restoredData!)
+            #expect(record.label == label)
+
+            var reader = DataReader(data: sigBlob)
+            #expect(reader.readWireString() == "ecdsa-sha2-nistp256")
+            let rawSig = reader.readWireData()
+            let signature = try #require(rawSig)
+            #expect(signature.count > 64)
+
+            try manager.deleteKey(label: label)
+        }
+    }
+
+    @Test func testPlantedKeychainRecordUsesMatchingVaultCopy() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let backing = ScriptedKeychainItems()
+            let keyStore = backing.makeStore(serviceName: "com.clavis.tests.planted.\(UUID().uuidString)")
+            let manager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: keyStore
+            )
+
+            let label = "planted-keychain-\(UUID().uuidString)"
+            let keyInfo = try manager.generateKey(label: label)
+
+            let foreignKey = P256.Signing.PrivateKey()
+            var foreignRecord = StoredPrivateKeyRecord(
+                label: label,
+                algorithm: .ecdsaP256,
+                storageType: .secureEnclave,
+                biometricPolicy: nil,
+                keyPurpose: .general,
+                keyData: foreignKey.rawRepresentation
+            )
+            try keyStore.save(label: label, data: try foreignRecord.encode())
+            foreignRecord.wipe()
+
+            let payload = Data("planted-keychain-record".utf8)
+            let sigBlob = try manager.signSSH(key: keyInfo, data: payload, prompt: "Sign with vault copy")
+            var reader = DataReader(data: sigBlob)
+            #expect(reader.readWireString() == "ecdsa-sha2-nistp256")
+            let rawSig = reader.readWireData()
+            let signature = try #require(rawSig)
+            #expect(signature.count > 64)
+
+            let restoredData = try #require(try keyStore.load(label: label, context: LAContext(), prompt: ""))
+            let restoredRecord = try StoredPrivateKeyRecord.decode(from: restoredData)
+            #expect(try KeychainManager.derivePublicKeyBlob(record: restoredRecord) == keyInfo.publicKeyBlob)
+
+            var replanted = StoredPrivateKeyRecord(
+                label: label,
+                algorithm: .ecdsaP256,
+                storageType: .secureEnclave,
+                biometricPolicy: nil,
+                keyPurpose: .general,
+                keyData: foreignKey.rawRepresentation
+            )
+            try keyStore.save(label: label, data: try replanted.encode())
+            replanted.wipe()
+
+            #expect {
+                try manager.deleteKey(label: label)
+            } throws: { error in
+                error as? KeyDeletionError == .partial(label: label)
             }
-            XCTAssertEqual(status, errSecAuthFailed)
+            #expect(!keyStore.contains(label: label))
+            #expect(EncryptedVaultStore.shared.containsRecord(label: label))
+            #expect(try manager.fetchKeyInfo(label: label)?.publicKeyBlob == keyInfo.publicKeyBlob)
+
+            let restoredSigBlob = try manager.signSSH(key: keyInfo, data: payload, prompt: "Sign after planted item was removed")
+            var restoredReader = DataReader(data: restoredSigBlob)
+            #expect(restoredReader.readWireString() == "ecdsa-sha2-nistp256")
+            let rawRestoredSig = restoredReader.readWireData()
+            let restoredSignature = try #require(rawRestoredSig)
+            #expect(restoredSignature.count > 64)
         }
-        XCTAssertEqual(addCallCount, 0)
-        XCTAssertEqual(deleteCallCount, 0)
     }
 
-    func testRestoreKeyFromEncryptedVaultWhenKeychainDeleted() throws {
-        let keyStore = InMemoryPrivateKeyStore()
-        let manager = makeKeyManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore
-        )
+    @Test func testDeleteKeyThrowsPartialWhenVaultRecordMismatches() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let backing = ScriptedKeychainItems()
+            let keyStore = backing.makeStore(serviceName: "com.clavis.tests.partial-delete.\(UUID().uuidString)")
+            let manager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: keyStore
+            )
 
-        let label = "shadow-restore-\(UUID().uuidString)"
-        let keyInfo = try manager.generateKey(label: label)
-        XCTAssertTrue(keyStore.contains(label: label))
-        XCTAssertTrue(EncryptedVaultStore.shared.containsRecord(label: label))
+            let label = "partial-del-\(UUID().uuidString)"
+            _ = try manager.generateKey(label: label)
 
-        // Simulate third-party unauthenticated SecItemDelete bypassing Clavis
-        try keyStore.remove(label: label, context: nil, prompt: "")
-        XCTAssertFalse(keyStore.contains(label: label))
+            let foreignKey = P256.Signing.PrivateKey()
+            var foreignRecord = StoredPrivateKeyRecord(
+                label: label,
+                algorithm: .ecdsaP256,
+                storageType: .secureEnclave,
+                biometricPolicy: nil,
+                keyPurpose: .general,
+                keyData: foreignKey.rawRepresentation
+            )
+            try keyStore.save(label: label, data: try foreignRecord.encode())
+            foreignRecord.wipe()
 
-        // Subsequent sign operation must transparently recover key from EncryptedVaultStore
-        let payload = Data("audit-message".utf8)
-        let sigBlob = try manager.signSSH(key: keyInfo, data: payload, prompt: "Sign with restored key")
-        XCTAssertFalse(sigBlob.isEmpty)
+            #expect {
+                try manager.deleteKey(label: label)
+            } throws: { error in
+                error as? KeyDeletionError == .partial(label: label)
+            }
 
-        // Verify key was restored back to Keychain
-        XCTAssertTrue(keyStore.contains(label: label))
-
-        // Verify signature against public key
-        var reader = DataReader(data: sigBlob)
-        XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
-        let signature = try XCTUnwrap(reader.readWireData())
-        XCTAssertGreaterThan(signature.count, 64)
-
-        // Legitimate deletion must remove from both Keychain and EncryptedVaultStore
-        try manager.deleteKey(label: label)
-        XCTAssertFalse(keyStore.contains(label: label))
-        XCTAssertFalse(EncryptedVaultStore.shared.containsRecord(label: label))
-    }
-
-    func testRestoreKeyFromEncryptedVaultWhenKeychainCorrupted() throws {
-        let keyStore = InMemoryPrivateKeyStore()
-        let manager = makeKeyManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore
-        )
-
-        let label = "shadow-corrupt-\(UUID().uuidString)"
-        let keyInfo = try manager.generateKey(label: label)
-        XCTAssertTrue(keyStore.contains(label: label))
-
-        // Overwrite Keychain with garbage data
-        try keyStore.save(label: label, data: Data("tampered-garbage-data".utf8))
-
-        // Subsequent sign operation must recover key from EncryptedVaultStore
-        let payload = Data("corrupted-key-test".utf8)
-        let sigBlob = try manager.signSSH(key: keyInfo, data: payload, prompt: "Sign with restored key")
-        XCTAssertFalse(sigBlob.isEmpty)
-
-        // Verify key was restored in Keychain
-        let restoredData = try keyStore.load(label: label, context: LAContext(), prompt: "")
-        XCTAssertNotNil(restoredData)
-        let record = try StoredPrivateKeyRecord.decode(from: restoredData!)
-        XCTAssertEqual(record.label, label)
-
-        var reader = DataReader(data: sigBlob)
-        XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
-        let signature = try XCTUnwrap(reader.readWireData())
-        XCTAssertGreaterThan(signature.count, 64)
-
-        try manager.deleteKey(label: label)
-    }
-
-    func testPlantedKeychainRecordUsesMatchingVaultCopy() throws {
-        let backing = ScriptedKeychainItems()
-        let keyStore = backing.makeStore(serviceName: "com.clavis.tests.planted.\(UUID().uuidString)")
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore,
-            agentGrantRevoker: { _ in }
-        )
-
-        let label = "planted-keychain-\(UUID().uuidString)"
-        let keyInfo = try manager.generateKey(label: label)
-
-        let foreignKey = P256.Signing.PrivateKey()
-        var foreignRecord = StoredPrivateKeyRecord(
-            label: label,
-            algorithm: .ecdsaP256,
-            storageType: .secureEnclave,
-            biometricPolicy: nil,
-            keyPurpose: .general,
-            keyData: foreignKey.rawRepresentation
-        )
-        try keyStore.save(label: label, data: try foreignRecord.encode())
-        foreignRecord.wipe()
-
-        let payload = Data("planted-keychain-record".utf8)
-        let sigBlob = try manager.signSSH(key: keyInfo, data: payload, prompt: "Sign with vault copy")
-        var reader = DataReader(data: sigBlob)
-        XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
-        let signature = try XCTUnwrap(reader.readWireData())
-        XCTAssertGreaterThan(signature.count, 64)
-
-        let restoredData = try XCTUnwrap(try keyStore.load(label: label, context: LAContext(), prompt: ""))
-        let restoredRecord = try StoredPrivateKeyRecord.decode(from: restoredData)
-        XCTAssertEqual(try KeychainManager.derivePublicKeyBlob(record: restoredRecord), keyInfo.publicKeyBlob)
-
-        var replanted = StoredPrivateKeyRecord(
-            label: label,
-            algorithm: .ecdsaP256,
-            storageType: .secureEnclave,
-            biometricPolicy: nil,
-            keyPurpose: .general,
-            keyData: foreignKey.rawRepresentation
-        )
-        try keyStore.save(label: label, data: try replanted.encode())
-        replanted.wipe()
-
-        XCTAssertThrowsError(try manager.deleteKey(label: label)) { error in
-            XCTAssertEqual(error as? KeyDeletionError, .partial(label: label))
+            // Key remains listed in public index
+            #expect(try manager.fetchKeyInfo(label: label) != nil)
+            #expect(try manager.listKeys().contains(where: { $0.label == label }))
+            // Vault record remains intact
+            #expect(EncryptedVaultStore.shared.containsRecord(label: label))
+            // Keychain record was removed
+            #expect(!keyStore.contains(label: label))
         }
-        XCTAssertFalse(keyStore.contains(label: label))
-        XCTAssertTrue(EncryptedVaultStore.shared.containsRecord(label: label))
-        XCTAssertEqual(try manager.fetchKeyInfo(label: label)?.publicKeyBlob, keyInfo.publicKeyBlob)
-
-        let restoredSigBlob = try manager.signSSH(key: keyInfo, data: payload, prompt: "Sign after planted item was removed")
-        var restoredReader = DataReader(data: restoredSigBlob)
-        XCTAssertEqual(restoredReader.readWireString(), "ecdsa-sha2-nistp256")
-        let restoredSignature = try XCTUnwrap(restoredReader.readWireData())
-        XCTAssertGreaterThan(restoredSignature.count, 64)
     }
 
+    @Test func testDeleteKeyLogsSecurityAlertWhenRevocationFailsOnPartialDeletion() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let backing = ScriptedKeychainItems()
+            let keyStore = backing.makeStore(serviceName: "com.clavis.tests.partial-del-alert.\(UUID().uuidString)")
+            let revocationFailure = NSError(domain: "test", code: 99, userInfo: [NSLocalizedDescriptionKey: "injected revocation error"])
+            let manager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: keyStore,
+                agentGrantRevoker: { _ in throw revocationFailure }
+            )
 
-    func testDeleteKeyThrowsPartialWhenVaultRecordMismatches() throws {
-        let backing = ScriptedKeychainItems()
-        let keyStore = backing.makeStore(serviceName: "com.clavis.tests.partial-delete.\(UUID().uuidString)")
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore,
-            agentGrantRevoker: { _ in }
-        )
+            let label = "partial-del-alert-\(UUID().uuidString)"
+            _ = try manager.generateKey(label: label)
 
-        let label = "partial-del-\(UUID().uuidString)"
-        _ = try manager.generateKey(label: label)
+            let foreignKey = P256.Signing.PrivateKey()
+            var foreignRecord = StoredPrivateKeyRecord(
+                label: label,
+                algorithm: .ecdsaP256,
+                storageType: .secureEnclave,
+                biometricPolicy: nil,
+                keyPurpose: .general,
+                keyData: foreignKey.rawRepresentation
+            )
+            try keyStore.save(label: label, data: try foreignRecord.encode())
+            foreignRecord.wipe()
 
-        let foreignKey = P256.Signing.PrivateKey()
-        var foreignRecord = StoredPrivateKeyRecord(
-            label: label,
-            algorithm: .ecdsaP256,
-            storageType: .secureEnclave,
-            biometricPolicy: nil,
-            keyPurpose: .general,
-            keyData: foreignKey.rawRepresentation
-        )
-        try keyStore.save(label: label, data: try foreignRecord.encode())
-        foreignRecord.wipe()
+            #expect {
+                try manager.deleteKey(label: label)
+            } throws: { error in
+                error as? KeyDeletionError == .partial(label: label)
+            }
 
-        XCTAssertThrowsError(try manager.deleteKey(label: label)) { error in
-            XCTAssertEqual(error as? KeyDeletionError, .partial(label: label))
+            let logURL = ClavisLogger.logFileURL
+            let logContent = try String(contentsOf: logURL, encoding: .utf8)
+            #expect(logContent.contains("SECURITY_ALERT"))
+            #expect(logContent.contains(label))
+            #expect(logContent.contains("injected revocation error"))
         }
-
-        // Key remains listed in public index
-        XCTAssertNotNil(try manager.fetchKeyInfo(label: label))
-        XCTAssertTrue(try manager.listKeys().contains(where: { $0.label == label }))
-        // Vault record remains intact
-        XCTAssertTrue(EncryptedVaultStore.shared.containsRecord(label: label))
-        // Keychain record was removed
-        XCTAssertFalse(keyStore.contains(label: label))
     }
 
-    func testDeleteKeyLogsSecurityAlertWhenRevocationFailsOnPartialDeletion() throws {
-        let backing = ScriptedKeychainItems()
-        let keyStore = backing.makeStore(serviceName: "com.clavis.tests.partial-del-alert.\(UUID().uuidString)")
-        let revocationFailure = NSError(domain: "test", code: 99, userInfo: [NSLocalizedDescriptionKey: "injected revocation error"])
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore,
-            agentGrantRevoker: { _ in throw revocationFailure }
-        )
+    @Test func testGenerateKeyRollsBackPrivateAndVaultRecordsWhenPublicStoreSaveFails() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let backing = ScriptedKeychainItems()
+            let keyStore = backing.makeStore(serviceName: "com.clavis.tests.save-rollback.\(UUID().uuidString)")
+            let manager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: keyStore
+            )
 
-        let label = "partial-del-alert-\(UUID().uuidString)"
-        _ = try manager.generateKey(label: label)
+            struct InjectedSaveError: Error, Equatable {}
 
-        let foreignKey = P256.Signing.PrivateKey()
-        var foreignRecord = StoredPrivateKeyRecord(
-            label: label,
-            algorithm: .ecdsaP256,
-            storageType: .secureEnclave,
-            biometricPolicy: nil,
-            keyPurpose: .general,
-            keyData: foreignKey.rawRepresentation
-        )
-        try keyStore.save(label: label, data: try foreignRecord.encode())
-        foreignRecord.wipe()
+            PublicKeyStore.forcedSaveErrorForTesting = InjectedSaveError()
+            defer { PublicKeyStore.forcedSaveErrorForTesting = nil }
 
-        XCTAssertThrowsError(try manager.deleteKey(label: label)) { error in
-            XCTAssertEqual(error as? KeyDeletionError, .partial(label: label))
+            // Test ECDSA P-256 (in generateKey)
+            let p256Label = "p256-save-fail-\(UUID().uuidString)"
+            #expect {
+                try manager.generateKey(label: p256Label, algorithm: "ECDSA P-256", storageType: .secureEnclave)
+            } throws: { error in
+                error is InjectedSaveError
+            }
+            #expect(!keyStore.contains(label: p256Label), "Keychain record must be removed on saveChecked failure")
+            #expect(!EncryptedVaultStore.shared.containsRecord(label: p256Label), "Vault record must be removed on saveChecked failure")
         }
-
-        let logURL = ClavisLogger.logFileURL
-        let logContent = try String(contentsOf: logURL, encoding: .utf8)
-        XCTAssertTrue(logContent.contains("SECURITY_ALERT"))
-        XCTAssertTrue(logContent.contains(label))
-        XCTAssertTrue(logContent.contains("injected revocation error"))
     }
 
-    func testGenerateKeyRollsBackPrivateAndVaultRecordsWhenPublicStoreSaveFails() throws {
-        let backing = ScriptedKeychainItems()
-        let keyStore = backing.makeStore(serviceName: "com.clavis.tests.save-rollback.\(UUID().uuidString)")
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore,
-            agentGrantRevoker: { _ in }
-        )
+    @Test func testValidationFailureInLoadAuthenticatedRecordLogsSecurityAlertBeforeVaultFallback() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let backing = ScriptedKeychainItems()
+            let keyStore = backing.makeStore(serviceName: "com.clavis.tests.restore-alert.\(UUID().uuidString)")
+            let manager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: keyStore
+            )
 
-        struct InjectedSaveError: Error, Equatable {}
+            let label = "validation-alert-\(UUID().uuidString)"
+            let keyInfo = try manager.generateKey(label: label)
 
-        PublicKeyStore.forcedSaveErrorForTesting = InjectedSaveError()
-        defer { PublicKeyStore.forcedSaveErrorForTesting = nil }
+            // Plant record with mismatched biometric policy to fail validateAuthenticatedRecord
+            var tamperedRecord = StoredPrivateKeyRecord(
+                label: label,
+                algorithm: .ecdsaP256,
+                storageType: .secureEnclave,
+                biometricPolicy: .biometryCurrentSet,
+                keyPurpose: .general,
+                keyData: Data(repeating: 0x42, count: 32)
+            )
+            try keyStore.save(label: label, data: try tamperedRecord.encode())
+            tamperedRecord.wipe()
 
-        // Test ECDSA P-256 (in generateKey)
-        let p256Label = "p256-save-fail-\(UUID().uuidString)"
-        XCTAssertThrowsError(try manager.generateKey(label: p256Label, algorithm: "ECDSA P-256", storageType: .secureEnclave)) { error in
-            XCTAssertTrue(error is InjectedSaveError)
+            let payload = Data("restore-alert-payload".utf8)
+            let sigBlob = try manager.signSSH(key: keyInfo, data: payload, prompt: "Sign with restored key")
+            var reader = DataReader(data: sigBlob)
+            #expect(reader.readWireString() == "ecdsa-sha2-nistp256")
+            let rawSig = reader.readWireData()
+            let signature = try #require(rawSig)
+            #expect(signature.count > 64)
+
+            let logURL = ClavisLogger.logFileURL
+            let logContent = try String(contentsOf: logURL, encoding: .utf8)
+            #expect(logContent.contains("SECURITY_ALERT"))
+            #expect(logContent.contains(label))
+            #expect(logContent.contains("Keychain record validation failed"))
         }
-        XCTAssertFalse(keyStore.contains(label: p256Label), "Keychain record must be removed on saveChecked failure")
-        XCTAssertFalse(EncryptedVaultStore.shared.containsRecord(label: p256Label), "Vault record must be removed on saveChecked failure")
-    }
-
-    func testValidationFailureInLoadAuthenticatedRecordLogsSecurityAlertBeforeVaultFallback() throws {
-        let backing = ScriptedKeychainItems()
-        let keyStore = backing.makeStore(serviceName: "com.clavis.tests.restore-alert.\(UUID().uuidString)")
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore,
-            agentGrantRevoker: { _ in }
-        )
-
-        let label = "validation-alert-\(UUID().uuidString)"
-        let keyInfo = try manager.generateKey(label: label)
-
-        // Plant record with mismatched biometric policy to fail validateAuthenticatedRecord
-        var tamperedRecord = StoredPrivateKeyRecord(
-            label: label,
-            algorithm: .ecdsaP256,
-            storageType: .secureEnclave,
-            biometricPolicy: .biometryCurrentSet,
-            keyPurpose: .general,
-            keyData: Data(repeating: 0x42, count: 32)
-        )
-        try keyStore.save(label: label, data: try tamperedRecord.encode())
-        tamperedRecord.wipe()
-
-        let payload = Data("restore-alert-payload".utf8)
-        let sigBlob = try manager.signSSH(key: keyInfo, data: payload, prompt: "Sign with restored key")
-        var reader = DataReader(data: sigBlob)
-        XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
-        let signature = try XCTUnwrap(reader.readWireData())
-        XCTAssertGreaterThan(signature.count, 64)
-
-        let logURL = ClavisLogger.logFileURL
-        let logContent = try String(contentsOf: logURL, encoding: .utf8)
-        XCTAssertTrue(logContent.contains("SECURITY_ALERT"))
-        XCTAssertTrue(logContent.contains(label))
-        XCTAssertTrue(logContent.contains("Keychain record validation failed"))
     }
 }
 

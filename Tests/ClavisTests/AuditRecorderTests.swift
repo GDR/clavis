@@ -1,26 +1,23 @@
-import XCTest
+import Testing
+import Foundation
 @testable import ClavisCore
 
-final class AuditRecorderTests: ClavisBaseTestCase {
-    private var testDirURL: URL!
-    private var dbURL: URL!
+@Suite struct AuditRecorderTests {
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
-        testDirURL = testRootURL.appendingPathComponent("audit-rec-test-\(UUID().uuidString)", isDirectory: true)
+    private func makeTestDB(fixture: ClavisTestFixture) throws -> URL {
+        let testDirURL = fixture.testRootURL.appendingPathComponent("audit-rec-test-\(UUID().uuidString)", isDirectory: true)
         try SecureFS.createDirectory(at: testDirURL)
-        dbURL = testDirURL.appendingPathComponent("audit.db")
+        return testDirURL.appendingPathComponent("audit.db")
     }
 
-    override func tearDownWithError() throws {
-        try? FileManager.default.removeItem(at: testDirURL)
-        try super.tearDownWithError()
-    }
+    @Test func test_002_C2_floodBecomesAggregateRow() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
 
-    func test_002_C2_floodBecomesAggregateRow() throws {
         var currentTime = Date(timeIntervalSince1970: 1_700_000_000)
         let recorder = AuditRecorder(
-            storeFactory: { try AuditStore(url: self.dbURL) },
+            storeFactory: { try AuditStore(url: dbURL) },
             now: { currentTime },
             floodThreshold: 30,
             floodWindow: 60
@@ -45,26 +42,30 @@ final class AuditRecorderTests: ClavisBaseTestCase {
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
         let records = try store.query(AuditQuery(limit: 200))
-        XCTAssertEqual(records.count, 31)
+        #expect(records.count == 31)
 
         // Check suppressed row
         let suppressedRecords = records.filter { $0.event.type == .suppressed }
-        XCTAssertEqual(suppressedRecords.count, 1)
-        XCTAssertEqual(suppressedRecords[0].event.count, 70)
-        XCTAssertEqual(suppressedRecords[0].event.result, .denied)
-        XCTAssertEqual(suppressedRecords[0].event.reason, .unknownKey)
-        XCTAssertEqual(suppressedRecords[0].event.keyFingerprint, "SHA256:victimKey")
-        XCTAssertEqual(suppressedRecords[0].event.sensitive, AuditSensitive())
+        #expect(suppressedRecords.count == 1)
+        #expect(suppressedRecords[0].event.count == 70)
+        #expect(suppressedRecords[0].event.result == .denied)
+        #expect(suppressedRecords[0].event.reason == .unknownKey)
+        #expect(suppressedRecords[0].event.keyFingerprint == "SHA256:victimKey")
+        #expect(suppressedRecords[0].event.sensitive == AuditSensitive())
 
         // Check normal rows
         let normalRecords = records.filter { $0.event.type == .signature }
-        XCTAssertEqual(normalRecords.count, 30)
+        #expect(normalRecords.count == 30)
     }
 
-    func test_002_C2_floodDoesNotEvictOlderEvents() throws {
+    @Test func test_002_C2_floodDoesNotEvictOlderEvents() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         var currentTime = Date(timeIntervalSince1970: 1_700_000_000)
         let recorder = AuditRecorder(
-            storeFactory: { try AuditStore(url: self.dbURL) },
+            storeFactory: { try AuditStore(url: dbURL) },
             now: { currentTime },
             floodThreshold: 30,
             floodWindow: 60,
@@ -96,14 +97,18 @@ final class AuditRecorderTests: ClavisBaseTestCase {
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
         let allowedQuery = try store.query(AuditQuery(results: [.allowed]))
-        XCTAssertEqual(allowedQuery.count, 1)
-        XCTAssertEqual(allowedQuery[0].event.keyFingerprint, "SHA256:preciousKey")
+        #expect(allowedQuery.count == 1)
+        #expect(allowedQuery[0].event.keyFingerprint == "SHA256:preciousKey")
     }
 
-    func test_002_C2_allowedSignaturesAreNeverSuppressed() throws {
+    @Test func test_002_C2_allowedSignaturesAreNeverSuppressed() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         var currentTime = Date(timeIntervalSince1970: 1_700_000_000)
         let recorder = AuditRecorder(
-            storeFactory: { try AuditStore(url: self.dbURL) },
+            storeFactory: { try AuditStore(url: dbURL) },
             now: { currentTime },
             floodThreshold: 30,
             floodWindow: 60
@@ -124,14 +129,18 @@ final class AuditRecorderTests: ClavisBaseTestCase {
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
         let records = try store.query(AuditQuery(limit: 200))
-        XCTAssertEqual(records.count, 100)
-        XCTAssertTrue(records.allSatisfy { $0.event.type == .signature && $0.event.result == .allowed })
+        #expect(records.count == 100)
+        #expect(records.allSatisfy { $0.event.type == .signature && $0.event.result == .allowed })
     }
 
-    func test_002_T3_retentionPrunesByAgeAndCap() throws {
+    @Test func test_002_T3_retentionPrunesByAgeAndCap() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = try makeTestDB(fixture: fixture)
+
         var currentTime = Date(timeIntervalSince1970: 1_700_000_000)
         let recorder = AuditRecorder(
-            storeFactory: { try AuditStore(url: self.dbURL) },
+            storeFactory: { try AuditStore(url: dbURL) },
             now: { currentTime },
             floodThreshold: 1000,
             floodWindow: 60,
@@ -150,10 +159,10 @@ final class AuditRecorderTests: ClavisBaseTestCase {
         defer { store.close() }
         let count = try store.count()
         // Should have been pruned because pruneEvery is 5 and maxRows is 10
-        XCTAssertLessThanOrEqual(count, 10)
+        #expect(count <= 10)
     }
 
-    func test_002_T3_storeOpenFailureDoesNotThrow() {
+    @Test func test_002_T3_storeOpenFailureDoesNotThrow() {
         struct MockError: Error {}
         let recorder = AuditRecorder(
             storeFactory: { throw MockError() }

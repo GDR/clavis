@@ -1,13 +1,10 @@
-import XCTest
+import Testing
+import Foundation
 import CryptoKit
 @testable import ClavisCore
 
-final class EncryptedVaultStoreTests: ClavisBaseTestCase {
-    override func tearDownWithError() throws {
-        EncryptedVaultStore.customPinStore = nil
-        EncryptedVaultStore.masterKeyLockTimeout = 10.0
-        try super.tearDownWithError()
-    }
+struct EncryptedVaultStoreTests {
+
 
     private func makeRecord(label: String) -> StoredPrivateKeyRecord {
         StoredPrivateKeyRecord(
@@ -46,134 +43,188 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
         try envelope.write(to: vaultFileURL(for: record.label), options: .atomic)
     }
 
-    func testNewEnvelopesUseAuthenticatedFormatAndRoundTrip() throws {
-        let label = "vault-roundtrip"
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: label))
+    @Test func testNewEnvelopesUseAuthenticatedFormatAndRoundTrip() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let label = "vault-roundtrip"
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: label))
 
-        let raw = try Data(contentsOf: vaultFileURL(for: label))
-        XCTAssertTrue(raw.starts(with: Data("CLVENV02".utf8)))
+            let raw = try Data(contentsOf: vaultFileURL(for: label))
+            #expect(raw.starts(with: Data("CLVENV02".utf8)))
 
-        let loaded = try XCTUnwrap(EncryptedVaultStore.shared.loadRecord(label: label))
-        XCTAssertEqual(loaded.label, label)
-        XCTAssertEqual(loaded.keyData, Data(repeating: 0x42, count: 32))
-    }
-
-    func testEnvelopeMovedToAnotherLabelSlotIsRejected() throws {
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "victim"))
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "decoy"))
-
-        // Attacker with write access to the vault directory swaps one label's ciphertext in
-        // place of another's. Without AAD this decrypts fine and relies on later label checks.
-        let source = vaultFileURL(for: "decoy")
-        let target = vaultFileURL(for: "victim")
-        try FileManager.default.removeItem(at: target)
-        try FileManager.default.copyItem(at: source, to: target)
-
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.loadRecord(label: "victim"))
-        XCTAssertNoThrow(try EncryptedVaultStore.shared.loadRecord(label: "decoy"))
-    }
-
-    func testTamperedCiphertextIsRejected() throws {
-        let label = "vault-tamper"
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: label))
-        let url = vaultFileURL(for: label)
-        var raw = try Data(contentsOf: url)
-        raw[raw.count - 1] ^= 0x01
-        try raw.write(to: url)
-
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.loadRecord(label: label))
-    }
-
-    func testSwappingMasterPubAfterSetupCausesSaveRecordToThrowAndWriteNothing() throws {
-        let initialLabel = "vault-initial"
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: initialLabel))
-
-        let pubURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.pub")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: pubURL.path))
-
-        // Attacker with write access to the filesystem swaps master.pub with their own public key
-        let attackerKey = P256.KeyAgreement.PrivateKey()
-        let attackerPub = attackerKey.publicKey.rawRepresentation
-        try attackerPub.write(to: pubURL, options: .atomic)
-
-        let victimLabel = "victim-record"
-        let victimFileURL = vaultFileURL(for: victimLabel)
-
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.saveRecord(makeRecord(label: victimLabel))) { error in
-            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyTampered)
-        }
-        XCTAssertFalse(
-            FileManager.default.fileExists(atPath: victimFileURL.path),
-            "Must write nothing to disk when master.pub has been tampered"
-        )
-    }
-
-    func testMissingPinWhenMasterFilesExistFailsClosed() throws {
-        let initialLabel = "vault-pinned"
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: initialLabel))
-
-        let pubURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.pub")
-        let keyURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.key")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: pubURL.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: keyURL.path))
-
-        // Simulate missing pin when master files already exist
-        let pinStore = InMemoryMasterKeyPinStore(pin: nil)
-        EncryptedVaultStore.customPinStore = pinStore
-
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKey()) { error in
-            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyPinMissing)
-        }
-
-        let newLabel = "cannot-write-unpinned"
-        let newFileURL = vaultFileURL(for: newLabel)
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.saveRecord(makeRecord(label: newLabel))) { error in
-            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyPinMissing)
-        }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: newFileURL.path))
-
-        // Never silently re-pin
-        XCTAssertNil(try pinStore.loadPin(), "Missing pin must never be silently re-pinned")
-    }
-
-    func testCLVENV01EnvelopeIsRejected() throws {
-        let label = "vault-legacy"
-        try writeLegacyEnvelope(makeRecord(label: label))
-        XCTAssertTrue(try Data(contentsOf: vaultFileURL(for: label)).starts(with: Data("CLVENV01".utf8)))
-
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.loadRecord(label: label))
-    }
-
-    func testTamperedPinValueFailsClosed() throws {
-        let label = "vault-tampered-pin"
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: label))
-
-        // Set a corrupted/mismatched pin in pinStore
-        let wrongPin = Data(repeating: 0xee, count: 32)
-        EncryptedVaultStore.customPinStore = InMemoryMasterKeyPinStore(pin: wrongPin)
-
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKey()) { error in
-            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyTampered)
-        }
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.loadRecord(label: label)) { error in
-            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyTampered)
+            let loaded = try #require(try EncryptedVaultStore.shared.loadRecord(label: label))
+            #expect(loaded.label == label)
+            #expect(loaded.keyData == Data(repeating: 0x42, count: 32))
         }
     }
 
-    func testLoadRecordFailsClosedWhenMasterPubIsTampered() throws {
-        let label = "vault-load-tamper"
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: label))
+    @Test func testEnvelopeMovedToAnotherLabelSlotIsRejected() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "victim"))
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "decoy"))
 
-        let pubURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.pub")
-        let attackerKey = P256.KeyAgreement.PrivateKey()
-        try attackerKey.publicKey.rawRepresentation.write(to: pubURL, options: .atomic)
+            // Attacker with write access to the vault directory swaps one label's ciphertext in
+            // place of another's. Without AAD this decrypts fine and relies on later label checks.
+            let source = vaultFileURL(for: "decoy")
+            let target = vaultFileURL(for: "victim")
+            try FileManager.default.removeItem(at: target)
+            try FileManager.default.copyItem(at: source, to: target)
 
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.loadRecord(label: label)) { error in
-            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyTampered)
+            #expect(throws: (any Error).self) {
+                try EncryptedVaultStore.shared.loadRecord(label: "victim")
+            }
+            #expect(throws: Never.self) {
+                _ = try EncryptedVaultStore.shared.loadRecord(label: "decoy")
+            }
         }
     }
 
-    func testKeychainMasterKeyPinStoreWithMockClosures() throws {
+    @Test func testTamperedCiphertextIsRejected() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let label = "vault-tamper"
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: label))
+            let url = vaultFileURL(for: label)
+            var raw = try Data(contentsOf: url)
+            raw[raw.count - 1] ^= 0x01
+            try raw.write(to: url)
+
+            #expect(throws: (any Error).self) {
+                try EncryptedVaultStore.shared.loadRecord(label: label)
+            }
+        }
+    }
+
+    @Test func testSwappingMasterPubAfterSetupCausesSaveRecordToThrowAndWriteNothing() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let initialLabel = "vault-initial"
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: initialLabel))
+
+            let pubURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.pub")
+            #expect(FileManager.default.fileExists(atPath: pubURL.path))
+
+            // Attacker with write access to the filesystem swaps master.pub with their own public key
+            let attackerKey = P256.KeyAgreement.PrivateKey()
+            let attackerPub = attackerKey.publicKey.rawRepresentation
+            try attackerPub.write(to: pubURL, options: .atomic)
+
+            let victimLabel = "victim-record"
+            let victimFileURL = vaultFileURL(for: victimLabel)
+
+            #expect {
+                try EncryptedVaultStore.shared.saveRecord(makeRecord(label: victimLabel))
+            } throws: { error in
+                error as? EncryptedVaultStore.VaultError == .masterKeyTampered
+            }
+            #expect(
+                !FileManager.default.fileExists(atPath: victimFileURL.path),
+                "Must write nothing to disk when master.pub has been tampered"
+            )
+        }
+    }
+
+    @Test func testMissingPinWhenMasterFilesExistFailsClosed() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let initialLabel = "vault-pinned"
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: initialLabel))
+
+            let pubURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.pub")
+            let keyURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.key")
+            #expect(FileManager.default.fileExists(atPath: pubURL.path))
+            #expect(FileManager.default.fileExists(atPath: keyURL.path))
+
+            // Simulate missing pin when master files already exist
+            let pinStore = InMemoryMasterKeyPinStore(pin: nil)
+            EncryptedVaultStore.customPinStore = pinStore
+            defer { EncryptedVaultStore.customPinStore = nil }
+
+            #expect {
+                try EncryptedVaultStore.shared.ensureMasterKey()
+            } throws: { error in
+                error as? EncryptedVaultStore.VaultError == .masterKeyPinMissing
+            }
+
+            let newLabel = "cannot-write-unpinned"
+            let newFileURL = vaultFileURL(for: newLabel)
+            #expect {
+                try EncryptedVaultStore.shared.saveRecord(makeRecord(label: newLabel))
+            } throws: { error in
+                error as? EncryptedVaultStore.VaultError == .masterKeyPinMissing
+            }
+            #expect(!FileManager.default.fileExists(atPath: newFileURL.path))
+
+            // Never silently re-pin
+            #expect(try pinStore.loadPin() == nil, "Missing pin must never be silently re-pinned")
+        }
+    }
+
+    @Test func testCLVENV01EnvelopeIsRejected() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let label = "vault-legacy"
+            try writeLegacyEnvelope(makeRecord(label: label))
+            #expect(try Data(contentsOf: vaultFileURL(for: label)).starts(with: Data("CLVENV01".utf8)))
+
+            #expect(throws: (any Error).self) {
+                try EncryptedVaultStore.shared.loadRecord(label: label)
+            }
+        }
+    }
+
+    @Test func testTamperedPinValueFailsClosed() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let label = "vault-tampered-pin"
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: label))
+
+            // Set a corrupted/mismatched pin in pinStore
+            let wrongPin = Data(repeating: 0xee, count: 32)
+            EncryptedVaultStore.customPinStore = InMemoryMasterKeyPinStore(pin: wrongPin)
+            defer { EncryptedVaultStore.customPinStore = nil }
+
+            #expect {
+                try EncryptedVaultStore.shared.ensureMasterKey()
+            } throws: { error in
+                error as? EncryptedVaultStore.VaultError == .masterKeyTampered
+            }
+            #expect {
+                try EncryptedVaultStore.shared.loadRecord(label: label)
+            } throws: { error in
+                error as? EncryptedVaultStore.VaultError == .masterKeyTampered
+            }
+        }
+    }
+
+    @Test func testLoadRecordFailsClosedWhenMasterPubIsTampered() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let label = "vault-load-tamper"
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: label))
+
+            let pubURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.pub")
+            let attackerKey = P256.KeyAgreement.PrivateKey()
+            try attackerKey.publicKey.rawRepresentation.write(to: pubURL, options: .atomic)
+
+            #expect {
+                try EncryptedVaultStore.shared.loadRecord(label: label)
+            } throws: { error in
+                error as? EncryptedVaultStore.VaultError == .masterKeyTampered
+            }
+        }
+    }
+
+    @Test func testKeychainMasterKeyPinStoreWithMockClosures() throws {
         final class MockKeychainState: @unchecked Sendable {
             private let lock = NSLock()
             private var storage: [String: [String: Any]] = [:]
@@ -242,449 +293,509 @@ final class EncryptedVaultStoreTests: ClavisBaseTestCase {
         )
 
         // Initially empty
-        XCTAssertNil(try store.loadPin())
+        #expect(try store.loadPin() == nil)
 
         // Save pin
         let samplePin = Data(repeating: 0x55, count: 32)
         try store.savePin(samplePin)
 
         let loaded = try store.loadPin()
-        XCTAssertEqual(loaded, samplePin)
+        #expect(loaded == samplePin)
 
         // Check attributes
         let item = state.get("com.clavis.vault-master-pin.test/test-pin")
-        XCTAssertNotNil(item)
+        #expect(item != nil)
         let accessible = item?[kSecAttrAccessible as String] as? String
-        XCTAssertEqual(accessible, kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
+        #expect(accessible == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String))
 
         // Update pin (save again)
         let updatedPin = Data(repeating: 0x77, count: 32)
         try store.savePin(updatedPin)
-        XCTAssertEqual(try store.loadPin(), updatedPin)
+        #expect(try store.loadPin() == updatedPin)
 
         // Remove pin
         try store.removePin()
-        XCTAssertNil(try store.loadPin())
+        #expect(try store.loadPin() == nil)
     }
 
-    func testPinAbsentWithMasterFilesThrowsMasterKeyPinMissingWithRepairInstructions() throws {
-        let label = "vault-initial-pin-test"
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: label))
+    @Test func testPinAbsentWithMasterFilesThrowsMasterKeyPinMissingWithRepairInstructions() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let label = "vault-initial-pin-test"
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: label))
 
-        EncryptedVaultStore.customPinStore = InMemoryMasterKeyPinStore(pin: nil)
+            EncryptedVaultStore.customPinStore = InMemoryMasterKeyPinStore(pin: nil)
+            defer { EncryptedVaultStore.customPinStore = nil }
 
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "cannot-save-unpinned"))) { error in
-            guard let vaultError = error as? EncryptedVaultStore.VaultError else {
-                XCTFail("Expected VaultError, got \(error)")
-                return
+            #expect {
+                try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "cannot-save-unpinned"))
+            } throws: { error in
+                guard let vaultError = error as? EncryptedVaultStore.VaultError else { return false }
+                return vaultError == .masterKeyPinMissing &&
+                    vaultError.localizedDescription.contains("clavis vault repair")
             }
-            XCTAssertEqual(vaultError, .masterKeyPinMissing)
-            XCTAssertTrue(
-                vaultError.localizedDescription.contains("clavis vault repair"),
-                "Error description must provide actionable recovery instruction 'clavis vault repair'"
+        }
+    }
+
+    @Test func testAfterRepairSaveAndLoadRecordWork() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let initialLabel = "vault-pre-repair"
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: initialLabel))
+
+            // Lost Keychain pin
+            let pinStore = InMemoryMasterKeyPinStore(pin: nil)
+            EncryptedVaultStore.customPinStore = pinStore
+            defer { EncryptedVaultStore.customPinStore = nil }
+
+            // Operations fail closed with masterKeyPinMissing
+            #expect {
+                try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "blocked"))
+            } throws: { error in
+                error as? EncryptedVaultStore.VaultError == .masterKeyPinMissing
+            }
+
+            // Run repair
+            let result = try EncryptedVaultStore.shared.repairMasterKeyPin(replacePin: false)
+            #expect(!result.fingerprint.isEmpty)
+            #expect(try pinStore.loadPin() != nil)
+
+            // saveRecord and loadRecord work after repair
+            let newLabel = "vault-post-repair"
+            #expect(throws: Never.self) {
+                try EncryptedVaultStore.shared.saveRecord(makeRecord(label: newLabel))
+            }
+            let loadedNew = try EncryptedVaultStore.shared.loadRecord(label: newLabel)
+            #expect(loadedNew?.label == newLabel)
+            let loadedInitial = try EncryptedVaultStore.shared.loadRecord(label: initialLabel)
+            #expect(loadedInitial?.label == initialLabel)
+        }
+    }
+
+    @Test func testPinMismatchIsNotRepairedWithoutReplacePinFlag() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "vault-replace-test"))
+            let wrongPin = Data(repeating: 0xee, count: 32)
+            let pinStore = InMemoryMasterKeyPinStore(pin: wrongPin)
+            EncryptedVaultStore.customPinStore = pinStore
+            defer { EncryptedVaultStore.customPinStore = nil }
+
+            // Without replacePin: true, repair must fail and not overwrite pin
+            #expect(throws: (any Error).self) {
+                try EncryptedVaultStore.shared.repairMasterKeyPin(replacePin: false)
+            }
+            #expect(try pinStore.loadPin() == wrongPin, "Mismatched pin must not be overwritten without replacePin: true")
+
+            // With replacePin: true, repair succeeds and updates pin
+            #expect(throws: Never.self) {
+                _ = try EncryptedVaultStore.shared.repairMasterKeyPin(replacePin: true)
+            }
+            let pubData = try Data(contentsOf: EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.pub"))
+            let expectedPin = Data(SHA256.hash(data: pubData))
+            #expect(try pinStore.loadPin() == expectedPin)
+        }
+    }
+
+    @Test func testSimulatedCrashLeavesNoPartialFilesAndSecondEnsureMasterKeySucceeds() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            final class CrashSimulatingPinStore: MasterKeyPinStoring, @unchecked Sendable {
+                let inner = InMemoryMasterKeyPinStore()
+                var onSavePin: (() -> Void)?
+
+                func loadPin() throws -> Data? {
+                    try inner.loadPin()
+                }
+                func savePin(_ pin: Data) throws {
+                    try inner.savePin(pin)
+                    onSavePin?()
+                }
+                func removePin() throws {
+                    try inner.removePin()
+                }
+            }
+
+            let pinStore = CrashSimulatingPinStore()
+            EncryptedVaultStore.customPinStore = pinStore
+            defer { EncryptedVaultStore.customPinStore = nil }
+
+            let pubURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.pub")
+            let keyURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.key")
+
+            pinStore.onSavePin = {
+                // When pin is saved, simulate crash/failure during file write by creating master.pub as a directory
+                try? FileManager.default.createDirectory(at: pubURL, withIntermediateDirectories: false)
+            }
+
+            // First attempt must fail because writing files fails
+            #expect(throws: (any Error).self) {
+                try EncryptedVaultStore.shared.ensureMasterKey()
+            }
+
+            // Verify no stale partial files remain and pin was rolled back
+            #expect(!FileManager.default.fileExists(atPath: keyURL.path), "master.key must not remain after failed write")
+            #expect(!FileManager.default.fileExists(atPath: pubURL.path), "master.pub must not remain after failed write")
+            let pinBefore = try pinStore.loadPin()
+            #expect(pinBefore == nil, "Pin must be rolled back on file write failure")
+
+            // Second ensureMasterKey succeeds
+            pinStore.onSavePin = nil
+            #expect(throws: Never.self) {
+                _ = try EncryptedVaultStore.shared.ensureMasterKey()
+            }
+            #expect(FileManager.default.fileExists(atPath: pubURL.path))
+            #expect(FileManager.default.fileExists(atPath: keyURL.path))
+            let pinAfter = try pinStore.loadPin()
+            #expect(pinAfter != nil)
+        }
+    }
+
+    @Test func testNonTTYStdinRefusesRepairConfirmation() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "vault-tty-test"))
+            EncryptedVaultStore.customPinStore = InMemoryMasterKeyPinStore(pin: nil)
+            defer { EncryptedVaultStore.customPinStore = nil }
+
+            let result = CLIService.handle(
+                args: ["clavis", "vault", "repair"],
+                isTTY: false
+            )
+            #expect(result != nil)
+            #expect(result?.exitCode == 1)
+            #expect(
+                result?.error?.contains("TTY") == true ||
+                result?.error?.contains("terminal") == true ||
+                result?.error?.contains("interactive") == true
             )
         }
     }
 
-    func testAfterRepairSaveAndLoadRecordWork() throws {
-        let initialLabel = "vault-pre-repair"
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: initialLabel))
+    @Test func testCLIVaultRepairInteractiveConfirmation() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "cli-repair-test"))
+            let pinStore = InMemoryMasterKeyPinStore(pin: nil)
+            EncryptedVaultStore.customPinStore = pinStore
+            defer { EncryptedVaultStore.customPinStore = nil }
 
-        // Lost Keychain pin
-        let pinStore = InMemoryMasterKeyPinStore(pin: nil)
-        EncryptedVaultStore.customPinStore = pinStore
+            // User enters "no" -> cancelled
+            let cancelled = CLIService.handle(
+                args: ["clavis", "vault", "repair"],
+                isTTY: true,
+                confirmationPrompt: { "no" }
+            )
+            #expect(cancelled?.exitCode == 1)
+            #expect(cancelled?.error?.contains("cancelled") == true)
+            #expect(try pinStore.loadPin() == nil)
 
-        // Operations fail closed with masterKeyPinMissing
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "blocked"))) { error in
-            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyPinMissing)
+            // User enters "yes" -> succeeded
+            let succeeded = CLIService.handle(
+                args: ["clavis", "vault", "repair"],
+                isTTY: true,
+                confirmationPrompt: { "yes" }
+            )
+            #expect(succeeded?.exitCode == 0)
+            #expect(succeeded?.output.contains("successfully repaired") == true)
+            #expect(try pinStore.loadPin() != nil)
         }
-
-        // Run repair
-        let result = try EncryptedVaultStore.shared.repairMasterKeyPin(replacePin: false)
-        XCTAssertFalse(result.fingerprint.isEmpty)
-        XCTAssertNotNil(try pinStore.loadPin())
-
-        // saveRecord and loadRecord work after repair
-        let newLabel = "vault-post-repair"
-        XCTAssertNoThrow(try EncryptedVaultStore.shared.saveRecord(makeRecord(label: newLabel)))
-        let loadedNew = try EncryptedVaultStore.shared.loadRecord(label: newLabel)
-        XCTAssertEqual(loadedNew?.label, newLabel)
-        let loadedInitial = try EncryptedVaultStore.shared.loadRecord(label: initialLabel)
-        XCTAssertEqual(loadedInitial?.label, initialLabel)
     }
 
-    func testPinMismatchIsNotRepairedWithoutReplacePinFlag() throws {
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "vault-replace-test"))
-        let wrongPin = Data(repeating: 0xee, count: 32)
-        let pinStore = InMemoryMasterKeyPinStore(pin: wrongPin)
-        EncryptedVaultStore.customPinStore = pinStore
+    @Test func testCLIVaultRepairPinMismatchRequiresReplacePinFlag() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "cli-mismatch-test"))
+            let wrongPin = Data(repeating: 0xee, count: 32)
+            let pinStore = InMemoryMasterKeyPinStore(pin: wrongPin)
+            EncryptedVaultStore.customPinStore = pinStore
+            defer { EncryptedVaultStore.customPinStore = nil }
 
-        // Without replacePin: true, repair must fail and not overwrite pin
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.repairMasterKeyPin(replacePin: false))
-        XCTAssertEqual(try pinStore.loadPin(), wrongPin, "Mismatched pin must not be overwritten without replacePin: true")
+            // Mismatched pin without --replace-pin -> fails with warning
+            let failed = CLIService.handle(
+                args: ["clavis", "vault", "repair"],
+                isTTY: true,
+                confirmationPrompt: { "yes" }
+            )
+            #expect(failed?.exitCode == 1)
+            #expect(failed?.error?.contains("--replace-pin") == true)
+            #expect(try pinStore.loadPin() == wrongPin)
 
-        // With replacePin: true, repair succeeds and updates pin
-        XCTAssertNoThrow(try EncryptedVaultStore.shared.repairMasterKeyPin(replacePin: true))
-        let pubData = try Data(contentsOf: EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.pub"))
-        let expectedPin = Data(SHA256.hash(data: pubData))
-        XCTAssertEqual(try pinStore.loadPin(), expectedPin)
-    }
-
-    func testSimulatedCrashLeavesNoPartialFilesAndSecondEnsureMasterKeySucceeds() throws {
-        final class CrashSimulatingPinStore: MasterKeyPinStoring, @unchecked Sendable {
-            let inner = InMemoryMasterKeyPinStore()
-            var onSavePin: (() -> Void)?
-
-            func loadPin() throws -> Data? {
-                try inner.loadPin()
-            }
-            func savePin(_ pin: Data) throws {
-                try inner.savePin(pin)
-                onSavePin?()
-            }
-            func removePin() throws {
-                try inner.removePin()
-            }
+            // Mismatched pin with --replace-pin -> succeeds
+            let succeeded = CLIService.handle(
+                args: ["clavis", "vault", "repair", "--replace-pin"],
+                isTTY: true,
+                confirmationPrompt: { "yes" }
+            )
+            #expect(succeeded?.exitCode == 0)
+            #expect(succeeded?.output.contains("WARNING: Replacing existing mismatched") == true)
+            #expect(try pinStore.loadPin() != wrongPin)
         }
-
-        let pinStore = CrashSimulatingPinStore()
-        EncryptedVaultStore.customPinStore = pinStore
-
-        let pubURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.pub")
-        let keyURL = EncryptedVaultStore.shared.vaultDirectoryURL.appendingPathComponent("master.key")
-
-        pinStore.onSavePin = {
-            // When pin is saved, simulate crash/failure during file write by creating master.pub as a directory
-            try? FileManager.default.createDirectory(at: pubURL, withIntermediateDirectories: false)
-        }
-
-        // First attempt must fail because writing files fails
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKey())
-
-        // Verify no stale partial files remain and pin was rolled back
-        XCTAssertFalse(FileManager.default.fileExists(atPath: keyURL.path), "master.key must not remain after failed write")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: pubURL.path), "master.pub must not remain after failed write")
-        XCTAssertNil(try pinStore.loadPin(), "Pin must be rolled back on file write failure")
-
-        // Second ensureMasterKey succeeds
-        pinStore.onSavePin = nil
-        XCTAssertNoThrow(try EncryptedVaultStore.shared.ensureMasterKey())
-        XCTAssertTrue(FileManager.default.fileExists(atPath: pubURL.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: keyURL.path))
-        XCTAssertNotNil(try pinStore.loadPin())
-    }
-
-    func testNonTTYStdinRefusesRepairConfirmation() throws {
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "vault-tty-test"))
-        EncryptedVaultStore.customPinStore = InMemoryMasterKeyPinStore(pin: nil)
-
-        let result = CLIService.handle(
-            args: ["clavis", "vault", "repair"],
-            isTTY: false
-        )
-        XCTAssertNotNil(result)
-        XCTAssertEqual(result?.exitCode, 1)
-        XCTAssertTrue(
-            result?.error?.contains("TTY") == true ||
-            result?.error?.contains("terminal") == true ||
-            result?.error?.contains("interactive") == true
-        )
-    }
-
-    func testCLIVaultRepairInteractiveConfirmation() throws {
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "cli-repair-test"))
-        let pinStore = InMemoryMasterKeyPinStore(pin: nil)
-        EncryptedVaultStore.customPinStore = pinStore
-
-        // User enters "no" -> cancelled
-        let cancelled = CLIService.handle(
-            args: ["clavis", "vault", "repair"],
-            isTTY: true,
-            confirmationPrompt: { "no" }
-        )
-        XCTAssertEqual(cancelled?.exitCode, 1)
-        XCTAssertTrue(cancelled?.error?.contains("cancelled") == true)
-        XCTAssertNil(try pinStore.loadPin())
-
-        // User enters "yes" -> succeeded
-        let succeeded = CLIService.handle(
-            args: ["clavis", "vault", "repair"],
-            isTTY: true,
-            confirmationPrompt: { "yes" }
-        )
-        XCTAssertEqual(succeeded?.exitCode, 0)
-        XCTAssertTrue(succeeded?.output.contains("successfully repaired") == true)
-        XCTAssertNotNil(try pinStore.loadPin())
-    }
-
-    func testCLIVaultRepairPinMismatchRequiresReplacePinFlag() throws {
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "cli-mismatch-test"))
-        let wrongPin = Data(repeating: 0xee, count: 32)
-        let pinStore = InMemoryMasterKeyPinStore(pin: wrongPin)
-        EncryptedVaultStore.customPinStore = pinStore
-
-        // Mismatched pin without --replace-pin -> fails with warning
-        let failed = CLIService.handle(
-            args: ["clavis", "vault", "repair"],
-            isTTY: true,
-            confirmationPrompt: { "yes" }
-        )
-        XCTAssertEqual(failed?.exitCode, 1)
-        XCTAssertTrue(failed?.error?.contains("--replace-pin") == true)
-        XCTAssertEqual(try pinStore.loadPin(), wrongPin)
-
-        // Mismatched pin with --replace-pin -> succeeds
-        let succeeded = CLIService.handle(
-            args: ["clavis", "vault", "repair", "--replace-pin"],
-            isTTY: true,
-            confirmationPrompt: { "yes" }
-        )
-        XCTAssertEqual(succeeded?.exitCode, 0)
-        XCTAssertTrue(succeeded?.output.contains("WARNING: Replacing existing mismatched") == true)
-        XCTAssertNotEqual(try pinStore.loadPin(), wrongPin)
     }
 
     /// R17: without a TTY the command must fail before verifyMasterKey() (Touch ID). With no vault on
     /// disk verification would fail with a different message, so the TTY error proves the order.
-    func testVaultRepairWithoutTTYFailsBeforeVerification() throws {
-        EncryptedVaultStore.customPinStore = InMemoryMasterKeyPinStore(pin: nil)
-        let result = CLIService.handle(args: ["clavis", "vault", "repair"], isTTY: false)
-        XCTAssertEqual(result?.exitCode, 1)
-        XCTAssertTrue(result?.error?.contains("TTY") == true)
-        XCTAssertFalse(result?.error?.contains("verify") == true)
+    @Test func testVaultRepairWithoutTTYFailsBeforeVerification() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            EncryptedVaultStore.customPinStore = InMemoryMasterKeyPinStore(pin: nil)
+            defer { EncryptedVaultStore.customPinStore = nil }
+            let result = CLIService.handle(args: ["clavis", "vault", "repair"], isTTY: false)
+            #expect(result?.exitCode == 1)
+            #expect(result?.error?.contains("TTY") == true)
+            #expect(result?.error?.contains("verify") != true)
+        }
     }
 
     /// R17: the owner needs the pinned fingerprint as a baseline to tell a legitimate repair from a
     /// replaced master.key.
-    func testVaultRepairShowsPinnedFingerprintBaselineAndWarning() throws {
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "cli-baseline-test"))
-        let wrongPin = Data(repeating: 0xee, count: 32)
-        let oldFingerprint = EncryptedVaultStore.fingerprint(forPin: wrongPin)
-        EncryptedVaultStore.customPinStore = InMemoryMasterKeyPinStore(pin: wrongPin)
+    @Test func testVaultRepairShowsPinnedFingerprintBaselineAndWarning() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "cli-baseline-test"))
+            let wrongPin = Data(repeating: 0xee, count: 32)
+            let oldFingerprint = EncryptedVaultStore.fingerprint(forPin: wrongPin)
+            EncryptedVaultStore.customPinStore = InMemoryMasterKeyPinStore(pin: wrongPin)
+            defer { EncryptedVaultStore.customPinStore = nil }
 
-        // Even the refusal (no --replace-pin) prints the baseline.
-        let refused = CLIService.handle(
-            args: ["clavis", "vault", "repair"],
-            isTTY: true,
-            confirmationPrompt: { "yes" }
-        )
-        XCTAssertEqual(refused?.exitCode, 1)
-        XCTAssertTrue(refused?.output.contains("Keychain pinned fingerprint: \(oldFingerprint)") == true)
-        XCTAssertTrue(refused?.output.contains("master.key created:") == true)
+            // Even the refusal (no --replace-pin) prints the baseline.
+            let refused = CLIService.handle(
+                args: ["clavis", "vault", "repair"],
+                isTTY: true,
+                confirmationPrompt: { "yes" }
+            )
+            #expect(refused?.exitCode == 1)
+            #expect(refused?.output.contains("Keychain pinned fingerprint: \(oldFingerprint)") == true)
+            #expect(refused?.output.contains("master.key created:") == true)
 
-        let replaced = CLIService.handle(
-            args: ["clavis", "vault", "repair", "--replace-pin"],
-            isTTY: true,
-            confirmationPrompt: { "no" }
-        )
-        let output = replaced?.output ?? ""
-        XCTAssertTrue(output.contains("Keychain pinned fingerprint: \(oldFingerprint)"))
-        XCTAssertTrue(output.contains("Master key fingerprint: SHA256:"))
-        XCTAssertTrue(output.contains("do not confirm"))
-        XCTAssertNotEqual(oldFingerprint, try EncryptedVaultStore.shared.verifyMasterKey().fingerprint)
+            let replaced = CLIService.handle(
+                args: ["clavis", "vault", "repair", "--replace-pin"],
+                isTTY: true,
+                confirmationPrompt: { "no" }
+            )
+            let output = replaced?.output ?? ""
+            #expect(output.contains("Keychain pinned fingerprint: \(oldFingerprint)"))
+            #expect(output.contains("Master key fingerprint: SHA256:"))
+            #expect(output.contains("do not confirm"))
+            #expect(oldFingerprint != (try EncryptedVaultStore.shared.verifyMasterKey().fingerprint))
+        }
     }
 
     // MARK: - Finding N-4: Cross-Process Advisory File Lock Tests
 
-    func testExternalHolderBlocksMasterKeyCreation() throws {
-        EncryptedVaultStore.masterKeyLockPollInterval = 5_000
-        defer { EncryptedVaultStore.masterKeyLockPollInterval = 50_000 }
+    @Test func testExternalHolderBlocksMasterKeyCreation() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            EncryptedVaultStore.masterKeyLockPollInterval = 5_000
+            defer { EncryptedVaultStore.masterKeyLockPollInterval = 50_000 }
 
-        let vaultDir = EncryptedVaultStore.shared.vaultDirectoryURL
-        try SecureFS.createDirectory(at: vaultDir)
-        let lockURL = vaultDir.appendingPathComponent(".master.lock")
-        let lockFd = SecureFS.openLockFile(path: lockURL.path, flags: O_CREAT | O_RDWR, mode: 0o600)
-        XCTAssertGreaterThanOrEqual(lockFd, 0)
-        XCTAssertEqual(flock(lockFd, LOCK_EX), 0)
+            let vaultDir = EncryptedVaultStore.shared.vaultDirectoryURL
+            try SecureFS.createDirectory(at: vaultDir)
+            let lockURL = vaultDir.appendingPathComponent(".master.lock")
+            let lockFd = SecureFS.openLockFile(path: lockURL.path, flags: O_CREAT | O_RDWR, mode: 0o600)
+            #expect(lockFd >= 0)
+            #expect(flock(lockFd, LOCK_EX) == 0)
 
-        let exp = expectation(description: "ensureMasterKey completes after lock released")
-        var returnedPubKey: P256.KeyAgreement.PublicKey?
-        var callError: Error?
-
-        let queue = DispatchQueue(label: "test.masterKey.block")
-        queue.async {
-            do {
-                let key = try EncryptedVaultStore.shared.ensureMasterKey()
-                returnedPubKey = key
-            } catch {
-                callError = error
+            let context = fixture.context
+            let task = Task.detached {
+                try await TestContextScope.$current.withValue(context) {
+                    try EncryptedVaultStore.shared.ensureMasterKey()
+                }
             }
-            exp.fulfill()
-        }
 
-        // Assert not finished while lock is held
-        usleep(30_000)
-        XCTAssertNil(returnedPubKey)
-        XCTAssertNil(callError)
+            // Assert not finished while lock is held
+            try await Task.sleep(nanoseconds: 30_000_000)
 
-        // Release lock
-        XCTAssertEqual(flock(lockFd, LOCK_UN), 0)
-        close(lockFd)
-
-        // Assert it finishes and files exist
-        wait(for: [exp], timeout: 2.0)
-        XCTAssertNotNil(returnedPubKey)
-        XCTAssertNil(callError)
-
-        let pubURL = vaultDir.appendingPathComponent("master.pub")
-        let keyURL = vaultDir.appendingPathComponent("master.key")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: pubURL.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: keyURL.path))
-    }
-
-    func testMasterKeyRecheckWorksWhenCreatedByAnotherProcess() throws {
-        EncryptedVaultStore.masterKeyLockPollInterval = 5_000
-        defer { EncryptedVaultStore.masterKeyLockPollInterval = 50_000 }
-
-        let vaultDir = EncryptedVaultStore.shared.vaultDirectoryURL
-        try SecureFS.createDirectory(at: vaultDir)
-        let lockURL = vaultDir.appendingPathComponent(".master.lock")
-        let lockFd = SecureFS.openLockFile(path: lockURL.path, flags: O_CREAT | O_RDWR, mode: 0o600)
-        XCTAssertGreaterThanOrEqual(lockFd, 0)
-        XCTAssertEqual(flock(lockFd, LOCK_EX), 0)
-
-        final class CountingPinStore: MasterKeyPinStoring, @unchecked Sendable {
-            private let lock = NSLock()
-            var saveCount = 0
-            var pin: Data?
-            init(pin: Data? = nil) { self.pin = pin }
-            func loadPin() throws -> Data? {
-                lock.lock()
-                defer { lock.unlock() }
-                return pin
-            }
-            func savePin(_ p: Data) throws {
-                lock.lock()
-                defer { lock.unlock() }
-                saveCount += 1
-                pin = p
-            }
-            func removePin() throws {
-                lock.lock()
-                defer { lock.unlock() }
-                pin = nil
-            }
-        }
-        let pinStore = CountingPinStore()
-        EncryptedVaultStore.customPinStore = pinStore
-
-        let exp = expectation(description: "waiting call completes after lock released")
-        var returnedPubKey: P256.KeyAgreement.PublicKey?
-        var callError: Error?
-
-        let queue = DispatchQueue(label: "test.masterKey.recheck")
-        queue.async {
-            do {
-                let key = try EncryptedVaultStore.shared.ensureMasterKey()
-                returnedPubKey = key
-            } catch {
-                callError = error
-            }
-            exp.fulfill()
-        }
-
-        // Wait briefly to ensure background call has started and is polling lock
-        usleep(20_000)
-        XCTAssertNil(returnedPubKey)
-
-        // Create valid key pair via file writes while holding lock
-        let swKey = P256.KeyAgreement.PrivateKey()
-        let pubData = swKey.publicKey.rawRepresentation
-        let pin = Data(SHA256.hash(data: pubData))
-        try EncryptedVaultStore.shared.activePinStore.savePin(pin)
-        XCTAssertEqual(pinStore.saveCount, 1)
-
-        let pubURL = vaultDir.appendingPathComponent("master.pub")
-        let keyURL = vaultDir.appendingPathComponent("master.key")
-        try SecureFS.withUmask(0o077) {
-            var keyFileBytes = Data([0x01])
-            keyFileBytes.append(swKey.rawRepresentation)
-            try keyFileBytes.write(to: keyURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
-
-            try pubData.write(to: pubURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
-        }
-
-        // Release lock
-        XCTAssertEqual(flock(lockFd, LOCK_UN), 0)
-        close(lockFd)
-
-        wait(for: [exp], timeout: 2.0)
-        XCTAssertNil(callError)
-        XCTAssertEqual(returnedPubKey?.rawRepresentation, swKey.publicKey.rawRepresentation)
-
-        // Verify pin was not overwritten
-        let storedPin = try EncryptedVaultStore.shared.activePinStore.loadPin()
-        XCTAssertEqual(storedPin, pin)
-        XCTAssertEqual(pinStore.saveCount, 1)
-    }
-
-    func testMasterKeyLockTimeoutThrowsError() throws {
-        EncryptedVaultStore.masterKeyLockPollInterval = 5_000
-        EncryptedVaultStore.masterKeyLockTimeout = 0.04
-        defer {
-            EncryptedVaultStore.masterKeyLockTimeout = 10.0
-            EncryptedVaultStore.masterKeyLockPollInterval = 50_000
-        }
-
-        let vaultDir = EncryptedVaultStore.shared.vaultDirectoryURL
-        try SecureFS.createDirectory(at: vaultDir)
-        let lockURL = vaultDir.appendingPathComponent(".master.lock")
-        let lockFd = SecureFS.openLockFile(path: lockURL.path, flags: O_CREAT | O_RDWR, mode: 0o600)
-        XCTAssertGreaterThanOrEqual(lockFd, 0)
-        XCTAssertEqual(flock(lockFd, LOCK_EX), 0)
-        defer {
-            flock(lockFd, LOCK_UN)
+            // Release lock
+            #expect(flock(lockFd, LOCK_UN) == 0)
             close(lockFd)
-        }
 
-        let start = Date()
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKey()) { error in
-            let nsError = error as NSError
-            XCTAssertEqual(nsError.domain, "Clavis")
-            XCTAssertEqual(nsError.code, -1)
-            XCTAssertEqual(nsError.localizedDescription, "Another Clavis process is creating the vault master key.")
-        }
-        let elapsed = Date().timeIntervalSince(start)
-        XCTAssertGreaterThanOrEqual(elapsed, 0.04)
-    }
+            // Assert it finishes and files exist
+            let returnedPubKey = try await task.value
+            #expect(returnedPubKey != nil)
 
-    func testEnsureMasterKeyLockedThrowsWhenSecureEnclaveUnavailable() throws {
-        EncryptedVaultStore.isSecureEnclaveAvailableOverride = false
-        defer {
-            EncryptedVaultStore.isSecureEnclaveAvailableOverride = nil
-        }
-
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKeyLocked()) { error in
-            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .secureEnclaveRequired)
+            let pubURL = vaultDir.appendingPathComponent("master.pub")
+            let keyURL = vaultDir.appendingPathComponent("master.key")
+            #expect(FileManager.default.fileExists(atPath: pubURL.path))
+            #expect(FileManager.default.fileExists(atPath: keyURL.path))
         }
     }
 
-    func testDeletingMasterFilesWhenPinExistsRefusesToOverwritePin() throws {
-        try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "vault-existing-pin"))
-        let originalPin = try XCTUnwrap(EncryptedVaultStore.shared.activePinStore.loadPin())
+    @Test func testMasterKeyRecheckWorksWhenCreatedByAnotherProcess() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            EncryptedVaultStore.masterKeyLockPollInterval = 5_000
+            defer {
+                EncryptedVaultStore.masterKeyLockPollInterval = 50_000
+                EncryptedVaultStore.customPinStore = nil
+            }
 
-        let vaultDir = EncryptedVaultStore.shared.vaultDirectoryURL
-        let pubURL = vaultDir.appendingPathComponent("master.pub")
-        let keyURL = vaultDir.appendingPathComponent("master.key")
-        try FileManager.default.removeItem(at: pubURL)
-        try FileManager.default.removeItem(at: keyURL)
+            let vaultDir = EncryptedVaultStore.shared.vaultDirectoryURL
+            try SecureFS.createDirectory(at: vaultDir)
+            let lockURL = vaultDir.appendingPathComponent(".master.lock")
+            let lockFd = SecureFS.openLockFile(path: lockURL.path, flags: O_CREAT | O_RDWR, mode: 0o600)
+            #expect(lockFd >= 0)
+            #expect(flock(lockFd, LOCK_EX) == 0)
 
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.ensureMasterKey()) { error in
-            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyTampered)
+            final class CountingPinStore: MasterKeyPinStoring, @unchecked Sendable {
+                private let lock = NSLock()
+                var saveCount = 0
+                var pin: Data?
+                init(pin: Data? = nil) { self.pin = pin }
+                func loadPin() throws -> Data? {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    return pin
+                }
+                func savePin(_ p: Data) throws {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    saveCount += 1
+                    pin = p
+                }
+                func removePin() throws {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    pin = nil
+                }
+            }
+            let pinStore = CountingPinStore()
+            EncryptedVaultStore.customPinStore = pinStore
+
+            let context = fixture.context
+            let task = Task.detached {
+                try await TestContextScope.$current.withValue(context) {
+                    try EncryptedVaultStore.shared.ensureMasterKey()
+                }
+            }
+
+            // Wait briefly to ensure background call has started and is polling lock
+            try await Task.sleep(nanoseconds: 20_000_000)
+
+            // Create valid key pair via file writes while holding lock
+            let swKey = P256.KeyAgreement.PrivateKey()
+            let pubData = swKey.publicKey.rawRepresentation
+            let pin = Data(SHA256.hash(data: pubData))
+            try EncryptedVaultStore.shared.activePinStore.savePin(pin)
+            #expect(pinStore.saveCount == 1)
+
+            let pubURL = vaultDir.appendingPathComponent("master.pub")
+            let keyURL = vaultDir.appendingPathComponent("master.key")
+            try SecureFS.withUmask(0o077) {
+                var keyFileBytes = Data([0x01])
+                keyFileBytes.append(swKey.rawRepresentation)
+                try keyFileBytes.write(to: keyURL, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
+
+                try pubData.write(to: pubURL, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
+            }
+
+            // Release lock
+            #expect(flock(lockFd, LOCK_UN) == 0)
+            close(lockFd)
+
+            let returnedPubKey = try await task.value
+            #expect(returnedPubKey.rawRepresentation == swKey.publicKey.rawRepresentation)
+
+            // Verify pin was not overwritten
+            let storedPin = try EncryptedVaultStore.shared.activePinStore.loadPin()
+            #expect(storedPin == pin)
+            #expect(pinStore.saveCount == 1)
         }
-        XCTAssertThrowsError(try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "attacker-key"))) { error in
-            XCTAssertEqual(error as? EncryptedVaultStore.VaultError, .masterKeyTampered)
+    }
+
+    @Test func testMasterKeyLockTimeoutThrowsError() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            EncryptedVaultStore.masterKeyLockPollInterval = 5_000
+            EncryptedVaultStore.masterKeyLockTimeout = 0.04
+            defer {
+                EncryptedVaultStore.masterKeyLockTimeout = 10.0
+                EncryptedVaultStore.masterKeyLockPollInterval = 50_000
+            }
+
+            let vaultDir = EncryptedVaultStore.shared.vaultDirectoryURL
+            try SecureFS.createDirectory(at: vaultDir)
+            let lockURL = vaultDir.appendingPathComponent(".master.lock")
+            let lockFd = SecureFS.openLockFile(path: lockURL.path, flags: O_CREAT | O_RDWR, mode: 0o600)
+            #expect(lockFd >= 0)
+            #expect(flock(lockFd, LOCK_EX) == 0)
+            defer {
+                _ = flock(lockFd, LOCK_UN)
+                close(lockFd)
+            }
+
+            let start = Date()
+            #expect {
+                try EncryptedVaultStore.shared.ensureMasterKey()
+            } throws: { error in
+                let nsError = error as NSError
+                return nsError.domain == "Clavis" &&
+                    nsError.code == -1 &&
+                    nsError.localizedDescription == "Another Clavis process is creating the vault master key."
+            }
+            let elapsed = Date().timeIntervalSince(start)
+            #expect(elapsed >= 0.04)
         }
-        XCTAssertEqual(
-            try EncryptedVaultStore.shared.activePinStore.loadPin(),
-            originalPin,
-            "Existing Keychain pin must never be overwritten when master files are deleted from disk"
-        )
+    }
+
+    @Test func testEnsureMasterKeyLockedThrowsWhenSecureEnclaveUnavailable() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            EncryptedVaultStore.isSecureEnclaveAvailableOverride = false
+            defer {
+                EncryptedVaultStore.isSecureEnclaveAvailableOverride = nil
+            }
+
+            #expect {
+                try EncryptedVaultStore.shared.ensureMasterKeyLocked()
+            } throws: { error in
+                error as? EncryptedVaultStore.VaultError == .secureEnclaveRequired
+            }
+        }
+    }
+
+    @Test func testDeletingMasterFilesWhenPinExistsRefusesToOverwritePin() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "vault-existing-pin"))
+            let originalPin = try #require(try EncryptedVaultStore.shared.activePinStore.loadPin())
+
+            let vaultDir = EncryptedVaultStore.shared.vaultDirectoryURL
+            let pubURL = vaultDir.appendingPathComponent("master.pub")
+            let keyURL = vaultDir.appendingPathComponent("master.key")
+            try FileManager.default.removeItem(at: pubURL)
+            try FileManager.default.removeItem(at: keyURL)
+
+            #expect {
+                try EncryptedVaultStore.shared.ensureMasterKey()
+            } throws: { error in
+                error as? EncryptedVaultStore.VaultError == .masterKeyTampered
+            }
+            #expect {
+                try EncryptedVaultStore.shared.saveRecord(makeRecord(label: "attacker-key"))
+            } throws: { error in
+                error as? EncryptedVaultStore.VaultError == .masterKeyTampered
+            }
+            #expect(
+                try EncryptedVaultStore.shared.activePinStore.loadPin() == originalPin,
+                "Existing Keychain pin must never be overwritten when master files are deleted from disk"
+            )
+        }
     }
 }
-
-
-
-

@@ -1,8 +1,10 @@
-import XCTest
+import Testing
+import Foundation
 import LocalAuthentication
 @testable import ClavisCore
 
-final class KeyKindChangeTests: ClavisBaseTestCase {
+@Suite(.serialized)
+struct KeyKindChangeTests {
 
     private struct RejectingAuthenticator: UserAuthenticating {
         func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) throws -> LAContext {
@@ -14,169 +16,189 @@ final class KeyKindChangeTests: ClavisBaseTestCase {
         }
     }
 
-    func test_005_AC5_changeKindRequiresUserPresence() throws {
-        let auth = CountingAuthenticator()
-        let keyManager = makeKeyManager(authenticator: auth)
+    @Test func test_005_AC5_changeKindRequiresUserPresence() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let auth = CountingAuthenticator()
+            let keyManager = fixture.makeKeyManager(authenticator: auth)
 
-        let key = try keyManager.generateKey(label: "presence-test", keyPurpose: .general)
+            let key = try keyManager.generateKey(label: "presence-test", keyPurpose: .general)
 
-        // Change kind must require user presence authentication
-        try keyManager.changeKind(label: key.label, to: .agent)
-        XCTAssertEqual(auth.authenticationCount, 1, "changeKind must require user presence authentication")
+            // Change kind must require user presence authentication
+            try keyManager.changeKind(label: key.label, to: .agent)
+            #expect(auth.authenticationCount == 1, "changeKind must require user presence authentication")
+        }
     }
 
-    func test_005_AC5_changeKindAuthFailureLeavesKeyUnchanged() throws {
-        let recorder = InMemoryAuditRecorder()
-        let keyStore = InMemoryPrivateKeyStore()
-        let initialManager = makeKeyManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore,
-            auditRecorder: recorder
-        )
+    @Test func test_005_AC5_changeKindAuthFailureLeavesKeyUnchanged() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let recorder = InMemoryAuditRecorder()
+            let keyStore = InMemoryPrivateKeyStore()
+            let initialManager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: keyStore,
+                auditRecorder: recorder
+            )
 
-        let key = try initialManager.generateKey(label: "auth-fail-test", keyPurpose: .general)
+            let key = try initialManager.generateKey(label: "auth-fail-test", keyPurpose: .general)
 
-        // Create manager with rejecting authenticator
-        let failingManager = makeKeyManager(
-            authenticator: RejectingAuthenticator(),
-            privateKeyStore: keyStore,
-            auditRecorder: recorder
-        )
+            // Create manager with rejecting authenticator
+            let failingManager = fixture.makeKeyManager(
+                authenticator: RejectingAuthenticator(),
+                privateKeyStore: keyStore,
+                auditRecorder: recorder
+            )
 
-        XCTAssertThrowsError(try failingManager.changeKind(label: key.label, to: .agent))
+            #expect(throws: (any Error).self) {
+                try failingManager.changeKind(label: key.label, to: .agent)
+            }
 
-        // Index remains unchanged
-        let fetchedKey = try initialManager.fetchKeyInfo(label: key.label)
-        XCTAssertEqual(fetchedKey?.keyPurpose, .general)
+            // Index remains unchanged
+            let fetchedKey = try initialManager.fetchKeyInfo(label: key.label)
+            #expect(fetchedKey?.keyPurpose == .general)
 
-        // Record in store remains unchanged
-        guard let rawData = try keyStore.load(label: key.label, context: LAContext(), prompt: "") else {
-            XCTFail("Record not found in keyStore")
-            return
+            // Record in store remains unchanged
+            let rawData = try #require(try keyStore.load(label: key.label, context: LAContext(), prompt: ""))
+            let record = try StoredPrivateKeyRecord.decode(from: rawData)
+            #expect(record.keyPurpose == .general)
+
+            // Audit log records denied / authenticationFailed
+            let changeEvents = recorder.events.filter { $0.type == .keyKindChange }
+            #expect(changeEvents.count == 1)
+            let event = changeEvents[0]
+            #expect(event.result == .denied)
+            #expect(event.reason == .authenticationFailed)
+            #expect(event.keyKind == .agent)
+            #expect(event.keyFingerprint == key.fingerprint)
+            #expect(event.sensitive.keyLabel == key.label)
         }
-        let record = try StoredPrivateKeyRecord.decode(from: rawData)
-        XCTAssertEqual(record.keyPurpose, .general)
-
-        // Audit log records denied / authenticationFailed
-        let changeEvents = recorder.events.filter { $0.type == .keyKindChange }
-        XCTAssertEqual(changeEvents.count, 1)
-        let event = changeEvents[0]
-        XCTAssertEqual(event.result, .denied)
-        XCTAssertEqual(event.reason, .authenticationFailed)
-        XCTAssertEqual(event.keyKind, .agent)
-        XCTAssertEqual(event.keyFingerprint, key.fingerprint)
-        XCTAssertEqual(event.sensitive.keyLabel, key.label)
     }
 
-    func test_005_T4_changeKindUpdatesRecordAndIndex() throws {
-        let keyStore = InMemoryPrivateKeyStore()
-        let keyManager = makeKeyManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore,
-            auditRecorder: InMemoryAuditRecorder()
-        )
+    @Test func test_005_T4_changeKindUpdatesRecordAndIndex() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let keyStore = InMemoryPrivateKeyStore()
+            let keyManager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: keyStore,
+                auditRecorder: InMemoryAuditRecorder()
+            )
 
-        let key = try keyManager.generateKey(label: "roundtrip-test", keyPurpose: .general)
-        XCTAssertEqual(key.keyPurpose, .general)
+            let key = try keyManager.generateKey(label: "roundtrip-test", keyPurpose: .general)
+            #expect(key.keyPurpose == .general)
 
-        // Change .general -> .agent
-        try keyManager.changeKind(label: key.label, to: .agent)
+            // Change .general -> .agent
+            try keyManager.changeKind(label: key.label, to: .agent)
 
-        // Check index
-        let keysAfterFirst = try keyManager.listKeys()
-        let matchingFirst = keysAfterFirst.first { $0.label == key.label }
-        XCTAssertEqual(matchingFirst?.keyPurpose, .agent)
+            // Check index
+            let keysAfterFirst = try keyManager.listKeys()
+            let matchingFirst = keysAfterFirst.first { $0.label == key.label }
+            #expect(matchingFirst?.keyPurpose == .agent)
 
-        // Check decoded record
-        guard let rawDataFirst = try keyStore.load(label: key.label, context: LAContext(), prompt: "") else {
-            XCTFail("Record not found in keyStore")
-            return
+            // Check decoded record
+            let rawDataFirst = try #require(try keyStore.load(label: key.label, context: LAContext(), prompt: ""))
+            let recordFirst = try StoredPrivateKeyRecord.decode(from: rawDataFirst)
+            #expect(recordFirst.keyPurpose == .agent)
+
+            // Change .agent -> .general
+            try keyManager.changeKind(label: key.label, to: .general)
+
+            // Check index
+            let keysAfterSecond = try keyManager.listKeys()
+            let matchingSecond = keysAfterSecond.first { $0.label == key.label }
+            #expect(matchingSecond?.keyPurpose == .general)
+
+            // Check decoded record
+            let rawDataSecond = try #require(try keyStore.load(label: key.label, context: LAContext(), prompt: ""))
+            let recordSecond = try StoredPrivateKeyRecord.decode(from: rawDataSecond)
+            #expect(recordSecond.keyPurpose == .general)
         }
-        let recordFirst = try StoredPrivateKeyRecord.decode(from: rawDataFirst)
-        XCTAssertEqual(recordFirst.keyPurpose, .agent)
-
-        // Change .agent -> .general
-        try keyManager.changeKind(label: key.label, to: .general)
-
-        // Check index
-        let keysAfterSecond = try keyManager.listKeys()
-        let matchingSecond = keysAfterSecond.first { $0.label == key.label }
-        XCTAssertEqual(matchingSecond?.keyPurpose, .general)
-
-        // Check decoded record
-        guard let rawDataSecond = try keyStore.load(label: key.label, context: LAContext(), prompt: "") else {
-            XCTFail("Record not found in keyStore")
-            return
-        }
-        let recordSecond = try StoredPrivateKeyRecord.decode(from: rawDataSecond)
-        XCTAssertEqual(recordSecond.keyPurpose, .general)
     }
 
-    func test_005_T4_gitOnlyCannotChangeKind() throws {
-        let auth = CountingAuthenticator()
-        let keyManager = makeKeyManager(authenticator: auth)
+    @Test func test_005_T4_gitOnlyCannotChangeKind() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let auth = CountingAuthenticator()
+            let keyManager = fixture.makeKeyManager(authenticator: auth)
 
-        let key = try keyManager.generateKey(label: "git-only-test", keyPurpose: .gitSigningOnly)
+            let key = try keyManager.generateKey(label: "git-only-test", keyPurpose: .gitSigningOnly)
 
-        // Attempting to change to .agent must throw kindChangeNotAllowed without prompt
-        XCTAssertThrowsError(try keyManager.changeKind(label: key.label, to: .agent)) { error in
-            XCTAssertEqual(error as? KeyPurposeError, .kindChangeNotAllowed)
+            // Attempting to change to .agent must throw kindChangeNotAllowed without prompt
+            #expect {
+                try keyManager.changeKind(label: key.label, to: .agent)
+            } throws: { error in
+                error as? KeyPurposeError == .kindChangeNotAllowed
+            }
+
+            // Attempting to change to .general must throw kindChangeNotAllowed without prompt
+            #expect {
+                try keyManager.changeKind(label: key.label, to: .general)
+            } throws: { error in
+                error as? KeyPurposeError == .kindChangeNotAllowed
+            }
+
+            #expect(auth.authenticationCount == 0, "No authentication prompt should occur for gitSigningOnly key")
         }
-
-        // Attempting to change to .general must throw kindChangeNotAllowed without prompt
-        XCTAssertThrowsError(try keyManager.changeKind(label: key.label, to: .general)) { error in
-            XCTAssertEqual(error as? KeyPurposeError, .kindChangeNotAllowed)
-        }
-
-        XCTAssertEqual(auth.authenticationCount, 0, "No authentication prompt should occur for gitSigningOnly key")
     }
 
-    func test_005_T4_changeKindRecordsAudit() throws {
-        let recorder = InMemoryAuditRecorder()
-        let keyManager = makeKeyManager(auditRecorder: recorder)
+    @Test func test_005_T4_changeKindRecordsAudit() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let recorder = InMemoryAuditRecorder()
+            let keyManager = fixture.makeKeyManager(auditRecorder: recorder)
 
-        let key = try keyManager.generateKey(label: "audit-test", keyPurpose: .general)
+            let key = try keyManager.generateKey(label: "audit-test", keyPurpose: .general)
 
-        try keyManager.changeKind(label: key.label, to: .agent)
+            try keyManager.changeKind(label: key.label, to: .agent)
 
-        let changeEvents = recorder.events.filter { $0.type == .keyKindChange }
-        XCTAssertEqual(changeEvents.count, 1)
-        let event = changeEvents[0]
-        XCTAssertEqual(event.result, .allowed)
-        XCTAssertEqual(event.keyKind, .agent)
-        XCTAssertEqual(event.keyFingerprint, key.fingerprint)
-        XCTAssertEqual(event.sensitive.keyLabel, key.label)
+            let changeEvents = recorder.events.filter { $0.type == .keyKindChange }
+            #expect(changeEvents.count == 1)
+            let event = changeEvents[0]
+            #expect(event.result == .allowed)
+            #expect(event.keyKind == .agent)
+            #expect(event.keyFingerprint == key.fingerprint)
+            #expect(event.sensitive.keyLabel == key.label)
+        }
     }
 
-    func test_005_T4_indexWriteFailureRollsBackRecord() throws {
-        let keyStore = InMemoryPrivateKeyStore()
-        let keyManager = makeKeyManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: keyStore,
-            auditRecorder: InMemoryAuditRecorder()
-        )
+    @Test func test_005_T4_indexWriteFailureRollsBackRecord() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let keyStore = InMemoryPrivateKeyStore()
+            let keyManager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: keyStore,
+                auditRecorder: InMemoryAuditRecorder()
+            )
 
-        let key = try keyManager.generateKey(label: "rollback-test", keyPurpose: .general)
+            let key = try keyManager.generateKey(label: "rollback-test", keyPurpose: .general)
 
-        PublicKeyStore.forcedSaveErrorForTesting = NSError(domain: "test", code: 999, userInfo: nil)
-        defer { PublicKeyStore.forcedSaveErrorForTesting = nil }
+            PublicKeyStore.forcedSaveErrorForTesting = NSError(domain: "test", code: 999, userInfo: nil)
+            defer { PublicKeyStore.forcedSaveErrorForTesting = nil }
 
-        XCTAssertThrowsError(try keyManager.changeKind(label: key.label, to: .agent))
+            #expect(throws: (any Error).self) {
+                try keyManager.changeKind(label: key.label, to: .agent)
+            }
 
-        // Index remains .general
-        let fetchedKey = try keyManager.fetchKeyInfo(label: key.label)
-        XCTAssertEqual(fetchedKey?.keyPurpose, .general)
+            // Index remains .general
+            let fetchedKey = try keyManager.fetchKeyInfo(label: key.label)
+            #expect(fetchedKey?.keyPurpose == .general)
 
-        // Keychain record was rolled back to .general
-        guard let rawData = try keyStore.load(label: key.label, context: LAContext(), prompt: "") else {
-            XCTFail("Record not found in keyStore")
-            return
+            // Keychain record was rolled back to .general
+            let rawData = try #require(try keyStore.load(label: key.label, context: LAContext(), prompt: ""))
+            let record = try StoredPrivateKeyRecord.decode(from: rawData)
+            #expect(record.keyPurpose == .general, "Keychain record should be rolled back to general")
+
+            // Vault record was rolled back to .general
+            let vaultRecord = try EncryptedVaultStore.shared.loadRecord(label: key.label)
+            #expect(vaultRecord?.keyPurpose == .general, "Vault record should be rolled back to general")
         }
-        let record = try StoredPrivateKeyRecord.decode(from: rawData)
-        XCTAssertEqual(record.keyPurpose, .general, "Keychain record should be rolled back to general")
-
-        // Vault record was rolled back to .general
-        let vaultRecord = try EncryptedVaultStore.shared.loadRecord(label: key.label)
-        XCTAssertEqual(vaultRecord?.keyPurpose, .general, "Vault record should be rolled back to general")
     }
 }
