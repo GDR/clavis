@@ -617,7 +617,12 @@ final class HistoryViewModelTests {
         // Delete rows 101..200 (gap of 100 rows)
         try executeSQL(on: dbURL, "DELETE FROM events WHERE seq BETWEEN 101 AND 200;")
 
-        let viewModel = HistoryViewModel(store: { store }, keyring: nil, contextProvider: { nil })
+        let viewModel = HistoryViewModel(
+            store: { store },
+            keyring: nil,
+            contextProvider: { nil },
+            notificationCenter: notificationCenter
+        )
         viewModel.query.limit = 150
         await viewModel.reload().value
 
@@ -639,6 +644,45 @@ final class HistoryViewModelTests {
         #expect(gaps.first?.1 == 200)
         #expect(gaps.first?.2 == 100)
     }
+
+    @Test func testPaginationIgnoresGlobalDistributedAndDefaultNotificationsWhenIsolated() async throws {
+        let store = try createTestStore()
+        for _ in 1...400 {
+            try store.insert(AuditEvent(type: .signature, result: .allowed))
+        }
+
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
+        await viewModel.reload().value
+        #expect(viewModel.records.count == 200)
+        #expect(viewModel.hasMore == true)
+
+        await viewModel.loadMore().value
+        #expect(viewModel.records.count == 400)
+
+        // Broadcast notifications on global centers (simulating concurrent tests or background processes)
+        let globalNames: [NSNotification.Name] = [
+            HistoryViewModel.didRecordAuditNotification,
+            NSNotification.Name("com.clavis.agentSigned"),
+            NSNotification.Name("com.clavis.agentRateLimited"),
+            NSNotification.Name("com.clavis.agentSessionsChanged")
+        ]
+        for name in globalNames {
+            NotificationCenter.default.post(name: name, object: nil)
+            DistributedNotificationCenter.default().postNotificationName(
+                name,
+                object: nil,
+                userInfo: nil,
+                deliverImmediately: true
+            )
+        }
+
+        // Pump main actor tasks/runloop to ensure any stray observers would have fired
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+
+        await viewModel.loadMore().value
+        #expect(viewModel.records.count == 400)
+        #expect(viewModel.hasMore == false)
+    }
 }
-
-
