@@ -1,10 +1,10 @@
+@testable import ClavisTestSupport
 import Foundation
 import Testing
 import CryptoKit
 import LocalAuthentication
 import AppKit
 @testable import ClavisCore
-@testable import ClavisTestSupport
 @testable import Clavis
 
 @Suite(.serialized)
@@ -297,19 +297,21 @@ final class DaemonLifecycleTests {
     }
 
     @MainActor
-    @Test func testAppStateInitializationAndDaemonFlag() {
-        let appState = AppState(
-            keyManager: makeKeyManager(),
-            sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-state.sock").path)
-        )
-        #expect(appState.errorMessage == nil)
+    @Test func testAppStateInitializationAndDaemonFlag() throws {
+        try fixture.runSync {
+            let appState = AppState(
+                keyManager: makeKeyManager(),
+                sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-state.sock").path)
+            )
+            #expect(appState.errorMessage == nil)
 
-        // Test lockNow refreshes state
-        appState.lockNow()
+            // Test lockNow refreshes state
+            appState.lockNow()
 
-        // Test clearError
-        appState.clearError()
-        #expect(appState.errorMessage == nil)
+            // Test clearError
+            appState.clearError()
+            #expect(appState.errorMessage == nil)
+        }
     }
 
     @MainActor
@@ -504,5 +506,102 @@ final class DaemonLifecycleTests {
 
         // AppState must verify against authoritative state and reject the forged notification
         #expect(appState.activeGitGrace == nil, "AppState must not adopt spoofed userInfo from unauthenticated distributed notifications")
+    }
+
+    @Test @MainActor
+    func testAppTerminationPromptCancelsShutdownWhenActiveWindowsPresent() {
+        var shutdownCalled = false
+        let delegate = ClavisApplicationDelegate(
+            activeWindowsCheck: { true },
+            confirmationPrompt: { false }, // user pressed Cancel
+            shutdownHandler: { shutdownCalled = true }
+        )
+
+        let reply = delegate.applicationShouldTerminate(NSApplication.shared)
+        #expect(reply == .terminateCancel)
+        #expect(!shutdownCalled)
+    }
+
+    @Test @MainActor
+    func testAppTerminationProceedsWhenConfirmedWithActiveWindows() {
+        var shutdownCalled = false
+        let delegate = ClavisApplicationDelegate(
+            activeWindowsCheck: { true },
+            confirmationPrompt: { true }, // user pressed Quit
+            shutdownHandler: { shutdownCalled = true }
+        )
+
+        let reply = delegate.applicationShouldTerminate(NSApplication.shared)
+        #expect(reply == .terminateNow)
+        #expect(shutdownCalled)
+    }
+
+    @Test @MainActor
+    func testAppTerminationProceedsImmediatelyWithoutPromptWhenNoActiveWindows() {
+        var shutdownCalled = false
+        var promptCalled = false
+        let delegate = ClavisApplicationDelegate(
+            activeWindowsCheck: { false },
+            confirmationPrompt: { promptCalled = true; return false },
+            shutdownHandler: { shutdownCalled = true }
+        )
+
+        let reply = delegate.applicationShouldTerminate(NSApplication.shared)
+        #expect(reply == .terminateNow)
+        #expect(!promptCalled)
+        #expect(shutdownCalled)
+    }
+
+    @Test @MainActor
+    func testWindowManagerHasActiveWindowsTracking() {
+        let wm = WindowManager()
+        #expect(!wm.hasActiveWindows)
+
+        let testWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        testWindow.isReleasedWhenClosed = false
+        testWindow.makeKeyAndOrderFront(nil)
+        defer { testWindow.orderOut(nil) }
+
+        wm.keyManagerWindow = testWindow
+        #expect(wm.hasActiveWindows)
+
+        wm.keyManagerWindow = nil
+        #expect(!wm.hasActiveWindows)
+
+        wm.settingsWindow = testWindow
+        #expect(wm.hasActiveWindows)
+
+        wm.settingsWindow = nil
+        #expect(!wm.hasActiveWindows)
+
+        wm.historyWindow = testWindow
+        #expect(wm.hasActiveWindows)
+
+        wm.historyWindow = nil
+        #expect(!wm.hasActiveWindows)
+    }
+
+    @Test @MainActor
+    func testWindowManagerCloseActiveWindow() {
+        let wm = WindowManager()
+        let testWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        testWindow.isReleasedWhenClosed = false
+        wm.keyManagerWindow = testWindow
+        testWindow.makeKeyAndOrderFront(nil)
+        defer { testWindow.orderOut(nil) }
+        #expect(testWindow.isVisible)
+
+        wm.closeActiveWindow()
+        #expect(!testWindow.isVisible)
     }
 }

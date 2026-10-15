@@ -6,20 +6,45 @@ import ClavisCore
 final class ClavisApplicationDelegate: NSObject, NSApplicationDelegate {
     private var didShutdown = false
     private let shutdownHandler: () -> Void
+    private let activeWindowsCheck: () -> Bool
+    private let confirmationPrompt: () -> Bool
 
     override convenience init() {
-        self.init {
-            AppState.shared.shutdownForTermination()
-            SingleInstanceLock.gui.release()
-        }
+        self.init(
+            activeWindowsCheck: { WindowManager.shared.hasActiveWindows },
+            confirmationPrompt: { ClavisApplicationDelegate.runDefaultConfirmationPrompt() },
+            shutdownHandler: {
+                AppState.shared.shutdownForTermination()
+                SingleInstanceLock.gui.release()
+            }
+        )
     }
 
-    init(shutdownHandler: @escaping () -> Void) {
+    convenience init(shutdownHandler: @escaping () -> Void) {
+        self.init(
+            activeWindowsCheck: { WindowManager.shared.hasActiveWindows },
+            confirmationPrompt: { ClavisApplicationDelegate.runDefaultConfirmationPrompt() },
+            shutdownHandler: shutdownHandler
+        )
+    }
+
+    init(
+        activeWindowsCheck: @escaping () -> Bool,
+        confirmationPrompt: @escaping () -> Bool,
+        shutdownHandler: @escaping () -> Void
+    ) {
+        self.activeWindowsCheck = activeWindowsCheck
+        self.confirmationPrompt = confirmationPrompt
         self.shutdownHandler = shutdownHandler
         super.init()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if activeWindowsCheck() {
+            guard confirmationPrompt() else {
+                return .terminateCancel
+            }
+        }
         shutdownOnce()
         return .terminateNow
     }
@@ -32,6 +57,19 @@ final class ClavisApplicationDelegate: NSObject, NSApplicationDelegate {
         guard !didShutdown else { return }
         didShutdown = true
         shutdownHandler()
+    }
+
+    private static func runDefaultConfirmationPrompt() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = ClavisUIStrings.MenuBar.quitConfirmationTitle
+        alert.informativeText = AppState.shared.isSocketActive
+            ? ClavisUIStrings.MenuBar.quitConfirmationDetailsWithAgent
+            : ClavisUIStrings.MenuBar.quitConfirmationDetailsSimple
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: ClavisUIStrings.MenuBar.quit)
+        alert.addButton(withTitle: ClavisUIStrings.Common.cancel)
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
     }
 }
 
@@ -97,11 +135,40 @@ struct ClavisApp: App {
         }
     }
 
+    private var closeWindowCommandTitle: String {
+        let preferred = Locale.preferredLanguages.first?.lowercased() ?? ""
+        if preferred.hasPrefix("ru") {
+            return "Закрыть окно"
+        }
+        return "Close Window"
+    }
+
     var body: some Scene {
         MenuBarExtra(ClavisUIStrings.Common.appName, systemImage: appState.isSocketActive ? "key.fill" : "key") {
             MenuBarView()
                 .environmentObject(appState)
         }
         .menuBarExtraStyle(.window)
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button(ClavisUIStrings.MenuBar.settings) {
+                    WindowManager.shared.openSettings()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+            CommandGroup(replacing: .newItem) {
+                Button(ClavisUIStrings.MenuBar.newKey) {
+                    WindowManager.shared.openKeyManager(sheet: .create)
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
+            CommandGroup(replacing: .saveItem) {
+                Button(closeWindowCommandTitle) {
+                    WindowManager.shared.closeActiveWindow()
+                }
+                .keyboardShortcut("w", modifiers: .command)
+            }
+            TextEditingCommands()
+        }
     }
 }
