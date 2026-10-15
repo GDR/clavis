@@ -100,8 +100,8 @@ final class SSHAgentServerAuditTests {
         }
     }
 
-    @Test func test_002_AC2_unknownKeyIsRecordedAsDenied() throws {
-        try fixture.runSync {
+    @Test func test_002_AC2_unknownKeyIsRecordedAsDenied() {
+        fixture.runSync {
             let keyManager = makeKeyManager()
             let recorder = InMemoryAuditRecorder()
             let server = makeServer(keyManager: keyManager, auditRecorder: recorder)

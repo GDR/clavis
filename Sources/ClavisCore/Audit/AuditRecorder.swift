@@ -178,7 +178,7 @@ public final class AuditRecorder: AuditRecording {
             let newStore = try storeFactory()
             self.store = newStore
             self.lastOpenFailureTime = nil
-            try? newStore.prune(olderThan: currentTime.addingTimeInterval(-retentionAge), maxRows: retentionMaxRows)
+            _ = try? newStore.prune(olderThan: currentTime.addingTimeInterval(-retentionAge), maxRows: retentionMaxRows)
             return newStore
         } catch {
             self.lastOpenFailureTime = currentTime
@@ -228,7 +228,7 @@ public final class AuditRecorder: AuditRecording {
             }
             insertCounter += 1
             if insertCounter % pruneEvery == 0 {
-                try? store.prune(olderThan: currentTime.addingTimeInterval(-retentionAge), maxRows: retentionMaxRows)
+                _ = try? store.prune(olderThan: currentTime.addingTimeInterval(-retentionAge), maxRows: retentionMaxRows)
             }
 
             if let witness = witness {

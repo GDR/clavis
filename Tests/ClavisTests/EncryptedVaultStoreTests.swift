@@ -545,7 +545,7 @@ struct EncryptedVaultStoreTests {
     @Test func testVaultRepairWithoutTTYFailsBeforeVerification() async throws {
         let fixture = try ClavisTestFixture()
         defer { fixture.cleanup() }
-        try await fixture.run {
+        await fixture.run {
             EncryptedVaultStore.customPinStore = InMemoryMasterKeyPinStore(pin: nil)
             defer { EncryptedVaultStore.customPinStore = nil }
             let result = CLIService.handle(args: ["clavis", "vault", "repair"], isTTY: false)
@@ -769,7 +769,7 @@ struct EncryptedVaultStoreTests {
     @Test func testEnsureMasterKeyLockedThrowsWhenSecureEnclaveUnavailable() async throws {
         let fixture = try ClavisTestFixture()
         defer { fixture.cleanup() }
-        try await fixture.run {
+        await fixture.run {
             EncryptedVaultStore.isSecureEnclaveAvailableOverride = false
             defer {
                 EncryptedVaultStore.isSecureEnclaveAvailableOverride = nil
