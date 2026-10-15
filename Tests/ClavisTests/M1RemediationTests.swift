@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import ClavisCore
 
-@Suite("M1 Seam Isolation Remediation Tests", .serialized)
+@Suite("M1 Seam Isolation Remediation Tests")
 struct M1RemediationTests {
 
     @Test("AuditStore seam precedence: TestContextScope takes precedence over customDefaultURL")
