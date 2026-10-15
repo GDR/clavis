@@ -1,8 +1,31 @@
-import XCTest
+import Foundation
+import Testing
 import CryptoKit
 @testable import ClavisCore
 
-final class KnownHostsTests: ClavisBaseTestCase {
+private final class CleanupHook: @unchecked Sendable {
+    private let action: () -> Void
+    init(action: @escaping () -> Void) {
+        self.action = action
+    }
+    deinit {
+        action()
+    }
+}
+
+@Suite
+struct KnownHostsTests {
+    private let fixture: ClavisTestFixture
+    private var testRootURL: URL { fixture.testRootURL }
+    private let _cleanup: CleanupHook
+
+    init() throws {
+        let fixture = try ClavisTestFixture()
+        self.fixture = fixture
+        self._cleanup = CleanupHook {
+            fixture.cleanup()
+        }
+    }
 
     private func makeEd25519KeyBase64() -> (blob: Data, base64: String) {
         let priv = Curve25519.Signing.PrivateKey()
@@ -21,7 +44,7 @@ final class KnownHostsTests: ClavisBaseTestCase {
         return (keyBlob, keyBlob.base64EncodedString())
     }
 
-    func test_006_T6_parsesHashedAndPlainOutput() throws {
+    @Test func test_006_T6_parsesHashedAndPlainOutput() throws {
         let (edBlob, edBase64) = makeEd25519KeyBase64()
         let (p256Blob, p256Base64) = makeP256KeyBase64()
 
@@ -33,18 +56,18 @@ final class KnownHostsTests: ClavisBaseTestCase {
         """
 
         let hosts = try KnownHosts.lookup(host: "github.com", runner: { _, args in
-            XCTAssertEqual(args, ["-F", "github.com", "-f", FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/known_hosts").path])
+            #expect(args == ["-F", "github.com", "-f", FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/known_hosts").path])
             return (0, fakeOutput)
         })
 
-        XCTAssertEqual(hosts.count, 2)
-        XCTAssertEqual(hosts[0].name, "github.com")
-        XCTAssertEqual(hosts[0].hostKeyBlob, edBlob)
-        XCTAssertEqual(hosts[1].name, "github.com")
-        XCTAssertEqual(hosts[1].hostKeyBlob, p256Blob)
+        #expect(hosts.count == 2)
+        #expect(hosts[0].name == "github.com")
+        #expect(hosts[0].hostKeyBlob == edBlob)
+        #expect(hosts[1].name == "github.com")
+        #expect(hosts[1].hostKeyBlob == p256Blob)
     }
 
-    func test_006_T6_skipsUnsupportedTypes() throws {
+    @Test func test_006_T6_skipsUnsupportedTypes() throws {
         let (edBlob, edBase64) = makeEd25519KeyBase64()
         let rsaDummyBase64 = Data([0x00, 0x00, 0x00, 0x07]).base64EncodedString()
 
@@ -63,12 +86,12 @@ final class KnownHostsTests: ClavisBaseTestCase {
             return (0, fakeOutput)
         })
 
-        XCTAssertEqual(hosts.count, 1)
-        XCTAssertEqual(hosts[0].name, "example.com")
-        XCTAssertEqual(hosts[0].hostKeyBlob, edBlob)
+        #expect(hosts.count == 1)
+        #expect(hosts[0].name == "example.com")
+        #expect(hosts[0].hostKeyBlob == edBlob)
     }
 
-    func test_006_T6_rejectsHostWithShellChars() {
+    @Test func test_006_T6_rejectsHostWithShellChars() {
         let invalidHosts = [
             "github.com; rm -rf /",
             "host$(whoami)",
@@ -88,10 +111,12 @@ final class KnownHostsTests: ClavisBaseTestCase {
         }
 
         for badHost in invalidHosts {
-            XCTAssertThrowsError(try KnownHosts.lookup(host: badHost, runner: fakeRunner)) { error in
-                XCTAssertEqual(error as? AgentPolicyError, AgentPolicyError.invalid("host"))
+            #expect {
+                try KnownHosts.lookup(host: badHost, runner: fakeRunner)
+            } throws: { error in
+                (error as? AgentPolicyError) == AgentPolicyError.invalid("host")
             }
-            XCTAssertFalse(runnerCalled)
+            #expect(!runnerCalled)
         }
     }
 }
