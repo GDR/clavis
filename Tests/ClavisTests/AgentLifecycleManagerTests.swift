@@ -1,67 +1,80 @@
-import XCTest
+import Testing
 import Darwin
+import Foundation
 @testable import ClavisCore
 @testable import Clavis
 
-final class AgentLifecycleManagerTests: ClavisBaseTestCase {
+@Suite("AgentLifecycleManagerTests")
+struct AgentLifecycleManagerTests {
+    private let fixture: ClavisTestFixture
 
-    func testStopAgentReturnsFalseAndPreservesSocketWhenProcessSurvivesSigkill() throws {
-        let sockPath = testRootURL.appendingPathComponent("agent-survive.sock").path
-        FileManager.default.createFile(atPath: sockPath, contents: Data())
-        XCTAssertTrue(FileManager.default.fileExists(atPath: sockPath))
-
-        let manager = AgentLifecycleManager(
-            socketPath: sockPath,
-            agentPIDProvider: { 99999 },
-            processNameProvider: { _ in "clavis-agent" },
-            isAlive: { _ in true },
-            sigtermTimeout: 0.005,
-            sigkillTimeout: 0.02
-        )
-
-        let stopped = manager.stopAgent()
-        XCTAssertFalse(stopped, "stopAgent() must return false if the process survives SIGKILL")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: sockPath), "Socket must NOT be removed if agent process survived SIGKILL")
-
-        let logURL = ClavisLogger.logFileURL
-        let logs = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
-        XCTAssertTrue(logs.contains("Failed to terminate agent daemon PID 99999; process survived SIGKILL"))
+    init() throws {
+        self.fixture = try ClavisTestFixture()
     }
 
-    func testSendLockAllThrowsAgentStopFailedWhenProcessSurvivesSigkill() throws {
-        let sockPath = testRootURL.appendingPathComponent("agent-lockall-survive.sock").path
-        FileManager.default.createFile(atPath: sockPath, contents: Data())
-        XCTAssertTrue(FileManager.default.fileExists(atPath: sockPath))
+    @Test
+    func testStopAgentReturnsFalseAndPreservesSocketWhenProcessSurvivesSigkill() async throws {
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let sockPath = fixture.testRootURL.appendingPathComponent("agent-survive.sock").path
+            FileManager.default.createFile(atPath: sockPath, contents: Data())
+            #expect(FileManager.default.fileExists(atPath: sockPath))
 
-        let manager = AgentLifecycleManager(
-            socketPath: sockPath,
-            agentPIDProvider: { 99999 },
-            processNameProvider: { _ in "clavis-agent" },
-            isAlive: { _ in true },
-            sigtermTimeout: 0.005,
-            sigkillTimeout: 0.02
-        )
+            let manager = AgentLifecycleManager(
+                socketPath: sockPath,
+                agentPIDProvider: { 99999 },
+                processNameProvider: { _ in "clavis-agent" },
+                isAlive: { _ in true },
+                sigtermTimeout: 0.005,
+                sigkillTimeout: 0.02
+            )
 
-        XCTAssertThrowsError(try manager.sendLockAllToAgent()) { error in
-            guard let lifecycleError = error as? AgentLifecycleError else {
-                XCTFail("Expected AgentLifecycleError, got \(error)")
-                return
-            }
-            switch lifecycleError {
-            case .agentStopFailed(let reason):
-                XCTAssertTrue(reason.contains("Failed to stop unresponsive agent"))
-            default:
-                XCTFail("Expected .agentStopFailed, got \(lifecycleError)")
-            }
+            let stopped = manager.stopAgent()
+            #expect(!stopped, "stopAgent() must return false if the process survives SIGKILL")
+            #expect(FileManager.default.fileExists(atPath: sockPath), "Socket must NOT be removed if agent process survived SIGKILL")
+
+            let logURL = ClavisLogger.logFileURL
+            let logs = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
+            #expect(logs.contains("Failed to terminate agent daemon PID 99999; process survived SIGKILL"))
         }
-
-        XCTAssertTrue(FileManager.default.fileExists(atPath: sockPath), "Socket must NOT be removed if agent process survived SIGKILL")
     }
 
+    @Test
+    func testSendLockAllThrowsAgentStopFailedWhenProcessSurvivesSigkill() async throws {
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let sockPath = fixture.testRootURL.appendingPathComponent("agent-lockall-survive.sock").path
+            FileManager.default.createFile(atPath: sockPath, contents: Data())
+            #expect(FileManager.default.fileExists(atPath: sockPath))
+
+            let manager = AgentLifecycleManager(
+                socketPath: sockPath,
+                agentPIDProvider: { 99999 },
+                processNameProvider: { _ in "clavis-agent" },
+                isAlive: { _ in true },
+                sigtermTimeout: 0.005,
+                sigkillTimeout: 0.02
+            )
+
+            #expect {
+                try manager.sendLockAllToAgent()
+            } throws: { error in
+                if case .agentStopFailed(let reason) = (error as? AgentLifecycleError) {
+                    return reason.contains("Failed to stop unresponsive agent")
+                }
+                return false
+            }
+
+            #expect(FileManager.default.fileExists(atPath: sockPath), "Socket must NOT be removed if agent process survived SIGKILL")
+        }
+    }
+
+    @Test
     func testStopAgentReturnsTrueAndRemovesSocketWhenProcessTerminatesOnSigterm() throws {
-        let sockPath = testRootURL.appendingPathComponent("agent-sigterm.sock").path
+        defer { fixture.cleanup() }
+        let sockPath = fixture.testRootURL.appendingPathComponent("agent-sigterm.sock").path
         FileManager.default.createFile(atPath: sockPath, contents: Data())
-        XCTAssertTrue(FileManager.default.fileExists(atPath: sockPath))
+        #expect(FileManager.default.fileExists(atPath: sockPath))
 
         let manager = AgentLifecycleManager(
             socketPath: sockPath,
@@ -73,14 +86,16 @@ final class AgentLifecycleManagerTests: ClavisBaseTestCase {
         )
 
         let stopped = manager.stopAgent()
-        XCTAssertTrue(stopped)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: sockPath), "Socket should be removed when process terminates")
+        #expect(stopped)
+        #expect(!FileManager.default.fileExists(atPath: sockPath), "Socket should be removed when process terminates")
     }
 
+    @Test
     func testStopAgentReturnsTrueAndRemovesSocketWhenProcessTerminatesOnSigkill() throws {
-        let sockPath = testRootURL.appendingPathComponent("agent-sigkill.sock").path
+        defer { fixture.cleanup() }
+        let sockPath = fixture.testRootURL.appendingPathComponent("agent-sigkill.sock").path
         FileManager.default.createFile(atPath: sockPath, contents: Data())
-        XCTAssertTrue(FileManager.default.fileExists(atPath: sockPath))
+        #expect(FileManager.default.fileExists(atPath: sockPath))
 
         var queryCount = 0
         let manager = AgentLifecycleManager(
@@ -97,14 +112,16 @@ final class AgentLifecycleManagerTests: ClavisBaseTestCase {
         )
 
         let stopped = manager.stopAgent()
-        XCTAssertTrue(stopped)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: sockPath), "Socket should be removed when process terminates after SIGKILL")
+        #expect(stopped)
+        #expect(!FileManager.default.fileExists(atPath: sockPath), "Socket should be removed when process terminates after SIGKILL")
     }
 
+    @Test
     func testStopAgentRefusesToSignalWhenProcessNameIsNotClavisAgent() throws {
-        let sockPath = testRootURL.appendingPathComponent("agent-alien.sock").path
+        defer { fixture.cleanup() }
+        let sockPath = fixture.testRootURL.appendingPathComponent("agent-alien.sock").path
         FileManager.default.createFile(atPath: sockPath, contents: Data())
-        XCTAssertTrue(FileManager.default.fileExists(atPath: sockPath))
+        #expect(FileManager.default.fileExists(atPath: sockPath))
 
         let manager = AgentLifecycleManager(
             socketPath: sockPath,
@@ -116,9 +133,9 @@ final class AgentLifecycleManagerTests: ClavisBaseTestCase {
         )
 
         let stopped = manager.stopAgent()
-        XCTAssertFalse(stopped)
+        #expect(!stopped)
         // Stale socket is cleaned up when process is not clavis-agent
-        XCTAssertFalse(FileManager.default.fileExists(atPath: sockPath))
+        #expect(!FileManager.default.fileExists(atPath: sockPath))
     }
 
     private func spawnExitingProcess() throws -> pid_t {
@@ -140,18 +157,21 @@ final class AgentLifecycleManagerTests: ClavisBaseTestCase {
         return pid
     }
 
+    @Test
     func testIsProcessAliveForLiveProcess() {
-        XCTAssertTrue(AgentLifecycleManager.isProcessAlive(pid: getpid()))
+        #expect(AgentLifecycleManager.isProcessAlive(pid: getpid()))
     }
 
+    @Test
     func testIsProcessAliveForDeadProcess() throws {
         let pid = try spawnExitingProcess()
         var status: Int32 = 0
         let waited = waitpid(pid, &status, 0)
-        XCTAssertEqual(waited, pid)
-        XCTAssertFalse(AgentLifecycleManager.isProcessAlive(pid: pid))
+        #expect(waited == pid)
+        #expect(!AgentLifecycleManager.isProcessAlive(pid: pid))
     }
 
+    @Test
     func testIsProcessAliveForZombieProcess() throws {
         let pid = try spawnExitingProcess()
         defer {
@@ -172,13 +192,15 @@ final class AgentLifecycleManagerTests: ClavisBaseTestCase {
             usleep(10_000)
         }
 
-        XCTAssertTrue(reachedZombie, "Process should have entered zombie state")
-        XCTAssertEqual(kill(pid, 0), 0, "kill(pid, 0) returns 0 for zombies (proves old check was wrong)")
-        XCTAssertFalse(AgentLifecycleManager.isProcessAlive(pid: pid), "isProcessAlive must filter zombie processes and return false")
+        #expect(reachedZombie, "Process should have entered zombie state")
+        #expect(kill(pid, 0) == 0, "kill(pid, 0) returns 0 for zombies (proves old check was wrong)")
+        #expect(!AgentLifecycleManager.isProcessAlive(pid: pid), "isProcessAlive must filter zombie processes and return false")
     }
 
+    @Test
     func testControlClientRejectsUntrustedServerPeer() throws {
-        let sockPath = testRootURL.appendingPathComponent("untrusted-server.sock").path
+        defer { fixture.cleanup() }
+        let sockPath = fixture.testRootURL.appendingPathComponent("untrusted-server.sock").path
         let server = SSHAgentServer(
             socketPath: sockPath,
             role: .personal,
@@ -192,22 +214,21 @@ final class AgentLifecycleManagerTests: ClavisBaseTestCase {
             isTrustedServerPeer: { _ in false }
         )
 
-        XCTAssertThrowsError(try untrustedManager.sendControlRequest(Data([SSHAgentServer.lockAllRequest]))) { error in
-            guard let lifecycleError = error as? AgentLifecycleError else {
-                XCTFail("Expected AgentLifecycleError, got \(error)")
-                return
+        #expect {
+            try untrustedManager.sendControlRequest(Data([SSHAgentServer.lockAllRequest]))
+        } throws: { error in
+            if case .agentControlFailed(let reason) = (error as? AgentLifecycleError) {
+                return reason.contains("untrusted control socket server peer")
             }
-            if case .agentControlFailed(let reason) = lifecycleError {
-                XCTAssertTrue(reason.contains("untrusted control socket server peer"), "Unexpected reason: \(reason)")
-            } else {
-                XCTFail("Expected .agentControlFailed, got \(lifecycleError)")
-            }
+            return false
         }
 
-        // Default validator uses ClavisCodeTrust.isTrustedPeer(socket:), which also rejects the xctest runner
+        // Default validator uses ClavisCodeTrust.isTrustedPeer(socket:), which also rejects the test runner
         let defaultManager = AgentLifecycleManager(socketPath: sockPath)
-        XCTAssertThrowsError(try defaultManager.sendControlRequest(Data([SSHAgentServer.lockAllRequest])))
-        XCTAssertTrue(defaultManager.listAgentSessions().isEmpty)
-        XCTAssertNil(defaultManager.queryAgentGitGrace())
+        #expect(throws: (any Error).self) {
+            try defaultManager.sendControlRequest(Data([SSHAgentServer.lockAllRequest]))
+        }
+        #expect(defaultManager.listAgentSessions().isEmpty)
+        #expect(defaultManager.queryAgentGitGrace() == nil)
     }
 }
