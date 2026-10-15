@@ -130,6 +130,7 @@ public struct EmptyVaultOnboardingView: View {
 
                 HStack(spacing: 12) {
                     Button(action: {
+                        onDismiss?()
                         AppState.shared.activeSheet = .create
                     }) {
                         HStack(spacing: 6) {
@@ -220,6 +221,7 @@ public struct EmptyVaultOnboardingView: View {
 @MainActor
 public struct PanelLockGate<Content: View>: View {
     @ObservedObject var lock: PanelLockController
+    @ObservedObject private var appState: AppState = .shared
     var showsEmptyState: Bool
     private let content: () -> Content
     @State private var dismissedEmptyState: Bool = false
@@ -242,9 +244,9 @@ public struct PanelLockGate<Content: View>: View {
     }
 
     public var body: some View {
-        if lock.isLocked && !lock.shouldBypassLock {
+        if lock.isEffectivelyLocked {
             LockedPlaceholderView(lock: lock)
-        } else if lock.shouldBypassLock && showsEmptyState && !dismissedEmptyState {
+        } else if lock.shouldBypassLock && showsEmptyState && !dismissedEmptyState && appState.activeSheet == nil {
             EmptyVaultOnboardingView(
                 lock: lock,
                 onDismiss: { dismissedEmptyState = true }

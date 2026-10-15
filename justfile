@@ -181,24 +181,6 @@ sign config=config: (bundle config)
         exit 1
     fi
 
-    entitlements_file=$(mktemp -t clavis-entitlements.XXXXXX.plist)
-    trap 'rm -f "$entitlements_file"' EXIT
-    if [ "$identity" = "-" ]; then
-        # For unprovisioned ad-hoc signing, use empty entitlements so local builds run without provisioning profiles
-        echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.plist"><plist version="1.0"><dict></dict></plist>' > "$entitlements_file"
-    else
-        team_prefix=""
-        if [ -n "{{ expected_team_id }}" ]; then
-            team_prefix="{{ expected_team_id }}."
-        else
-            extracted_ou="$(security find-certificate -c "$identity" -p ${keychain:+"$keychain"} 2>/dev/null | openssl x509 -noout -subject -nameopt RFC2253 2>/dev/null | sed -n 's/.*OU=\([A-Z0-9]\{10\}\).*/\1./p' | head -n 1 || true)"
-            if [ -n "$extracted_ou" ]; then
-                team_prefix="$extracted_ou"
-            fi
-        fi
-        sed "s/\$(AppIdentifierPrefix)/$team_prefix/g" Entitlements.plist > "$entitlements_file"
-    fi
-
     echo "🔐 Signing binaries with identity: '$identity' ($timestamp_flag)..."
 
     sign_and_verify() {
@@ -219,7 +201,7 @@ sign config=config: (bundle config)
             --identifier "Clavis" \
             --options runtime \
             "$timestamp_flag" \
-            --entitlements "$entitlements_file" \
+            --entitlements "$entitlements" \
             "$target"
 
         if [ "$is_deep" = "1" ]; then
@@ -234,16 +216,9 @@ sign config=config: (bundle config)
             echo "❌ Unexpanded \$(AppIdentifierPrefix) found in signed entitlements of $target." >&2
             exit 1
         fi
-        if [ "$identity" = "-" ]; then
-            if echo "$signed_ent" | grep -Eq "keychain-access-groups|com.apple.security.application-groups"; then
-                echo "❌ Provisioning-dependent entitlement unexpectedly present in $target." >&2
-                exit 1
-            fi
-        else
-            if ! echo "$signed_ent" | grep -Eq "keychain-access-groups"; then
-                echo "❌ Expected keychain-access-groups entitlement in release signed $target." >&2
-                exit 1
-            fi
+        if echo "$signed_ent" | grep -Eq "keychain-access-groups|com.apple.security.application-groups|com.apple.application-identifier"; then
+            echo "❌ Provisioning-dependent entitlement unexpectedly present in $target." >&2
+            exit 1
         fi
 
         sign_details="$(/usr/bin/codesign --display --verbose=4 "$target" 2>&1)"
@@ -421,7 +396,25 @@ run config="debug":
     mkdir -p ".build/{{ config }}"
     nohup ".build/{{ config }}/Clavis.app/Contents/MacOS/Clavis" \
         >>".build/{{ config }}/run.log" 2>&1 &
+    app_pid=$!
     disown
+    # Keep the just recipe script alive until Clavis and clavis-agent finish execve;
+    # otherwise just unlinks its temp script while syspolicyd is still scanning p_textvp.
+    for _ in {1..50}; do
+        if ! kill -0 "$app_pid" 2>/dev/null; then
+            echo "❌ Clavis exited immediately after launch (PID $app_pid). Check .build/{{ config }}/run.log or unified logs." >&2
+            exit 1
+        fi
+        if pgrep -x Clavis >/dev/null && pgrep -x clavis-agent >/dev/null; then
+            break
+        fi
+        sleep 0.1
+    done
+    if ! pgrep -x Clavis >/dev/null; then
+        echo "❌ Clavis did not finish starting within 5s (PID $app_pid)." >&2
+        exit 1
+    fi
+    echo "✅ Clavis running (PID $app_pid)"
 
 # Clean build artifacts
 clean:

@@ -463,13 +463,19 @@ public class AppState: ObservableObject {
             self.keys = keyManagementViewModel.keys
             self.errorMessage = keyManagementViewModel.errorMessage
         }
-        return try keyManagementViewModel.generateKey(
+        let info = try keyManagementViewModel.generateKey(
             label: label,
             algorithm: algorithm,
             storageType: storageType,
             biometricPolicy: biometricPolicy,
             keyPurpose: keyPurpose
         )
+        // Generating a key already authenticates the user; transition the panel out
+        // of its initial locked state so leaving empty-vault bypass does not lock the window.
+        if !PanelLockController.shared.currentMode.requiresPIN && PanelLockController.shared.state == .locked {
+            PanelLockController.shared.applyUnlock(context: nil)
+        }
+        return info
     }
 
     public func deleteKey(label: String) throws {

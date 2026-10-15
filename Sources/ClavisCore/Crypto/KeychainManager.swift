@@ -119,9 +119,10 @@ public class KeychainManager {
         var recordData = try record.encode()
         defer { Self.wipeData(&recordData) }
         // The serialized value is an opaque Secure Enclave reference.
-        // The hardware key keeps its own biometric policy above; user
-        // presence here only protects the handle from other processes.
-        try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
+        // The hardware key enforces its own biometric policy in SEP; store the
+        // metadata record as device-bound Login Keychain data so unprovisioned
+        // local builds do not hit errSecMissingEntitlement (-34018).
+        try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [])
         do {
             try vaultStore.saveRecord(record)
         } catch {
@@ -506,7 +507,7 @@ public class KeychainManager {
         if var bytes = try? restoredRecord.encode() {
             defer { Self.wipeData(&bytes) }
             do {
-                try privateKeyStore.save(label: label, data: bytes, accessControlFlags: [.userPresence])
+                try privateKeyStore.save(label: label, data: bytes, accessControlFlags: [])
             } catch let error as PrivateKeyStoreError {
                 if case .protectionUnavailable = error {
                     throw error
@@ -833,7 +834,7 @@ public class KeychainManager {
             defer { Self.wipeData(&recordData) }
 
             do {
-                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [.userPresence])
+                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [])
             } catch {
                 if hasVaultRecord {
                     try? vaultStore.saveRecord(record)
@@ -858,7 +859,7 @@ public class KeychainManager {
             } catch {
                 if var originalRecordData = try? record.encode() {
                     defer { Self.wipeData(&originalRecordData) }
-                    try? privateKeyStore.save(label: label, data: originalRecordData, accessControlFlags: [.userPresence])
+                    try? privateKeyStore.save(label: label, data: originalRecordData, accessControlFlags: [])
                 }
                 if hasVaultRecord {
                     try? vaultStore.saveRecord(record)
