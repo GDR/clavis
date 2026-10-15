@@ -11,6 +11,28 @@ public class WindowManager: NSObject, NSWindowDelegate {
     internal var historyViewModel: HistoryViewModel?
     public weak var menuBarWindow: NSWindow?
 
+    public override init() {
+        super.init()
+    }
+
+    /// Returns true if any standard GUI management window is currently open and visible.
+    public var hasActiveWindows: Bool {
+        (keyManagerWindow?.isVisible == true) ||
+        (settingsWindow?.isVisible == true) ||
+        (historyWindow?.isVisible == true)
+    }
+
+    /// Closes the frontmost active window.
+    public func closeActiveWindow() {
+        if let keyWindow = NSApp.keyWindow {
+            keyWindow.performClose(nil)
+        } else if let mainWindow = NSApp.mainWindow {
+            mainWindow.performClose(nil)
+        } else if let window = [keyManagerWindow, settingsWindow, historyWindow].compactMap({ $0 }).first(where: { $0.isVisible }) {
+            window.performClose(nil)
+        }
+    }
+
     public func dismissMenuBarExtra() {
         for window in NSApp.windows {
             if let button = findStatusBarButton(in: window.contentView), button.state == .on {
