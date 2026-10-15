@@ -1,12 +1,13 @@
-import XCTest
+import Testing
+import Foundation
 @testable import ClavisCore
 
-final class AgentSessionRegistryTests: ClavisBaseTestCase {
-    private var auditRecorder: InMemoryAuditRecorder!
+@Suite("AgentSessionRegistryTests")
+struct AgentSessionRegistryTests {
+    private let auditRecorder: InMemoryAuditRecorder
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
-        auditRecorder = InMemoryAuditRecorder()
+    init() {
+        self.auditRecorder = InMemoryAuditRecorder()
     }
 
     private func makeSession(
@@ -31,6 +32,7 @@ final class AgentSessionRegistryTests: ClavisBaseTestCase {
         )
     }
 
+    @Test
     func test_001_AC2_noSessionMeansNoSession() {
         let registry = AgentSessionRegistry(
             processInfo: { _ in (startTime: 1000, parentPid: 1) },
@@ -38,9 +40,10 @@ final class AgentSessionRegistryTests: ClavisBaseTestCase {
             watchRootExit: false
         )
         let result = registry.session(forKeyFingerprint: "SHA256:unknown", peerPid: 100)
-        XCTAssertEqual(result, .noSession)
+        #expect(result == .noSession)
     }
 
+    @Test
     func test_001_AC3_peerOutsideTreeIsRejected() {
         let session = makeSession(rootPid: 100, rootStartTime: 1000)
         let processTable: [pid_t: (startTime: UInt64, parentPid: pid_t)] = [
@@ -55,9 +58,10 @@ final class AgentSessionRegistryTests: ClavisBaseTestCase {
         registry.add(session)
 
         let result = registry.session(forKeyFingerprint: session.keyFingerprint, peerPid: 200)
-        XCTAssertEqual(result, .outsideTree)
+        #expect(result == .outsideTree)
     }
 
+    @Test
     func test_001_T1_descendantIsFound() {
         let session = makeSession(rootPid: 100, rootStartTime: 1000)
         let processTable: [pid_t: (startTime: UInt64, parentPid: pid_t)] = [
@@ -73,9 +77,10 @@ final class AgentSessionRegistryTests: ClavisBaseTestCase {
         registry.add(session)
 
         let result = registry.session(forKeyFingerprint: session.keyFingerprint, peerPid: 300)
-        XCTAssertEqual(result, .found(session))
+        #expect(result == .found(session))
     }
 
+    @Test
     func test_001_T1_pidReuseIsNotMember() {
         let session = makeSession(rootPid: 100, rootStartTime: 1000)
         // Candidate root is alive with start time 1000.
@@ -102,9 +107,10 @@ final class AgentSessionRegistryTests: ClavisBaseTestCase {
         registry.add(session)
 
         let result = registry.session(forKeyFingerprint: session.keyFingerprint, peerPid: 300)
-        XCTAssertEqual(result, .outsideTree)
+        #expect(result == .outsideTree)
     }
 
+    @Test
     func test_001_T1_leaseExpiryEndsSession() {
         var currentTime = Date(timeIntervalSince1970: 1_000_000)
         let session = makeSession(
@@ -125,14 +131,15 @@ final class AgentSessionRegistryTests: ClavisBaseTestCase {
         currentTime = currentTime.addingTimeInterval(301)
 
         let result = registry.session(forKeyFingerprint: session.keyFingerprint, peerPid: 100)
-        XCTAssertEqual(result, .expired(session))
+        #expect(result == .expired(session))
 
         // Session was ended on lookup
-        XCTAssertEqual(registry.count, 0)
+        #expect(registry.count == 0)
         let secondLookup = registry.session(forKeyFingerprint: session.keyFingerprint, peerPid: 100)
-        XCTAssertEqual(secondLookup, .noSession)
+        #expect(secondLookup == .noSession)
     }
 
+    @Test
     func test_001_T1_walkStopsAt64Hops() {
         let session = makeSession(rootPid: 100, rootStartTime: 1000)
         // Cyclic process table that does not contain root 100
@@ -149,9 +156,10 @@ final class AgentSessionRegistryTests: ClavisBaseTestCase {
         registry.add(session)
 
         let result = registry.session(forKeyFingerprint: session.keyFingerprint, peerPid: 200)
-        XCTAssertEqual(result, .outsideTree)
+        #expect(result == .outsideTree)
     }
 
+    @Test
     func test_001_AC4_deadRootEndsSessionOnLookup() {
         let recorder = InMemoryAuditRecorder()
         var rootAlive = true
@@ -167,18 +175,19 @@ final class AgentSessionRegistryTests: ClavisBaseTestCase {
             watchRootExit: false
         )
         registry.add(session)
-        XCTAssertEqual(registry.count, 1)
+        #expect(registry.count == 1)
 
         rootAlive = false
         let result = registry.session(forKeyFingerprint: session.keyFingerprint, peerPid: 100)
-        XCTAssertEqual(result, .noSession)
-        XCTAssertEqual(registry.count, 0)
+        #expect(result == .noSession)
+        #expect(registry.count == 0)
 
-        XCTAssertTrue(recorder.events.contains { event in
+        #expect(recorder.events.contains { event in
             event.type == .sessionEnd && event.result == .info && event.reason == .rootExited && event.sessionID == session.id && event.keyKind == .agent
         })
     }
 
+    @Test
     func test_001_T1_rootExitSourceEndsSession() throws {
         let recorder = InMemoryAuditRecorder()
         let process = Process()
@@ -189,7 +198,7 @@ final class AgentSessionRegistryTests: ClavisBaseTestCase {
 
         guard let snap = SSHAgentServer.processParentSnapshot(pid: pid) else {
             process.terminate()
-            XCTFail("Failed to get process parent snapshot for child")
+            Issue.record("Failed to get process parent snapshot for child")
             return
         }
 
@@ -199,7 +208,7 @@ final class AgentSessionRegistryTests: ClavisBaseTestCase {
             watchRootExit: true
         )
         registry.add(session)
-        XCTAssertEqual(registry.count, 1)
+        #expect(registry.count == 1)
 
         process.terminate()
 
@@ -207,14 +216,15 @@ final class AgentSessionRegistryTests: ClavisBaseTestCase {
         while registry.count > 0 && Date() < deadline {
             usleep(20_000)
         }
-        XCTAssertEqual(registry.count, 0)
+        #expect(registry.count == 0)
         process.waitUntilExit()
 
-        XCTAssertTrue(recorder.events.contains { event in
+        #expect(recorder.events.contains { event in
             event.type == .sessionEnd && event.reason == .rootExited && event.sessionID == session.id
         })
     }
 
+    @Test
     func test_001_AC5_screenLockEndsAllSessions() throws {
         let fakeMonitor = FakeSystemEventMonitor()
         let registry = AgentSessionRegistry(
@@ -227,26 +237,27 @@ final class AgentSessionRegistryTests: ClavisBaseTestCase {
 
         registry.add(session1)
         registry.add(session2)
-        XCTAssertEqual(registry.count, 2)
+        #expect(registry.count == 2)
 
         registry.installSystemEventHandler(monitor: fakeMonitor)
         fakeMonitor.fire(id: "agent.sessions")
 
-        XCTAssertEqual(registry.count, 0)
+        #expect(registry.count == 0)
         let endEvents = auditRecorder.events.filter { $0.type == .sessionEnd && $0.reason == .screenLocked }
-        XCTAssertEqual(endEvents.count, 2)
+        #expect(endEvents.count == 2)
     }
 
+    @Test
     func test_001_T4_daemonStopEndsAllSessions() throws {
         let pid = getpid()
-        let snap = SSHAgentServer.processParentSnapshot(pid: pid)!
+        let snap = try #require(SSHAgentServer.processParentSnapshot(pid: pid))
         let session = makeSession(keyLabel: "key-stop", rootPid: pid, rootStartTime: snap.startTime)
         AgentSessionRegistry.shared.add(session)
-        XCTAssertGreaterThanOrEqual(AgentSessionRegistry.shared.count, 1)
+        #expect(AgentSessionRegistry.shared.count >= 1)
 
         AgentServers.stopAll()
 
-        XCTAssertEqual(AgentSessionRegistry.shared.count, 0)
+        #expect(AgentSessionRegistry.shared.count == 0)
     }
 }
 

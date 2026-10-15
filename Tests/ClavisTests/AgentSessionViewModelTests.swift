@@ -1,22 +1,34 @@
-import XCTest
+import Testing
 import Foundation
 @testable import ClavisCore
 @testable import Clavis
 
-final class AgentSessionViewModelTests: ClavisBaseTestCase {
-    private var mockAgent: MockAgentController!
+private final class CleanupHook: @unchecked Sendable {
+    private let action: () -> Void
+    init(action: @escaping () -> Void) {
+        self.action = action
+    }
+    deinit {
+        action()
+    }
+}
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
-        mockAgent = MockAgentController()
+@Suite
+struct AgentSessionViewModelTests {
+    private let fixture: ClavisTestFixture
+    private let mockAgent: MockAgentController
+    private let _cleanup: CleanupHook
+
+    init() throws {
+        let fixture = try ClavisTestFixture()
+        self.fixture = fixture
+        self.mockAgent = MockAgentController()
+        self._cleanup = CleanupHook {
+            fixture.cleanup()
+        }
     }
 
-    override func tearDownWithError() throws {
-        mockAgent = nil
-        try super.tearDownWithError()
-    }
-
-    @MainActor
+    @Test @MainActor
     func testRefreshAgentSessionsPopulatesList() async throws {
         let initialSession = AgentSessionSummary(
             id: "sess-1",
@@ -37,12 +49,12 @@ final class AgentSessionViewModelTests: ClavisBaseTestCase {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
 
-        XCTAssertEqual(viewModel.agentSessions.count, 1)
-        XCTAssertEqual(viewModel.agentSessions.first?.id, "sess-1")
-        XCTAssertEqual(viewModel.agentSessions.first?.toolName, "git-tool")
+        #expect(viewModel.agentSessions.count == 1)
+        #expect(viewModel.agentSessions.first?.id == "sess-1")
+        #expect(viewModel.agentSessions.first?.toolName == "git-tool")
     }
 
-    @MainActor
+    @Test @MainActor
     func testEndAgentSessionRemovesSession() async throws {
         let session = AgentSessionSummary(
             id: "sess-to-end",
@@ -60,7 +72,7 @@ final class AgentSessionViewModelTests: ClavisBaseTestCase {
             if viewModel.agentSessions.count == 1 { break }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        XCTAssertEqual(viewModel.agentSessions.count, 1)
+        #expect(viewModel.agentSessions.count == 1)
 
         viewModel.endAgentSession(id: "sess-to-end")
 
@@ -69,12 +81,12 @@ final class AgentSessionViewModelTests: ClavisBaseTestCase {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
 
-        XCTAssertEqual(viewModel.agentSessions.count, 0)
-        XCTAssertEqual(mockAgent.endAgentSessionCallCount, 1)
-        XCTAssertEqual(mockAgent.recordedEndSessionIDs, ["sess-to-end"])
+        #expect(viewModel.agentSessions.count == 0)
+        #expect(mockAgent.endAgentSessionCallCount == 1)
+        #expect(mockAgent.recordedEndSessionIDs == ["sess-to-end"])
     }
 
-    @MainActor
+    @Test @MainActor
     func testRevokeAllAgentSessionsReturnsCount() throws {
         let session1 = AgentSessionSummary(
             id: "s1", keyLabel: "k1", keyFingerprint: "fp1",
@@ -89,12 +101,12 @@ final class AgentSessionViewModelTests: ClavisBaseTestCase {
         let viewModel = AgentSessionViewModel(agentLifecycle: mockAgent)
         let revoked = viewModel.revokeAllAgentSessions()
 
-        XCTAssertEqual(revoked, 2)
-        XCTAssertEqual(mockAgent.revokeAllAgentSessionsCallCount, 1)
-        XCTAssertEqual(mockAgent.stubbedSessions.count, 0)
+        #expect(revoked == 2)
+        #expect(mockAgent.revokeAllAgentSessionsCallCount == 1)
+        #expect(mockAgent.stubbedSessions.count == 0)
     }
 
-    @MainActor
+    @Test @MainActor
     func testExtendAgentSessionUpdatesExpiry() throws {
         let start = Date()
         let initialExpiry = start.addingTimeInterval(600)
@@ -107,14 +119,15 @@ final class AgentSessionViewModelTests: ClavisBaseTestCase {
         let viewModel = AgentSessionViewModel(agentLifecycle: mockAgent)
         let newDate = viewModel.extendAgentSession(id: "s-ext", minutes: 30)
 
-        XCTAssertNotNil(newDate)
-        XCTAssertEqual(newDate?.timeIntervalSince(initialExpiry) ?? 0, 1800, accuracy: 1.0)
-        XCTAssertEqual(mockAgent.extendAgentSessionCallCount, 1)
-        XCTAssertEqual(mockAgent.recordedExtendCalls.first?.id, "s-ext")
-        XCTAssertEqual(mockAgent.recordedExtendCalls.first?.minutes, 30)
+        #expect(newDate != nil)
+        let diff = abs((newDate?.timeIntervalSince(initialExpiry) ?? 0) - 1800)
+        #expect(diff < 1.0)
+        #expect(mockAgent.extendAgentSessionCallCount == 1)
+        #expect(mockAgent.recordedExtendCalls.first?.id == "s-ext")
+        #expect(mockAgent.recordedExtendCalls.first?.minutes == 30)
     }
 
-    @MainActor
+    @Test @MainActor
     func testNotificationsCoalescingAndFormatting() throws {
         let dummyKey = SSHKeyInfo(
             label: "key-from-provider",
@@ -145,9 +158,9 @@ final class AgentSessionViewModelTests: ClavisBaseTestCase {
             userInfo: ["sessionID": "sess-notif"]
         ))
 
-        XCTAssertEqual(notifications.count, 1)
-        XCTAssertEqual(notifications[0].title, ClavisUIStrings.AgentSession.notificationSignedTitle)
-        XCTAssertEqual(notifications[0].body, "curl · active-key")
+        #expect(notifications.count == 1)
+        #expect(notifications[0].title == ClavisUIStrings.AgentSession.notificationSignedTitle)
+        #expect(notifications[0].body == "curl · active-key")
 
         // 2. Post immediate repeat notification -> must coalesce
         viewModel.handleAgentSignedNotification(Notification(
@@ -155,7 +168,7 @@ final class AgentSessionViewModelTests: ClavisBaseTestCase {
             object: nil,
             userInfo: ["sessionID": "sess-notif"]
         ))
-        XCTAssertEqual(notifications.count, 1, "Immediate repeat notification for same sessionID must be coalesced")
+        #expect(notifications.count == 1, "Immediate repeat notification for same sessionID must be coalesced")
 
         // 3. Post rate limited notification (not rate-coalesced by the 10s cooldown)
         viewModel.handleAgentRateLimitedNotification(Notification(
@@ -163,9 +176,9 @@ final class AgentSessionViewModelTests: ClavisBaseTestCase {
             object: nil,
             userInfo: ["sessionID": "sess-notif"]
         ))
-        XCTAssertEqual(notifications.count, 2)
-        XCTAssertEqual(notifications[1].title, ClavisUIStrings.AgentSession.notificationRateLimitedTitle)
-        XCTAssertEqual(notifications[1].body, "curl · active-key")
+        #expect(notifications.count == 2)
+        #expect(notifications[1].title == ClavisUIStrings.AgentSession.notificationRateLimitedTitle)
+        #expect(notifications[1].body == "curl · active-key")
 
         // 4. Notification with unknown session but matching fingerprint via keysProvider
         viewModel.handleAgentSignedNotification(Notification(
@@ -173,8 +186,8 @@ final class AgentSessionViewModelTests: ClavisBaseTestCase {
             object: nil,
             userInfo: ["sessionID": "unknown-sess-1", "fingerprint": "SHA256:provider-fp"]
         ))
-        XCTAssertEqual(notifications.count, 3)
-        XCTAssertEqual(notifications[2].body, "key-from-provider")
+        #expect(notifications.count == 3)
+        #expect(notifications[2].body == "key-from-provider")
 
         // 5. Notification with unknown session and unknown fingerprint
         viewModel.handleAgentSignedNotification(Notification(
@@ -182,7 +195,7 @@ final class AgentSessionViewModelTests: ClavisBaseTestCase {
             object: nil,
             userInfo: ["sessionID": "unknown-sess-2", "fingerprint": "SHA256:unmatched"]
         ))
-        XCTAssertEqual(notifications.count, 4)
-        XCTAssertEqual(notifications[3].body, "unknown-sess-2")
+        #expect(notifications.count == 4)
+        #expect(notifications[3].body == "unknown-sess-2")
     }
 }
