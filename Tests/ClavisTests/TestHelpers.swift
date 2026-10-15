@@ -238,6 +238,10 @@ struct ClavisTestFixture: Sendable {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
 
+        var timeout = timeval(tv_sec: 15, tv_usec: 0)
+        _ = setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        _ = setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = path.utf8CString

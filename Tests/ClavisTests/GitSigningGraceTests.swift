@@ -5,28 +5,16 @@ import LocalAuthentication
 @testable import ClavisCore
 @testable import Clavis
 
-private final class CleanupHook: @unchecked Sendable {
-    private let action: () -> Void
-    init(action: @escaping () -> Void) {
-        self.action = action
-    }
-    deinit {
-        action()
-    }
-}
-
-struct GitSigningGraceTests {
+final class GitSigningGraceTests {
     private let fixture: ClavisTestFixture
     private var testRootURL: URL { fixture.testRootURL }
-    private let _cleanup: CleanupHook
-
 
     init() throws {
-        let fixture = try ClavisTestFixture()
-        self.fixture = fixture
-        self._cleanup = CleanupHook {
-            fixture.cleanup()
-        }
+        self.fixture = try ClavisTestFixture()
+    }
+
+    deinit {
+        fixture.cleanup()
     }
 
     private func makeKeyManager(
@@ -812,7 +800,7 @@ struct GitSigningGraceTests {
         #expect(grant.isValid)
     }
 
-    @Test func testAuthorizeGitSigningGrantRejectsWeakerContextForStrictRecord() async throws {
+    @Test func testAuthorizeGitSigningGrantRejectsWeakerContextForStrictRecord() throws {
         let store = InMemoryPrivateKeyStore()
         let authenticator = PolicyCapturingAuthenticator()
         let customGraceManager = GitSigningGraceManager(observeSystemEvents: false)
@@ -851,13 +839,17 @@ struct GitSigningGraceTests {
         let context = try #require(authenticator.contexts.last)
         context.interactionNotAllowed = true
 
-        let (success, error) = await withCheckedContinuation { continuation in
-            context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "reuse") { success, error in
-                continuation.resume(returning: (success, error))
-            }
+        let evalDone = DispatchSemaphore(value: 0)
+        var evaluatedSuccess = true
+        var evaluatedError: Error?
+        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "reuse") { success, error in
+            evaluatedSuccess = success
+            evaluatedError = error
+            evalDone.signal()
         }
-        #expect(!success)
-        #expect((error as? LAError)?.code == .invalidContext)
+        #expect(evalDone.wait(timeout: .now() + 5.0) == .success)
+        #expect(!evaluatedSuccess)
+        #expect((evaluatedError as? LAError)?.code == .invalidContext)
     }
 
     @Test func testFailedSignatureUnderNewGrantInvalidatesGrant() throws {

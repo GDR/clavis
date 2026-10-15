@@ -85,8 +85,6 @@ public final class UnixSocketServer {
         }
     }
 
-    private let queue = DispatchQueue(label: "com.clavis.unix-socket-server", attributes: .concurrent)
-
     public init(
         configuration: Configuration,
         clientHandler: @escaping SimpleClientHandler,
@@ -332,7 +330,10 @@ public final class UnixSocketServer {
 
         isRunning = true
         didStart = true
-        queue.async {
+        // Run blocking accept(2) loop on a dedicated kernel thread rather than a
+        // non-overcommit .default-QoS GCD queue, which XNU workqueue throttles when
+        // Swift Concurrency cooperative threads block in synchronous syscalls.
+        Thread.detachNewThread {
             self.acceptLoop()
         }
     }
@@ -454,7 +455,7 @@ public final class UnixSocketServer {
                     continue
                 }
 
-                queue.async {
+                Thread.detachNewThread {
                     defer { self.releaseClientSlot(clientPid: clientPid, clientExecutablePath: clientExecutablePath) }
                     self.handleClient(
                         socket: clientSocket,

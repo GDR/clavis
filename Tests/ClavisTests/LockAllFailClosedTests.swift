@@ -4,18 +4,8 @@ import Darwin
 @testable import ClavisCore
 @testable import Clavis
 
-private final class CleanupHook: @unchecked Sendable {
-    private let action: () -> Void
-    init(action: @escaping () -> Void) {
-        self.action = action
-    }
-    deinit {
-        action()
-    }
-}
-
 @Suite
-struct LockAllFailClosedTests {
+final class LockAllFailClosedTests {
 
     enum StubBehavior {
         case replyFailure
@@ -26,15 +16,14 @@ struct LockAllFailClosedTests {
 
     private let fixture: ClavisTestFixture
     private var testRootURL: URL { fixture.testRootURL }
-    private let _cleanup: CleanupHook
 
     init() throws {
         signal(SIGPIPE, SIG_IGN)
-        let fixture = try ClavisTestFixture()
-        self.fixture = fixture
-        self._cleanup = CleanupHook {
-            fixture.cleanup()
-        }
+        self.fixture = try ClavisTestFixture()
+    }
+
+    deinit {
+        fixture.cleanup()
     }
 
     private func makeKeyManager(

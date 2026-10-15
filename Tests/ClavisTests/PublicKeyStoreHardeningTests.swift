@@ -74,7 +74,7 @@ import Foundation
         }
     }
 
-    @Test func testStaleCacheWritePreventedByGenerationCounterOnConcurrentInvalidate() async throws {
+    @Test func testStaleCacheWritePreventedByGenerationCounterOnConcurrentInvalidate() throws {
         PublicKeyStore.resetForTesting()
         defer {
             PublicKeyStore.resetForTesting()
@@ -83,36 +83,39 @@ import Foundation
         let staleKey = makeKey(label: "stale-key")
         let inFlight = DispatchSemaphore(value: 0)
         let invalidated = DispatchSemaphore(value: 0)
+        let done = DispatchSemaphore(value: 0)
 
         let loader: @Sendable () -> [SSHKeyInfo] = {
             inFlight.signal()
-            invalidated.wait()
+            _ = invalidated.wait(timeout: .now() + 5.0)
             return [staleKey]
         }
 
-        try await PublicKeyStore.$testKeychainLoader.withValue(loader) {
-            let task = Task {
+        let workerQueue = DispatchQueue(label: "com.clavis.test.publickeystore.stale")
+        workerQueue.async {
+            PublicKeyStore.$testKeychainLoader.withValue(loader) {
                 let loaded = PublicKeyStore.loadAll()
                 #expect(loaded.map(\.label) == ["stale-key"])
+                done.signal()
             }
-
-            // Wait until loadAll is inside the keychain loader
-            inFlight.wait()
-
-            let genBefore = PublicKeyStore.generationForTesting
-            // Invalidate cache concurrently while loadAll is reading
-            PublicKeyStore.invalidateCache()
-            let genAfter = PublicKeyStore.generationForTesting
-            #expect(genAfter == genBefore + 1, "invalidateCache must increment generation counter")
-
-            // Allow loadAll to finish its stale read
-            invalidated.signal()
-
-            _ = await task.result
-
-            // Since generation changed during the read, cachedKeys must NOT be populated with stale keys
-            #expect(PublicKeyStore.cachedKeysForTesting == nil, "cachedKeys must not be overwritten with stale data after invalidateCache()")
         }
+
+        // Wait until loadAll is inside the keychain loader
+        #expect(inFlight.wait(timeout: .now() + 5.0) == .success)
+
+        let genBefore = PublicKeyStore.generationForTesting
+        // Invalidate cache concurrently while loadAll is reading
+        PublicKeyStore.invalidateCache()
+        let genAfter = PublicKeyStore.generationForTesting
+        #expect(genAfter == genBefore + 1, "invalidateCache must increment generation counter")
+
+        // Allow loadAll to finish its stale read
+        invalidated.signal()
+
+        #expect(done.wait(timeout: .now() + 5.0) == .success)
+
+        // Since generation changed during the read, cachedKeys must NOT be populated with stale keys
+        #expect(PublicKeyStore.cachedKeysForTesting == nil, "cachedKeys must not be overwritten with stale data after invalidateCache()")
     }
 
     @Test func testConcurrentLoadAllAndInvalidateWithBarrier() async throws {
@@ -127,7 +130,7 @@ import Foundation
             return [testKey]
         }
 
-        try await PublicKeyStore.$testKeychainLoader.withValue(loader) {
+        await PublicKeyStore.$testKeychainLoader.withValue(loader) {
             await withTaskGroup(of: Void.self) { group in
                 for i in 0..<24 {
                     if i % 4 == 0 {

@@ -31,34 +31,22 @@ final class FakePanelAuthenticator: PanelAuthenticating {
     }
 }
 
-private final class CleanupHook: @unchecked Sendable {
-    private let action: () -> Void
-    init(action: @escaping () -> Void) {
-        self.action = action
-    }
-    deinit {
-        action()
-    }
-}
-
 @Suite @MainActor
-struct PanelLockControllerTests {
+final class PanelLockControllerTests {
     private let fixture: ClavisTestFixture
     private let suiteName: String
-    private let testDefaults: UserDefaults
-    private let _cleanup: CleanupHook
+    nonisolated(unsafe) private let testDefaults: UserDefaults
 
     init() throws {
-        let fixture = try ClavisTestFixture()
-        self.fixture = fixture
+        self.fixture = try ClavisTestFixture()
         let suite = "com.clavis.tests.panelLock.\(UUID().uuidString)"
         self.suiteName = suite
-        let defaults = UserDefaults(suiteName: suite)!
-        self.testDefaults = defaults
-        self._cleanup = CleanupHook {
-            defaults.removePersistentDomain(forName: suite)
-            fixture.cleanup()
-        }
+        self.testDefaults = UserDefaults(suiteName: suite)!
+    }
+
+    deinit {
+        testDefaults.removePersistentDomain(forName: suiteName)
+        fixture.cleanup()
     }
 
     @Test func test_003_AC7_freshInstallIsLocked() {
