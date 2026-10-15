@@ -1,40 +1,81 @@
-import XCTest
+import Foundation
+import Testing
 import CryptoKit
 import LocalAuthentication
 @testable import ClavisCore
 @testable import Clavis
 
-final class GitSigningGraceTests: ClavisBaseTestCase {
+private final class CleanupHook: @unchecked Sendable {
+    private let action: () -> Void
+    init(action: @escaping () -> Void) {
+        self.action = action
+    }
+    deinit {
+        action()
+    }
+}
 
-    func testSSHSIGPayloadStrictParsing() throws {
+struct GitSigningGraceTests {
+    private let fixture: ClavisTestFixture
+    private var testRootURL: URL { fixture.testRootURL }
+    private let _cleanup: CleanupHook
+
+
+    init() throws {
+        let fixture = try ClavisTestFixture()
+        self.fixture = fixture
+        self._cleanup = CleanupHook {
+            fixture.cleanup()
+        }
+    }
+
+    private func makeKeyManager(
+        authenticator: UserAuthenticating = AllowingAuthenticator(),
+        privateKeyStore: PrivateKeyStoring = InMemoryPrivateKeyStore(),
+        vaultStore: EncryptedVaultStore? = nil,
+        auditRecorder: AuditRecording = InMemoryAuditRecorder(),
+        signingProvider: SecureEnclaveSigningProviding? = nil,
+        gitSigningGraceManager: GitSigningGraceManager = .shared
+    ) -> KeychainManager {
+        fixture.makeKeyManager(
+            authenticator: authenticator,
+            privateKeyStore: privateKeyStore,
+            vaultStore: vaultStore,
+            auditRecorder: auditRecorder,
+            signingProvider: signingProvider,
+            gitSigningGraceManager: gitSigningGraceManager
+        )
+    }
+
+    @Test func testSSHSIGPayloadStrictParsing() throws {
         // Valid Git SSHSIG payload (sha256)
         let hash256 = Data(repeating: 0x42, count: 32)
         let payload256 = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: hash256)
         let wire256 = payload256.serialize()
 
         let parsed = SSHSIGPayload.parse(from: wire256)
-        XCTAssertNotNil(parsed)
-        XCTAssertEqual(parsed?.namespace, "git")
-        XCTAssertEqual(parsed?.hashAlgorithm, "sha256")
-        XCTAssertEqual(parsed?.messageHash, hash256)
+        #expect(parsed != nil)
+        #expect(parsed?.namespace == "git")
+        #expect(parsed?.hashAlgorithm == "sha256")
+        #expect(parsed?.messageHash == hash256)
 
         // Valid Git SSHSIG payload (sha512)
         let hash512 = Data(repeating: 0x99, count: 64)
         let payload512 = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha512", messageHash: hash512)
         let wire512 = payload512.serialize()
         let parsed512 = SSHSIGPayload.parse(from: wire512)
-        XCTAssertNotNil(parsed512)
-        XCTAssertEqual(parsed512?.hashAlgorithm, "sha512")
-        XCTAssertEqual(parsed512?.messageHash, hash512)
+        #expect(parsed512 != nil)
+        #expect(parsed512?.hashAlgorithm == "sha512")
+        #expect(parsed512?.messageHash == hash512)
 
         // 1. Wrong magic
         var badMagic = wire256
         badMagic[0] = 0x58
-        XCTAssertNil(SSHSIGPayload.parse(from: badMagic))
+        #expect(SSHSIGPayload.parse(from: badMagic) == nil)
 
         // 2. Non-git namespace
         let filePayload = SSHSIGPayload(namespace: "file", hashAlgorithm: "sha256", messageHash: hash256)
-        XCTAssertNil(SSHSIGPayload.parse(from: filePayload.serialize()))
+        #expect(SSHSIGPayload.parse(from: filePayload.serialize()) == nil)
 
         // 3. Invalid hash length (31 bytes for sha256)
         var invalidLenWire = SSHSIGPayload.magic
@@ -42,12 +83,12 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         invalidLenWire.appendWireString("")
         invalidLenWire.appendWireString("sha256")
         invalidLenWire.appendWireData(Data(repeating: 0x01, count: 31))
-        XCTAssertNil(SSHSIGPayload.parse(from: invalidLenWire))
+        #expect(SSHSIGPayload.parse(from: invalidLenWire) == nil)
 
         // 4. Trailing garbage bytes (fail closed)
         var trailingGarbageWire = wire256
         trailingGarbageWire.append(Data([0x00, 0x01, 0x02]))
-        XCTAssertNil(SSHSIGPayload.parse(from: trailingGarbageWire))
+        #expect(SSHSIGPayload.parse(from: trailingGarbageWire) == nil)
 
         // 5. Non-empty reserved field
         var badReservedWire = SSHSIGPayload.magic
@@ -55,76 +96,66 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         badReservedWire.appendWireString("reserved-data")
         badReservedWire.appendWireString("sha256")
         badReservedWire.appendWireData(hash256)
-        XCTAssertNil(SSHSIGPayload.parse(from: badReservedWire))
+        #expect(SSHSIGPayload.parse(from: badReservedWire) == nil)
 
         // 6. Arbitrary non-SSHSIG payload
         let sshAuthPayload = Data([0x01, 0x02, 0x03, 0x04, 0x05])
-        XCTAssertNil(SSHSIGPayload.parse(from: sshAuthPayload))
+        #expect(SSHSIGPayload.parse(from: sshAuthPayload) == nil)
     }
 
-
-    func testGitSigningGrantLifecycle() throws {
+    @Test func testGitSigningGrantLifecycle() throws {
         let label = "grant-test-\(UUID().uuidString)"
         let myPid = getpid()
-        guard let mySnap = ProcessInspector.processParentSnapshot(pid: myPid) else {
-            return XCTFail("Failed to get process snapshot for test runner")
-        }
+        let mySnap = try #require(ProcessInspector.processParentSnapshot(pid: myPid), "Failed to get process snapshot for test runner")
         let approved = GitApprovedProcess(pid: myPid, startTime: mySnap.startTime, path: "/usr/bin/git")
         let grant = GitSigningGrant(keyLabel: label, duration: 0.2, maxOperations: 3, approvedProcess: approved)
 
-        XCTAssertTrue(grant.isValid)
-        XCTAssertEqual(grant.remainingOperations, 3)
+        #expect(grant.isValid)
+        #expect(grant.remainingOperations == 3)
 
         // Consume operations
-        XCTAssertTrue(grant.consumeOperation(clientIdentity: "/usr/bin/git", peerProcess: approved))
-        XCTAssertEqual(grant.remainingOperations, 2)
-        XCTAssertTrue(grant.consumeOperation(clientIdentity: "/usr/bin/git", peerProcess: approved))
-        XCTAssertEqual(grant.remainingOperations, 1)
-        XCTAssertTrue(grant.consumeOperation(clientIdentity: "/usr/bin/git", peerProcess: approved))
-        XCTAssertEqual(grant.remainingOperations, 0)
+        #expect(grant.consumeOperation(clientIdentity: "/usr/bin/git", peerProcess: approved))
+        #expect(grant.remainingOperations == 2)
+        #expect(grant.consumeOperation(clientIdentity: "/usr/bin/git", peerProcess: approved))
+        #expect(grant.remainingOperations == 1)
+        #expect(grant.consumeOperation(clientIdentity: "/usr/bin/git", peerProcess: approved))
+        #expect(grant.remainingOperations == 0)
 
         // Exceeded operation limit
-        XCTAssertFalse(grant.consumeOperation(clientIdentity: "/usr/bin/git", peerProcess: approved))
-        XCTAssertFalse(grant.isValid)
+        #expect(!grant.consumeOperation(clientIdentity: "/usr/bin/git", peerProcess: approved))
+        #expect(!grant.isValid)
 
         // Expiry by time
         let timeGrant = GitSigningGrant(keyLabel: label, duration: 0.05, maxOperations: 100, approvedProcess: approved)
-        XCTAssertTrue(timeGrant.isValid)
+        #expect(timeGrant.isValid)
         usleep(70_000)
-        XCTAssertFalse(timeGrant.isValid)
-        XCTAssertFalse(timeGrant.consumeOperation(clientIdentity: "/usr/bin/git", peerProcess: approved))
+        #expect(!timeGrant.isValid)
+        #expect(!timeGrant.consumeOperation(clientIdentity: "/usr/bin/git", peerProcess: approved))
     }
 
-
-    func testGitSigningGraceManagerRebaseFlow() throws {
+    @Test func testGitSigningGraceManagerRebaseFlow() throws {
         let graceManager = GitSigningGraceManager(observeSystemEvents: false)
+
         let label = "rebase-key-\(UUID().uuidString)"
 
         // Step 1: First commit
-        XCTAssertFalse(graceManager.hasRecentGitSignature(for: label))
+        #expect(!graceManager.hasRecentGitSignature(for: label))
         graceManager.recordGitSignature(for: label)
-        XCTAssertTrue(graceManager.hasRecentGitSignature(for: label, windowSeconds: 2.0))
+        #expect(graceManager.hasRecentGitSignature(for: label, windowSeconds: 2.0))
 
         // Step 2: Second commit within window (<30s) prompts user
         var promptCalled = false
-        GitSigningGraceManager.promptProvider = { keyLabel, clientDesc in
+        graceManager.setPresenter(ClosureGitSigningGracePresenter { keyLabel, clientDesc in
             promptCalled = true
             return .grantFiveMinutes
-        }
-        defer {
-            GitSigningGraceManager.promptProvider = { label, clientDesc in
-                GitSigningPrompt.displayModal(keyLabel: label, clientDesc: clientDesc)
-            }
-        }
+        })
 
-        let choice = GitSigningGraceManager.promptProvider(label, "git (PID 1234)")
-        XCTAssertTrue(promptCalled)
-        XCTAssertEqual(choice, .grantFiveMinutes)
+        let choice = graceManager.prompt(keyLabel: label, clientDesc: "git (PID 1234)")
+        #expect(promptCalled)
+        #expect(choice == .grantFiveMinutes)
 
         let myPid = getpid()
-        guard let mySnap = ProcessInspector.processParentSnapshot(pid: myPid) else {
-            return XCTFail("Failed to get process snapshot for test runner")
-        }
+        let mySnap = try #require(ProcessInspector.processParentSnapshot(pid: myPid), "Failed to get process snapshot for test runner")
         let approved = GitApprovedProcess(pid: myPid, startTime: mySnap.startTime, path: "/usr/bin/git")
 
         // Issue grant
@@ -136,45 +167,44 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             context: LAContext(),
             approvedProcess: approved
         )
-        XCTAssertNotNil(graceManager.getValidGrant(for: label))
-        XCTAssertEqual(grant.remainingOperations, 50)
+        #expect(graceManager.getValidGrant(for: label) != nil)
+        #expect(grant.remainingOperations == 50)
 
         // Step 3: Subsequent rebase commits consume grant
         let result = graceManager.withGrant(for: label, clientIdentity: "/usr/bin/git", peerProcess: approved) { _ in "signed" }
-        XCTAssertEqual(result, "signed")
-        XCTAssertEqual(grant.remainingOperations, 49)
+        #expect(result == "signed")
+        #expect(grant.remainingOperations == 49)
         let untrustedPeer = GitApprovedProcess(pid: myPid + 9999, startTime: mySnap.startTime, path: "/tmp/fake-git")
-        XCTAssertNil(
-            graceManager.withGrant(for: label, clientIdentity: "/tmp/fake-git", peerProcess: untrustedPeer) { _ in "signed" },
+        #expect(
+            graceManager.withGrant(for: label, clientIdentity: "/tmp/fake-git", peerProcess: untrustedPeer) { _ in "signed" } == nil,
             "A grant must not be transferable to another client identity or unapproved process"
         )
 
         // Invalidation clears grant
         graceManager.invalidateAll(broadcast: false)
-        XCTAssertNil(graceManager.getValidGrant(for: label))
+        #expect(graceManager.getValidGrant(for: label) == nil)
     }
 
-
-    func testKeyPurposeDomainIsolation() throws {
+    @Test func testKeyPurposeDomainIsolation() throws {
         let store = InMemoryPrivateKeyStore()
         let authenticator = CountingAuthenticator()
-        let manager = KeychainManager(authenticator: authenticator, privateKeyStore: store)
+        let manager = makeKeyManager(authenticator: authenticator, privateKeyStore: store)
 
         let label = "git-only-\(UUID().uuidString)"
         let keyInfo = try manager.generateKey(label: label, keyPurpose: .gitSigningOnly)
-        XCTAssertEqual(keyInfo.purpose, .gitSigningOnly)
+        #expect(keyInfo.purpose == .gitSigningOnly)
 
         // Verify stored record preserves purpose
-        let loaded = try XCTUnwrap(store.load(label: label, context: LAContext(), prompt: ""))
+        let loaded = try #require(try store.load(label: label, context: LAContext(), prompt: ""))
         let record = try StoredPrivateKeyRecord.decode(from: loaded)
-        XCTAssertEqual(record.purpose, .gitSigningOnly)
+        #expect(record.purpose == .gitSigningOnly)
 
         // SSH Agent identities answer must EXCLUDE gitSigningOnly keys
         let server = SSHAgentServer(keyManager: manager)
         let identitiesData = server.handleRequestIdentities()
-        XCTAssertFalse(identitiesData.isEmpty)
+        #expect(!identitiesData.isEmpty)
         let blobInIdentities = identitiesData.range(of: keyInfo.publicKeyBlob) != nil
-        XCTAssertFalse(blobInIdentities, "Git-only key must never be advertised in SSH identities listing")
+        #expect(!blobInIdentities, "Git-only key must never be advertised in SSH identities listing")
 
         // Signing non-Git payload with git-only key must be REJECTED (Data([5]))
         var signRequestWire = Data()
@@ -184,7 +214,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         Swift.withUnsafeBytes(of: &flags) { signRequestWire.append(contentsOf: $0) }
 
         let response = server.handleSignRequest(payload: signRequestWire, clientPid: getpid())
-        XCTAssertEqual(response, Data([5]), "Non-Git payload must be strictly rejected for gitSigningOnly key")
+        #expect(response == Data([5]), "Non-Git payload must be strictly rejected for gitSigningOnly key")
 
         // Signing valid Git SSHSIG payload must SUCCEED
         let validGitPayload = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: Data(repeating: 0x55, count: 32)).serialize()
@@ -194,12 +224,12 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         Swift.withUnsafeBytes(of: &flags) { validSignRequest.append(contentsOf: $0) }
 
         let gitResponse = server.handleSignRequest(payload: validSignRequest, clientPid: getpid())
-        XCTAssertEqual(gitResponse.first, 14, "Git SSHSIG payload must be signed successfully")
+        #expect(gitResponse.first == 14, "Git SSHSIG payload must be signed successfully")
     }
 
-    func testTamperedPublicPurposeCannotBroadenGitOnlyKey() throws {
+    @Test func testTamperedPublicPurposeCannotBroadenGitOnlyKey() throws {
         let store = InMemoryPrivateKeyStore()
-        let manager = KeychainManager(
+        let manager = makeKeyManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: store
         )
@@ -228,75 +258,79 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             keyPurpose: .general
         )
 
-        XCTAssertThrowsError(
+        #expect {
             try manager.signSSH(
                 key: tampered,
                 data: Data("ssh-userauth-challenge".utf8),
                 prompt: "SSH",
                 useCache: true
             )
-        ) { error in
+        } throws: { error in
             guard case PrivateKeyRecordError.purposeMismatch(let expected, let actual) = error else {
-                return XCTFail("Expected purposeMismatch, got \(error)")
+                return false
             }
-            XCTAssertEqual(expected, KeyPurpose.general.rawValue)
-            XCTAssertEqual(actual, KeyPurpose.gitSigningOnly.rawValue)
+            return expected == KeyPurpose.general.rawValue && actual == KeyPurpose.gitSigningOnly.rawValue
         }
 
-        XCTAssertThrowsError(
+        #expect {
             try manager.authorizeGitSigningGrant(
                 key: tampered,
                 prompt: "Grant",
                 clientIdentity: "/usr/bin/git"
             )
-        ) { error in
+        } throws: { error in
             guard case PrivateKeyRecordError.purposeMismatch = error else {
-                return XCTFail("Expected purposeMismatch, got \(error)")
+                return false
             }
+            return true
         }
     }
 
-    func testGitOnlyKeyCannotBeUsedForNonGitSigning() throws {
+    @Test func testGitOnlyKeyCannotBeUsedForNonGitSigning() throws {
         let manager = makeKeyManager()
         let key = try manager.generateKey(
             label: "git-only-operations-\(UUID().uuidString)",
             keyPurpose: .gitSigningOnly
         )
 
-        XCTAssertThrowsError(
+        #expect {
             try manager.signSSH(
                 key: key,
                 data: Data("arbitrary-non-git-challenge".utf8),
                 prompt: "Generic"
             )
-        ) { error in
+        } throws: { error in
             guard case PrivateKeyRecordError.purposeNotAllowed = error else {
-                return XCTFail("Expected purposeNotAllowed, got \(error)")
+                return false
             }
+            return true
         }
     }
 
-
-    func testSSHAgentServerRebaseGraceFlow() throws {
+    @Test func testSSHAgentServerRebaseGraceFlow() throws {
         let store = InMemoryPrivateKeyStore()
+
         let authenticator = CountingAuthenticator()
-        let manager = KeychainManager(authenticator: authenticator, privateKeyStore: store)
-        let server = SSHAgentServer(keyManager: manager)
+        var promptCount = 0
+        let customGraceManager = GitSigningGraceManager(
+            observeSystemEvents: false,
+            presenter: ClosureGitSigningGracePresenter { _, _ in
+                promptCount += 1
+                return .grantFiveMinutes
+            }
+        )
+        let manager = makeKeyManager(
+            authenticator: authenticator,
+            privateKeyStore: store,
+            gitSigningGraceManager: customGraceManager
+        )
+        let server = SSHAgentServer(
+            keyManager: manager,
+            gitSigningGraceManager: customGraceManager
+        )
 
         let label = "rebase-flow-\(UUID().uuidString)"
         let keyInfo = try manager.generateKey(label: label, keyPurpose: .general)
-
-        var promptCount = 0
-        GitSigningGraceManager.promptProvider = { _, _ in
-            promptCount += 1
-            return .grantFiveMinutes
-        }
-        defer {
-            GitSigningGraceManager.promptProvider = { l, c in
-                GitSigningPrompt.displayModal(keyLabel: l, clientDesc: c)
-            }
-            GitSigningGraceManager.shared.invalidateAll(broadcast: false)
-        }
 
         let makeGitSignRequest: () -> Data = {
             let gitPayload = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: Data(repeating: 0x77, count: 32)).serialize()
@@ -310,34 +344,34 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // Commit #1: First commit (single commit)
         let resp1 = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
-        XCTAssertEqual(resp1.first, 14)
-        XCTAssertEqual(authenticator.authenticationCount, 1, "First commit requires standard single Touch ID")
-        XCTAssertEqual(promptCount, 0, "First commit must not show modal dialog")
-        XCTAssertNil(GitSigningGraceManager.shared.getValidGrant(for: label), "No grant issued on first single commit")
+        #expect(resp1.first == 14)
+        #expect(authenticator.authenticationCount == 1, "First commit requires standard single Touch ID")
+        #expect(promptCount == 0, "First commit must not show modal dialog")
+        #expect(customGraceManager.getValidGrant(for: label) == nil, "No grant issued on first single commit")
 
         // Commit #2: Repeated commit within 30s (Rebase detected!)
         let resp2 = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
-        XCTAssertEqual(resp2.first, 14)
-        XCTAssertEqual(promptCount, 1, "Second commit within 30s must trigger session dialog")
-        XCTAssertEqual(authenticator.authenticationCount, 2, "Second commit requires Touch ID to authorize 5-minute grant")
+        #expect(resp2.first == 14)
+        #expect(promptCount == 1, "Second commit within 30s must trigger session dialog")
+        #expect(authenticator.authenticationCount == 2, "Second commit requires Touch ID to authorize 5-minute grant")
 
-        let activeGrant = try XCTUnwrap(GitSigningGraceManager.shared.getValidGrant(for: label))
-        XCTAssertTrue(activeGrant.isValid)
-        XCTAssertEqual(activeGrant.remainingOperations, 199, "Commit #2 consumes 1 operation of the 200 grant")
+        let activeGrant = try #require(customGraceManager.getValidGrant(for: label))
+        #expect(activeGrant.isValid)
+        #expect(activeGrant.remainingOperations == 199, "Commit #2 consumes 1 operation of the 200 grant")
 
         // Commit #3: Subsequent commit during rebase
         let resp3 = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
-        XCTAssertEqual(resp3.first, 14)
-        XCTAssertEqual(authenticator.authenticationCount, 2, "Third commit must NOT prompt Touch ID (0 prompts)")
-        XCTAssertEqual(promptCount, 1, "Third commit must NOT show dialog")
-        XCTAssertEqual(activeGrant.remainingOperations, 198, "Commit #3 consumes another operation")
+        #expect(resp3.first == 14)
+        #expect(authenticator.authenticationCount == 2, "Third commit must NOT prompt Touch ID (0 prompts)")
+        #expect(promptCount == 1, "Third commit must NOT show dialog")
+        #expect(activeGrant.remainingOperations == 198, "Commit #3 consumes another operation")
 
         // Invalidation (e.g. End Session / Screen Lock)
-        GitSigningGraceManager.shared.invalidateAll(broadcast: false)
-        XCTAssertNil(GitSigningGraceManager.shared.getValidGrant(for: label))
+        customGraceManager.invalidateAll(broadcast: false)
+        #expect(customGraceManager.getValidGrant(for: label) == nil)
     }
 
-    func testResolveClientIdentityDifferentiatesProcesses() {
+    @Test func testResolveClientIdentityDifferentiatesProcesses() {
         let currentPid = getpid()
         guard let currentPath = ProcessInspector.getProcessPath(pid: currentPid) else {
             return
@@ -347,21 +381,21 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let identity2 = ProcessInspector.resolveClientIdentity(pid: currentPid, processPath: currentPath)
 
         // Same process call must produce identical identity
-        XCTAssertEqual(identity1, identity2)
-        XCTAssertTrue(identity1.contains(currentPath))
+        #expect(identity1 == identity2)
+        #expect(identity1.contains(currentPath))
 
         // Different executable paths or different processes must produce distinct identities
         let fakeIdentity = ProcessInspector.resolveClientIdentity(pid: currentPid, processPath: "/usr/bin/git")
-        XCTAssertNotEqual(identity1, fakeIdentity)
+        #expect(identity1 != fakeIdentity)
 
         // PID 1 (launchd) has no parent or init parent, must differ from current process
         if let launchdPath = ProcessInspector.getProcessPath(pid: 1) {
             let launchdIdentity = ProcessInspector.resolveClientIdentity(pid: 1, processPath: launchdPath)
-            XCTAssertNotEqual(identity1, launchdIdentity)
+            #expect(identity1 != launchdIdentity)
         }
     }
 
-    func testSameParentDoesNotInheritGitSigningGrant() {
+    @Test func testSameParentDoesNotInheritGitSigningGrant() {
         let shell: pid_t = 10
         let approvedGit: pid_t = 20
         let siblingGit: pid_t = 21
@@ -388,7 +422,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let lookup: (pid_t) -> ProcessParentSnapshot? = { processes[$0] }
         let pathLookup: (pid_t) -> String? = { processPaths[$0] }
 
-        XCTAssertTrue(
+        #expect(
             ProcessInspector.gitGrantCoversPeer(
                 peerPid: approvedGit,
                 peerStartTime: approvedStart,
@@ -399,7 +433,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             ),
             "The approved git process keeps its own grant"
         )
-        XCTAssertTrue(
+        #expect(
             ProcessInspector.gitGrantCoversPeer(
                 peerPid: signer,
                 peerStartTime: signerStart,
@@ -410,8 +444,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             ),
             "A signer helper child of the approved git, such as ssh-keygen, keeps the grant"
         )
-        XCTAssertFalse(
-            ProcessInspector.gitGrantCoversPeer(
+        #expect(
+            !ProcessInspector.gitGrantCoversPeer(
                 peerPid: siblingGit,
                 peerStartTime: siblingStart,
                 approvedPid: approvedGit,
@@ -424,8 +458,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         var reused = processes
         reused[approvedGit] = ProcessParentSnapshot(startTime: approvedStart &+ 1, parentPid: shell)
-        XCTAssertFalse(
-            ProcessInspector.gitGrantCoversPeer(
+        #expect(
+            !ProcessInspector.gitGrantCoversPeer(
                 peerPid: approvedGit,
                 peerStartTime: approvedStart &+ 1,
                 approvedPid: approvedGit,
@@ -437,7 +471,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
     }
 
-    func testGitGrantAnchorModelsRealProcessShape() {
+    @Test func testGitGrantAnchorModelsRealProcessShape() {
         let shellPid: pid_t = 10
         let gitGPid: pid_t = 20
         let signer2Pid: pid_t = 30
@@ -485,17 +519,17 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             processInfo: processInfo,
             processPathLookup: pathLookup
         ) else {
-            XCTFail("grantAnchor must succeed for signer #2 under git G")
+            Issue.record("grantAnchor must succeed for signer #2 under git G")
             return
         }
 
-        XCTAssertEqual(anchor.pid, gitGPid, "Anchor PID must be parent git G")
-        XCTAssertEqual(anchor.startTime, gitGStart, "Anchor start time must match git G")
-        XCTAssertEqual(anchor.path, "/usr/bin/git", "Anchor path must match parent git")
+        #expect(anchor.pid == gitGPid, "Anchor PID must be parent git G")
+        #expect(anchor.startTime == gitGStart, "Anchor start time must match git G")
+        #expect(anchor.path == "/usr/bin/git", "Anchor path must match parent git")
 
         // Peer signer #3 (same parent G) is covered
         let signer3 = GitApprovedProcess(pid: signer3Pid, startTime: signer3Start)
-        XCTAssertTrue(
+        #expect(
             ProcessInspector.gitGrantCoversPeer(
                 peerPid: signer3.pid,
                 peerStartTime: signer3.startTime,
@@ -512,8 +546,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             pid: signerUnderDifferentGitPid,
             startTime: signerDifferentGitStart
         )
-        XCTAssertFalse(
-            ProcessInspector.gitGrantCoversPeer(
+        #expect(
+            !ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerDifferentGit.pid,
                 peerStartTime: signerDifferentGit.startTime,
                 approvedPid: anchor.pid,
@@ -527,8 +561,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         // Recycled git pid is NOT covered
         var recycledProcesses = processes
         recycledProcesses[gitGPid] = ProcessParentSnapshot(startTime: gitGStart &+ 1, parentPid: shellPid)
-        XCTAssertFalse(
-            ProcessInspector.gitGrantCoversPeer(
+        #expect(
+            !ProcessInspector.gitGrantCoversPeer(
                 peerPid: signer3.pid,
                 peerStartTime: signer3.startTime,
                 approvedPid: anchor.pid,
@@ -546,7 +580,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             processInfo: processInfo,
             processPathLookup: pathLookup
         )
-        XCTAssertNil(shellSignerAnchor, "Anchor on shell must be refused when signer parent is a shell")
+        #expect(shellSignerAnchor == nil, "Anchor on shell must be refused when signer parent is a shell")
 
         let directShellAnchor = ProcessInspector.grantAnchor(
             peerPid: shellPid,
@@ -554,7 +588,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             processInfo: processInfo,
             processPathLookup: pathLookup
         )
-        XCTAssertNil(directShellAnchor, "Anchor directly on shell must be refused")
+        #expect(directShellAnchor == nil, "Anchor directly on shell must be refused")
 
         let launchdAnchor = ProcessInspector.grantAnchor(
             peerPid: 1,
@@ -562,10 +596,10 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             processInfo: processInfo,
             processPathLookup: pathLookup
         )
-        XCTAssertNil(launchdAnchor, "Anchor on launchd must be refused")
+        #expect(launchdAnchor == nil, "Anchor on launchd must be refused")
     }
 
-    func testCustomGpgSSHProgramResolvedAsKnownHelper() {
+    @Test func testCustomGpgSSHProgramResolvedAsKnownHelper() {
         let shellPid: pid_t = 10
         let gitPid: pid_t = 20
         let customSignerPid: pid_t = 30
@@ -598,10 +632,10 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             processPathLookup: pathLookup,
             resolvedGpgSSHProgram: customResolver
         )
-        XCTAssertNotNil(customAnchor)
-        XCTAssertEqual(customAnchor?.pid, gitPid)
-        XCTAssertEqual(customAnchor?.startTime, 200)
-        XCTAssertEqual(customAnchor?.path, "/usr/local/bin/git")
+        #expect(customAnchor != nil)
+        #expect(customAnchor?.pid == gitPid)
+        #expect(customAnchor?.startTime == 200)
+        #expect(customAnchor?.path == "/usr/local/bin/git")
 
         // Unknown program (e.g. curl) under git is NOT a known signer helper
         let unknownAnchor = ProcessInspector.grantAnchor(
@@ -611,10 +645,10 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             processPathLookup: pathLookup,
             resolvedGpgSSHProgram: customResolver
         )
-        XCTAssertNil(unknownAnchor, "Unknown program that is not a signer helper must be refused as an anchor helper")
+        #expect(unknownAnchor == nil, "Unknown program that is not a signer helper must be refused as an anchor helper")
     }
 
-    func testResolveGpgSSHProgramTimesOutAndKillsHangingProcess() throws {
+    @Test func testResolveGpgSSHProgramTimesOutAndKillsHangingProcess() throws {
         let scriptURL = testRootURL.appendingPathComponent("hanging-git.sh")
         let scriptContent = "#!/bin/sh\nsleep 10\n"
         try scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
@@ -624,22 +658,22 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let result = ProcessInspector.resolveGpgSSHProgram(gitExecutablePath: scriptURL.path, timeout: 0.08)
         let elapsed = Date().timeIntervalSince(start)
 
-        XCTAssertNil(result, "resolveGpgSSHProgram must return nil on timeout")
-        XCTAssertGreaterThanOrEqual(elapsed, 0.06, "Must wait for the timeout duration")
-        XCTAssertLessThan(elapsed, 2.0, "Must terminate child process without hanging until sleep completes")
+        #expect(result == nil, "resolveGpgSSHProgram must return nil on timeout")
+        #expect(elapsed >= 0.06, "Must wait for the timeout duration")
+        #expect(elapsed < 2.0, "Must terminate child process without hanging until sleep completes")
     }
 
-    func testResolveGpgSSHProgramParsesOutputSuccessfully() throws {
+    @Test func testResolveGpgSSHProgramParsesOutputSuccessfully() throws {
         let scriptURL = testRootURL.appendingPathComponent("mock-git.sh")
         let scriptContent = "#!/bin/sh\necho \"  /opt/bin/mock-signer  \"\n"
         try scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
 
         let result = ProcessInspector.resolveGpgSSHProgram(gitExecutablePath: scriptURL.path, timeout: 2.0)
-        XCTAssertEqual(result, "/opt/bin/mock-signer")
+        #expect(result == "/opt/bin/mock-signer")
     }
 
-    func testCycleSafeAncestorWalk() {
+    @Test func testCycleSafeAncestorWalk() {
         // Model an adversarial or corrupted cycle: PID 100 -> 101 -> 100
         let processes: [pid_t: ProcessParentSnapshot] = [
             100: ProcessParentSnapshot(startTime: 1000, parentPid: 101),
@@ -652,10 +686,10 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             approvedStartTime: 2000,
             processInfo: { processes[$0] }
         )
-        XCTAssertFalse(covered, "Cycle in process tree must terminate safely and return false")
+        #expect(!covered, "Cycle in process tree must terminate safely and return false")
     }
 
-    func testRefusedAnchorsOnAllShellsAndTerminals() {
+    @Test func testRefusedAnchorsOnAllShellsAndTerminals() {
         let refusedNames = [
             "sh", "bash", "zsh", "fish", "dash", "ksh", "csh", "tcsh",
             "Terminal", "iTerm", "iTerm2", "kitty", "alacritty", "wezterm", "tmux", "screen", "login",
@@ -664,7 +698,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         for name in refusedNames {
             let path = "/usr/bin/\(name)"
             let refused = ProcessInspector.isRefusedAnchor(pid: 42, path: path)
-            XCTAssertTrue(refused, "Executable named \(name) must be recognized as refused anchor")
+            #expect(refused, "Executable named \(name) must be recognized as refused anchor")
 
             let anchor = ProcessInspector.grantAnchor(
                 peerPid: 42,
@@ -672,11 +706,11 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
                 processInfo: { _ in ProcessParentSnapshot(startTime: 100, parentPid: 1) },
                 processPathLookup: { _ in "/bin/bash" }
             )
-            XCTAssertNil(anchor, "grantAnchor must refuse \(name)")
+            #expect(anchor == nil, "grantAnchor must refuse \(name)")
         }
     }
 
-    func testGrantAnchorAcceptsGitAndXCTestInDebug() {
+    @Test func testGrantAnchorAcceptsGitAndXCTestInDebug() {
         let gitPid: pid_t = 100
         let gitPath = "/nix/store/0123456789abcdef0123456789abcdef-git-2.40.0/bin/git"
         let gitAnchor = ProcessInspector.grantAnchor(
@@ -685,8 +719,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             processInfo: { _ in ProcessParentSnapshot(startTime: 1000, parentPid: 1) },
             processPathLookup: { _ in gitPath }
         )
-        XCTAssertNotNil(gitAnchor, "grantAnchor must accept git with valid Nix store path")
-        XCTAssertEqual(gitAnchor?.pid, gitPid)
+        #expect(gitAnchor != nil, "grantAnchor must accept git with valid Nix store path")
+        #expect(gitAnchor?.pid == gitPid)
 
         let xctestPid: pid_t = 200
         let xctestPath = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Xcode/Agents/xctest"
@@ -697,14 +731,14 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             processPathLookup: { _ in xctestPath }
         )
         #if DEBUG
-        XCTAssertNotNil(xctestAnchor, "xctest must be accepted as an anchor in DEBUG builds")
-        XCTAssertEqual(xctestAnchor?.pid, xctestPid)
+        #expect(xctestAnchor != nil, "xctest must be accepted as an anchor in DEBUG builds")
+        #expect(xctestAnchor?.pid == xctestPid)
         #else
-        XCTAssertNil(xctestAnchor, "xctest must NOT be accepted as an anchor in release builds")
+        #expect(xctestAnchor == nil, "xctest must NOT be accepted as an anchor in release builds")
         #endif
     }
 
-    func testGitSigningPromptBypassesModalInHeadlessSession() {
+    @Test func testGitSigningPromptBypassesModalInHeadlessSession() {
         let previousProvider = GitSigningPrompt.sessionCheckProvider
         defer { GitSigningPrompt.sessionCheckProvider = previousProvider }
 
@@ -716,44 +750,48 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let elapsed = Date().timeIntervalSince(start)
 
         // Must return .singleShot immediately (< 0.5s), avoiding the 30-second CFUserNotificationDisplayAlert hang
-        XCTAssertEqual(choice, .singleShot)
-        XCTAssertLessThan(elapsed, 0.5)
+        #expect(choice == .singleShot)
+        #expect(elapsed < 0.5)
     }
 
-    func testModalDefaultButtonIsTheLeastPrivilegedChoice() {
+    @Test func testModalDefaultButtonIsTheLeastPrivilegedChoice() {
         // Return / default button must never start an unattended signing session.
-        XCTAssertEqual(
-            GitSigningPrompt.choice(forResponseFlags: CFOptionFlags(kCFUserNotificationDefaultResponse)),
+        #expect(
+            GitSigningPrompt.choice(forResponseFlags: CFOptionFlags(kCFUserNotificationDefaultResponse)) ==
             .singleShot
         )
-        XCTAssertEqual(
-            GitSigningPrompt.choice(forResponseFlags: CFOptionFlags(kCFUserNotificationAlternateResponse)),
+        #expect(
+            GitSigningPrompt.choice(forResponseFlags: CFOptionFlags(kCFUserNotificationAlternateResponse)) ==
             .cancel
         )
-        XCTAssertEqual(
-            GitSigningPrompt.choice(forResponseFlags: CFOptionFlags(kCFUserNotificationOtherResponse)),
+        #expect(
+            GitSigningPrompt.choice(forResponseFlags: CFOptionFlags(kCFUserNotificationOtherResponse)) ==
             .grantFiveMinutes
         )
     }
 
-    func testModalTimeoutAndUnknownResponsesCancel() {
+    @Test func testModalTimeoutAndUnknownResponsesCancel() {
         // CFUserNotification reports a timeout / dismissal as the cancel response (3).
-        XCTAssertEqual(
-            GitSigningPrompt.choice(forResponseFlags: CFOptionFlags(kCFUserNotificationCancelResponse)),
+        #expect(
+            GitSigningPrompt.choice(forResponseFlags: CFOptionFlags(kCFUserNotificationCancelResponse)) ==
             .cancel
         )
         // Only the low two bits carry the response; higher flag bits must not change the outcome.
-        XCTAssertEqual(
-            GitSigningPrompt.choice(forResponseFlags: CFOptionFlags(kCFUserNotificationDefaultResponse) | 0x100),
+        #expect(
+            GitSigningPrompt.choice(forResponseFlags: CFOptionFlags(kCFUserNotificationDefaultResponse) | 0x100) ==
             .singleShot
         )
     }
 
-    func testAuthorizeGitSigningGrantUsesBiometricsForCurrentSet() throws {
+    @Test func testAuthorizeGitSigningGrantUsesBiometricsForCurrentSet() throws {
         let store = InMemoryPrivateKeyStore()
         let authenticator = PolicyCapturingAuthenticator()
-        let manager = KeychainManager(authenticator: authenticator, privateKeyStore: store)
-        defer { GitSigningGraceManager.shared.invalidateAll(broadcast: false) }
+        let customGraceManager = GitSigningGraceManager(observeSystemEvents: false)
+        let manager = makeKeyManager(
+            authenticator: authenticator,
+            privateKeyStore: store,
+            gitSigningGraceManager: customGraceManager
+        )
 
         let label = "strict-grant-\(UUID().uuidString)"
         let key = try installEd25519Record(
@@ -769,16 +807,20 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             clientIdentity: "/usr/bin/git"
         )
 
-        XCTAssertEqual(authenticator.policies, [.deviceOwnerAuthenticationWithBiometrics])
-        XCTAssertEqual(GitSigningGraceManager.shared.getValidGrant(for: label)?.keyLabel, grant.keyLabel)
-        XCTAssertTrue(grant.isValid)
+        #expect(authenticator.policies == [.deviceOwnerAuthenticationWithBiometrics])
+        #expect(customGraceManager.getValidGrant(for: label)?.keyLabel == grant.keyLabel)
+        #expect(grant.isValid)
     }
 
-    func testAuthorizeGitSigningGrantRejectsWeakerContextForStrictRecord() throws {
+    @Test func testAuthorizeGitSigningGrantRejectsWeakerContextForStrictRecord() async throws {
         let store = InMemoryPrivateKeyStore()
         let authenticator = PolicyCapturingAuthenticator()
-        let manager = KeychainManager(authenticator: authenticator, privateKeyStore: store)
-        defer { GitSigningGraceManager.shared.invalidateAll(broadcast: false) }
+        let customGraceManager = GitSigningGraceManager(observeSystemEvents: false)
+        let manager = makeKeyManager(
+            authenticator: authenticator,
+            privateKeyStore: store,
+            gitSigningGraceManager: customGraceManager
+        )
 
         let label = "downgraded-grant-\(UUID().uuidString)"
         let key = try installEd25519Record(
@@ -788,37 +830,39 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             publishedPolicy: .userPresence
         )
 
-        XCTAssertThrowsError(
+        #expect {
             try manager.authorizeGitSigningGrant(
                 key: key,
                 prompt: "Grant",
                 clientIdentity: "/usr/bin/git"
             )
-        ) { error in
+        } throws: { error in
             guard case PrivateKeyRecordError.metadataMismatch(let field, let expected, let actual) = error else {
-                return XCTFail("Expected metadataMismatch, got \(error)")
+                return false
             }
-            XCTAssertEqual(field, "biometricPolicy")
-            XCTAssertEqual(expected, BiometricPolicy.userPresence.rawValue)
-            XCTAssertEqual(actual, BiometricPolicy.biometryCurrentSet.rawValue)
+            return field == "biometricPolicy" &&
+                   expected == BiometricPolicy.userPresence.rawValue &&
+                   actual == BiometricPolicy.biometryCurrentSet.rawValue
         }
 
-        XCTAssertEqual(authenticator.policies, [.deviceOwnerAuthentication])
-        XCTAssertNil(GitSigningGraceManager.shared.getValidGrant(for: label))
+        #expect(authenticator.policies == [.deviceOwnerAuthentication])
+        #expect(customGraceManager.getValidGrant(for: label) == nil)
 
-        let context = try XCTUnwrap(authenticator.contexts.last)
+        let context = try #require(authenticator.contexts.last)
         context.interactionNotAllowed = true
-        let evaluated = expectation(description: "invalidated context cannot be reused")
-        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "reuse") { success, error in
-            XCTAssertFalse(success)
-            XCTAssertEqual((error as? LAError)?.code, .invalidContext)
-            evaluated.fulfill()
+
+        let (success, error) = await withCheckedContinuation { continuation in
+            context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "reuse") { success, error in
+                continuation.resume(returning: (success, error))
+            }
         }
-        wait(for: [evaluated], timeout: 2)
+        #expect(!success)
+        #expect((error as? LAError)?.code == .invalidContext)
     }
 
-    func testFailedSignatureUnderNewGrantInvalidatesGrant() throws {
+    @Test func testFailedSignatureUnderNewGrantInvalidatesGrant() throws {
         final class FailingGrantSigningProvider: SecureEnclaveSigningProviding, @unchecked Sendable {
+
             private let inner = InMemorySecureEnclaveSigningProvider()
             var signCount = 0
 
@@ -841,22 +885,22 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             }
         }
         let signingProvider = FailingGrantSigningProvider()
+        let customGraceManager = GitSigningGraceManager(
+            observeSystemEvents: false,
+            presenter: ClosureGitSigningGracePresenter { _, _ in .grantFiveMinutes }
+        )
         let manager = makeKeyManager(
             authenticator: CountingAuthenticator(),
             privateKeyStore: InMemoryPrivateKeyStore(),
-            signingProvider: signingProvider
+            signingProvider: signingProvider,
+            gitSigningGraceManager: customGraceManager
         )
-        let server = SSHAgentServer(keyManager: manager)
+        let server = SSHAgentServer(
+            keyManager: manager,
+            gitSigningGraceManager: customGraceManager
+        )
         let label = "grant-fail-\(UUID().uuidString)"
         let keyInfo = try manager.generateKey(label: label, keyPurpose: .general)
-
-        GitSigningGraceManager.promptProvider = { _, _ in .grantFiveMinutes }
-        defer {
-            GitSigningGraceManager.promptProvider = { keyLabel, clientDesc in
-                GitSigningPrompt.displayModal(keyLabel: keyLabel, clientDesc: clientDesc)
-            }
-            GitSigningGraceManager.shared.invalidateAll(broadcast: false)
-        }
 
         let makeGitSignRequest: () -> Data = {
             let gitPayload = SSHSIGPayload(
@@ -873,12 +917,12 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         }
 
         let first = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
-        XCTAssertEqual(first.first, 14)
+        #expect(first.first == 14)
 
         let second = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
-        XCTAssertEqual(second, Data([5]))
-        XCTAssertNil(
-            GitSigningGraceManager.shared.getValidGrant(for: label),
+        #expect(second == Data([5]))
+        #expect(
+            customGraceManager.getValidGrant(for: label) == nil,
             "A signature failure under a new grant must invalidate that grant"
         )
     }
@@ -914,26 +958,31 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
     }
 
-    func testGitSigningPromptDescSanitizesRLOAndZeroWidthCharacters() throws {
+    @Test func testGitSigningPromptDescSanitizesRLOAndZeroWidthCharacters() throws {
         let store = InMemoryPrivateKeyStore()
+
         let authenticator = CountingAuthenticator()
-        let manager = KeychainManager(authenticator: authenticator, privateKeyStore: store)
-        let server = SSHAgentServer(keyManager: manager, peerProcessValidator: { _, _, _ in true })
+        var capturedPromptDesc = ""
+        let customGraceManager = GitSigningGraceManager(
+            observeSystemEvents: false,
+            presenter: ClosureGitSigningGracePresenter { _, desc in
+                capturedPromptDesc = desc
+                return .cancel
+            }
+        )
+        let manager = makeKeyManager(
+            authenticator: authenticator,
+            privateKeyStore: store,
+            gitSigningGraceManager: customGraceManager
+        )
+        let server = SSHAgentServer(
+            keyManager: manager,
+            gitSigningGraceManager: customGraceManager,
+            peerProcessValidator: { _, _, _ in true }
+        )
 
         let label = "git-sanitize-rlo-\(UUID().uuidString)"
         let keyInfo = try manager.generateKey(label: label, keyPurpose: .general)
-
-        var capturedPromptDesc = ""
-        GitSigningGraceManager.promptProvider = { _, desc in
-            capturedPromptDesc = desc
-            return .cancel
-        }
-        defer {
-            GitSigningGraceManager.promptProvider = { l, c in
-                GitSigningPrompt.displayModal(keyLabel: l, clientDesc: c)
-            }
-            GitSigningGraceManager.shared.invalidateAll(broadcast: false)
-        }
 
         let makeGitSignRequest: () -> Data = {
             let gitPayload = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: Data(repeating: 0x77, count: 32)).serialize()
@@ -961,38 +1010,42 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             clientExecutablePath: hostilePath
         )
 
-        XCTAssertFalse(capturedPromptDesc.isEmpty, "Modal prompt must have been presented")
-        XCTAssertEqual(
-            capturedPromptDesc,
-            "/tmp/evil/git (PID \(getpid()))",
+        #expect(!capturedPromptDesc.isEmpty, "Modal prompt must have been presented")
+        #expect(
+            capturedPromptDesc == "/tmp/evil/git (PID \(getpid()))",
             "promptDesc must strip RLO and zero-width characters without them in the description"
         )
-        XCTAssertFalse(capturedPromptDesc.unicodeScalars.contains("\u{202E}"), "promptDesc must not contain RLO character")
-        XCTAssertFalse(capturedPromptDesc.unicodeScalars.contains("\u{200B}"), "promptDesc must not contain zero-width space")
-        XCTAssertFalse(capturedPromptDesc.unicodeScalars.contains("\u{200E}"), "promptDesc must not contain LTR mark")
-        XCTAssertFalse(capturedPromptDesc.unicodeScalars.contains("\u{FEFF}"), "promptDesc must not contain zero-width no-break space")
+        #expect(!capturedPromptDesc.unicodeScalars.contains("\u{202E}"), "promptDesc must not contain RLO character")
+        #expect(!capturedPromptDesc.unicodeScalars.contains("\u{200B}"), "promptDesc must not contain zero-width space")
+        #expect(!capturedPromptDesc.unicodeScalars.contains("\u{200E}"), "promptDesc must not contain LTR mark")
+        #expect(!capturedPromptDesc.unicodeScalars.contains("\u{FEFF}"), "promptDesc must not contain zero-width no-break space")
     }
 
-    func testGitSigningPromptDescTruncatesLongPathPreservingTailWithEllipsis() throws {
+    @Test func testGitSigningPromptDescTruncatesLongPathPreservingTailWithEllipsis() throws {
         let store = InMemoryPrivateKeyStore()
+
         let authenticator = CountingAuthenticator()
-        let manager = KeychainManager(authenticator: authenticator, privateKeyStore: store)
-        let server = SSHAgentServer(keyManager: manager, peerProcessValidator: { _, _, _ in true })
+        var capturedPromptDesc = ""
+        let customGraceManager = GitSigningGraceManager(
+            observeSystemEvents: false,
+            presenter: ClosureGitSigningGracePresenter { _, desc in
+                capturedPromptDesc = desc
+                return .cancel
+            }
+        )
+        let manager = makeKeyManager(
+            authenticator: authenticator,
+            privateKeyStore: store,
+            gitSigningGraceManager: customGraceManager
+        )
+        let server = SSHAgentServer(
+            keyManager: manager,
+            gitSigningGraceManager: customGraceManager,
+            peerProcessValidator: { _, _, _ in true }
+        )
 
         let label = "git-long-path-\(UUID().uuidString)"
         let keyInfo = try manager.generateKey(label: label, keyPurpose: .general)
-
-        var capturedPromptDesc = ""
-        GitSigningGraceManager.promptProvider = { _, desc in
-            capturedPromptDesc = desc
-            return .cancel
-        }
-        defer {
-            GitSigningGraceManager.promptProvider = { l, c in
-                GitSigningPrompt.displayModal(keyLabel: l, clientDesc: c)
-            }
-            GitSigningGraceManager.shared.invalidateAll(broadcast: false)
-        }
 
         let makeGitSignRequest: () -> Data = {
             let gitPayload = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: Data(repeating: 0x77, count: 32)).serialize()
@@ -1005,7 +1058,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         }
 
         let longPath = "/usr/local/" + String(repeating: "a", count: 600) + "/git"
-        XCTAssertGreaterThanOrEqual(longPath.count, 600)
+        #expect(longPath.count >= 600)
 
         // Commit #1
         _ = server.handleSignRequest(
@@ -1021,96 +1074,101 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             clientExecutablePath: longPath
         )
 
-        XCTAssertFalse(capturedPromptDesc.isEmpty, "Modal prompt must have been presented")
-        XCTAssertTrue(capturedPromptDesc.hasPrefix("/usr/local/"), "Long path must preserve leading prefix")
-        XCTAssertTrue(capturedPromptDesc.contains("…"), "Long path must contain middle ellipsis")
-        XCTAssertTrue(capturedPromptDesc.contains("/git (PID \(getpid()))"), "Long path must preserve the tail")
+        #expect(!capturedPromptDesc.isEmpty, "Modal prompt must have been presented")
+        #expect(capturedPromptDesc.hasPrefix("/usr/local/"), "Long path must preserve leading prefix")
+        #expect(capturedPromptDesc.contains("…"), "Long path must contain middle ellipsis")
+        #expect(capturedPromptDesc.contains("/git (PID \(getpid()))"), "Long path must preserve the tail")
         let pidSuffix = " (PID \(getpid()))"
-        XCTAssertLessThanOrEqual(capturedPromptDesc.count, 80 + pidSuffix.count, "promptDesc must be bounded to ~80 chars plus PID")
+        #expect(capturedPromptDesc.count <= 80 + pidSuffix.count, "promptDesc must be bounded to ~80 chars plus PID")
     }
 
-    func testGitSigningConcurrentSignRequestsSerializePromptProvider() throws {
-        let store = InMemoryPrivateKeyStore()
-        let authenticator = CountingAuthenticator()
-        let manager = KeychainManager(authenticator: authenticator, privateKeyStore: store)
-        let server = SSHAgentServer(keyManager: manager)
+    @Test func testGitSigningConcurrentSignRequestsSerializePromptProvider() throws {
+        try fixture.runSync {
+            let store = InMemoryPrivateKeyStore()
+            let authenticator = CountingAuthenticator()
 
-        let label = "git-concurrent-\(UUID().uuidString)"
-        let keyInfo = try manager.generateKey(label: label, keyPurpose: .general)
-
-        struct CallInterval {
-            let entry: Date
-            let exit: Date
-        }
-        let lock = NSLock()
-        var intervals: [CallInterval] = []
-
-        GitSigningGraceManager.promptProvider = { _, _ in
-            let entry = Date()
-            Thread.sleep(forTimeInterval: 0.05)
-            let exit = Date()
-            lock.lock()
-            intervals.append(CallInterval(entry: entry, exit: exit))
-            lock.unlock()
-            return .cancel
-        }
-        defer {
-            GitSigningGraceManager.promptProvider = { l, c in
-                GitSigningPrompt.displayModal(keyLabel: l, clientDesc: c)
+            struct CallInterval {
+                let entry: Date
+                let exit: Date
             }
-            GitSigningGraceManager.shared.invalidateAll(broadcast: false)
-        }
+            let lock = NSLock()
+            var intervals: [CallInterval] = []
 
-        let makeGitSignRequest: () -> Data = {
-            let gitPayload = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: Data(repeating: 0x77, count: 32)).serialize()
-            var req = Data()
-            req.appendWireData(keyInfo.publicKeyBlob)
-            req.appendWireData(gitPayload)
-            var flags: UInt32 = 0
-            Swift.withUnsafeBytes(of: &flags) { req.append(contentsOf: $0) }
-            return req
-        }
-
-        // Commit #1: Establishes recent Git signature for this PID
-        let resp1 = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
-        XCTAssertEqual(resp1.first, 14)
-
-        // Two concurrent sign requests (Commit #2 candidates)
-        let readySem = DispatchSemaphore(value: 0)
-        let startSem = DispatchSemaphore(value: 0)
-        let group = DispatchGroup()
-
-        for _ in 0..<2 {
-            group.enter()
-            DispatchQueue.global().async {
-                readySem.signal()
-                startSem.wait()
-                _ = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
-                group.leave()
-            }
-        }
-
-        XCTAssertEqual(readySem.wait(timeout: .now() + 2), .success)
-        XCTAssertEqual(readySem.wait(timeout: .now() + 2), .success)
-        startSem.signal()
-        startSem.signal()
-
-        XCTAssertEqual(group.wait(timeout: .now() + 5), .success)
-        XCTAssertEqual(intervals.count, 2, "Both requests should have invoked promptProvider")
-
-        if intervals.count == 2 {
-            let sorted = intervals.sorted(by: { $0.entry < $1.entry })
-            let first = sorted[0]
-            let second = sorted[1]
-            XCTAssertGreaterThanOrEqual(
-                second.entry.timeIntervalSince1970,
-                first.exit.timeIntervalSince1970,
-                "Injected promptProvider must be called sequentially without overlap (first exit: \(first.exit), second entry: \(second.entry))"
+            let customGraceManager = GitSigningGraceManager(
+                observeSystemEvents: false,
+                presenter: ClosureGitSigningGracePresenter { _, _ in
+                    let entry = Date()
+                    Thread.sleep(forTimeInterval: 0.05)
+                    let exit = Date()
+                    lock.lock()
+                    intervals.append(CallInterval(entry: entry, exit: exit))
+                    lock.unlock()
+                    return .cancel
+                }
             )
+            let manager = makeKeyManager(
+                authenticator: authenticator,
+                privateKeyStore: store,
+                gitSigningGraceManager: customGraceManager
+            )
+            let server = SSHAgentServer(
+                keyManager: manager,
+                gitSigningGraceManager: customGraceManager
+            )
+
+            let label = "git-concurrent-\(UUID().uuidString)"
+            let keyInfo = try manager.generateKey(label: label, keyPurpose: .general)
+
+            let makeGitSignRequest: () -> Data = {
+                let gitPayload = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: Data(repeating: 0x77, count: 32)).serialize()
+                var req = Data()
+                req.appendWireData(keyInfo.publicKeyBlob)
+                req.appendWireData(gitPayload)
+                var flags: UInt32 = 0
+                Swift.withUnsafeBytes(of: &flags) { req.append(contentsOf: $0) }
+                return req
+            }
+
+            // Commit #1: Establishes recent Git signature for this PID
+            let resp1 = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
+            #expect(resp1.first == 14)
+
+            // Two concurrent sign requests (Commit #2 candidates)
+            let readySem = DispatchSemaphore(value: 0)
+            let startSem = DispatchSemaphore(value: 0)
+            let group = DispatchGroup()
+
+            for _ in 0..<2 {
+                group.enter()
+                Thread.detachNewThread {
+                    readySem.signal()
+                    startSem.wait()
+                    _ = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
+                    group.leave()
+                }
+            }
+
+            #expect(readySem.wait(timeout: .now() + 5) == .success)
+            #expect(readySem.wait(timeout: .now() + 5) == .success)
+            startSem.signal()
+            startSem.signal()
+
+            #expect(group.wait(timeout: .now() + 5) == .success)
+            #expect(intervals.count == 2, "Both requests should have invoked promptProvider")
+
+            if intervals.count == 2 {
+                let sorted = intervals.sorted(by: { $0.entry < $1.entry })
+                let first = sorted[0]
+                let second = sorted[1]
+                #expect(
+                    second.entry.timeIntervalSince1970 >= first.exit.timeIntervalSince1970,
+                    "Injected promptProvider must be called sequentially without overlap"
+                )
+            }
         }
     }
 
-    func testGitSigningGrantChainRestriction() {
+    @Test func testGitSigningGrantChainRestriction() {
         let launchdPid: pid_t = 1
         let shellPid: pid_t = 10
         let approvedGitPid: pid_t = 20
@@ -1184,7 +1242,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let customResolver: () -> String? = { "/opt/homebrew/bin/custom-signer" }
 
         // 1. git -> ssh-keygen: covered
-        XCTAssertTrue(
+        #expect(
             ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderApprovedGitPid,
                 peerStartTime: defaultStartTime,
@@ -1197,7 +1255,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
 
         // 2. git -> git -> ssh-keygen: covered (rebase spawning child git commit)
-        XCTAssertTrue(
+        #expect(
             ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderChildGitPid,
                 peerStartTime: defaultStartTime,
@@ -1210,8 +1268,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
 
         // 3. git -> sh -> ssh-keygen: refused (e.g. git hook)
-        XCTAssertFalse(
-            ProcessInspector.gitGrantCoversPeer(
+        #expect(
+            !ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderShHookPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1223,8 +1281,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
 
         // 4. git -> sh -> git -> ssh-keygen: refused (e.g. rebase -x running a script that commits)
-        XCTAssertFalse(
-            ProcessInspector.gitGrantCoversPeer(
+        #expect(
+            !ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderGitUnderScriptPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1236,8 +1294,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
 
         // Other non-git intermediate ancestors: refused
-        XCTAssertFalse(
-            ProcessInspector.gitGrantCoversPeer(
+        #expect(
+            !ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderPythonPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1247,8 +1305,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             ),
             "git -> python -> ssh-keygen must be refused"
         )
-        XCTAssertFalse(
-            ProcessInspector.gitGrantCoversPeer(
+        #expect(
+            !ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderMakePid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1260,8 +1318,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
 
         // Non-signer helper peer: refused
-        XCTAssertFalse(
-            ProcessInspector.gitGrantCoversPeer(
+        #expect(
+            !ProcessInspector.gitGrantCoversPeer(
                 peerPid: nonSignerHelperPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1273,7 +1331,7 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
 
         // Custom gpg.ssh.program: covered for git-only chain, refused for non-git chain
-        XCTAssertTrue(
+        #expect(
             ProcessInspector.gitGrantCoversPeer(
                 peerPid: customSignerUnderChildGitPid,
                 peerStartTime: defaultStartTime,
@@ -1285,8 +1343,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             ),
             "Custom gpg.ssh.program on git-only chain must be covered"
         )
-        XCTAssertFalse(
-            ProcessInspector.gitGrantCoversPeer(
+        #expect(
+            !ProcessInspector.gitGrantCoversPeer(
                 peerPid: customSignerUnderShPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1300,8 +1358,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // 5. PID reuse / changed start time: refused
         // a) Approved process PID reused with different start time
-        XCTAssertFalse(
-            ProcessInspector.gitGrantCoversPeer(
+        #expect(
+            !ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderChildGitPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1313,8 +1371,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
 
         // b) Peer process PID reused with different start time
-        XCTAssertFalse(
-            ProcessInspector.gitGrantCoversPeer(
+        #expect(
+            !ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderChildGitPid,
                 peerStartTime: defaultStartTime &+ 1,
                 approvedPid: approvedGitPid,
@@ -1328,8 +1386,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         // c) Intermediate git process PID reused / missing snapshot
         var brokenProcesses = processes
         brokenProcesses[childGitPid] = nil
-        XCTAssertFalse(
-            ProcessInspector.gitGrantCoversPeer(
+        #expect(
+            !ProcessInspector.gitGrantCoversPeer(
                 peerPid: signerUnderChildGitPid,
                 peerStartTime: defaultStartTime,
                 approvedPid: approvedGitPid,
@@ -1341,13 +1399,11 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
     }
 
-    func testGitSigningGrantRejectsMismatchedOrRecycledPID() {
+    @Test func testGitSigningGrantRejectsMismatchedOrRecycledPID() throws {
         let manager = GitSigningGraceManager(observeSystemEvents: false)
         let label = "git-anchor-test-\(UUID().uuidString)"
         let myPid = getpid()
-        guard let mySnap = ProcessInspector.processParentSnapshot(pid: myPid) else {
-            return XCTFail("Failed to get process snapshot for test runner")
-        }
+        let mySnap = try #require(ProcessInspector.processParentSnapshot(pid: myPid), "Failed to get process snapshot for test runner")
         let approvedPid = myPid
         let approvedStart = mySnap.startTime
         let approvedPath = "/usr/bin/git"
@@ -1363,28 +1419,28 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
 
         // Matching peer process must be accepted
-        XCTAssertTrue(
+        #expect(
             grant.consumeOperation(clientIdentity: approvedPath, peerProcess: approvedProcess),
             "Peer matching approved process must be allowed"
         )
 
         // 1. Peer with different PID must be rejected, even if executable path is /usr/bin/git
         let differentPidPeer = GitApprovedProcess(pid: myPid + 99999, startTime: approvedStart, path: approvedPath)
-        XCTAssertFalse(
-            grant.consumeOperation(clientIdentity: approvedPath, peerProcess: differentPidPeer),
+        #expect(
+            !grant.consumeOperation(clientIdentity: approvedPath, peerProcess: differentPidPeer),
             "Peer with different PID must be rejected"
         )
 
         // 2. Peer with recycled PID (same PID, different start time) must be rejected
         let recycledPidPeer = GitApprovedProcess(pid: approvedPid, startTime: approvedStart + 10, path: approvedPath)
-        XCTAssertFalse(
-            grant.consumeOperation(clientIdentity: approvedPath, peerProcess: recycledPidPeer),
+        #expect(
+            !grant.consumeOperation(clientIdentity: approvedPath, peerProcess: recycledPidPeer),
             "Recycled PID with different start time must be rejected"
         )
 
         // 3. Fallback to bare string comparison must be rejected (no peer process provided)
-        XCTAssertFalse(
-            grant.consumeOperation(clientIdentity: approvedPath, peerProcess: nil),
+        #expect(
+            !grant.consumeOperation(clientIdentity: approvedPath, peerProcess: nil),
             "Missing peerProcess must fail closed and reject bare string match"
         )
 
@@ -1397,33 +1453,33 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             context: LAContext(),
             approvedProcess: nil
         )
-        XCTAssertFalse(
-            unanchoredGrant.consumeOperation(clientIdentity: approvedPath, peerProcess: nil),
+        #expect(
+            !unanchoredGrant.consumeOperation(clientIdentity: approvedPath, peerProcess: nil),
             "Unanchored grant without approvedProcess must fail closed on bare string comparison"
         )
-        XCTAssertFalse(
-            unanchoredGrant.consumeOperation(clientIdentity: approvedPath, peerProcess: approvedProcess),
+        #expect(
+            !unanchoredGrant.consumeOperation(clientIdentity: approvedPath, peerProcess: approvedProcess),
             "Unanchored grant must not allow client operations"
         )
     }
 
-    func testGitSigningGraceRejectsUntrustedExecutablePaths() {
+    @Test func testGitSigningGraceRejectsUntrustedExecutablePaths() {
         // 1. Allowlist rejects untrusted signer helpers (basename matching like /tmp/ssh-keygen is rejected)
-        XCTAssertFalse(ProcessInspector.isSignerHelper(path: "/tmp/ssh-keygen"), "/tmp/ssh-keygen must be rejected")
-        XCTAssertFalse(ProcessInspector.isSignerHelper(path: "/tmp/git"), "/tmp/git must be rejected as helper")
-        XCTAssertFalse(ProcessInspector.isSignerHelper(path: "/Users/test/.local/bin/ssh-keygen"), "Untrusted path must be rejected")
+        #expect(!ProcessInspector.isSignerHelper(path: "/tmp/ssh-keygen"), "/tmp/ssh-keygen must be rejected")
+        #expect(!ProcessInspector.isSignerHelper(path: "/tmp/git"), "/tmp/git must be rejected as helper")
+        #expect(!ProcessInspector.isSignerHelper(path: "/Users/test/.local/bin/ssh-keygen"), "Untrusted path must be rejected")
 
         // Canonical/trusted signer helper paths
-        XCTAssertTrue(ProcessInspector.isSignerHelper(path: "/usr/bin/ssh-keygen"))
-        XCTAssertTrue(ProcessInspector.isSignerHelper(path: "/usr/local/bin/ssh-keygen"))
-        XCTAssertTrue(ProcessInspector.isSignerHelper(path: "/opt/homebrew/bin/ssh-keygen"))
-        XCTAssertTrue(ProcessInspector.isSignerHelper(path: "/run/current-system/sw/bin/ssh-keygen"))
-        XCTAssertTrue(ProcessInspector.isSignerHelper(path: "/nix/store/s0m3h4sh0123456789abcdef01234567-openssh-9.5/bin/ssh-keygen"))
-        XCTAssertFalse(ProcessInspector.isSignerHelper(path: "/nix/store/evil/sub/bin/ssh-keygen"))
-        XCTAssertFalse(ProcessInspector.isSignerHelper(path: "/nix/store/../../tmp/bin/ssh-keygen"))
-        XCTAssertFalse(ProcessInspector.isTrustedSshBinary(path: "/nix/store/evil/sub/bin/ssh"))
-        XCTAssertFalse(ProcessInspector.isTrustedSshBinary(path: "/nix/store/short-openssh/bin/ssh"))
-        XCTAssertTrue(ProcessInspector.isTrustedSshBinary(path: "/nix/store/s0m3h4sh0123456789abcdef01234567-openssh-9.5/bin/ssh"))
+        #expect(ProcessInspector.isSignerHelper(path: "/usr/bin/ssh-keygen"))
+        #expect(ProcessInspector.isSignerHelper(path: "/usr/local/bin/ssh-keygen"))
+        #expect(ProcessInspector.isSignerHelper(path: "/opt/homebrew/bin/ssh-keygen"))
+        #expect(ProcessInspector.isSignerHelper(path: "/run/current-system/sw/bin/ssh-keygen"))
+        #expect(ProcessInspector.isSignerHelper(path: "/nix/store/s0m3h4sh0123456789abcdef01234567-openssh-9.5/bin/ssh-keygen"))
+        #expect(!ProcessInspector.isSignerHelper(path: "/nix/store/evil/sub/bin/ssh-keygen"))
+        #expect(!ProcessInspector.isSignerHelper(path: "/nix/store/../../tmp/bin/ssh-keygen"))
+        #expect(!ProcessInspector.isTrustedSshBinary(path: "/nix/store/evil/sub/bin/ssh"))
+        #expect(!ProcessInspector.isTrustedSshBinary(path: "/nix/store/short-openssh/bin/ssh"))
+        #expect(ProcessInspector.isTrustedSshBinary(path: "/nix/store/s0m3h4sh0123456789abcdef01234567-openssh-9.5/bin/ssh"))
 
         // 2. grantAnchor rejects untrusted git paths (e.g. /tmp/git)
         let mockProcesses: [pid_t: ProcessParentSnapshot] = [
@@ -1438,24 +1494,24 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         let pLookup: (pid_t) -> String? = { mockPaths[$0] }
 
         // Direct anchor on /tmp/git must be rejected
-        XCTAssertNil(
+        #expect(
             ProcessInspector.grantAnchor(
                 peerPid: 100,
                 peerPath: "/tmp/git",
                 processInfo: pInfo,
                 processPathLookup: pLookup
-            ),
+            ) == nil,
             "Direct anchor on /tmp/git must be rejected"
         )
 
         // ssh-keygen child under /tmp/git parent must be rejected
-        XCTAssertNil(
+        #expect(
             ProcessInspector.grantAnchor(
                 peerPid: 200,
                 peerPath: "/usr/bin/ssh-keygen",
                 processInfo: pInfo,
                 processPathLookup: pLookup
-            ),
+            ) == nil,
             "Signer helper under /tmp/git parent must be rejected"
         )
 
@@ -1474,9 +1530,9 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
                 processInfo: { _ in ProcessParentSnapshot(startTime: 1000, parentPid: 1) },
                 processPathLookup: { _ in trustedGit }
             )
-            XCTAssertNotNil(anchor, "\(trustedGit) must be recognized as valid direct git anchor")
-            XCTAssertEqual(anchor?.pid, 100)
-            XCTAssertEqual(anchor?.startTime, 1000)
+            #expect(anchor != nil, "\(trustedGit) must be recognized as valid direct git anchor")
+            #expect(anchor?.pid == 100)
+            #expect(anchor?.startTime == 1000)
         }
 
         // 3. gitGrantCoversPeer rejects untrusted helper and untrusted intermediate git
@@ -1497,8 +1553,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         ]
 
         // /tmp/ssh-keygen under /usr/bin/git -> rejected
-        XCTAssertFalse(
-            ProcessInspector.gitGrantCoversPeer(
+        #expect(
+            !ProcessInspector.gitGrantCoversPeer(
                 peerPid: untrustedHelperPid,
                 peerStartTime: 3000,
                 peerPath: "/tmp/ssh-keygen",
@@ -1511,8 +1567,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
 
         // /usr/bin/ssh-keygen under /tmp/git -> rejected
-        XCTAssertFalse(
-            ProcessInspector.gitGrantCoversPeer(
+        #expect(
+            !ProcessInspector.gitGrantCoversPeer(
                 peerPid: 303,
                 peerStartTime: 3000,
                 peerPath: "/usr/bin/ssh-keygen",
@@ -1525,12 +1581,11 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         )
     }
 
-    func test_F02_gitSigningGrantSignsWithoutKeychainReReadAndZeroizesBufferOnInvalidate() throws {
+    @Test func test_F02_gitSigningGrantSignsWithoutKeychainReReadAndZeroizesBufferOnInvalidate() throws {
         let store = InteractionCheckingPrivateKeyStore()
-        let manager = KeychainManager(
+        let manager = makeKeyManager(
             authenticator: AllowingAuthenticator(),
             privateKeyStore: store,
-            agentGrantRevoker: { _ in },
             auditRecorder: InMemoryAuditRecorder()
         )
 
@@ -1548,8 +1603,8 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
             approvedProcess: anchor
         )
 
-        XCTAssertEqual(store.loadCallCount, 1, "Initial authorization loads record once")
-        XCTAssertTrue(grant.isValid, "Grant is active before invalidation")
+        #expect(store.loadCallCount == 1, "Initial authorization loads record once")
+        #expect(grant.isValid, "Grant is active before invalidation")
 
         let hash256 = Data(repeating: 0x42, count: 32)
         let payload = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: hash256)
@@ -1558,23 +1613,25 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
         // Sign using grant
         let sigBlob = try grant.sign(dataToSign, using: manager)
         var reader = DataReader(data: sigBlob)
-        XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
+        #expect(reader.readWireString() == "ecdsa-sha2-nistp256")
         guard let rawSig = reader.readWireData() else {
-            XCTFail("Missing signature in wire blob")
+            Issue.record("Missing signature in wire blob")
             return
         }
-        XCTAssertGreaterThan(rawSig.count, 64)
+        #expect(rawSig.count > 64)
 
         // Ensure store was not re-read
-        XCTAssertEqual(store.loadCallCount, 1, "Grant signing must use grant-scoped hardware signer without re-reading store")
+        #expect(store.loadCallCount == 1, "Grant signing must use grant-scoped hardware signer without re-reading store")
 
         // Invalidate grant
         grant.invalidate()
-        XCTAssertFalse(grant.isValid, "Grant must be invalid")
-        XCTAssertThrowsError(try grant.sign(dataToSign, using: manager))
+        #expect(!grant.isValid, "Grant must be invalid")
+        #expect(throws: (any Error).self) {
+            try grant.sign(dataToSign, using: manager)
+        }
     }
 
-    func testCustomPresenterInjectionWithoutTouchingStaticState() throws {
+    @Test func testCustomPresenterInjectionWithoutTouchingStaticState() throws {
         final class CustomPresenterSpy: GitSigningGracePresenter, @unchecked Sendable {
             struct Call: Equatable {
                 let keyLabel: String
@@ -1605,20 +1662,20 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // 1. Direct prompt on manager receives the call on injected presenter
         let choice1 = customGraceManager.prompt(keyLabel: "injected-key", clientDesc: "git (PID 4242)", timeout: 12.5)
-        XCTAssertEqual(choice1, .grantFiveMinutes)
-        XCTAssertEqual(spy.calls.count, 1)
-        XCTAssertEqual(spy.calls.first?.keyLabel, "injected-key")
-        XCTAssertEqual(spy.calls.first?.clientDesc, "git (PID 4242)")
-        XCTAssertEqual(spy.calls.first?.timeout, 12.5)
+        #expect(choice1 == .grantFiveMinutes)
+        #expect(spy.calls.count == 1)
+        #expect(spy.calls.first?.keyLabel == "injected-key")
+        #expect(spy.calls.first?.clientDesc == "git (PID 4242)")
+        #expect(spy.calls.first?.timeout == 12.5)
 
         // 2. Default timeout convenience method
         spy.responseChoice = .singleShot
         let choice2 = customGraceManager.prompt(keyLabel: "injected-key-2", clientDesc: "git (PID 4243)")
-        XCTAssertEqual(choice2, .singleShot)
-        XCTAssertEqual(spy.calls.count, 2)
-        XCTAssertEqual(spy.calls.last?.keyLabel, "injected-key-2")
-        XCTAssertEqual(spy.calls.last?.clientDesc, "git (PID 4243)")
-        XCTAssertEqual(spy.calls.last?.timeout, 30.0)
+        #expect(choice2 == .singleShot)
+        #expect(spy.calls.count == 2)
+        #expect(spy.calls.last?.keyLabel == "injected-key-2")
+        #expect(spy.calls.last?.clientDesc == "git (PID 4243)")
+        #expect(spy.calls.last?.timeout == 30.0)
 
         // 3. Dependency injection into SSHAgentServer and KeychainManager:
         // Run full rebase flow through SSHAgentServer and verify prompt is received by spy
@@ -1653,20 +1710,20 @@ final class GitSigningGraceTests: ClavisBaseTestCase {
 
         // Commit #1: standard Touch ID, no prompt
         let resp1 = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
-        XCTAssertEqual(resp1.first, 14)
-        XCTAssertEqual(spy.calls.count, 2, "Commit #1 must not trigger prompt")
-        XCTAssertNil(customGraceManager.getValidGrant(for: label))
+        #expect(resp1.first == 14)
+        #expect(spy.calls.count == 2, "Commit #1 must not trigger prompt")
+        #expect(customGraceManager.getValidGrant(for: label) == nil)
 
         // Commit #2 within 30s: rapid signing triggers custom presenter prompt via SSHAgentServer!
         let resp2 = server.handleSignRequest(payload: makeGitSignRequest(), clientPid: getpid())
-        XCTAssertEqual(resp2.first, 14)
-        XCTAssertEqual(spy.calls.count, 3, "Commit #2 must route prompt directly through custom presenter")
-        XCTAssertEqual(spy.calls.last?.keyLabel, label)
+        #expect(resp2.first == 14)
+        #expect(spy.calls.count == 3, "Commit #2 must route prompt directly through custom presenter")
+        #expect(spy.calls.last?.keyLabel == label)
 
         // Verify active grant exists on injected manager and NOT on shared manager
-        let activeGrant = try XCTUnwrap(customGraceManager.getValidGrant(for: label))
-        XCTAssertTrue(activeGrant.isValid)
-        XCTAssertNil(GitSigningGraceManager.shared.getValidGrant(for: label), "Shared GitSigningGraceManager must not be touched")
+        let activeGrant = try #require(customGraceManager.getValidGrant(for: label))
+        #expect(activeGrant.isValid)
+        #expect(GitSigningGraceManager.shared.getValidGrant(for: label) == nil, "Shared GitSigningGraceManager must not be touched")
     }
 }
 

@@ -1,56 +1,62 @@
-import XCTest
+import Testing
+import Foundation
 @testable import ClavisCore
 
-final class AgentKeyCLITests: ClavisBaseTestCase {
+@Suite("AgentKeyCLITests")
+struct AgentKeyCLITests {
 
+    @Test
     func test_005_T6_parseGeneratePurpose() throws {
         // Default to general
         let defaultPurpose = try CLIService.parseGeneratePurpose(args: ["clavis", "generate", "key1"])
-        XCTAssertEqual(defaultPurpose, .general)
+        #expect(defaultPurpose == .general)
 
         // --git-only flag
         let gitPurpose = try CLIService.parseGeneratePurpose(args: ["clavis", "generate", "key2", "--git-only"])
-        XCTAssertEqual(gitPurpose, .gitSigningOnly)
+        #expect(gitPurpose == .gitSigningOnly)
 
         // --agent flag
         let agentPurpose = try CLIService.parseGeneratePurpose(args: ["clavis", "generate", "key3", "--agent"])
-        XCTAssertEqual(agentPurpose, .agent)
+        #expect(agentPurpose == .agent)
 
         // Mutually exclusive: --git-only and --agent together must throw
-        XCTAssertThrowsError(
+        #expect {
             try CLIService.parseGeneratePurpose(args: ["clavis", "generate", "key4", "--git-only", "--agent"])
-        ) { error in
+        } throws: { error in
             let nsError = error as NSError
-            XCTAssertEqual(nsError.localizedDescription, CLIMessages.agentAndGitOnlyExclusive)
+            return nsError.localizedDescription == CLIMessages.agentAndGitOnlyExclusive
         }
     }
 
+    @Test
     func test_005_T6_parseKindTarget() {
-        XCTAssertEqual(CLIService.parseKindTarget(argument: "agent"), .agent)
-        XCTAssertEqual(CLIService.parseKindTarget(argument: "Agent"), .agent)
-        XCTAssertEqual(CLIService.parseKindTarget(argument: "AGENT"), .agent)
-        XCTAssertEqual(CLIService.parseKindTarget(argument: " agent "), .agent)
+        #expect(CLIService.parseKindTarget(argument: "agent") == .agent)
+        #expect(CLIService.parseKindTarget(argument: "Agent") == .agent)
+        #expect(CLIService.parseKindTarget(argument: "AGENT") == .agent)
+        #expect(CLIService.parseKindTarget(argument: " agent ") == .agent)
 
-        XCTAssertEqual(CLIService.parseKindTarget(argument: "personal"), .general)
-        XCTAssertEqual(CLIService.parseKindTarget(argument: "Personal"), .general)
-        XCTAssertEqual(CLIService.parseKindTarget(argument: "PERSONAL"), .general)
-        XCTAssertEqual(CLIService.parseKindTarget(argument: " personal "), .general)
+        #expect(CLIService.parseKindTarget(argument: "personal") == .general)
+        #expect(CLIService.parseKindTarget(argument: "Personal") == .general)
+        #expect(CLIService.parseKindTarget(argument: "PERSONAL") == .general)
+        #expect(CLIService.parseKindTarget(argument: " personal ") == .general)
 
-        XCTAssertNil(CLIService.parseKindTarget(argument: "invalid"))
-        XCTAssertNil(CLIService.parseKindTarget(argument: "git-only"))
-        XCTAssertNil(CLIService.parseKindTarget(argument: ""))
+        #expect(CLIService.parseKindTarget(argument: "invalid") == nil)
+        #expect(CLIService.parseKindTarget(argument: "git-only") == nil)
+        #expect(CLIService.parseKindTarget(argument: "") == nil)
     }
 
+    @Test
     func test_005_T6_formatKeyHeader() {
-        XCTAssertEqual(CLIService.formatKeyHeader(label: "my-general", purpose: .general), " - [my-general]")
-        XCTAssertEqual(CLIService.formatKeyHeader(label: "my-git", purpose: .gitSigningOnly), " - [my-git] [Git Only]")
-        XCTAssertEqual(CLIService.formatKeyHeader(label: "my-agent", purpose: .agent), " - [my-agent] [Agent]")
+        #expect(CLIService.formatKeyHeader(label: "my-general", purpose: .general) == " - [my-general]")
+        #expect(CLIService.formatKeyHeader(label: "my-git", purpose: .gitSigningOnly) == " - [my-git] [Git Only]")
+        #expect(CLIService.formatKeyHeader(label: "my-agent", purpose: .agent) == " - [my-agent] [Agent]")
     }
 
+    @Test
     func test_005_T6_formatKeyListEntries() {
         // Empty list
         let emptyEntries = CLIService.formatKeyListEntries(keys: [])
-        XCTAssertEqual(emptyEntries, [CLIMessages.noKeysFound()])
+        #expect(emptyEntries == [CLIMessages.noKeysFound()])
 
         // Multiple keys
         let k1 = SSHKeyInfo(
@@ -88,24 +94,25 @@ final class AgentKeyCLITests: ClavisBaseTestCase {
         )
 
         let entries = CLIService.formatKeyListEntries(keys: [k1, k2, k3])
-        XCTAssertEqual(entries[0], CLIMessages.foundKeysHeader(count: 3))
-        XCTAssertEqual(entries[1], " - [work-key]")
-        XCTAssertEqual(entries[4], " - [commit-signer] [Git Only]")
-        XCTAssertEqual(entries[7], " - [agent-claude] [Agent]")
+        #expect(entries[0] == CLIMessages.foundKeysHeader(count: 3))
+        #expect(entries[1] == " - [work-key]")
+        #expect(entries[4] == " - [commit-signer] [Git Only]")
+        #expect(entries[7] == " - [agent-claude] [Agent]")
     }
 
+    @Test
     func test_SSHKeyInfo_promotionAndBackwardCompatibilityTypealias() {
         // Verify type identity between SSHKeyInfo and backward-compatible Ed25519KeyInfo typealias
-        XCTAssertTrue(SSHKeyInfo.self == Ed25519KeyInfo.self)
+        #expect(SSHKeyInfo.self == Ed25519KeyInfo.self)
 
         // Verify strict invariant: Keychain publicServiceName must remain unchanged
-        XCTAssertEqual(KeychainManager.publicServiceName, "com.clavis.ed25519.pub")
-        XCTAssertEqual(KeychainManager.privateServiceName, "com.clavis.private-record.v2")
+        #expect(KeychainManager.publicServiceName == "com.clavis.ed25519.pub")
+        #expect(KeychainManager.privateServiceName == "com.clavis.private-record.v2")
 
         // Verify accurate CLI strings
-        XCTAssertEqual(CLIMessages.noKeysFound(), "No keys found in Keychain.")
-        XCTAssertTrue(CLIMessages.help.contains("Clavis — Native macOS Secure Enclave SSH Agent & Key Manager"))
-        XCTAssertFalse(CLIMessages.help.contains("Ed25519"))
+        #expect(CLIMessages.noKeysFound() == "No keys found in Keychain.")
+        #expect(CLIMessages.help.contains("Clavis — Native macOS Secure Enclave SSH Agent & Key Manager"))
+        #expect(!CLIMessages.help.contains("Ed25519"))
 
         let sampleKey = SSHKeyInfo(
             label: "p256-key",
@@ -119,7 +126,7 @@ final class AgentKeyCLITests: ClavisBaseTestCase {
             keyPurpose: .general
         )
         let generatedMsg = CLIMessages.successfullyGenerated(info: sampleKey)
-        XCTAssertTrue(generatedMsg.contains("Successfully generated key 'p256-key' in Keychain."))
-        XCTAssertFalse(generatedMsg.contains("Ed25519"))
+        #expect(generatedMsg.contains("Successfully generated key 'p256-key' in Keychain."))
+        #expect(!generatedMsg.contains("Ed25519"))
     }
 }

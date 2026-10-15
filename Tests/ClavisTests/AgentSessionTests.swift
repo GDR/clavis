@@ -1,6 +1,7 @@
-import XCTest
+import Testing
 import CryptoKit
 import LocalAuthentication
+import Foundation
 @testable import ClavisCore
 
 final class InteractionCheckingPrivateKeyStore: PrivateKeyStoring, @unchecked Sendable {
@@ -38,179 +39,198 @@ final class InteractionCheckingPrivateKeyStore: PrivateKeyStoring, @unchecked Se
     }
 }
 
-final class AgentSessionTests: ClavisBaseTestCase {
+@Suite("AgentSessionTests")
+struct AgentSessionTests {
 
-    func test_F02_authorizedSessionGrantSignsWithoutKeychainOrVaultReRead() throws {
-        let store = InteractionCheckingPrivateKeyStore()
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: store,
-            agentGrantRevoker: { _ in },
-            auditRecorder: InMemoryAuditRecorder()
-        )
+    @Test
+    func test_F02_authorizedSessionGrantSignsWithoutKeychainOrVaultReRead() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let store = InteractionCheckingPrivateKeyStore()
+            let manager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: store,
+                auditRecorder: InMemoryAuditRecorder()
+            )
 
-        let key = try manager.generateKey(
-            label: "agent-grant-test-key",
-            biometricPolicy: .userPresence,
-            keyPurpose: .agent
-        )
+            let key = try manager.generateKey(
+                label: "agent-grant-test-key",
+                biometricPolicy: .userPresence,
+                keyPurpose: .agent
+            )
 
-        let grant = try manager.authorizeAgentSession(
-            key: key,
-            prompt: "Authorize agent session"
-        )
+            let grant = try manager.authorizeAgentSession(
+                key: key,
+                prompt: "Authorize agent session"
+            )
 
-        XCTAssertEqual(store.loadCallCount, 1, "Initial authorization should load record exactly once")
+            #expect(store.loadCallCount == 1, "Initial authorization should load record exactly once")
 
-        // Multiple signings during grant lease
-        for i in 1...5 {
-            let data = Data("payload-\(i)".utf8)
-            let sigBlob = try grant.sign(data, using: manager)
+            // Multiple signings during grant lease
+            for i in 1...5 {
+                let data = Data("payload-\(i)".utf8)
+                let sigBlob = try grant.sign(data, using: manager)
 
-            var reader = DataReader(data: sigBlob)
-            XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
-            guard let rawSig = reader.readWireData() else {
-                XCTFail("Missing signature in wire blob")
-                return
+                var reader = DataReader(data: sigBlob)
+                #expect(reader.readWireString() == "ecdsa-sha2-nistp256")
+                let rawSigData = reader.readWireData()
+                let rawSig = try #require(rawSigData, "Missing signature in wire blob")
+                #expect(rawSig.count > 64)
             }
-            XCTAssertGreaterThan(rawSig.count, 64)
-        }
 
-        // Must NOT have re-read privateKeyStore or EncryptedVaultStore for each signature
-        XCTAssertEqual(
-            store.loadCallCount,
-            1,
-            "Authorized grant must sign using grant-scoped hardware signer without re-invoking privateKeyStore.load"
-        )
-    }
-
-    func test_F02_grantZeroizesBufferOnInvalidate() throws {
-        let store = InteractionCheckingPrivateKeyStore()
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: store,
-            agentGrantRevoker: { _ in },
-            auditRecorder: InMemoryAuditRecorder()
-        )
-
-        let key = try manager.generateKey(
-            label: "agent-grant-zeroize-key",
-            biometricPolicy: .userPresence,
-            keyPurpose: .agent
-        )
-
-        let grant = try manager.authorizeAgentSession(
-            key: key,
-            prompt: "Authorize agent session"
-        )
-
-        XCTAssertTrue(grant.isValid, "Grant must be active before invalidation")
-
-        grant.invalidate()
-
-        XCTAssertFalse(grant.isValid, "Grant must be invalidated on invalidate()")
-        XCTAssertThrowsError(try grant.sign(Data("test".utf8), using: manager)) { error in
-            XCTAssertEqual(error as? AgentSessionGrantError, .grantInvalidated)
+            // Must NOT have re-read privateKeyStore or EncryptedVaultStore for each signature
+            #expect(
+                store.loadCallCount == 1,
+                "Authorized grant must sign using grant-scoped hardware signer without re-invoking privateKeyStore.load"
+            )
         }
     }
 
-    func test_F02_concurrentSigningsDoNotMutateLAContextLocalizedReason() throws {
-        let store = InteractionCheckingPrivateKeyStore()
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: store,
-            agentGrantRevoker: { _ in },
-            auditRecorder: InMemoryAuditRecorder()
-        )
+    @Test
+    func test_F02_grantZeroizesBufferOnInvalidate() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let store = InteractionCheckingPrivateKeyStore()
+            let manager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: store,
+                auditRecorder: InMemoryAuditRecorder()
+            )
 
-        let key = try manager.generateKey(
-            label: "agent-grant-concurrent-key",
-            biometricPolicy: .userPresence,
-            keyPurpose: .agent
-        )
+            let key = try manager.generateKey(
+                label: "agent-grant-zeroize-key",
+                biometricPolicy: .userPresence,
+                keyPurpose: .agent
+            )
 
-        let grant = try manager.authorizeAgentSession(
-            key: key,
-            prompt: "Authorize agent session"
-        )
+            let grant = try manager.authorizeAgentSession(
+                key: key,
+                prompt: "Authorize agent session"
+            )
 
-        let iterationCount = 20
-        let group = DispatchGroup()
-        let failureLock = NSLock()
-        var failures: [String] = []
+            #expect(grant.isValid, "Grant must be active before invalidation")
 
-        for i in 0..<iterationCount {
-            group.enter()
-            DispatchQueue.global(qos: .userInitiated).async {
-                defer { group.leave() }
-                do {
-                    let payload = Data("concurrent-payload-\(i)".utf8)
-                    let sigBlob = try grant.sign(payload, using: manager)
-                    var reader = DataReader(data: sigBlob)
-                    guard reader.readWireString() == "ecdsa-sha2-nistp256",
-                          let rawSig = reader.readWireData(),
-                          rawSig.count > 64 else {
+            grant.invalidate()
+
+            #expect(!grant.isValid, "Grant must be invalidated on invalidate()")
+            #expect {
+                try grant.sign(Data("test".utf8), using: manager)
+            } throws: { error in
+                (error as? AgentSessionGrantError) == .grantInvalidated
+            }
+        }
+    }
+
+    @Test
+    func test_F02_concurrentSigningsDoNotMutateLAContextLocalizedReason() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let store = InteractionCheckingPrivateKeyStore()
+            let manager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: store,
+                auditRecorder: InMemoryAuditRecorder()
+            )
+
+            let key = try manager.generateKey(
+                label: "agent-grant-concurrent-key",
+                biometricPolicy: .userPresence,
+                keyPurpose: .agent
+            )
+
+            let grant = try manager.authorizeAgentSession(
+                key: key,
+                prompt: "Authorize agent session"
+            )
+
+            let iterationCount = 20
+            let group = DispatchGroup()
+            let failureLock = NSLock()
+            var failures: [String] = []
+
+            for i in 0..<iterationCount {
+                group.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    defer { group.leave() }
+                    do {
+                        let payload = Data("concurrent-payload-\(i)".utf8)
+                        let sigBlob = try grant.sign(payload, using: manager)
+                        var reader = DataReader(data: sigBlob)
+                        guard reader.readWireString() == "ecdsa-sha2-nistp256",
+                              let rawSig = reader.readWireData(),
+                              rawSig.count > 64 else {
+                            failureLock.lock()
+                            failures.append("Invalid signature in worker \(i)")
+                            failureLock.unlock()
+                            return
+                        }
+                    } catch {
                         failureLock.lock()
-                        failures.append("Invalid signature in worker \(i)")
+                        failures.append("Worker \(i) threw: \(error)")
                         failureLock.unlock()
-                        return
                     }
-                } catch {
-                    failureLock.lock()
-                    failures.append("Worker \(i) threw: \(error)")
-                    failureLock.unlock()
                 }
             }
-        }
 
-        group.wait()
-        XCTAssertTrue(failures.isEmpty, "Concurrent signings failed: \(failures.joined(separator: ", "))")
-        XCTAssertEqual(store.loadCallCount, 1, "Concurrent signings must not re-query privateKeyStore")
+            group.wait()
+            #expect(failures.isEmpty, "Concurrent signings failed: \(failures.joined(separator: ", "))")
+            #expect(store.loadCallCount == 1, "Concurrent signings must not re-query privateKeyStore")
+        }
     }
 
-    func test_F02_ecdsaP256SessionGrantSignsUsingHardwareSigner() throws {
-        let store = InteractionCheckingPrivateKeyStore()
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: store,
-            agentGrantRevoker: { _ in },
-            auditRecorder: InMemoryAuditRecorder()
-        )
+    @Test
+    func test_F02_ecdsaP256SessionGrantSignsUsingHardwareSigner() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let store = InteractionCheckingPrivateKeyStore()
+            let manager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: store,
+                auditRecorder: InMemoryAuditRecorder()
+            )
 
-        let key = try manager.generateKey(
-            label: "p256-grant-test-key",
-            algorithm: "ECDSA P-256",
-            storageType: .secureEnclave,
-            biometricPolicy: .userPresence,
-            keyPurpose: .agent
-        )
+            let key = try manager.generateKey(
+                label: "p256-grant-test-key",
+                algorithm: "ECDSA P-256",
+                storageType: .secureEnclave,
+                biometricPolicy: .userPresence,
+                keyPurpose: .agent
+            )
 
-        let grant = try manager.authorizeAgentSession(
-            key: key,
-            prompt: "Authorize agent session"
-        )
+            let grant = try manager.authorizeAgentSession(
+                key: key,
+                prompt: "Authorize agent session"
+            )
 
-        XCTAssertEqual(store.loadCallCount, 1, "Initial authorization should load record exactly once")
-        XCTAssertTrue(grant.isValid, "Grant must be active before invalidation")
+            #expect(store.loadCallCount == 1, "Initial authorization should load record exactly once")
+            #expect(grant.isValid, "Grant must be active before invalidation")
 
-        for i in 1...5 {
-            let data = Data("p256-payload-\(i)".utf8)
-            let sigBlob = try grant.sign(data, using: manager)
+            for i in 1...5 {
+                let data = Data("p256-payload-\(i)".utf8)
+                let sigBlob = try grant.sign(data, using: manager)
 
-            var reader = DataReader(data: sigBlob)
-            XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
-            let innerData = reader.readWireData()
-            XCTAssertNotNil(innerData)
-            XCTAssertGreaterThan(innerData?.count ?? 0, 64)
+                var reader = DataReader(data: sigBlob)
+                #expect(reader.readWireString() == "ecdsa-sha2-nistp256")
+                let innerData = reader.readWireData()
+                #expect(innerData != nil)
+                #expect((innerData?.count ?? 0) > 64)
+            }
+
+            #expect(store.loadCallCount == 1, "ECDSA P-256 grant signing must use grant-scoped signer without store reload")
+
+            grant.invalidate()
+            #expect(!grant.isValid)
+            #expect(throws: (any Error).self) {
+                try grant.sign(Data("fail".utf8), using: manager)
+            }
         }
-
-        XCTAssertEqual(store.loadCallCount, 1, "ECDSA P-256 grant signing must use grant-scoped signer without store reload")
-
-        grant.invalidate()
-        XCTAssertFalse(grant.isValid)
-        XCTAssertThrowsError(try grant.sign(Data("fail".utf8), using: manager))
     }
 
+    @Test
     func test_F02_hardwareGrantSignsViaHardwareSignerWithoutKeychainReRead() throws {
         final class Counter: @unchecked Sendable {
             var value = 0
@@ -242,114 +262,138 @@ final class AgentSessionTests: ClavisBaseTestCase {
         for i in 1...3 {
             let sig = try grant.sign(Data("payload-\(i)".utf8))
             var reader = DataReader(data: sig)
-            XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
+            #expect(reader.readWireString() == "ecdsa-sha2-nistp256")
         }
 
-        XCTAssertEqual(counter.value, 3)
+        #expect(counter.value == 3)
 
         grant.invalidate()
-        XCTAssertThrowsError(try grant.sign(Data("fail".utf8)))
+        #expect(throws: (any Error).self) {
+            try grant.sign(Data("fail".utf8))
+        }
     }
 
-    func test_F02_secureEnclaveSessionGrantSignsWithoutKeychainOrVaultReRead() throws {
-        guard ProcessInfo.processInfo.environment["CLAVIS_RUN_SECURE_ENCLAVE_INTEGRATION_TESTS"] == "1" else {
-            throw XCTSkip("Set CLAVIS_RUN_SECURE_ENCLAVE_INTEGRATION_TESTS=1 to run Secure Enclave integration tests.")
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["CLAVIS_RUN_SECURE_ENCLAVE_INTEGRATION_TESTS"] == "1" && PlatformSupport.hasSecureEnclave))
+    func test_F02_secureEnclaveSessionGrantSignsWithoutKeychainOrVaultReRead() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let store = InteractionCheckingPrivateKeyStore()
+            let manager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                privateKeyStore: store,
+                auditRecorder: InMemoryAuditRecorder()
+            )
+
+            let key = try manager.generateKey(
+                label: "se-grant-test-key",
+                storageType: .secureEnclave,
+                biometricPolicy: .userPresence,
+                keyPurpose: .agent
+            )
+
+            let grant = try manager.authorizeAgentSession(
+                key: key,
+                prompt: "Authorize SE agent session"
+            )
+
+            #expect(store.loadCallCount == 1, "Initial authorization should load record once")
+
+            for i in 1...3 {
+                let data = Data("se-payload-\(i)".utf8)
+                let sigBlob = try grant.sign(data, using: manager)
+
+                var reader = DataReader(data: sigBlob)
+                #expect(reader.readWireString() == "ecdsa-sha2-nistp256")
+                let innerData = reader.readWireData()
+                #expect(innerData != nil)
+            }
+
+            #expect(store.loadCallCount == 1, "SE grant signing must sign directly without uncached keychain re-reads")
+
+            grant.invalidate()
+            #expect(throws: (any Error).self) {
+                try grant.sign(Data("fail".utf8), using: manager)
+            }
         }
-        try XCTSkipUnless(PlatformSupport.hasSecureEnclave, "Secure Enclave not supported on this platform")
+    }
 
-        let store = InteractionCheckingPrivateKeyStore()
-        let manager = KeychainManager(
-            authenticator: AllowingAuthenticator(),
-            privateKeyStore: store,
-            agentGrantRevoker: { _ in },
-            auditRecorder: InMemoryAuditRecorder()
-        )
+    @Test
+    func testAgentSessionGrantEnforcesInteractionNotAllowedAndInvalidationAtSigningBoundary() async throws {
+        let fixture = try ClavisTestFixture()
+        defer {
+            KeychainManager.customSigningProvider = nil
+            fixture.cleanup()
+        }
+        try await fixture.run {
+            final class TrackableAuthenticator: UserAuthenticating, @unchecked Sendable {
+                let context: TrackableLAContext
+                init(context: TrackableLAContext) {
+                    self.context = context
+                }
+                func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) throws -> LAContext {
+                    context
+                }
+                func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) async throws -> LAContext {
+                    context
+                }
+            }
 
-        let key = try manager.generateKey(
-            label: "se-grant-test-key",
-            storageType: .secureEnclave,
-            biometricPolicy: .userPresence,
-            keyPurpose: .agent
-        )
+            final class ContextRecorder: @unchecked Sendable {
+                private let lock = NSLock()
+                private(set) var contexts: [LAContext?] = []
 
-        let grant = try manager.authorizeAgentSession(
-            key: key,
-            prompt: "Authorize SE agent session"
-        )
+                func append(_ context: LAContext?) {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    contexts.append(context)
+                }
+            }
 
-        XCTAssertEqual(store.loadCallCount, 1, "Initial authorization should load record once")
+            let recorder = ContextRecorder()
+            let trackableContext = TrackableLAContext()
+            let signingProvider = InMemorySecureEnclaveSigningProvider { context in
+                recorder.append(context)
+                if context == nil
+                    || context?.interactionNotAllowed != true
+                    || (context as? TrackableLAContext)?.isInvalidated == true {
+                    throw LAError(.invalidContext)
+                }
+            }
+            KeychainManager.customSigningProvider = signingProvider
 
-        for i in 1...3 {
-            let data = Data("se-payload-\(i)".utf8)
-            let sigBlob = try grant.sign(data, using: manager)
+            let keyManager = fixture.makeKeyManager(
+                authenticator: TrackableAuthenticator(context: trackableContext),
+                privateKeyStore: InteractionCheckingPrivateKeyStore(),
+                signingProvider: signingProvider
+            )
 
+            let key = try keyManager.generateKey(
+                label: "agent-grant-boundary-validation-key",
+                storageType: .secureEnclave,
+                biometricPolicy: .userPresence,
+                keyPurpose: .agent
+            )
+
+            let grant = try keyManager.authorizeAgentSession(
+                key: key,
+                prompt: "Authorize agent session"
+            )
+
+            let sigBlob = try grant.sign(Data("payload".utf8))
             var reader = DataReader(data: sigBlob)
-            XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
-            let innerData = reader.readWireData()
-            XCTAssertNotNil(innerData)
-        }
+            #expect(reader.readWireString() == "ecdsa-sha2-nistp256")
+            #expect(reader.readWireData() != nil)
+            #expect(recorder.contexts.count == 1)
+            #expect(recorder.contexts.first as? TrackableLAContext === trackableContext)
+            #expect(trackableContext.interactionNotAllowed)
+            #expect(!trackableContext.isInvalidated)
 
-        XCTAssertEqual(store.loadCallCount, 1, "SE grant signing must sign directly without uncached keychain re-reads")
-
-        grant.invalidate()
-        XCTAssertThrowsError(try grant.sign(Data("fail".utf8), using: manager))
-    }
-
-    func testAgentSessionGrantEnforcesInteractionNotAllowedAndInvalidationAtSigningBoundary() throws {
-        final class TrackableAuthenticator: UserAuthenticating, @unchecked Sendable {
-            let context: TrackableLAContext
-            init(context: TrackableLAContext) {
-                self.context = context
-            }
-            func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) throws -> LAContext {
-                context
-            }
-            func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) async throws -> LAContext {
-                context
+            grant.invalidate()
+            #expect(trackableContext.isInvalidated)
+            #expect(throws: (any Error).self) {
+                try grant.sign(Data("payload".utf8))
             }
         }
-
-        let trackableContext = TrackableLAContext()
-        var validatedContexts: [LAContext?] = []
-        let signingProvider = InMemorySecureEnclaveSigningProvider { context in
-            validatedContexts.append(context)
-            if context == nil
-                || context?.interactionNotAllowed != true
-                || (context as? TrackableLAContext)?.isInvalidated == true {
-                throw LAError(.invalidContext)
-            }
-        }
-        KeychainManager.customSigningProvider = signingProvider
-
-        let keyManager = makeKeyManager(
-            authenticator: TrackableAuthenticator(context: trackableContext),
-            privateKeyStore: InteractionCheckingPrivateKeyStore(),
-            signingProvider: signingProvider
-        )
-
-        let key = try keyManager.generateKey(
-            label: "agent-grant-boundary-validation-key",
-            storageType: .secureEnclave,
-            biometricPolicy: .userPresence,
-            keyPurpose: .agent
-        )
-
-        let grant = try keyManager.authorizeAgentSession(
-            key: key,
-            prompt: "Authorize agent session"
-        )
-
-        let sigBlob = try grant.sign(Data("payload".utf8))
-        var reader = DataReader(data: sigBlob)
-        XCTAssertEqual(reader.readWireString(), "ecdsa-sha2-nistp256")
-        XCTAssertNotNil(reader.readWireData())
-        XCTAssertEqual(validatedContexts.count, 1)
-        XCTAssertTrue(validatedContexts.first as? TrackableLAContext === trackableContext)
-        XCTAssertTrue(trackableContext.interactionNotAllowed)
-        XCTAssertFalse(trackableContext.isInvalidated)
-
-        grant.invalidate()
-        XCTAssertTrue(trackableContext.isInvalidated)
-        XCTAssertThrowsError(try grant.sign(Data("payload".utf8)))
     }
 }
