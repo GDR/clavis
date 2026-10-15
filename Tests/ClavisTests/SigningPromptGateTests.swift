@@ -1,7 +1,9 @@
-import XCTest
+import Testing
+import Foundation
 @testable import ClavisCore
 
-final class SigningPromptGateTests: ClavisBaseTestCase {
+@Suite("SigningPromptGateTests")
+struct SigningPromptGateTests {
     private final class Clock: @unchecked Sendable {
         var current = Date(timeIntervalSince1970: 1_000)
         func advance(_ seconds: TimeInterval) { current = current.addingTimeInterval(seconds) }
@@ -9,6 +11,7 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
 
     private func denial() -> Error { UserAuthenticationError.rejected(nil) }
 
+    @Test
     func testPromptsRunOneAtATime() {
         let gate = SigningPromptGate()
         let lock = NSLock()
@@ -17,7 +20,7 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
         let group = DispatchGroup()
         for _ in 0..<6 {
             group.enter()
-            DispatchQueue.global().async {
+            Thread.detachNewThread {
                 _ = try? gate.run {
                     lock.lock(); concurrent += 1; maxConcurrent = max(maxConcurrent, concurrent); lock.unlock()
                     Thread.sleep(forTimeInterval: 0.005)
@@ -26,79 +29,112 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
                 group.leave()
             }
         }
-        XCTAssertEqual(group.wait(timeout: .now() + 5), .success)
-        XCTAssertEqual(maxConcurrent, 1, "Authentication prompts must never overlap")
+        #expect(group.wait(timeout: .now() + 5) == .success)
+        #expect(maxConcurrent == 1, "Authentication prompts must never overlap")
     }
 
+    @Test
     func testRepeatedDenialsTriggerCooldownWithoutRunningBody() {
         let clock = Clock()
         let gate = SigningPromptGate(maxConsecutiveDenials: 3, now: { clock.current })
         for _ in 0..<3 {
-            XCTAssertThrowsError(try gate.run { throw denial() })
+            #expect(throws: (any Error).self) {
+                try gate.run { throw denial() }
+            }
         }
 
         var bodyRan = false
-        XCTAssertThrowsError(try gate.run { bodyRan = true }) {
-            XCTAssertEqual($0 as? SigningPromptGateError, .coolingDown)
+        #expect {
+            try gate.run { bodyRan = true }
+        } throws: { error in
+            (error as? SigningPromptGateError) == .coolingDown
         }
-        XCTAssertFalse(bodyRan, "No prompt may be shown while cooling down")
+        #expect(!bodyRan, "No prompt may be shown while cooling down")
 
         clock.advance(59)
-        XCTAssertThrowsError(try gate.run { bodyRan = true })
-        XCTAssertFalse(bodyRan)
+        #expect(throws: (any Error).self) {
+            try gate.run { bodyRan = true }
+        }
+        #expect(!bodyRan)
 
         clock.advance(2)
-        XCTAssertNoThrow(try gate.run { bodyRan = true })
-        XCTAssertTrue(bodyRan, "Requests are admitted again after the cooldown")
+        #expect(throws: Never.self) {
+            try gate.run { bodyRan = true }
+        }
+        #expect(bodyRan, "Requests are admitted again after the cooldown")
     }
 
+    @Test
     func testCooldownDoublesUntilCapAndResetsAfterSuccess() {
         let clock = Clock()
         let gate = SigningPromptGate(maxConsecutiveDenials: 1, cooldown: 60, now: { clock.current })
         let expected: [TimeInterval] = [60, 120, 240, 480, 900, 900]
 
         for duration in expected {
-            XCTAssertThrowsError(try gate.run { throw denial() })
-            var bodyRan = false
-            XCTAssertThrowsError(try gate.run { bodyRan = true }) {
-                XCTAssertEqual($0 as? SigningPromptGateError, .coolingDown)
+            #expect(throws: (any Error).self) {
+                try gate.run { throw denial() }
             }
-            XCTAssertFalse(bodyRan)
+            var bodyRan = false
+            #expect {
+                try gate.run { bodyRan = true }
+            } throws: { error in
+                (error as? SigningPromptGateError) == .coolingDown
+            }
+            #expect(!bodyRan)
             clock.advance(duration - 1)
-            XCTAssertThrowsError(try gate.run { bodyRan = true })
-            XCTAssertFalse(bodyRan, "Still refused \(duration - 1)s into a \(duration)s lockout")
+            #expect(throws: (any Error).self) {
+                try gate.run { bodyRan = true }
+            }
+            #expect(!bodyRan, "Still refused \(duration - 1)s into a \(duration)s lockout")
             clock.advance(1)
         }
 
-        XCTAssertNoThrow(try gate.run { })
-        XCTAssertThrowsError(try gate.run { throw denial() })
+        #expect(throws: Never.self) {
+            try gate.run { }
+        }
+        #expect(throws: (any Error).self) {
+            try gate.run { throw denial() }
+        }
         var bodyRan = false
         clock.advance(59)
-        XCTAssertThrowsError(try gate.run { bodyRan = true }) {
-            XCTAssertEqual($0 as? SigningPromptGateError, .coolingDown)
+        #expect {
+            try gate.run { bodyRan = true }
+        } throws: { error in
+            (error as? SigningPromptGateError) == .coolingDown
         }
-        XCTAssertFalse(bodyRan, "A success must restore the 60s base cooldown")
+        #expect(!bodyRan, "A success must restore the 60s base cooldown")
         clock.advance(1)
-        XCTAssertNoThrow(try gate.run { bodyRan = true })
-        XCTAssertTrue(bodyRan)
+        #expect(throws: Never.self) {
+            try gate.run { bodyRan = true }
+        }
+        #expect(bodyRan)
     }
 
+    @Test
     func testSuccessResetsDenialCounter() {
         let gate = SigningPromptGate(maxConsecutiveDenials: 3, cooldown: 60)
-        for _ in 0..<2 { XCTAssertThrowsError(try gate.run { throw denial() }) }
-        XCTAssertNoThrow(try gate.run { })
-        for _ in 0..<2 { XCTAssertThrowsError(try gate.run { throw denial() }) }
-        XCTAssertNoThrow(try gate.run { }, "Two denials after a success must not reach the threshold")
+        for _ in 0..<2 {
+            #expect(throws: (any Error).self) { try gate.run { throw denial() } }
+        }
+        #expect(throws: Never.self) { try gate.run { } }
+        for _ in 0..<2 {
+            #expect(throws: (any Error).self) { try gate.run { throw denial() } }
+        }
+        #expect(throws: Never.self) { try gate.run { } }
     }
 
+    @Test
     func testNonAuthenticationFailuresDoNotCountAsDenials() {
         let gate = SigningPromptGate(maxConsecutiveDenials: 2, cooldown: 60)
         for _ in 0..<5 {
-            XCTAssertThrowsError(try gate.run { throw PrivateKeyRecordError.publicKeyMismatch })
+            #expect(throws: (any Error).self) {
+                try gate.run { throw PrivateKeyRecordError.publicKeyMismatch }
+            }
         }
-        XCTAssertNoThrow(try gate.run { })
+        #expect(throws: Never.self) { try gate.run { } }
     }
 
+    @Test
     func testSystemSSHWarnsWhenTheAgentMayBeForwarded() {
         let requester = "ssh (PID 42)"
         let forwarded = SSHAgentServer.signatureReason(
@@ -106,85 +142,88 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
             requester: requester,
             processPath: "/usr/bin/ssh"
         )
-        XCTAssertEqual(
-            forwarded,
+        #expect(
+            forwarded ==
             "use \u{201c}Main Key\u{201d} for SSH authentication (requested by ssh (PID 42)). This request may come from a forwarded agent; the remote host is not visible"
         )
-        XCTAssertTrue(forwarded.contains("forwarded agent"))
-        XCTAssertTrue(forwarded.contains("remote host is not visible"))
-        XCTAssertTrue(forwarded.contains(requester))
+        #expect(forwarded.contains("forwarded agent"))
+        #expect(forwarded.contains("remote host is not visible"))
+        #expect(forwarded.contains(requester))
 
         let standardized = SSHAgentServer.signatureReason(
             keyLabel: "Main Key",
             requester: requester,
             processPath: "/usr/bin/./ssh"
         )
-        XCTAssertEqual(standardized, forwarded)
+        #expect(standardized == forwarded)
 
         let homebrew = SSHAgentServer.signatureReason(
             keyLabel: "Main Key",
             requester: requester,
             processPath: "/opt/homebrew/bin/ssh"
         )
-        XCTAssertEqual(homebrew, forwarded)
-        XCTAssertTrue(homebrew.contains("forwarded agent"))
-        XCTAssertTrue(homebrew.contains("remote host is not visible"))
+        #expect(homebrew == forwarded)
+        #expect(homebrew.contains("forwarded agent"))
+        #expect(homebrew.contains("remote host is not visible"))
 
         let otherCaller = SSHAgentServer.signatureReason(
             keyLabel: "Main Key",
             requester: requester,
             processPath: "/usr/bin/security"
         )
-        XCTAssertEqual(
-            otherCaller,
+        #expect(
+            otherCaller ==
             SSHAgentServer.dataSigningReason(keyLabel: "Main Key", requester: requester)
         )
-        XCTAssertFalse(otherCaller.contains("forwarded agent"))
-        XCTAssertFalse(otherCaller.contains("remote host is not visible"))
+        #expect(!otherCaller.contains("forwarded agent"))
+        #expect(!otherCaller.contains("remote host is not visible"))
     }
 
+    @Test
     func testPromptsNameTheRequester() {
-        XCTAssertEqual(
-            SSHAgentServer.dataSigningReason(keyLabel: "Main Key", requester: "/usr/bin/ssh (PID 42)"),
+        #expect(
+            SSHAgentServer.dataSigningReason(keyLabel: "Main Key", requester: "/usr/bin/ssh (PID 42)") ==
             "sign data requested by /usr/bin/ssh (PID 42) with \u{201c}Main Key\u{201d}"
         )
-        XCTAssertEqual(
-            SSHAgentServer.gitCommitSigningReason(keyLabel: "Main Key", requester: "ssh-keygen (PID 7)"),
+        #expect(
+            SSHAgentServer.gitCommitSigningReason(keyLabel: "Main Key", requester: "ssh-keygen (PID 7)") ==
             "sign a Git commit with \u{201c}Main Key\u{201d} (requested by ssh-keygen (PID 7))"
         )
     }
 
+    @Test
     func testRequesterDescriptionIsDisplaySafe() {
-        XCTAssertEqual(SSHAgentServer.requesterDescription(processPath: "/usr/bin/ssh", pid: 42), "/usr/bin/ssh (PID 42)")
-        XCTAssertNotEqual(
-            SSHAgentServer.requesterDescription(processPath: "/usr/bin/ssh", pid: 42),
+        #expect(SSHAgentServer.requesterDescription(processPath: "/usr/bin/ssh", pid: 42) == "/usr/bin/ssh (PID 42)")
+        #expect(
+            SSHAgentServer.requesterDescription(processPath: "/usr/bin/ssh", pid: 42) !=
             SSHAgentServer.requesterDescription(processPath: "/tmp/ssh", pid: 42)
         )
         // Control, newline and bidi-format characters are removed.
         let hostile = "/tmp/evil\n\u{202E}Approve\u{0007}"
         let described = SSHAgentServer.requesterDescription(processPath: hostile, pid: 1)
-        XCTAssertFalse(described.contains("\n"))
-        XCTAssertFalse(described.unicodeScalars.contains("\u{202E}"))
-        XCTAssertFalse(described.unicodeScalars.contains("\u{0007}"))
+        #expect(!described.contains("\n"))
+        #expect(!described.unicodeScalars.contains("\u{202E}"))
+        #expect(!described.unicodeScalars.contains("\u{0007}"))
         // Format characters (such as zero-width space / direction marks) are removed.
         let formatHostile = "/tmp/bin\u{200B}\u{200E}\u{FEFF}"
         let describedFormat = SSHAgentServer.requesterDescription(processPath: formatHostile, pid: 1)
-        XCTAssertEqual(describedFormat, "/tmp/bin (PID 1)")
+        #expect(describedFormat == "/tmp/bin (PID 1)")
         // Bounded length with visible middle ellipsis on path truncation, keeping both prefix and tail.
         let long = "/tmp/" + String(repeating: "a", count: 500)
         let describedLong = SSHAgentServer.requesterDescription(processPath: long, pid: 1)
-        XCTAssertLessThanOrEqual(describedLong.count, 80 + " (PID 1)".count)
-        XCTAssertTrue(describedLong.hasPrefix("/tmp/" + String(repeating: "a", count: 27)))
-        XCTAssertTrue(describedLong.contains("…"))
-        XCTAssertTrue(describedLong.hasSuffix(String(repeating: "a", count: 47) + " (PID 1)"))
-        XCTAssertEqual(SSHAgentServer.requesterDescription(processPath: "/", pid: 3), "/ (PID 3)")
+        #expect(describedLong.count <= 80 + " (PID 1)".count)
+        #expect(describedLong.hasPrefix("/tmp/" + String(repeating: "a", count: 27)))
+        #expect(describedLong.contains("…"))
+        #expect(describedLong.hasSuffix(String(repeating: "a", count: 47) + " (PID 1)"))
+        #expect(SSHAgentServer.requesterDescription(processPath: "/", pid: 3) == "/ (PID 3)")
 
         // Whitespace padding is collapsed into a single space so leading directory cannot be pushed off-screen.
         let paddedSpoof = "/Users/attacker/evil" + String(repeating: " ", count: 80) + "/usr/bin/ssh"
         let describedPadded = SSHAgentServer.requesterDescription(processPath: paddedSpoof, pid: 99)
-        XCTAssertEqual(describedPadded, "/Users/attacker/evil /usr/bin/ssh (PID 99)")
+        #expect(describedPadded == "/Users/attacker/evil /usr/bin/ssh (PID 99)")
     }
 
+    @Test
     func testNoisyRequesterLocksOutWhileCleanRequesterContinues() {
         let clock = Clock()
         let gate = SigningPromptGate(maxConsecutiveDenials: 3, cooldown: 60, now: { clock.current })
@@ -192,57 +231,73 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
         let clean = SigningPromptGate.Requester(executablePath: "/usr/bin/clean", pid: 202)
 
         for _ in 0..<3 {
-            XCTAssertThrowsError(try gate.run(requester: noisy) { throw denial() })
+            #expect(throws: (any Error).self) {
+                try gate.run(requester: noisy) { throw denial() }
+            }
         }
 
         // Noisy requester is locked out
         var noisyRan = false
-        XCTAssertThrowsError(try gate.run(requester: noisy) { noisyRan = true }) {
-            XCTAssertEqual($0 as? SigningPromptGateError, .coolingDown)
+        #expect {
+            try gate.run(requester: noisy) { noisyRan = true }
+        } throws: { error in
+            (error as? SigningPromptGateError) == .coolingDown
         }
-        XCTAssertFalse(noisyRan, "Noisy requester must be in cooldown")
+        #expect(!noisyRan, "Noisy requester must be in cooldown")
 
         // Clean requester continues without being locked out
         var cleanRan = false
-        XCTAssertNoThrow(try gate.run(requester: clean) { cleanRan = true })
-        XCTAssertTrue(cleanRan, "Clean requester must not be locked out by noisy requester")
+        #expect(throws: Never.self) {
+            try gate.run(requester: clean) { cleanRan = true }
+        }
+        #expect(cleanRan, "Clean requester must not be locked out by noisy requester")
 
         // Noisy requester is still locked out
-        XCTAssertThrowsError(try gate.run(requester: noisy) { noisyRan = true })
-        XCTAssertFalse(noisyRan)
+        #expect(throws: (any Error).self) {
+            try gate.run(requester: noisy) { noisyRan = true }
+        }
+        #expect(!noisyRan)
 
         // After cooldown expires, noisy requester is admitted again
         clock.advance(60)
-        XCTAssertNoThrow(try gate.run(requester: noisy) { noisyRan = true })
-        XCTAssertTrue(noisyRan, "Noisy requester admitted after cooldown")
+        #expect(throws: Never.self) {
+            try gate.run(requester: noisy) { noisyRan = true }
+        }
+        #expect(noisyRan, "Noisy requester admitted after cooldown")
     }
 
+    @Test
     func testDeadSocketRequestDoesNotTriggerPromptBody() {
         var fds: [Int32] = [-1, -1]
-        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
-        let clientFd = fds[0]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
+        var clientFd: Int32 = fds[0]
         let serverFd = fds[1]
         defer {
-            close(clientFd)
+            if clientFd >= 0 { close(clientFd) }
             close(serverFd)
         }
 
         // Peer closes connection
         close(clientFd)
+        clientFd = -1
+
 
         let gate = SigningPromptGate()
         var bodyRan = false
-        XCTAssertThrowsError(try gate.run(clientSocket: serverFd) {
-            bodyRan = true
-        }) { error in
-            XCTAssertEqual(error as? SigningPromptGateError, .clientDisconnected)
+        #expect {
+            try gate.run(clientSocket: serverFd) {
+                bodyRan = true
+            }
+        } throws: { error in
+            (error as? SigningPromptGateError) == .clientDisconnected
         }
-        XCTAssertFalse(bodyRan, "Dead socket request must never trigger prompt body")
+        #expect(!bodyRan, "Dead socket request must never trigger prompt body")
     }
 
+    @Test
     func testIsSocketAliveStates() {
         var fds: [Int32] = [-1, -1]
-        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
         let clientFd = fds[0]
         let serverFd = fds[1]
         defer {
@@ -251,56 +306,61 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
         }
 
         // Idle socket returns true
-        XCTAssertTrue(SigningPromptGate.isSocketAlive(serverFd), "Idle socket should be alive")
+        #expect(SigningPromptGate.isSocketAlive(serverFd), "Idle socket should be alive")
 
         // Pending byte (write 1 byte to peer) returns true
         var byte: UInt8 = 0x42
-        XCTAssertEqual(write(clientFd, &byte, 1), 1)
-        XCTAssertTrue(SigningPromptGate.isSocketAlive(serverFd), "Socket with pending byte should be alive")
+        #expect(write(clientFd, &byte, 1) == 1)
+        #expect(SigningPromptGate.isSocketAlive(serverFd), "Socket with pending byte should be alive")
     }
 
+    @Test
     func testIsSocketAlivePeerClosed() {
         var fds: [Int32] = [-1, -1]
-        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
-        let clientFd = fds[0]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
+        var clientFd: Int32 = fds[0]
         let serverFd = fds[1]
         defer {
-            close(clientFd)
+            if clientFd >= 0 { close(clientFd) }
             close(serverFd)
         }
 
         // Peer closed returns false
         close(clientFd)
-        XCTAssertFalse(SigningPromptGate.isSocketAlive(serverFd), "Closed peer without pending bytes should return false")
+        clientFd = -1
+        #expect(!SigningPromptGate.isSocketAlive(serverFd), "Closed peer without pending bytes should return false")
     }
 
+    @Test
     func testIsSocketAlivePeerClosedWithQueuedByteReturnsTrueUntilRead() {
         var fds: [Int32] = [-1, -1]
-        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
-        let clientFd = fds[0]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
+        var clientFd: Int32 = fds[0]
         let serverFd = fds[1]
         defer {
-            close(clientFd)
+            if clientFd >= 0 { close(clientFd) }
             close(serverFd)
         }
 
         // Peer closed with queued byte returns true until read
         var byte: UInt8 = 0xAA
-        XCTAssertEqual(write(clientFd, &byte, 1), 1)
+        #expect(write(clientFd, &byte, 1) == 1)
         close(clientFd)
+        clientFd = -1
 
-        XCTAssertTrue(SigningPromptGate.isSocketAlive(serverFd), "Socket with queued byte from closed peer should return true")
+        #expect(SigningPromptGate.isSocketAlive(serverFd), "Socket with queued byte from closed peer should return true")
 
         var readBuf: UInt8 = 0
-        XCTAssertEqual(read(serverFd, &readBuf, 1), 1)
-        XCTAssertEqual(readBuf, 0xAA)
+        #expect(read(serverFd, &readBuf, 1) == 1)
+        #expect(readBuf == 0xAA)
 
-        XCTAssertFalse(SigningPromptGate.isSocketAlive(serverFd), "Socket should return false once queued byte is read")
+        #expect(!SigningPromptGate.isSocketAlive(serverFd), "Socket should return false once queued byte is read")
     }
 
+    @Test
     func testGateRunWithPendingBytesDoesNotThrowClientDisconnected() {
         var fds: [Int32] = [-1, -1]
-        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
         let clientFd = fds[0]
         let serverFd = fds[1]
         defer {
@@ -309,17 +369,19 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
         }
 
         var byte: UInt8 = 0x55
-        XCTAssertEqual(write(clientFd, &byte, 1), 1)
+        #expect(write(clientFd, &byte, 1) == 1)
 
         let gate = SigningPromptGate()
         var bodyRan = false
-        XCTAssertNoThrow(try gate.run(clientSocket: serverFd) {
-            bodyRan = true
-        })
-        XCTAssertTrue(bodyRan, "gate.run should not throw clientDisconnected for socket with pending byte")
+        #expect(throws: Never.self) {
+            try gate.run(clientSocket: serverFd) {
+                bodyRan = true
+            }
+        }
+        #expect(bodyRan, "gate.run should not throw clientDisconnected for socket with pending byte")
     }
 
-
+    @Test
     func testQueueCapPerRequesterEnforcesMaxOneWaitingAndOneActive() {
         let gate = SigningPromptGate()
         let requester = SigningPromptGate.Requester(executablePath: "/usr/bin/git", pid: 42)
@@ -333,7 +395,7 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
 
         // 1. Active request for requester
         group.enter()
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             _ = try? gate.run(requester: requester) {
                 activeStarted.signal()
                 activeRelease.wait()
@@ -341,11 +403,11 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
             group.leave()
         }
 
-        XCTAssertEqual(activeStarted.wait(timeout: .now() + 2), .success)
+        #expect(activeStarted.wait(timeout: .now() + 5) == .success)
 
         // 2. Waiting request for requester (1 waiting allowed)
         group.enter()
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             waitingStarted.signal()
             _ = try? gate.run(requester: requester) {
                 // Should run after activeRelease
@@ -353,23 +415,26 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
             group.leave()
         }
 
-        XCTAssertEqual(waitingStarted.wait(timeout: .now() + 2), .success)
+        #expect(waitingStarted.wait(timeout: .now() + 5) == .success)
+
         Thread.sleep(forTimeInterval: 0.05)
 
         // 3. Third request for same requester exceeds cap (max 1 waiting + 1 active)
         var thirdRan = false
-        XCTAssertThrowsError(try gate.run(requester: requester) {
-            thirdRan = true
-        }) { error in
-            XCTAssertEqual(error as? SigningPromptGateError, .queueFull)
+        #expect {
+            try gate.run(requester: requester) {
+                thirdRan = true
+            }
+        } throws: { error in
+            (error as? SigningPromptGateError) == .queueFull
         }
-        XCTAssertFalse(thirdRan, "Third concurrent request for same requester must be rejected")
+        #expect(!thirdRan, "Third concurrent request for same requester must be rejected")
 
         // 4. Another requester can still queue a request (has its own cap)
         var otherRan = false
         let otherGroup = DispatchGroup()
         otherGroup.enter()
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             _ = try? gate.run(requester: otherRequester) {
                 otherRan = true
             }
@@ -378,11 +443,12 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
 
         // Release active request
         activeRelease.signal()
-        XCTAssertEqual(group.wait(timeout: .now() + 3), .success)
-        XCTAssertEqual(otherGroup.wait(timeout: .now() + 3), .success)
-        XCTAssertTrue(otherRan, "Other requester request must succeed after turn")
+        #expect(group.wait(timeout: .now() + 3) == .success)
+        #expect(otherGroup.wait(timeout: .now() + 3) == .success)
+        #expect(otherRan, "Other requester request must succeed after turn")
     }
 
+    @Test
     func testRunExclusiveSerializesConcurrentlyWithRun() {
         let gate = SigningPromptGate()
         let lock = NSLock()
@@ -392,7 +458,7 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
 
         for i in 0..<8 {
             group.enter()
-            DispatchQueue.global().async {
+            Thread.detachNewThread {
                 if i % 2 == 0 {
                     _ = try? gate.run {
                         lock.lock(); concurrent += 1; maxConcurrent = max(maxConcurrent, concurrent); lock.unlock()
@@ -410,10 +476,11 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
             }
         }
 
-        XCTAssertEqual(group.wait(timeout: .now() + 5), .success)
-        XCTAssertEqual(maxConcurrent, 1, "run and runExclusive must never overlap")
+        #expect(group.wait(timeout: .now() + 5) == .success)
+        #expect(maxConcurrent == 1, "run and runExclusive must never overlap")
     }
 
+    @Test
     func testRunExclusiveDoesNotCountDenials() {
         let gate = SigningPromptGate(maxConsecutiveDenials: 2, cooldown: 60)
 
@@ -421,92 +488,102 @@ final class SigningPromptGateTests: ClavisBaseTestCase {
 
         // Multiple failures in runExclusive
         for _ in 0..<5 {
-            XCTAssertThrowsError(try gate.runExclusive { throw denial() })
-            XCTAssertThrowsError(try gate.runExclusive { throw CustomTestError() })
+            #expect(throws: (any Error).self) { try gate.runExclusive { throw denial() } }
+            #expect(throws: (any Error).self) { try gate.runExclusive { throw CustomTestError() } }
         }
 
         // gate.run should still execute normally without cooldown lockout
         var ran = false
-        XCTAssertNoThrow(try gate.run { ran = true })
-        XCTAssertTrue(ran, "Failures in runExclusive must not trigger denial tracking or cooldown")
+        #expect(throws: Never.self) { try gate.run { ran = true } }
+        #expect(ran, "Failures in runExclusive must not trigger denial tracking or cooldown")
     }
 
-    func testAgentPolicyAndExtendSessionDropWhenSocketDisconnected() throws {
-        // Create an already-closed socket descriptor
-        let deadSock = socket(AF_UNIX, SOCK_STREAM, 0)
-        close(deadSock)
+    @Test
+    func testAgentPolicyAndExtendSessionDropWhenSocketDisconnected() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
 
-        let countingAuth = CountingAuthenticator()
-        let audit = InMemoryAuditRecorder()
-        let keyMgr = makeKeyManager(authenticator: countingAuth, auditRecorder: audit)
-        let key = try keyMgr.generateKey(label: "gate-drop-key", biometricPolicy: .userPresence, keyPurpose: .agent)
+        try await fixture.run {
+            // Create a socket whose peer is disconnected
+            var fds: [Int32] = [-1, -1]
+            #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
+            let deadSock = fds[0]
+            close(fds[1])
+            defer { close(deadSock) }
 
-        let policyStore = InMemoryAgentPolicyStore()
-        let registry = AgentSessionRegistry(
-            processInfo: { _ in (startTime: 1000, parentPid: 1) },
-            auditRecorder: audit,
-            watchRootExit: false
-        )
 
-        let server = SSHAgentServer(
-            role: .personal,
-            keyManager: keyMgr,
-            controlPeerValidator: { _ in true },
-            peerProcessValidator: { _, _, _ in true },
-            auditRecorder: audit,
-            agentSessions: registry,
-            agentPolicies: policyStore
-        )
+            let countingAuth = CountingAuthenticator()
+            let audit = InMemoryAuditRecorder()
+            let keyMgr = fixture.makeKeyManager(authenticator: countingAuth, auditRecorder: audit)
+            let key = try keyMgr.generateKey(label: "gate-drop-key", biometricPolicy: .userPresence, keyPurpose: .agent)
 
-        // Register session
-        var regPayload = Data([SSHAgentServer.registerAgentSessionRequest])
-        regPayload.appendWireString(key.label)
-        regPayload.appendWireString("gate-tool")
-        regPayload.appendWireUInt32(30)
-        let regResp = server.processAgentRequest(
-            payload: regPayload,
-            clientPid: 1234,
-            clientStartTime: 1000,
-            isTrustedControlPeer: { true }
-        )
-        XCTAssertEqual(regResp.first, 6)
-        let sessionID = registry.summaries()[0].id
+            let policyStore = InMemoryAgentPolicyStore()
+            let registry = AgentSessionRegistry(
+                processInfo: { _ in (startTime: 1000, parentPid: 1) },
+                auditRecorder: audit,
+                watchRootExit: false
+            )
 
-        let authCountBefore = countingAuth.authenticationCount
+            let server = SSHAgentServer(
+                role: .personal,
+                keyManager: keyMgr,
+                controlPeerValidator: { _ in true },
+                peerProcessValidator: { _, _, _ in true },
+                auditRecorder: audit,
+                agentSessions: registry,
+                agentPolicies: policyStore
+            )
 
-        // 1. setAgentPolicy with dead socket
-        let newPolicy = AgentKeyPolicy(mode: .ask)
-        let policyData = try JSONEncoder().encode(newPolicy)
-        var setPolicyPayload = Data([SSHAgentServer.setAgentPolicyRequest])
-        setPolicyPayload.appendWireString(key.fingerprint)
-        setPolicyPayload.appendWireString(String(data: policyData, encoding: .utf8)!)
+            // Register session
+            var regPayload = Data([SSHAgentServer.registerAgentSessionRequest])
+            regPayload.appendWireString(key.label)
+            regPayload.appendWireString("gate-tool")
+            regPayload.appendWireUInt32(30)
+            let regResp = server.processAgentRequest(
+                payload: regPayload,
+                clientPid: 1234,
+                clientStartTime: 1000,
+                isTrustedControlPeer: { true }
+            )
+            #expect(regResp.first == 6)
+            let sessionID = try #require(registry.summaries().first?.id)
 
-        let setResp = server.processAgentRequest(
-            payload: setPolicyPayload,
-            clientPid: 1234,
-            clientExecutablePath: "/usr/bin/ssh",
-            clientStartTime: 1000,
-            clientSocket: deadSock,
-            isTrustedControlPeer: { true }
-        )
-        XCTAssertEqual(setResp, Data([5]))
-        XCTAssertEqual(countingAuth.authenticationCount, authCountBefore, "setAgentPolicy must not prompt on dead socket")
+            let authCountBefore = countingAuth.authenticationCount
 
-        // 2. extendAgentSession with dead socket
-        var extendPayload = Data([SSHAgentServer.extendAgentSessionRequest])
-        extendPayload.appendWireString(sessionID)
-        extendPayload.appendWireUInt32(30)
+            // 1. setAgentPolicy with dead socket
+            let newPolicy = AgentKeyPolicy(mode: .ask)
+            let policyData = try JSONEncoder().encode(newPolicy)
+            var setPolicyPayload = Data([SSHAgentServer.setAgentPolicyRequest])
+            setPolicyPayload.appendWireString(key.fingerprint)
+            setPolicyPayload.appendWireString(String(data: policyData, encoding: .utf8)!)
 
-        let extendResp = server.processAgentRequest(
-            payload: extendPayload,
-            clientPid: 1234,
-            clientExecutablePath: "/usr/bin/ssh",
-            clientStartTime: 1000,
-            clientSocket: deadSock,
-            isTrustedControlPeer: { true }
-        )
-        XCTAssertEqual(extendResp, Data([5]))
-        XCTAssertEqual(countingAuth.authenticationCount, authCountBefore, "extendAgentSession must not prompt on dead socket")
+            let setResp = server.processAgentRequest(
+                payload: setPolicyPayload,
+                clientPid: 1234,
+                clientExecutablePath: "/usr/bin/ssh",
+                clientStartTime: 1000,
+                clientSocket: deadSock,
+                isTrustedControlPeer: { true }
+            )
+            #expect(setResp == Data([5]))
+            #expect(countingAuth.authenticationCount == authCountBefore, "setAgentPolicy must not prompt on dead socket")
+
+            // 2. extendAgentSession with dead socket
+            var extendPayload = Data([SSHAgentServer.extendAgentSessionRequest])
+            extendPayload.appendWireString(sessionID)
+            extendPayload.appendWireUInt32(30)
+
+            let extendResp = server.processAgentRequest(
+                payload: extendPayload,
+                clientPid: 1234,
+                clientExecutablePath: "/usr/bin/ssh",
+                clientStartTime: 1000,
+                clientSocket: deadSock,
+                isTrustedControlPeer: { true }
+            )
+            #expect(extendResp == Data([5]))
+            #expect(countingAuth.authenticationCount == authCountBefore, "extendAgentSession must not prompt on dead socket")
+        }
     }
 }
 
