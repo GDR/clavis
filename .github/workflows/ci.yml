@@ -27,5 +27,20 @@ jobs:
       - name: Set up Just
         uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
 
+      - name: Resolve Swift toolchain hash
+        id: toolchain
+        run: |
+          swift_hash="$(swift -version 2>&1 | head -n 1 | shasum -a 256 | awk '{print $1}' | cut -c1-12)"
+          echo "swift_hash=$swift_hash" >> "$GITHUB_OUTPUT"
+
+      - name: Cache SwiftPM build artifacts (.build)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift_hash }}-${{ hashFiles('Package.swift', '**/Package.resolved', 'justfile') }}-${{ hashFiles('Sources/**', 'Tests/**') }}
+          restore-keys: |
+            spm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift_hash }}-${{ hashFiles('Package.swift', '**/Package.resolved', 'justfile') }}-
+            spm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift_hash }}-
+
       - name: Run Tests
         run: just test

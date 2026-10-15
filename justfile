@@ -34,6 +34,45 @@ build config=config:
     echo "🔨 Building Clavis ({{ config }})..."
     SDKROOT="$sdkroot" swift build -c {{ config }}
 
+# Compile all test targets without running tests
+build-tests:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sdkroot="$(env -u SDKROOT /usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+    if [ ! -f "$sdkroot/SDKSettings.plist" ]; then
+        echo "❌ Active Xcode returned an invalid macOS SDK path: $sdkroot" >&2
+        exit 1
+    fi
+    mkdir -p .build && touch .build/.metadata_never_index
+    echo "🔨 Building test targets..."
+    SDKROOT="$sdkroot" swift build --build-tests
+
+# Compile only ClavisCore library
+build-core:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sdkroot="$(env -u SDKROOT /usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+    if [ ! -f "$sdkroot/SDKSettings.plist" ]; then
+        echo "❌ Active Xcode returned an invalid macOS SDK path: $sdkroot" >&2
+        exit 1
+    fi
+    mkdir -p .build && touch .build/.metadata_never_index
+    echo "🔨 Building ClavisCore..."
+    SDKROOT="$sdkroot" swift build --target ClavisCore
+
+# Compile only Clavis application executable
+build-app:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sdkroot="$(env -u SDKROOT /usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+    if [ ! -f "$sdkroot/SDKSettings.plist" ]; then
+        echo "❌ Active Xcode returned an invalid macOS SDK path: $sdkroot" >&2
+        exit 1
+    fi
+    mkdir -p .build && touch .build/.metadata_never_index
+    echo "🔨 Building Clavis App..."
+    SDKROOT="$sdkroot" swift build --target Clavis
+
 # Assemble Clavis.app bundle with helpers and resources
 bundle config=config: (build config)
     #!/usr/bin/env bash
@@ -329,10 +368,37 @@ package config=config: (dmg config)
     shasum -a 256 "$archive" > "$archive.sha256"
     echo "✅ Created $archive and checksum."
 
-# Run test suite
-test:
+# Run test suite with parallel Swift Testing (supports extra flags via args)
+test *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sdkroot="$(env -u SDKROOT /usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
     mkdir -p .build && touch .build/.metadata_never_index
-    swift test --parallel --enable-swift-testing --disable-xctest
+    SDKROOT="${sdkroot:-}" swift test --parallel --enable-swift-testing --disable-xctest {{ args }}
+
+# Run core test suite (decoupled from SwiftUI/AppKit)
+test-core *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sdkroot="$(env -u SDKROOT /usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+    mkdir -p .build && touch .build/.metadata_never_index
+    SDKROOT="${sdkroot:-}" swift test --filter ClavisCoreTests --parallel --enable-swift-testing --disable-xctest {{ args }}
+
+# Run UI and application test suite
+test-app *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sdkroot="$(env -u SDKROOT /usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+    mkdir -p .build && touch .build/.metadata_never_index
+    SDKROOT="${sdkroot:-}" swift test --filter ClavisAppTests --parallel --enable-swift-testing --disable-xctest {{ args }}
+
+# Run tests without recompilation (fast re-run on warm binaries)
+test-fast *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sdkroot="$(env -u SDKROOT /usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+    mkdir -p .build && touch .build/.metadata_never_index
+    SDKROOT="${sdkroot:-}" swift test --skip-build --parallel --enable-swift-testing --disable-xctest {{ args }}
 
 # Build and relaunch Clavis.app locally
 run config="debug":
@@ -361,3 +427,7 @@ run config="debug":
 clean:
     swift package clean
     rm -rf {{ dmg_name }} {{ dmg_name }}.sha256 {{ archive_name }} {{ archive_name }}.sha256 .build/release/dmg .build/debug/dmg
+
+# Clean all build artifacts, caches, and .build directory
+clean-all: clean
+    rm -rf .build
