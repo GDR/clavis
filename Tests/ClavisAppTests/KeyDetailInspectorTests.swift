@@ -273,4 +273,63 @@ struct KeyDetailInspectorTests {
             #expect(appState.activeGitGraces.contains(where: { $0.keyLabel == keyB.label }) == true)
         }
     }
+
+    // MARK: - Milestone M1 (PR 1): Header Title Stack & Overflow Menu Deduplication
+
+    @Test
+    func testHeaderTwoLineTitleStackFormatting() {
+        let generalKey = makeTestKey(label: "deploy-key", purpose: .general)
+        let stack = KeyDetailInspectorView.headerTitleStack(for: generalKey)
+        #expect(stack.title == "deploy-key")
+        #expect(stack.subtitle == "ECDSA P-256 · Hardware Key")
+
+        let customAlgoKey = SSHKeyInfo(
+            label: "ed25519-key",
+            publicKeyOpenSSH: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI test@sk",
+            publicKeyBlob: Data(repeating: 0x42, count: 32),
+            fingerprint: "SHA256:soft1234567890defghijklmnopqrstuvwxyz123456",
+            createdAt: Date(),
+            algorithmName: "Ed25519-SK",
+            storage: .secureEnclave,
+            biometricPolicy: .userPresence,
+            keyPurpose: .general
+        )
+        let customStack = KeyDetailInspectorView.headerTitleStack(for: customAlgoKey)
+        #expect(customStack.title == "ed25519-key")
+        #expect(customStack.subtitle == "Ed25519-SK · Hardware Key")
+
+        // Also verify underlying subtitle formatter handles software fallback correctly
+        #expect(ClavisUIStrings.Inspector.keySubtitle(algorithm: "RSA-4096", isHardware: false) == "RSA-4096 · Software Key")
+    }
+
+    @Test
+    func testOverflowMenuDeduplicationAcrossKeyPurposes() {
+        // Agent keys contain deploy key, openSSH, fingerprint, change purpose, delete
+        let agentKey = makeTestKey(purpose: .agent)
+        let agentActions = KeyDetailInspectorView.overflowMenuActions(for: agentKey)
+        #expect(agentActions == [.copyDeployKey, .copyOpenSSH, .copyFingerprint, .changePurpose, .deleteKey])
+
+        // General keys contain openSSH, fingerprint, change purpose, delete
+        let generalKey = makeTestKey(purpose: .general)
+        let generalActions = KeyDetailInspectorView.overflowMenuActions(for: generalKey)
+        #expect(generalActions == [.copyOpenSSH, .copyFingerprint, .changePurpose, .deleteKey])
+
+        // Git signing keys contain openSSH, fingerprint, delete (immutable purpose)
+        let gitKey = makeTestKey(purpose: .gitSigningOnly)
+        let gitActions = KeyDetailInspectorView.overflowMenuActions(for: gitKey)
+        #expect(gitActions == [.copyOpenSSH, .copyFingerprint, .deleteKey])
+
+        // Assert Show History is NEVER present in the overflow menu for any key purpose
+        for purpose in [KeyPurpose.general, KeyPurpose.agent, KeyPurpose.gitSigningOnly] {
+            let key = makeTestKey(purpose: purpose)
+            let actions = KeyDetailInspectorView.overflowMenuActions(for: key)
+            #expect(!actions.contains(where: { "\($0)".lowercased().contains("history") }))
+        }
+    }
+
+    @Test
+    func testPrimaryHeaderShowHistoryStringAndIcon() {
+        #expect(ClavisUIStrings.History.showHistory == "Show History")
+        #expect(ClavisUIStrings.Accessibility.moreActions == "More actions")
+    }
 }
