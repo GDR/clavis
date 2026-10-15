@@ -592,10 +592,10 @@ struct EncryptedVaultStoreTests {
 
     // MARK: - Finding N-4: Cross-Process Advisory File Lock Tests
 
-    @Test func testExternalHolderBlocksMasterKeyCreation() async throws {
+    @Test func testExternalHolderBlocksMasterKeyCreation() throws {
         let fixture = try ClavisTestFixture()
         defer { fixture.cleanup() }
-        try await fixture.run {
+        try fixture.runSync {
             EncryptedVaultStore.masterKeyLockPollInterval = 5_000
             defer { EncryptedVaultStore.masterKeyLockPollInterval = 50_000 }
 
@@ -607,22 +607,29 @@ struct EncryptedVaultStoreTests {
             #expect(flock(lockFd, LOCK_EX) == 0)
 
             let context = fixture.context
-            let task = Task.detached {
-                try await TestContextScope.$current.withValue(context) {
-                    try EncryptedVaultStore.shared.ensureMasterKey()
+            let done = DispatchSemaphore(value: 0)
+            nonisolated(unsafe) var result: Result<P256.KeyAgreement.PublicKey, Error>?
+            let queue = DispatchQueue(label: "test.masterKey.externalHolder")
+            queue.async {
+                result = Result {
+                    try TestContextScope.$current.withValue(context) {
+                        try EncryptedVaultStore.shared.ensureMasterKey()
+                    }
                 }
+                done.signal()
             }
 
-            // Assert not finished while lock is held
-            try await Task.sleep(nanoseconds: 30_000_000)
+            // Wait briefly while lock is held without suspending on the cooperative pool
+            usleep(30_000)
 
             // Release lock
             #expect(flock(lockFd, LOCK_UN) == 0)
             close(lockFd)
 
             // Assert it finishes and files exist
-            let returnedPubKey = try await task.value
-            #expect(returnedPubKey != nil)
+            #expect(done.wait(timeout: .now() + 5.0) == .success)
+            let returnedPubKey = try #require(result).get()
+            #expect(!returnedPubKey.rawRepresentation.isEmpty)
 
             let pubURL = vaultDir.appendingPathComponent("master.pub")
             let keyURL = vaultDir.appendingPathComponent("master.key")
@@ -631,10 +638,10 @@ struct EncryptedVaultStoreTests {
         }
     }
 
-    @Test func testMasterKeyRecheckWorksWhenCreatedByAnotherProcess() async throws {
+    @Test func testMasterKeyRecheckWorksWhenCreatedByAnotherProcess() throws {
         let fixture = try ClavisTestFixture()
         defer { fixture.cleanup() }
-        try await fixture.run {
+        try fixture.runSync {
             EncryptedVaultStore.masterKeyLockPollInterval = 5_000
             defer {
                 EncryptedVaultStore.masterKeyLockPollInterval = 50_000
@@ -674,14 +681,20 @@ struct EncryptedVaultStoreTests {
             EncryptedVaultStore.customPinStore = pinStore
 
             let context = fixture.context
-            let task = Task.detached {
-                try await TestContextScope.$current.withValue(context) {
-                    try EncryptedVaultStore.shared.ensureMasterKey()
+            let done = DispatchSemaphore(value: 0)
+            nonisolated(unsafe) var result: Result<P256.KeyAgreement.PublicKey, Error>?
+            let queue = DispatchQueue(label: "test.masterKey.recheck")
+            queue.async {
+                result = Result {
+                    try TestContextScope.$current.withValue(context) {
+                        try EncryptedVaultStore.shared.ensureMasterKey()
+                    }
                 }
+                done.signal()
             }
 
             // Wait briefly to ensure background call has started and is polling lock
-            try await Task.sleep(nanoseconds: 20_000_000)
+            usleep(20_000)
 
             // Create valid key pair via file writes while holding lock
             let swKey = P256.KeyAgreement.PrivateKey()
@@ -706,7 +719,8 @@ struct EncryptedVaultStoreTests {
             #expect(flock(lockFd, LOCK_UN) == 0)
             close(lockFd)
 
-            let returnedPubKey = try await task.value
+            #expect(done.wait(timeout: .now() + 5.0) == .success)
+            let returnedPubKey = try #require(result).get()
             #expect(returnedPubKey.rawRepresentation == swKey.publicKey.rawRepresentation)
 
             // Verify pin was not overwritten

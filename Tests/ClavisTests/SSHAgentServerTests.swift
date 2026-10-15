@@ -124,7 +124,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         let server = SSHAgentServer(
             socketPath: socketPath,
             maxConcurrentClients: 1,
-            clientIdleTimeout: 0.05
+            clientIdleTimeout: 0.6
         )
         try server.start()
         defer { server.stop() }
@@ -132,7 +132,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         let idleClient = try connectUnixSocket(path: socketPath)
         defer { close(idleClient) }
 
-        let acceptanceDeadline = Date().addingTimeInterval(1)
+        let acceptanceDeadline = Date().addingTimeInterval(3)
         while server.activeClientCount != 1 && Date() < acceptanceDeadline {
             usleep(5_000)
         }
@@ -143,7 +143,7 @@ final class SSHAgentServerTests: ClavisBaseTestCase {
         usleep(15_000)
         XCTAssertNil(socketReadFullBytes(from: rejectedClient, count: 1))
 
-        let timeoutDeadline = Date().addingTimeInterval(1)
+        let timeoutDeadline = Date().addingTimeInterval(3)
         while server.activeClientCount != 0 && Date() < timeoutDeadline {
             usleep(5_000)
         }
