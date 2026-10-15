@@ -1,14 +1,15 @@
-import XCTest
+import Foundation
+import Testing
 import CryptoKit
 import LocalAuthentication
 @testable import ClavisCore
 
-final class AuditUnsealTests: ClavisBaseTestCase {
-    private var dbURL: URL {
-        testRootURL.appendingPathComponent("audit-unseal-test.db")
-    }
+@Suite struct AuditUnsealTests {
+    @Test func test_008_AC3_unlockedReaderOpensAllRowsWithOneAgreePerEpoch() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-unseal-test.db")
 
-    func test_008_AC3_unlockedReaderOpensAllRowsWithOneAgreePerEpoch() throws {
         let keyring = SoftwareAuditKeyring(requireContext: true)
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
@@ -36,10 +37,10 @@ final class AuditUnsealTests: ClavisBaseTestCase {
         }
 
         let epochs = try store.epochs()
-        XCTAssertEqual(epochs.count, 3)
+        #expect(epochs.count == 3)
 
         let records = try store.query(AuditQuery(limit: 200))
-        XCTAssertEqual(records.count, 150)
+        #expect(records.count == 150)
 
         // Read all rows with unlock context
         let dummyContext = LAContext()
@@ -48,19 +49,23 @@ final class AuditUnsealTests: ClavisBaseTestCase {
         for record in records {
             let result = unsealer.open(record)
             guard case .plaintext(let sensitive) = result else {
-                XCTFail("Expected plaintext for record \(record.seq), got \(result)")
+                Issue.record("Expected plaintext for record \(record.seq), got \(result)")
                 return
             }
-            XCTAssertNotNil(sensitive.keyLabel)
-            XCTAssertEqual(sensitive.processChain.count, 1)
-            XCTAssertNotNil(sensitive.host)
+            #expect(sensitive.keyLabel != nil)
+            #expect(sensitive.processChain.count == 1)
+            #expect(sensitive.host != nil)
         }
 
         // AC3: 3 epochs * 50 rows -> agreeCalls == 3
-        XCTAssertEqual(keyring.agreeCalls, 3)
+        #expect(keyring.agreeCalls == 3)
     }
 
-    func test_008_AC5_lostKeyShowsOldRowsUnreadableNewRowsReadable() throws {
+    @Test func test_008_AC5_lostKeyShowsOldRowsUnreadableNewRowsReadable() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-unseal-test.db")
+
         let keyring = SoftwareAuditKeyring(requireContext: false)
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
@@ -78,7 +83,7 @@ final class AuditUnsealTests: ClavisBaseTestCase {
 
         // Rotate to new key and drop old key (simulating lost key)
         let newPubKey = try keyring.rotate(mode: .passwordOrBiometry)
-        XCTAssertNotEqual(oldPubKey.keyID, newPubKey.keyID)
+        #expect(oldPubKey.keyID != newPubKey.keyID)
         keyring.dropKey(keyID: oldPubKey.keyID)
 
         // Write row under new key
@@ -93,19 +98,23 @@ final class AuditUnsealTests: ClavisBaseTestCase {
 
         let unsealer = AuditUnsealer(keyring: keyring, store: store, context: nil)
         let records = try store.query(AuditQuery(limit: 10))
-        let rec1 = records.first(where: { $0.seq == seq1 })!
-        let rec2 = records.first(where: { $0.seq == seq2 })!
+        let rec1 = try #require(records.first(where: { $0.seq == seq1 }))
+        let rec2 = try #require(records.first(where: { $0.seq == seq2 }))
 
         // AC5: old entry is unreadable, new entry is readable
-        XCTAssertEqual(unsealer.open(rec1), .unreadable)
+        #expect(unsealer.open(rec1) == .unreadable)
         if case .plaintext(let s2) = unsealer.open(rec2) {
-            XCTAssertEqual(s2.keyLabel, "new_key")
+            #expect(s2.keyLabel == "new_key")
         } else {
-            XCTFail("Expected rec2 to be readable plaintext")
+            Issue.record("Expected rec2 to be readable plaintext")
         }
     }
 
-    func test_008_T5_tamperedBlobIsUnreadable() throws {
+    @Test func test_008_T5_tamperedBlobIsUnreadable() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-unseal-test.db")
+
         let keyring = SoftwareAuditKeyring(requireContext: false)
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
@@ -123,13 +132,17 @@ final class AuditUnsealTests: ClavisBaseTestCase {
 
         let seq = try store.insert(event, sensitiveFormat: fmt, sensitiveBlob: tamperedBlob)
         let records = try store.query(AuditQuery(limit: 1))
-        let record = records.first(where: { $0.seq == seq })!
+        let record = try #require(records.first(where: { $0.seq == seq }))
 
         let unsealer = AuditUnsealer(keyring: keyring, store: store, context: nil)
-        XCTAssertEqual(unsealer.open(record), .unreadable)
+        #expect(unsealer.open(record) == .unreadable)
     }
 
-    func test_008_T5_legacyAndOmittedFormats() throws {
+    @Test func test_008_T5_legacyAndOmittedFormats() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-unseal-test.db")
+
         let keyring = SoftwareAuditKeyring(requireContext: false)
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
@@ -152,16 +165,20 @@ final class AuditUnsealTests: ClavisBaseTestCase {
 
         let unsealer = AuditUnsealer(keyring: keyring, store: store, context: nil)
         let records = try store.query(AuditQuery(limit: 10))
-        let rec0 = records.first(where: { $0.seq == seq0 })!
-        let rec2 = records.first(where: { $0.seq == seq2 })!
-        let rec99 = records.first(where: { $0.seq == seq99 })!
+        let rec0 = try #require(records.first(where: { $0.seq == seq0 }))
+        let rec2 = try #require(records.first(where: { $0.seq == seq2 }))
+        let rec99 = try #require(records.first(where: { $0.seq == seq99 }))
 
-        XCTAssertEqual(unsealer.open(rec0), .plaintext(event0.sensitive))
-        XCTAssertEqual(unsealer.open(rec2), .omitted)
-        XCTAssertEqual(unsealer.open(rec99), .unreadable)
+        #expect(unsealer.open(rec0) == .plaintext(event0.sensitive))
+        #expect(unsealer.open(rec2) == .omitted)
+        #expect(unsealer.open(rec99) == .unreadable)
     }
 
-    func test_008_AC2_otherKeyringCannotRead() throws {
+    @Test func test_008_AC2_otherKeyringCannotRead() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-unseal-test.db")
+
         let keyring1 = SoftwareAuditKeyring(requireContext: false)
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
@@ -180,8 +197,8 @@ final class AuditUnsealTests: ClavisBaseTestCase {
         let unsealer = AuditUnsealer(keyring: keyring2, store: store, context: nil)
 
         let records = try store.query(AuditQuery(limit: 1))
-        let record = records.first(where: { $0.seq == seq })!
+        let record = try #require(records.first(where: { $0.seq == seq }))
 
-        XCTAssertEqual(unsealer.open(record), .unreadable)
+        #expect(unsealer.open(record) == .unreadable)
     }
 }

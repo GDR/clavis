@@ -1,9 +1,10 @@
-import XCTest
+import Testing
+import Foundation
 @testable import ClavisCore
 
-final class AuditExporterTests: ClavisBaseTestCase {
+@Suite struct AuditExporterTests {
 
-    func test_002_AC7_exportRedactsLabelsAndPaths() throws {
+    @Test func test_002_AC7_exportRedactsLabelsAndPaths() throws {
         let event = AuditEvent(
             type: .signature,
             result: .allowed,
@@ -22,26 +23,23 @@ final class AuditExporterTests: ClavisBaseTestCase {
         let record = AuditRecord(seq: 42, event: event)
 
         let exportedData = AuditExporter.export([record])
-        guard let jsonString = String(data: exportedData, encoding: .utf8) else {
-            XCTFail("Exported data is not valid UTF-8 string")
-            return
-        }
+        let jsonString = try #require(String(data: exportedData, encoding: .utf8))
 
         // Must not contain secret key label or raw process path
-        XCTAssertFalse(jsonString.contains("super-secret-key-label"))
-        XCTAssertFalse(jsonString.contains("/Users/alice/bin/custom-ssh-client"))
+        #expect(!jsonString.contains("super-secret-key-label"))
+        #expect(!jsonString.contains("/Users/alice/bin/custom-ssh-client"))
 
         // Must contain host in clear text
-        XCTAssertTrue(jsonString.contains("bastion.example.com"))
+        #expect(jsonString.contains("bastion.example.com"))
 
         // Must contain pid, fingerprint, and pseudo-hashes starting with "h:"
-        XCTAssertTrue(jsonString.contains("1234"))
-        XCTAssertTrue(jsonString.contains("SHA256:abc123fingerprint"))
-        XCTAssertTrue(jsonString.contains("\"keyLabel\":\"h:"))
-        XCTAssertTrue(jsonString.contains("\"executablePath\":\"h:"))
+        #expect(jsonString.contains("1234"))
+        #expect(jsonString.contains("SHA256:abc123fingerprint"))
+        #expect(jsonString.contains("\"keyLabel\":\"h:"))
+        #expect(jsonString.contains("\"executablePath\":\"h:"))
     }
 
-    func test_002_AC7_sameLabelSameHashWithinOneExport() throws {
+    @Test func test_002_AC7_sameLabelSameHashWithinOneExport() throws {
         let event1 = AuditEvent(
             type: .signature,
             result: .allowed,
@@ -61,26 +59,23 @@ final class AuditExporterTests: ClavisBaseTestCase {
         let records = [AuditRecord(seq: 1, event: event1), AuditRecord(seq: 2, event: event2)]
 
         let data = AuditExporter.export(records)
-        guard let output = String(data: data, encoding: .utf8) else {
-            XCTFail("Not valid UTF-8")
-            return
-        }
+        let output = try #require(String(data: data, encoding: .utf8))
 
         let lines = output.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n")
-        XCTAssertEqual(lines.count, 2)
+        #expect(lines.count == 2)
 
         // Parse JSON objects from both lines
-        let json1 = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as? [String: Any])
-        let json2 = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(lines[1].utf8)) as? [String: Any])
+        let json1 = try #require(try JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as? [String: Any])
+        let json2 = try #require(try JSONSerialization.jsonObject(with: Data(lines[1].utf8)) as? [String: Any])
 
-        XCTAssertEqual(json1["keyLabel"] as? String, json2["keyLabel"] as? String)
+        #expect((json1["keyLabel"] as? String) == (json2["keyLabel"] as? String))
 
-        let chain1 = try XCTUnwrap(json1["processChain"] as? [[String: Any]])
-        let chain2 = try XCTUnwrap(json2["processChain"] as? [[String: Any]])
-        XCTAssertEqual(chain1.first?["executablePath"] as? String, chain2.first?["executablePath"] as? String)
+        let chain1 = try #require(json1["processChain"] as? [[String: Any]])
+        let chain2 = try #require(json2["processChain"] as? [[String: Any]])
+        #expect((chain1.first?["executablePath"] as? String) == (chain2.first?["executablePath"] as? String))
     }
 
-    func test_002_AC7_differentExportsUseDifferentSalts() throws {
+    @Test func test_002_AC7_differentExportsUseDifferentSalts() throws {
         let event = AuditEvent(
             type: .signature,
             result: .allowed,
@@ -94,15 +89,15 @@ final class AuditExporterTests: ClavisBaseTestCase {
         let data1 = AuditExporter.export([record])
         let data2 = AuditExporter.export([record])
 
-        let str1 = try XCTUnwrap(String(data: data1, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines))
-        let str2 = try XCTUnwrap(String(data: data2, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines))
+        let str1 = try #require(String(data: data1, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines))
+        let str2 = try #require(String(data: data2, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines))
 
-        let json1 = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(str1.utf8)) as? [String: Any])
-        let json2 = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(str2.utf8)) as? [String: Any])
+        let json1 = try #require(try JSONSerialization.jsonObject(with: Data(str1.utf8)) as? [String: Any])
+        let json2 = try #require(try JSONSerialization.jsonObject(with: Data(str2.utf8)) as? [String: Any])
 
-        let label1 = try XCTUnwrap(json1["keyLabel"] as? String)
-        let label2 = try XCTUnwrap(json2["keyLabel"] as? String)
+        let label1 = try #require(json1["keyLabel"] as? String)
+        let label2 = try #require(json2["keyLabel"] as? String)
 
-        XCTAssertNotEqual(label1, label2, "Successive exports without explicit salt must produce distinct pseudonyms")
+        #expect(label1 != label2, "Successive exports without explicit salt must produce distinct pseudonyms")
     }
 }

@@ -1,24 +1,26 @@
-import XCTest
+import Testing
+import Foundation
 import SQLite3
 @testable import ClavisCore
 
-final class AuditStoreV2Tests: ClavisBaseTestCase {
-    private var dbURL: URL {
-        testRootURL.appendingPathComponent("audit-v2-test.db")
-    }
+@Suite struct AuditStoreV2Tests {
 
-    func test_008_T3_freshDatabaseDirectlyInitializesV2() throws {
+    @Test func test_008_T3_freshDatabaseDirectlyInitializesV2() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-v2-test.db")
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
         // Verify user_version is 2
         var rawDb: OpaquePointer?
-        XCTAssertEqual(sqlite3_open(dbURL.path, &rawDb), SQLITE_OK)
+        #expect(sqlite3_open(dbURL.path, &rawDb) == SQLITE_OK)
         var stmt: OpaquePointer?
-        XCTAssertEqual(sqlite3_prepare_v2(rawDb, "PRAGMA user_version;", -1, &stmt, nil), SQLITE_OK)
-        XCTAssertEqual(sqlite3_step(stmt), SQLITE_ROW)
+        #expect(sqlite3_prepare_v2(rawDb, "PRAGMA user_version;", -1, &stmt, nil) == SQLITE_OK)
+        #expect(sqlite3_step(stmt) == SQLITE_ROW)
         let version = sqlite3_column_int(stmt, 0)
-        XCTAssertEqual(version, 2)
+        #expect(version == 2)
         sqlite3_finalize(stmt)
         sqlite3_close(rawDb)
 
@@ -29,18 +31,21 @@ final class AuditStoreV2Tests: ClavisBaseTestCase {
             epk: Data(repeating: 0x02, count: 65),
             wrappedDEK: Data(repeating: 0x03, count: 48)
         )
-        XCTAssertNoThrow(try store.insertEpoch(epoch))
+        #expect(throws: Never.self) {
+            try store.insertEpoch(epoch)
+        }
         let retrieved = try store.epoch(id: epoch.epochID)
-        XCTAssertEqual(retrieved, epoch)
+        #expect(retrieved == epoch)
     }
 
-    func test_008_T3_refusesV1Database() throws {
+    @Test func test_008_T3_refusesV1Database() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-v2-test.db")
+
         var rawDb: OpaquePointer?
-        XCTAssertEqual(sqlite3_open(dbURL.path, &rawDb), SQLITE_OK)
-        guard let db = rawDb else {
-            XCTFail("Failed to open raw sqlite db")
-            return
-        }
+        #expect(sqlite3_open(dbURL.path, &rawDb) == SQLITE_OK)
+        let db = try #require(rawDb)
 
         let v1Schema = """
         BEGIN IMMEDIATE;
@@ -62,16 +67,22 @@ final class AuditStoreV2Tests: ClavisBaseTestCase {
         PRAGMA user_version = 1;
         COMMIT;
         """
-        XCTAssertEqual(sqlite3_exec(db, v1Schema, nil, nil, nil), SQLITE_OK)
+        #expect(sqlite3_exec(db, v1Schema, nil, nil, nil) == SQLITE_OK)
         sqlite3_close(db)
 
         // Open with AuditStore — should be rejected as unsupported version 1
-        XCTAssertThrowsError(try AuditStore(url: dbURL)) { error in
-            XCTAssertEqual(error as? AuditStoreError, AuditStoreError.unsupportedVersion(1))
+        #expect {
+            try AuditStore(url: dbURL)
+        } throws: { error in
+            error as? AuditStoreError == AuditStoreError.unsupportedVersion(1)
         }
     }
 
-    func test_008_T3_epochRoundTrip() throws {
+    @Test func test_008_T3_epochRoundTrip() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-v2-test.db")
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
@@ -87,11 +98,11 @@ final class AuditStoreV2Tests: ClavisBaseTestCase {
         try store.insertEpoch(epoch)
 
         let fetched = try store.epoch(id: epochID)
-        XCTAssertEqual(fetched, epoch)
+        #expect(fetched == epoch)
 
         let allEpochs = try store.epochs()
-        XCTAssertEqual(allEpochs.count, 1)
-        XCTAssertEqual(allEpochs.first, epoch)
+        #expect(allEpochs.count == 1)
+        #expect(allEpochs.first == epoch)
 
         // Update wrap
         let newEpk = Data(repeating: 0xCC, count: 65)
@@ -100,12 +111,16 @@ final class AuditStoreV2Tests: ClavisBaseTestCase {
         try store.updateEpochWrap(id: epochID, keyID: newKeyID, epk: newEpk, wrappedDEK: newWrapped)
 
         let updated = try store.epoch(id: epochID)
-        XCTAssertEqual(updated?.keyID, newKeyID)
-        XCTAssertEqual(updated?.epk, newEpk)
-        XCTAssertEqual(updated?.wrappedDEK, newWrapped)
+        #expect(updated?.keyID == newKeyID)
+        #expect(updated?.epk == newEpk)
+        #expect(updated?.wrappedDEK == newWrapped)
     }
 
-    func test_008_T3_replaceSensitiveIsConditional() throws {
+    @Test func test_008_T3_replaceSensitiveIsConditional() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-v2-test.db")
+
         let store = try AuditStore(url: dbURL)
         defer { store.close() }
 
@@ -117,31 +132,35 @@ final class AuditStoreV2Tests: ClavisBaseTestCase {
         let seq = try store.insert(event)
 
         let legacyRows = try store.legacyPlaintextRows(limit: 10)
-        XCTAssertEqual(legacyRows.count, 1)
-        XCTAssertEqual(legacyRows[0].seq, seq)
-        XCTAssertEqual(legacyRows[0].event.sensitive.keyLabel, "legacy_label")
+        #expect(legacyRows.count == 1)
+        #expect(legacyRows[0].seq == seq)
+        #expect(legacyRows[0].event.sensitive.keyLabel == "legacy_label")
 
         let sealedBlob = Data([0x01, 0x02, 0x03, 0x04])
         // First replace: expectedFormat = 0, newFormat = 1 -> true
         let replacedFirst = try store.replaceSensitive(seq: seq, expectedFormat: 0, newFormat: 1, blob: sealedBlob)
-        XCTAssertTrue(replacedFirst)
+        #expect(replacedFirst)
 
         // Second replace with expectedFormat = 0 -> false (already format 1)
         let replacedSecond = try store.replaceSensitive(seq: seq, expectedFormat: 0, newFormat: 1, blob: sealedBlob)
-        XCTAssertFalse(replacedSecond)
+        #expect(!replacedSecond)
 
         // Legacy rows should now be empty
         let remainingLegacy = try store.legacyPlaintextRows(limit: 10)
-        XCTAssertTrue(remainingLegacy.isEmpty)
+        #expect(remainingLegacy.isEmpty)
 
         // Query row directly
         let records = try store.query(AuditQuery())
-        XCTAssertEqual(records.count, 1)
-        XCTAssertEqual(records[0].sensitiveFormat, 1)
-        XCTAssertEqual(records[0].sealedSensitive, sealedBlob)
+        #expect(records.count == 1)
+        #expect(records[0].sensitiveFormat == 1)
+        #expect(records[0].sealedSensitive == sealedBlob)
     }
 
-    func test_008_AC1_rawFileHasNoPlaintext() throws {
+    @Test func test_008_AC1_rawFileHasNoPlaintext() throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let dbURL = fixture.testRootURL.appendingPathComponent("audit-v2-test.db")
+
         let store = try AuditStore(url: dbURL)
 
         let secretLabel = "super_classified_key_label_v2"
@@ -173,8 +192,8 @@ final class AuditStoreV2Tests: ClavisBaseTestCase {
             data.range(of: target) != nil
         }
 
-        XCTAssertFalse(containsSubdata(fileData, target: Data(secretLabel.utf8)))
-        XCTAssertFalse(containsSubdata(fileData, target: Data(secretPath.utf8)))
-        XCTAssertFalse(containsSubdata(fileData, target: Data(secretHost.utf8)))
+        #expect(!containsSubdata(fileData, target: Data(secretLabel.utf8)))
+        #expect(!containsSubdata(fileData, target: Data(secretPath.utf8)))
+        #expect(!containsSubdata(fileData, target: Data(secretHost.utf8)))
     }
 }
