@@ -628,12 +628,12 @@ struct KeyLifecycleAndTamperTests {
             updateItem: { _, _ in errSecItemNotFound }
         )
 
-        try store.save(label: "hardware-key", data: Data([0xCA, 0xFE]), accessControlFlags: [.userPresence])
+        try store.save(label: "hardware-key", data: Data([0xCA, 0xFE]), accessControlFlags: [])
 
         #expect(addedItems.count == 1)
         let added = addedItems[0] as NSDictionary
-        #expect(added[kSecAttrAccessControl as String] != nil)
-        #expect(added[kSecAttrAccessible as String] == nil)
+        #expect(added[kSecAttrAccessControl as String] == nil)
+        #expect(added[kSecAttrAccessible as String] as? String == kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
         #expect(added[kSecUseDataProtectionKeychain as String] == nil)
         #expect(added[kSecAttrAccessGroup as String] == nil)
     }

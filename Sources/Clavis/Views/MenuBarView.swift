@@ -88,14 +88,15 @@ public struct MenuBarView: View {
         if let pid = appState.agentPID {
             return ClavisUIStrings.MenuBar.activeWithPID(pid)
         }
-        if lock.isLocked {
+        if lock.isEffectivelyLocked {
             return ClavisUIStrings.PanelLock.title
         }
         return ClavisUIStrings.MenuBar.identitiesReady(count: appState.keys.count)
     }
 
     public var body: some View {
-        let visibleSections = MenuBarSections.visible(isLocked: lock.isLocked, hasSessions: hasSessions)
+        let isLocked = lock.isEffectivelyLocked
+        let visibleSections = MenuBarSections.visible(isLocked: isLocked, hasSessions: hasSessions)
 
         VStack(alignment: .leading, spacing: 8) {
             // Header: Agent Status & Lock All
@@ -114,7 +115,7 @@ public struct MenuBarView: View {
 
                 Spacer()
 
-                if visibleSections.contains(.lockNow) && (hasSessions || lock.isLocked) {
+                if visibleSections.contains(.lockNow) && (hasSessions || isLocked) {
                     Button(action: {
                         ClavisLogger.promptDebug("calvis-ui", "MenuBarView: lock all triggered by user")
                         appState.lockNow()
@@ -162,7 +163,7 @@ public struct MenuBarView: View {
             }
 
             // Locked active agent sessions count banner (D2)
-            if lock.isLocked && visibleSections.contains(.sessionCount) {
+            if isLocked && visibleSections.contains(.sessionCount) {
                 HStack(spacing: 8) {
                     Image(systemName: "key.fill")
                         .foregroundColor(.blue)
@@ -347,14 +348,14 @@ public struct MenuBarView: View {
                         ClavisLogger.promptDebug("calvis-ui", "MenuBarView: unlock triggered by user")
                         Task {
                             await lock.unlock()
-                            if !lock.isLocked {
+                            if !lock.isEffectivelyLocked {
                                 WindowManager.shared.openKeyManager()
                             }
                         }
                     }
                 }
 
-                if lock.isLocked && visibleSections.contains(.lockNow) {
+                if isLocked && visibleSections.contains(.lockNow) {
                     MenuBarActionItem(
                         title: ClavisUIStrings.MenuBar.lockAll,
                         icon: "lock.fill",
