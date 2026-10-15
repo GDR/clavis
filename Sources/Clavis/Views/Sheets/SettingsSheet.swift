@@ -41,252 +41,49 @@ public struct SettingsView: View {
         self._isSettingsAuthenticated = State(initialValue: isSettingsAuthenticated)
     }
 
+    private var lockEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { lock.isEnabled },
+            set: { newValue in
+                Task {
+                    _ = await lock.setEnabled(newValue, authenticated: true)
+                }
+            }
+        )
+    }
+
+    private var lockIdleBinding: Binding<Int> {
+        Binding(
+            get: { lock.idleMinutes },
+            set: { lock.idleMinutes = $0 }
+        )
+    }
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { appState.launchAtLogin },
+            set: { appState.setLaunchAtLogin($0) }
+        )
+    }
+
     public var body: some View {
         Group {
             if !isSettingsAuthenticated {
-                VStack(spacing: 16) {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 48))
-                        .foregroundColor(.secondary)
-
-                    Text(ClavisUIStrings.Settings.windowTitle)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.primary)
-
-                    if lock.currentMode.requiresPIN {
-                        PinEntryView(lock: lock, onUnlockSuccess: { _ in
-                            isSettingsAuthenticated = true
-                        })
-                    } else {
-                        Button(action: {
-                            Task {
-                                await authenticateSettings()
-                            }
-                        }) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "lock.open.fill")
-                                Text(ClavisUIStrings.PanelLock.unlock)
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.regular)
-                        .disabled(isAuthenticating)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(nsColor: .windowBackgroundColor))
-                .task {
-                    if !lock.currentMode.requiresPIN {
-                        await authenticateSettings()
-                    }
-                }
+                unauthenticatedGate
             } else {
                 ScrollView {
                     VStack(spacing: 16) {
-                        // Control Panel Lock Section
-                        SettingsGroup(title: ClavisUIStrings.PanelLock.settingsSection) {
-                            VStack(alignment: .leading, spacing: 10) {
-                                SettingsRow(
-                                    icon: "lock.fill",
-                                    iconColor: Color(red: 0.88, green: 0.45, blue: 0.12),
-                                    title: ClavisUIStrings.PanelLock.settingsToggle,
-                                    subtitle: ""
-                                ) {
-                                    Toggle("", isOn: Binding(
-                                        get: { lock.isEnabled },
-                                        set: { newValue in
-                                            Task {
-                                                _ = await lock.setEnabled(newValue, authenticated: true)
-                                            }
-                                        }
-                                    ))
-                                    .toggleStyle(.switch)
-                                    .labelsHidden()
-                                }
-
-                        if lock.isEnabled {
-                            Divider()
-
-                            SettingsRow(
-                                icon: "timer",
-                                iconColor: Color(red: 0.35, green: 0.78, blue: 0.98),
-                                title: ClavisUIStrings.PanelLock.settingsIdle,
-                                subtitle: ""
-                            ) {
-                                Picker("", selection: Binding(
-                                    get: { lock.idleMinutes },
-                                    set: { lock.idleMinutes = $0 }
-                                )) {
-                                    ForEach(PanelLockController.idleOptions, id: \.self) { minutes in
-                                        Text(ClavisUIStrings.PanelLock.minutesFormat(minutes))
-                                            .tag(minutes)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .frame(width: 120)
-                            }
-                        }
+                        controlPanelLockGroup
+                        unlockMethodGroup
+                        startupGroup
+                        sshIntegrationGroup
+                        agentPolicyGroup
                     }
-                }
-
-                // Unlock Method Section
-                SettingsGroup(title: ClavisUIStrings.PinUnlock.settingsSection) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach([AuditReadMode.passwordOrBiometry, .biometryOrPIN, .biometryAndPIN], id: \.self) { mode in
-                            let isSelected = lock.currentMode == mode
-                            let isAvailable = !mode.requiresPIN || PlatformSupport.hasSecureEnclave
-                            Button(action: {
-                                guard !isSelected && isAvailable else { return }
-                                selectMode(mode)
-                            }) {
-                                HStack(spacing: 8) {
-                                    Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
-                                        .foregroundColor(isSelected ? .accentColor : .secondary)
-                                    Text(modeTitle(for: mode))
-                                        .font(.system(size: 13))
-                                        .foregroundColor(isAvailable ? .primary : .secondary)
-                                    Spacer()
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(!isAvailable)
-                        }
-
-                        if lock.currentMode.requiresPIN {
-                            Divider()
-
-                            HStack(spacing: 12) {
-                                Button(ClavisUIStrings.PinUnlock.changePIN) {
-                                    activeSheet = .changePIN
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-
-                                Button(ClavisUIStrings.PinUnlock.forgotPIN) {
-                                    ClavisLogger.promptDebug("calvis-ui", "SettingsSheet: displaying forgot PIN reset confirmation alert")
-                                    showingResetAlert = true
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                            }
-                            .padding(.top, 4)
-                        }
-                    }
-                }
-
-                // System Startup Section
-                SettingsGroup(title: ClavisUIStrings.Settings.startupSection) {
-                    SettingsRow(
-                        icon: "power",
-                        iconColor: Color(red: 0.0, green: 0.48, blue: 1.0),
-                        title: ClavisUIStrings.Settings.launchAtLoginTitle,
-                        subtitle: ClavisUIStrings.Settings.launchAtLoginSubtitle
-                    ) {
-                        Toggle("", isOn: Binding(
-                            get: { appState.launchAtLogin },
-                            set: { appState.setLaunchAtLogin($0) }
-                        ))
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                    }
-                }
-
-                // SSH Integration Section
-                SettingsGroup(title: ClavisUIStrings.Settings.sshSection) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        SettingsRow(
-                            icon: "terminal.fill",
-                            iconColor: Color(red: 0.55, green: 0.58, blue: 0.62),
-                            title: ClavisUIStrings.Settings.agentSocketTitle,
-                            subtitle: SSHAgentServer.defaultSocketPath
-                        ) {
-                            EmptyView()
-                        }
-
-                        Divider()
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(ClavisUIStrings.Settings.envVarTitle)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.secondary)
-
-                            HStack(spacing: 8) {
-                                Text(ClavisUIStrings.Settings.envVarCommand)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundColor(.primary)
-                                    .lineLimit(1)
-                                    .textSelection(.enabled)
-
-                                Spacer()
-
-                                Button(action: {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(ClavisUIStrings.Settings.envVarCommand, forType: .string)
-                                    copiedEnv = true
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                        copiedEnv = false
-                                    }
-                                }) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: copiedEnv ? "checkmark" : "doc.on.doc")
-                                        Text(copiedEnv ? ClavisUIStrings.Common.copied : ClavisUIStrings.Common.copy)
-                                    }
-                                    .font(.system(size: 11, weight: .medium))
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 7)
-                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        }
-                        .padding(.top, 2)
-                    }
-                }
-
-                // Agent Session Policy Section
-                SettingsGroup(title: ClavisUIStrings.AgentPolicy.sectionTitle) {
-                    SettingsRow(
-                        icon: "person.crop.circle.badge.clock",
-                        iconColor: Color(red: 0.58, green: 0.35, blue: 0.88),
-                        title: ClavisUIStrings.AgentPolicy.globalMaxLease,
-                        subtitle: ""
-                    ) {
-                        Picker("", selection: $globalMaxLease) {
-                            ForEach(globalMaxLeaseOptions, id: \.self) { minutes in
-                                Text(ClavisUIStrings.PanelLock.minutesFormat(minutes))
-                                    .tag(minutes)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(width: 120)
-                        .onChange(of: globalMaxLease) { newValue in
-                            guard newValue != lastSavedGlobalMaxLease else { return }
-                            globalPolicyError = nil
-                            Task { @MainActor in
-                                do {
-                                    try appState.setGlobalPolicy(AgentGlobalPolicy(maxLeaseMinutes: newValue))
-                                    lastSavedGlobalMaxLease = newValue
-                                } catch {
-                                    globalMaxLease = lastSavedGlobalMaxLease
-                                    globalPolicyError = error.localizedDescription
-                                }
-                            }
-                        }
-                    }
-                    if let err = globalPolicyError {
-                        Text(err).font(.caption2).foregroundColor(.red)
-                    }
+                    .padding(20)
                 }
             }
-            .padding(20)
         }
-        }
-    }
-    .frame(width: 480, height: 560)
+        .frame(width: 480, height: 560)
     .onChange(of: lock.isLocked) { isLocked in
         if isLocked {
             isSettingsAuthenticated = false
@@ -344,6 +141,242 @@ public struct SettingsView: View {
             if let global = appState.getGlobalPolicy() {
                 globalMaxLease = global.maxLeaseMinutes
                 lastSavedGlobalMaxLease = global.maxLeaseMinutes
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var unauthenticatedGate: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 48))
+                .foregroundColor(.secondary)
+
+            Text(ClavisUIStrings.Settings.windowTitle)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.primary)
+
+            if lock.currentMode.requiresPIN {
+                PinEntryView(lock: lock, onUnlockSuccess: { _ in
+                    isSettingsAuthenticated = true
+                })
+            } else {
+                Button(action: {
+                    Task {
+                        await authenticateSettings()
+                    }
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "lock.open.fill")
+                        Text(ClavisUIStrings.PanelLock.unlock)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .disabled(isAuthenticating)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .task {
+            if !lock.currentMode.requiresPIN {
+                await authenticateSettings()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var controlPanelLockGroup: some View {
+        SettingsGroup(title: ClavisUIStrings.PanelLock.settingsSection) {
+            VStack(alignment: .leading, spacing: 10) {
+                SettingsRow(
+                    icon: "lock.fill",
+                    iconColor: Color(red: 0.88, green: 0.45, blue: 0.12),
+                    title: ClavisUIStrings.PanelLock.settingsToggle,
+                    subtitle: ""
+                ) {
+                    Toggle("", isOn: lockEnabledBinding)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                }
+
+                if lock.isEnabled {
+                    Divider()
+
+                    SettingsRow(
+                        icon: "timer",
+                        iconColor: Color(red: 0.35, green: 0.78, blue: 0.98),
+                        title: ClavisUIStrings.PanelLock.settingsIdle,
+                        subtitle: ""
+                    ) {
+                        Picker("", selection: lockIdleBinding) {
+                            ForEach(PanelLockController.idleOptions, id: \.self) { minutes in
+                                Text(ClavisUIStrings.PanelLock.minutesFormat(minutes))
+                                    .tag(minutes)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 120)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var unlockMethodGroup: some View {
+        SettingsGroup(title: ClavisUIStrings.PinUnlock.settingsSection) {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach([AuditReadMode.passwordOrBiometry, .biometryOrPIN, .biometryAndPIN], id: \.self) { mode in
+                    let isSelected = lock.currentMode == mode
+                    let isAvailable = !mode.requiresPIN || PlatformSupport.hasSecureEnclave
+                    Button(action: {
+                        guard !isSelected && isAvailable else { return }
+                        selectMode(mode)
+                    }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                                .foregroundColor(isSelected ? .accentColor : .secondary)
+                            Text(modeTitle(for: mode))
+                                .font(.system(size: 13))
+                                .foregroundColor(isAvailable ? .primary : .secondary)
+                            Spacer()
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!isAvailable)
+                }
+
+                if lock.currentMode.requiresPIN {
+                    Divider()
+
+                    HStack(spacing: 12) {
+                        Button(ClavisUIStrings.PinUnlock.changePIN) {
+                            activeSheet = .changePIN
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
+                        Button(ClavisUIStrings.PinUnlock.forgotPIN) {
+                            ClavisLogger.promptDebug("calvis-ui", "SettingsSheet: displaying forgot PIN reset confirmation alert")
+                            showingResetAlert = true
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                    .padding(.top, 4)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var startupGroup: some View {
+        SettingsGroup(title: ClavisUIStrings.Settings.startupSection) {
+            SettingsRow(
+                icon: "power",
+                iconColor: Color(red: 0.0, green: 0.48, blue: 1.0),
+                title: ClavisUIStrings.Settings.launchAtLoginTitle,
+                subtitle: ClavisUIStrings.Settings.launchAtLoginSubtitle
+            ) {
+                Toggle("", isOn: launchAtLoginBinding)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var sshIntegrationGroup: some View {
+        SettingsGroup(title: ClavisUIStrings.Settings.sshSection) {
+            VStack(alignment: .leading, spacing: 10) {
+                SettingsRow(
+                    icon: "terminal.fill",
+                    iconColor: Color(red: 0.55, green: 0.58, blue: 0.62),
+                    title: ClavisUIStrings.Settings.agentSocketTitle,
+                    subtitle: SSHAgentServer.defaultSocketPath
+                ) {
+                    EmptyView()
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(ClavisUIStrings.Settings.envVarTitle)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+
+                    HStack(spacing: 8) {
+                        Text(ClavisUIStrings.Settings.envVarCommand)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                            .textSelection(.enabled)
+
+                        Spacer()
+
+                        Button(action: {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(ClavisUIStrings.Settings.envVarCommand, forType: .string)
+                            copiedEnv = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                copiedEnv = false
+                            }
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: copiedEnv ? "checkmark" : "doc.on.doc")
+                                Text(copiedEnv ? ClavisUIStrings.Common.copied : ClavisUIStrings.Common.copy)
+                            }
+                            .font(.system(size: 11, weight: .medium))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .padding(.top, 2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var agentPolicyGroup: some View {
+        SettingsGroup(title: ClavisUIStrings.AgentPolicy.sectionTitle) {
+            SettingsRow(
+                icon: "person.crop.circle.badge.clock",
+                iconColor: Color(red: 0.58, green: 0.35, blue: 0.88),
+                title: ClavisUIStrings.AgentPolicy.globalMaxLease,
+                subtitle: ""
+            ) {
+                Picker("", selection: $globalMaxLease) {
+                    ForEach(globalMaxLeaseOptions, id: \.self) { minutes in
+                        Text(ClavisUIStrings.PanelLock.minutesFormat(minutes))
+                            .tag(minutes)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 120)
+                .onChange(of: globalMaxLease) { newValue in
+                    guard newValue != lastSavedGlobalMaxLease else { return }
+                    globalPolicyError = nil
+                    Task { @MainActor in
+                        do {
+                            try appState.setGlobalPolicy(AgentGlobalPolicy(maxLeaseMinutes: newValue))
+                            lastSavedGlobalMaxLease = newValue
+                        } catch {
+                            globalMaxLease = lastSavedGlobalMaxLease
+                            globalPolicyError = error.localizedDescription
+                        }
+                    }
+                }
+            }
+            if let err = globalPolicyError {
+                Text(err).font(.caption2).foregroundColor(.red)
             }
         }
     }
