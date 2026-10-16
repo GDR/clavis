@@ -5,14 +5,18 @@ import ClavisCore
 
 public struct HistoryView: View {
     @ObservedObject public var viewModel: HistoryViewModel
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     @State private var availableKeys: [SSHKeyInfo] = []
     @State private var selectedKeyFingerprint: String = ""
-    @State private var selectedKind: String = "all"
-    @State private var selectedResult: String = "all"
-    @State private var selectedTimeRange: TimeRange = .all
+    @State private var hostInputText: String = ""
+    @State private var isHostSuggestionsVisible: Bool = false
+    @State private var highlightedHostIndex: Int = -1
+    @State private var pickerDate: Date = Date()
     @State private var expandedSeqs: Set<Int64> = []
     @State private var showingIntegritySheet: Bool = false
+    @FocusState private var isHostFieldFocused: Bool
+    @FocusState private var isSearchFieldFocused: Bool
 
     public enum TimeRange: String, CaseIterable, Identifiable {
         case hour, day, week, all
@@ -38,700 +42,890 @@ public struct HistoryView: View {
         }
     }
 
+    private static let shortDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MMM d, yyyy"
+        return formatter
+    }()
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
     public init(viewModel: HistoryViewModel) {
         self.viewModel = viewModel
     }
 
-    private let relativeDateFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter
-    }()
+    private var currentHostSuggestions: [HistoryHostSuggestion] {
+        viewModel.hostSuggestions(matching: hostInputText)
+    }
 
-    private let absoluteDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .medium
-        return formatter
-    }()
+    private var groupedSections: [HistoryDaySection] {
+        viewModel.groupedSections()
+    }
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Filter Toolbar
-            filterToolbar
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(Color(nsColor: .windowBackgroundColor))
-
-            Divider()
-
-            // Active Session Filter Banner
             if let activeSessionID = viewModel.query.sessionID {
-                HStack(spacing: 8) {
-                    Image(systemName: "cpu")
-                        .foregroundColor(.purple)
-                        .font(.system(size: 11))
-                    Text("Session: \(activeSessionID)")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.primary)
-                    Button(action: {
-                        viewModel.query.sessionID = nil
-                        viewModel.reload()
-                    }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(ClavisUIStrings.Common.cancel)
-
-                    Spacer()
-
-                    if AppState.shared.agentSessions.contains(where: { $0.id == activeSessionID }) {
-                        Button(action: {
-                            AppState.shared.endAgentSession(id: activeSessionID)
-                        }) {
-                            Text(ClavisUIStrings.AgentSession.historyEndSession)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.red)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-                .background(Color.purple.opacity(0.1))
-
+                activeSessionBanner(sessionID: activeSessionID)
                 Divider()
             }
 
-            // Key Context Required Banner (PIN mode unlocked with device password)
             if viewModel.needsKeyContext {
                 PinEntryView(isInlineBanner: true) { _ in
                     viewModel.reload()
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 30)
                 .padding(.vertical, 8)
                 .background(Color(nsColor: .controlBackgroundColor))
 
                 Divider()
             }
 
-            // Content
-            if let error = viewModel.errorMessage {
-                VStack(spacing: 8) {
-                    Text(ClavisUIStrings.Common.error)
-                        .font(.headline)
-                        .foregroundColor(.red)
-                    Text(error)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Button(action: { viewModel.reload() }) {
-                        Text(retryButtonLabel)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if viewModel.items.isEmpty && !viewModel.isLoading {
-                VStack(spacing: 12) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 40))
-                        .foregroundColor(.secondary.opacity(0.6))
-                    Text(ClavisUIStrings.History.empty)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    ForEach(viewModel.items) { item in
-                        switch item {
-                        case .record(let record):
-                            recordRow(for: record)
-                                .onAppear {
-                                    if record.seq == viewModel.records.last?.seq && viewModel.hasMore {
-                                        viewModel.loadMore()
-                                    }
-                                }
-                        case .gap(let fromSeq, let toSeq, let count):
-                            gapRow(fromSeq: fromSeq, toSeq: toSeq, count: count)
-                        }
-                    }
+            // Single scroll surface containing both filters and date-grouped event sections
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    historyFilterControls
+                        .zIndex(20)
 
-                    if viewModel.hasMore {
-                        HStack {
-                            Spacer()
-                            if viewModel.isLoadingMore {
-                                ProgressView()
-                                    .scaleEffect(0.8)
-                                    .padding(.vertical, 8)
-                            } else {
-                                Button(action: {
-                                    viewModel.loadMore()
-                                }) {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "arrow.down.circle")
-                                        Text(loadMoreButtonLabel)
+                    historyResultSummaryBar
+
+                    if let error = viewModel.errorMessage {
+                        errorStateView(message: error)
+                    } else if viewModel.items.isEmpty && !viewModel.isLoading {
+                        emptyHistoryStateView
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                            ForEach(groupedSections) { section in
+                                Section(header: historyDayHeader(for: section)) {
+                                    ForEach(section.items) { item in
+                                        switch item {
+                                        case .record(let record):
+                                            recordRow(for: record)
+                                                .onAppear {
+                                                    if record.seq == viewModel.records.last?.seq && viewModel.hasMore {
+                                                        viewModel.loadMore()
+                                                    }
+                                                }
+                                        case .gap(let fromSeq, let toSeq, let count):
+                                            gapRow(fromSeq: fromSeq, toSeq: toSeq, count: count)
+                                        }
                                     }
-                                    .font(.system(size: 12, weight: .medium))
                                 }
-                                .buttonStyle(.plain)
-                                .foregroundColor(.accentColor)
-                                .padding(.vertical, 8)
                             }
-                            Spacer()
                         }
+
+                        historyLoadStateFooter
                     }
                 }
-                .listStyle(.inset(alternatesRowBackgrounds: true))
+                .padding(.top, 20)
+                .padding(.horizontal, 35)
+                .padding(.bottom, 18)
             }
         }
-        .frame(minWidth: 750, minHeight: 500)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            Button("") {
+                viewModel.reload()
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .opacity(0)
+            .allowsHitTesting(false)
+        }
         .onAppear {
             loadKeys()
             syncFiltersFromQuery()
             viewModel.reload()
+        }
+        .onChange(of: viewModel.query.keyFingerprint) { newFingerprint in
+            let normalized = newFingerprint ?? ""
+            if selectedKeyFingerprint != normalized {
+                selectedKeyFingerprint = normalized
+            }
+        }
+        .onChange(of: isHostFieldFocused) { focused in
+            if focused {
+                isHostSuggestionsVisible = true
+                highlightedHostIndex = -1
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    if !isHostFieldFocused {
+                        isHostSuggestionsVisible = false
+                        highlightedHostIndex = -1
+                    }
+                }
+            }
         }
         .sheet(isPresented: $showingIntegritySheet) {
             HistoryIntegritySheet(viewModel: viewModel, isPresented: $showingIntegritySheet)
         }
     }
 
-    private var isRussian: Bool {
-        Locale.preferredLanguages.first?.hasPrefix("ru") == true
-            || Locale.current.language.languageCode?.identifier == "ru"
-    }
+    // MARK: - Filter Controls (Inside Scroll Surface)
 
-    private var retryButtonLabel: String {
-        isRussian ? "Повторить" : "Retry"
-    }
+    private var historyFilterControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Row 1: Host combobox + Operation/process/result search
+            HStack(alignment: .top, spacing: 10) {
+                hostFilterField
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .zIndex(30)
 
-    private var refreshButtonLabel: String {
-        isRussian ? "Обновить" : "Refresh"
-    }
-
-    private var loadMoreButtonLabel: String {
-        isRussian ? "Загрузить ещё" : "Load More"
-    }
-
-    private var searchPlaceholder: String {
-        isRussian ? "Поиск (ключ, отпечаток, узел, процесс, PID)..." : "Search (key, fingerprint, host, process, PID)..."
-    }
-
-    private func eventCountLabel(count: Int) -> String {
-        isRussian ? "Событий: \(count)" : "\(count) events"
-    }
-
-    private var filterToolbar: some View {
-        VStack(spacing: 8) {
-            // Row 1: Search field & Actions
-            HStack(spacing: 10) {
-                // Search Input Field
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundColor(.secondary)
-                        .font(.system(size: 12))
-                    TextField(searchPlaceholder, text: $viewModel.searchText)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12))
-                    if !viewModel.searchText.isEmpty {
-                        Button(action: { viewModel.searchText = "" }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.secondary)
-                                .font(.system(size: 11))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(ClavisUIStrings.Common.cancel)
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .cornerRadius(6)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
-                )
-
-                Spacer()
-
-                // Refresh Button (⌘R)
-                Button(action: {
-                    viewModel.reload()
-                }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.clockwise")
-                        Text(refreshButtonLabel)
-                    }
-                }
-                .keyboardShortcut("r", modifiers: .command)
-                .help("Refresh (⌘R)")
-
-                // Check Integrity Button
-                Button(action: {
-                    showingIntegritySheet = true
-                    viewModel.checkIntegrity()
-                }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark.shield")
-                        Text(ClavisUIStrings.History.checkIntegrity)
-                    }
-                }
-
-                // Export Button
-                Button(action: exportHistory) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "square.and.arrow.up")
-                        Text(ClavisUIStrings.History.export)
-                    }
-                }
+                searchQueryField
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // Row 2: Specific Filter Pickers & Counter
-            HStack(spacing: 10) {
-                // Key Picker
-                Picker("", selection: $selectedKeyFingerprint) {
-                    Text(ClavisUIStrings.History.filterAllKeys).tag("")
-                    ForEach(availableKeys, id: \.fingerprint) { key in
-                        Text(key.label).tag(key.fingerprint)
+            // Row 2: Key picker + Go to date + All dates + Reset filters
+            HStack(alignment: .bottom, spacing: 8) {
+                keyFilterField
+
+                goToDateField
+
+                Button(action: {
+                    viewModel.clearDateFilter()
+                }) {
+                    Text("All dates")
+                        .font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(DesignTokens.cardBackground)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .stroke(DesignTokens.cardBorder, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.selectedDate == nil)
+                .opacity(viewModel.selectedDate == nil ? 0.42 : 1.0)
+                .accessibilityLabel("All dates")
+
+                Spacer(minLength: 8)
+
+                Button(action: resetAllFilters) {
+                    Text("Reset filters")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(DesignTokens.textSecondary)
+                        .padding(.horizontal, 8)
+                        .frame(height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Reset filters")
+            }
+            .padding(.bottom, 10)
+        }
+    }
+
+    private var hostFilterField: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Host")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(DesignTokens.textSecondary)
+
+            HStack(spacing: 6) {
+                TextField("Search or choose a host", text: $hostInputText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .focused($isHostFieldFocused)
+                    .onChange(of: hostInputText) { newValue in
+                        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                        viewModel.filterRemoteHost = trimmed.isEmpty ? nil : trimmed
+                        if isHostFieldFocused {
+                            isHostSuggestionsVisible = true
+                            highlightedHostIndex = -1
+                        }
                     }
-                }
-                .labelsHidden()
-                .frame(width: 130)
-                .onChange(of: selectedKeyFingerprint) { newValue in
-                    viewModel.query.keyFingerprint = newValue.isEmpty ? nil : newValue
-                    viewModel.reload()
-                }
-
-                // Kind Picker
-                Picker("", selection: $selectedKind) {
-                    Text(ClavisUIStrings.History.filterAllKinds).tag("all")
-                    Text(ClavisUIStrings.History.filterKindPersonal).tag("personal")
-                    Text(ClavisUIStrings.History.filterKindAgent).tag("agent")
-                }
-                .labelsHidden()
-                .frame(width: 100)
-                .onChange(of: selectedKind) { newValue in
-                    switch newValue {
-                    case "personal": viewModel.query.keyKind = .personal
-                    case "agent": viewModel.query.keyKind = .agent
-                    default: viewModel.query.keyKind = nil
+                    .onSubmit {
+                        let suggestions = currentHostSuggestions
+                        if isHostSuggestionsVisible,
+                           highlightedHostIndex >= 0,
+                           highlightedHostIndex < suggestions.count {
+                            chooseHostSuggestion(suggestions[highlightedHostIndex].host)
+                        } else {
+                            isHostSuggestionsVisible = false
+                        }
                     }
-                    viewModel.reload()
-                }
+                    .accessibilityLabel("Host")
 
-                // Result Picker
-                Picker("", selection: $selectedResult) {
-                    Text(ClavisUIStrings.History.filterAllResult).tag("all")
-                    Text(ClavisUIStrings.History.resultAllowed).tag("allowed")
-                    Text(ClavisUIStrings.History.resultDenied).tag("denied")
-                    Text(ClavisUIStrings.History.resultCancelled).tag("cancelled")
-                    Text(ClavisUIStrings.History.resultFailed).tag("failed")
-                }
-                .labelsHidden()
-                .frame(width: 110)
-                .onChange(of: selectedResult) { newValue in
-                    switch newValue {
-                    case "allowed": viewModel.query.results = [.allowed]
-                    case "denied": viewModel.query.results = [.denied]
-                    case "cancelled": viewModel.query.results = [.cancelled]
-                    case "failed": viewModel.query.results = [.failed]
-                    default: viewModel.query.results = []
+                if !hostInputText.isEmpty {
+                    Button(action: {
+                        hostInputText = ""
+                        viewModel.filterRemoteHost = nil
+                        highlightedHostIndex = -1
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(DesignTokens.textSecondary)
                     }
-                    viewModel.reload()
-                }
-
-                // Date Range Picker
-                Picker("", selection: $selectedTimeRange) {
-                    ForEach(TimeRange.allCases) { range in
-                        Text(range.title).tag(range)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear host filter")
+                } else {
+                    Button(action: {
+                        isHostSuggestionsVisible.toggle()
+                        if isHostSuggestionsVisible {
+                            isHostFieldFocused = true
+                        }
+                    }) {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(DesignTokens.textSecondary)
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Show suggested hosts")
                 }
-                .labelsHidden()
-                .frame(width: 120)
-                .onChange(of: selectedTimeRange) { newRange in
-                    viewModel.query.from = newRange.startDate
-                    viewModel.reload()
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(DesignTokens.cardBackground)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(
+                        isHostFieldFocused ? DesignTokens.accentBlue.opacity(0.75) : DesignTokens.cardBorder,
+                        lineWidth: isHostFieldFocused ? 1.5 : 1
+                    )
+            )
+            .overlay(alignment: .topLeading) {
+                if isHostSuggestionsVisible {
+                    hostSuggestionsDropdown
+                        .offset(y: 35)
                 }
-
-                Spacer()
-
-                Text(eventCountLabel(count: viewModel.records.count))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
             }
         }
     }
+
+    private var hostSuggestionsDropdown: some View {
+        let suggestions = currentHostSuggestions
+        return VStack(alignment: .leading, spacing: 2) {
+            if suggestions.isEmpty {
+                Text("No matching hosts")
+                    .font(.system(size: 11))
+                    .foregroundColor(DesignTokens.textSecondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(suggestions.enumerated()), id: \.element.id) { index, item in
+                            Button(action: {
+                                chooseHostSuggestion(item.host)
+                            }) {
+                                HStack(spacing: 8) {
+                                    Text(item.host)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.primary)
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Text(item.count.formatted())
+                                        .font(.system(size: 10).monospacedDigit())
+                                        .foregroundColor(DesignTokens.textSecondary)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 7)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(
+                                            highlightedHostIndex == index
+                                                ? DesignTokens.accentBlue.opacity(0.22)
+                                                : Color.clear
+                                        )
+                                )
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .onHover { hovering in
+                                if hovering {
+                                    highlightedHostIndex = index
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: min(CGFloat(suggestions.count) * 32 + 6, 210))
+            }
+        }
+        .padding(5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color(nsColor: .windowBackgroundColor))
+                .shadow(color: Color.black.opacity(0.28), radius: 14, x: 0, y: 8)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(DesignTokens.cardBorder, lineWidth: 1)
+        )
+        .zIndex(50)
+    }
+
+    private func chooseHostSuggestion(_ host: String) {
+        hostInputText = host
+        viewModel.filterRemoteHost = host
+        isHostSuggestionsVisible = false
+        highlightedHostIndex = -1
+        isHostFieldFocused = false
+    }
+
+    private var searchQueryField: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Operation, process, or result")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(DesignTokens.textSecondary)
+
+            HStack(spacing: 6) {
+                TextField("e.g. git, rejected", text: $viewModel.searchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .focused($isSearchFieldFocused)
+                    .accessibilityLabel("Operation, process, or result")
+
+                if !viewModel.searchText.isEmpty {
+                    Button(action: {
+                        viewModel.searchText = ""
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(DesignTokens.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(ClavisUIStrings.Common.cancel)
+                }
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(DesignTokens.cardBackground)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(
+                        isSearchFieldFocused ? DesignTokens.accentBlue.opacity(0.75) : DesignTokens.cardBorder,
+                        lineWidth: isSearchFieldFocused ? 1.5 : 1
+                    )
+            )
+        }
+    }
+
+    private var keyFilterField: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Key")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(DesignTokens.textSecondary)
+
+            Picker("Key", selection: $selectedKeyFingerprint) {
+                Text("All keys").tag("")
+                ForEach(availableKeys, id: \.fingerprint) { key in
+                    Text(key.label).tag(key.fingerprint)
+                }
+            }
+            .labelsHidden()
+            .frame(minWidth: 120, maxWidth: 180)
+            .frame(height: 30)
+            .onChange(of: selectedKeyFingerprint) { newValue in
+                let fp = newValue.isEmpty ? nil : newValue
+                if viewModel.query.keyFingerprint != fp {
+                    viewModel.query.keyFingerprint = fp
+                    AppState.shared.historyFilterKeyFingerprint = fp
+                    isHostSuggestionsVisible = false
+                    viewModel.reload()
+                }
+            }
+            .accessibilityLabel("Key")
+        }
+    }
+
+    private var goToDateField: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Go to date")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(DesignTokens.textSecondary)
+
+            DatePicker(
+                "Go to date",
+                selection: Binding(
+                    get: { viewModel.selectedDate ?? pickerDate },
+                    set: { newDate in
+                        pickerDate = newDate
+                        isHostSuggestionsVisible = false
+                        viewModel.selectedDate = newDate
+                    }
+                ),
+                in: ...Date(),
+                displayedComponents: [.date]
+            )
+            .labelsHidden()
+            .datePickerStyle(.compact)
+            .frame(height: 30)
+            .accessibilityLabel("Go to date")
+        }
+    }
+
+    private var historyResultSummaryBar: some View {
+        HStack(spacing: 10) {
+            Text("\(viewModel.records.count.formatted()) matching events")
+                .font(.system(size: 11).monospacedDigit())
+                .foregroundColor(DesignTokens.textSecondary)
+
+            Spacer()
+
+            Text("Newest first")
+                .font(.system(size: 11))
+                .foregroundColor(DesignTokens.textSecondary)
+        }
+        .padding(.vertical, 9)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(DesignTokens.cardBorder)
+                .frame(height: 1)
+        }
+    }
+
+    // MARK: - Sticky Date Section Header
+
+    private func historyDayHeader(for section: HistoryDaySection) -> some View {
+        HStack(spacing: 10) {
+            Text(section.title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.primary)
+
+            Spacer()
+
+            Text("\(section.totalCount.formatted()) events")
+                .font(.system(size: 11).monospacedDigit())
+                .foregroundColor(DesignTokens.textSecondary)
+        }
+        .padding(.vertical, 10)
+        .background {
+            if reduceTransparency {
+                DesignTokens.inspectorBackground
+            } else {
+                ZStack {
+                    DesignTokens.inspectorBackground.opacity(0.72)
+                    Rectangle().fill(.ultraThinMaterial)
+                }
+            }
+        }
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(DesignTokens.cardBorder)
+                .frame(height: 1)
+        }
+    }
+
+    // MARK: - Event Row & Expandable Audit Details
 
     private func recordRow(for record: AuditRecord) -> some View {
         let event = record.event
         let isExpanded = expandedSeqs.contains(record.seq)
+        let unsealResult = resolveUnsealResult(for: record)
+        let sens = viewModel.resolvedSensitive(for: record)
+        let operation = HistoryViewModel.operationTitle(for: record, sensitive: sens)
+        let status = HistoryViewModel.statusLabel(for: event.result)
+        let isRejected = event.result == .denied || event.result == .cancelled || event.result == .failed
 
-        let unsealResult: AuditUnsealResult
-        if let res = viewModel.sensitive[record.seq] {
-            unsealResult = res
-        } else if record.sensitiveFormat == 0 {
-            unsealResult = .plaintext(event.sensitive)
-        } else if record.sensitiveFormat == 2 {
-            unsealResult = .omitted
-        } else {
-            unsealResult = .unreadable
-        }
-
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                // Disclosure chevron button
-                Button(action: {
-                    if isExpanded {
-                        expandedSeqs.remove(record.seq)
-                    } else {
-                        expandedSeqs.insert(record.seq)
-                    }
-                }) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(.secondary)
-                        .frame(width: 14, height: 14)
-                }
-                .buttonStyle(.plain)
-                .help(isExpanded ? (isRussian ? "Свернуть" : "Collapse") : (isRussian ? "Развернуть детали" : "Expand details"))
-                .accessibilityLabel(isExpanded ? ClavisUIStrings.Accessibility.collapseDetails : ClavisUIStrings.Accessibility.expandDetails)
-                .accessibilityValue(isExpanded ? ClavisUIStrings.Accessibility.expanded : ClavisUIStrings.Accessibility.collapsed)
-
-                // Timestamp
-                Text(relativeDateFormatter.localizedString(for: event.time, relativeTo: Date()))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .frame(width: 80, alignment: .leading)
-                    .help(absoluteDateFormatter.string(from: event.time))
-
-                switch unsealResult {
-                case .plaintext(let sensitive):
-                    // Key Label & Badge
-                    HStack(spacing: 6) {
-                        Text(sensitive.keyLabel ?? event.keyFingerprint?.prefix(12).description ?? "—")
-                            .font(.system(size: 13, weight: .medium))
-                            .lineLimit(1)
-
-                        if let kind = event.keyKind {
-                            Text(kind == .personal ? ClavisUIStrings.History.filterKindPersonal : ClavisUIStrings.History.filterKindAgent)
-                                .font(.system(size: 9, weight: .semibold))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1.5)
-                                .background(Capsule().fill(Color.secondary.opacity(0.15)))
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .frame(width: 140, alignment: .leading)
-
-                    // Process Info
-                    HStack(spacing: 4) {
-                        if let firstProc = sensitive.processChain.first {
-                            let procName = (firstProc.executablePath as NSString).lastPathComponent
-                            Text(procName)
-                                .font(.system(size: 12, design: .monospaced))
-                        } else {
-                            Text("—")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .frame(width: 140, alignment: .leading)
-
-                    // Host
-                    Text(sensitive.host ?? "—")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .frame(width: 90, alignment: .leading)
-
-                case .unreadable:
-                    Text(ClavisUIStrings.History.unreadable)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .frame(width: 370, alignment: .leading)
-
-                case .omitted:
-                    HStack(spacing: 6) {
-                        Text(ClavisUIStrings.History.omitted)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .help(ClavisUIStrings.History.omittedTooltip)
-
-                        if let kind = event.keyKind {
-                            Text(kind == .personal ? ClavisUIStrings.History.filterKindPersonal : ClavisUIStrings.History.filterKindAgent)
-                                .font(.system(size: 9, weight: .semibold))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1.5)
-                                .background(Capsule().fill(Color.secondary.opacity(0.15)))
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .frame(width: 370, alignment: .leading)
-                }
-
-                Spacer()
-
-                // Suppressed badge if count > 1
-                if event.count > 1 || event.type == .suppressed {
-                    Text(ClavisUIStrings.History.suppressedCount(event.count))
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.orange.opacity(0.15)))
-                        .foregroundColor(.orange)
-                }
-
-                // Result Status
-                resultBadge(for: event.result)
-                    .frame(width: 80, alignment: .trailing)
+        let keyDisplay: String = {
+            switch unsealResult {
+            case .plaintext(let s):
+                return s.keyLabel ?? event.keyFingerprint?.prefix(16).description ?? "Unknown key"
+            case .omitted:
+                return event.keyFingerprint?.prefix(16).description ?? ClavisUIStrings.History.omitted
+            case .unreadable:
+                return event.keyFingerprint?.prefix(16).description ?? ClavisUIStrings.History.unreadable
             }
+        }()
 
-            // Expanded Detail Inspection View (#124)
-            if isExpanded {
-                eventDetailInspectionView(for: record, unsealResult: unsealResult)
+        let hostDisplay: String = {
+            if case .plaintext(let s) = unsealResult, let h = s.host, !h.isEmpty {
+                return h
             }
-        }
-        .padding(.vertical, 4)
-        .contextMenu {
-            let recordDigest = AuditWitness.digest(for: record)
-            Button(action: { copyToClipboard(recordDigest) }) {
-                Label(isRussian ? "Копировать хэш SHA-256" : "Copy SHA-256 Hash", systemImage: "doc.on.doc")
+            if let h = sens.host, !h.isEmpty {
+                return h
             }
+            return "local"
+        }()
 
-            if let sid = event.sessionID {
-                Button(action: { copyToClipboard(sid) }) {
-                    Label(isRussian ? "Копировать ID сессии" : "Copy Session ID", systemImage: "cpu")
-                }
-                Button(ClavisUIStrings.AgentSession.historyShowSession) {
-                    viewModel.query.sessionID = sid
-                    viewModel.reload()
-                }
-            }
+        let subtitleText = "\(keyDisplay) · \(hostDisplay) · \(status)"
 
-            if let fp = event.keyFingerprint {
-                Button(action: { copyToClipboard(fp) }) {
-                    Label(isRussian ? "Копировать отпечаток" : "Copy Fingerprint", systemImage: "key")
-                }
-                Button(action: {
-                    viewModel.query.keyFingerprint = fp
-                    viewModel.reload()
-                }) {
-                    Label(isRussian ? "Фильтровать по этому ключу" : "Filter by this Key", systemImage: "line.3.horizontal.decrease.circle")
-                }
-            }
-
-            if case .plaintext(let sens) = unsealResult {
-                if let host = sens.host, !host.isEmpty {
-                    Button(action: { copyToClipboard(host) }) {
-                        Label(isRussian ? "Копировать узел" : "Copy Host", systemImage: "network")
-                    }
-                }
-                if let firstProc = sens.processChain.first {
-                    Button(action: { copyToClipboard(firstProc.executablePath) }) {
-                        Label(isRussian ? "Копировать путь процесса" : "Copy Process Path", systemImage: "terminal")
-                    }
-                }
-            }
-
+        return VStack(alignment: .leading, spacing: 0) {
             Button(action: {
-                let summary = formatFullRecordSummary(record, unsealResult: unsealResult)
-                copyToClipboard(summary)
+                if isExpanded {
+                    expandedSeqs.remove(record.seq)
+                } else {
+                    expandedSeqs.insert(record.seq)
+                }
             }) {
-                Label(isRussian ? "Копировать все данные строки" : "Copy Full Row Details", systemImage: "doc.text")
+                HStack(alignment: .center, spacing: 9) {
+                    Image(systemName: isRejected ? "xmark" : "checkmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(isRejected ? Color.red : DesignTokens.accentGreen)
+                        .frame(width: 14, height: 14)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(operation)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.primary)
+                                .lineLimit(1)
+
+                            if event.count > 1 || event.type == .suppressed {
+                                Text(ClavisUIStrings.History.suppressedCount(event.count))
+                                    .font(.system(size: 10, weight: .medium))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Capsule().fill(DesignTokens.accentOrange.opacity(0.15)))
+                                    .foregroundColor(DesignTokens.accentOrange)
+                            }
+                        }
+
+                        Text(subtitleText)
+                            .font(.system(size: 11))
+                            .foregroundColor(DesignTokens.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+
+                    Spacer(minLength: 12)
+
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(Self.shortDateFormatter.string(from: event.time))
+                            .font(.system(size: 10).monospacedDigit())
+                            .foregroundColor(DesignTokens.textSecondary)
+
+                        Text(Self.timeFormatter.string(from: event.time))
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundColor(DesignTokens.textSecondary)
+                    }
+                    .help(Self.isoFormatter.string(from: event.time))
+                }
+                .frame(minHeight: 32)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(operation), \(subtitleText)")
+            .accessibilityValue(
+                isExpanded
+                    ? ClavisUIStrings.Accessibility.expanded
+                    : ClavisUIStrings.Accessibility.collapsed
+            )
+
+            if isExpanded {
+                expandedEventDataView(
+                    record: record,
+                    unsealResult: unsealResult,
+                    keyDisplay: keyDisplay,
+                    hostDisplay: hostDisplay,
+                    status: status
+                )
+            }
+        }
+        .padding(.vertical, 10)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(DesignTokens.cardBorder)
+                .frame(height: 1)
+        }
+        .contextMenu {
+            eventContextMenu(for: record, unsealResult: unsealResult)
         }
     }
 
-    private func eventDetailInspectionView(for record: AuditRecord, unsealResult: AuditUnsealResult) -> some View {
+    private func expandedEventDataView(
+        record: AuditRecord,
+        unsealResult: AuditUnsealResult,
+        keyDisplay: String,
+        hostDisplay: String,
+        status: String
+    ) -> some View {
+        let event = record.event
+        let digest = AuditWitness.digest(for: record)
+        let timestampISO = Self.isoFormatter.string(from: event.time)
+        let sens = viewModel.resolvedSensitive(for: record)
+
+        let resultLine: String = {
+            if let reason = event.reason {
+                return "\(status) · \(reason.rawValue.replacingOccurrences(of: "_", with: " "))"
+            }
+            return status
+        }()
+
+        let processLine: String = {
+            guard !sens.processChain.isEmpty else { return "—" }
+            let names = sens.processChain.reversed().map {
+                ($0.executablePath as NSString).lastPathComponent
+            }.joined(separator: " → ")
+            let pids = sens.processChain.reversed().map { String($0.pid) }.joined(separator: " → ")
+            return "\(names) (PID \(pids))"
+        }()
+
+        let sessionLine = event.sessionID ?? "—"
+
+        let detailLines = [
+            "Key: \(keyDisplay)",
+            "Host: \(hostDisplay)",
+            "Result: \(resultLine)",
+            "Process: \(processLine)",
+            "Timestamp: \(timestampISO)",
+            "Session: \(sessionLine)",
+            "Record hash: SHA256:\(digest)"
+        ].joined(separator: "\n")
+
+        return Text(detailLines)
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundColor(DesignTokens.textSecondary)
+            .lineSpacing(4)
+            .textSelection(.enabled)
+            .padding(.leading, 23)
+            .padding(.top, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func eventContextMenu(for record: AuditRecord, unsealResult: AuditUnsealResult) -> some View {
         let event = record.event
         let recordDigest = AuditWitness.digest(for: record)
-        let isoFormatter = ISO8601DateFormatter()
-        let timestampStr = isoFormatter.string(from: event.time)
 
-        return VStack(alignment: .leading, spacing: 8) {
-            Divider()
-                .padding(.vertical, 2)
+        Button(action: { copyToClipboard(recordDigest) }) {
+            Label("Copy SHA-256 Hash", systemImage: "doc.on.doc")
+        }
 
-            VStack(alignment: .leading, spacing: 6) {
-                // Timestamp
-                detailItem(
-                    label: isRussian ? "Время" : "Timestamp",
-                    value: "\(absoluteDateFormatter.string(from: event.time)) (\(timestampStr))",
-                    copyValue: timestampStr
-                )
+        if let sid = event.sessionID {
+            Button(action: { copyToClipboard(sid) }) {
+                Label("Copy Session ID", systemImage: "cpu")
+            }
+            Button(ClavisUIStrings.AgentSession.historyShowSession) {
+                viewModel.query.sessionID = sid
+                viewModel.reload()
+            }
+        }
 
-                // SHA-256 Record Hash
-                detailItem(
-                    label: isRussian ? "Хэш SHA-256" : "SHA-256 Hash",
-                    value: recordDigest,
-                    copyValue: recordDigest,
-                    isMonospace: true
-                )
+        if let fp = event.keyFingerprint {
+            Button(action: { copyToClipboard(fp) }) {
+                Label("Copy Fingerprint", systemImage: "key")
+            }
+            Button(action: {
+                selectedKeyFingerprint = fp
+                viewModel.query.keyFingerprint = fp
+                AppState.shared.historyFilterKeyFingerprint = fp
+                viewModel.reload()
+            }) {
+                Label("Filter by this Key", systemImage: "line.3.horizontal.decrease.circle")
+            }
+        }
 
-                // Sequence & Event ID
-                HStack(spacing: 20) {
-                    detailItem(
-                        label: isRussian ? "Номер" : "Sequence",
-                        value: "\(record.seq)",
-                        copyValue: "\(record.seq)",
-                        isMonospace: true
-                    )
-                    detailItem(
-                        label: isRussian ? "ID события" : "Event ID",
-                        value: event.id.uuidString.lowercased(),
-                        copyValue: event.id.uuidString.lowercased(),
-                        isMonospace: true
-                    )
-                }
-
-                // Session ID (if present)
-                if let sessionID = event.sessionID {
-                    HStack(spacing: 8) {
-                        detailItem(
-                            label: isRussian ? "Сессия" : "Session ID",
-                            value: sessionID,
-                            copyValue: sessionID,
-                            isMonospace: true
-                        )
-                        Button(action: {
-                            viewModel.query.sessionID = sessionID
-                            viewModel.reload()
-                        }) {
-                            Text(ClavisUIStrings.AgentSession.historyShowSession)
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(.purple)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-
-                // Key Label & Fingerprint
-                let keyLabelText: String? = {
-                    if case .plaintext(let sens) = unsealResult {
-                        return sens.keyLabel
-                    }
-                    return event.sensitive.keyLabel
-                }()
-                if let keyLabelText {
-                    detailItem(
-                        label: isRussian ? "Ключ" : "Key Label",
-                        value: keyLabelText,
-                        copyValue: keyLabelText
-                    )
-                }
-
-                if let fp = event.keyFingerprint {
-                    detailItem(
-                        label: isRussian ? "Отпечаток" : "Fingerprint",
-                        value: fp,
-                        copyValue: fp,
-                        isMonospace: true
-                    )
-                }
-
-                // Remote host (if present)
-                let hostText: String? = {
-                    if case .plaintext(let sens) = unsealResult {
-                        return sens.host
-                    }
-                    return event.sensitive.host
-                }()
-                if let hostText, !hostText.isEmpty {
-                    detailItem(
-                        label: isRussian ? "Узел" : "Remote Host",
-                        value: hostText,
-                        copyValue: hostText
-                    )
-                }
-
-                // Process chain & PIDs
-                let processChain: [AuditProcess] = {
-                    if case .plaintext(let sens) = unsealResult {
-                        return sens.processChain
-                    }
-                    return event.sensitive.processChain
-                }()
-
-                if !processChain.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(isRussian ? "Цепочка процессов:" : "Process Hierarchy:")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Button(action: {
-                                let text = processChain.map { "\($0.executablePath) (PID \($0.pid))" }.joined(separator: "\n")
-                                copyToClipboard(text)
-                            }) {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "doc.on.doc")
-                                    Text(isRussian ? "Копировать цепочку" : "Copy Chain")
-                                }
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            ForEach(Array(processChain.enumerated()), id: \.offset) { idx, proc in
-                                HStack(spacing: 6) {
-                                    Text(idx == 0 ? "├─" : (idx == processChain.count - 1 ? "└─" : "├─"))
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                    Text(proc.executablePath)
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundColor(.primary)
-                                        .textSelection(.enabled)
-                                    Text("(PID \(proc.pid))")
-                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                        .foregroundColor(.secondary)
-                                    Button(action: {
-                                        copyToClipboard("\(proc.executablePath) (PID \(proc.pid))")
-                                    }) {
-                                        Image(systemName: "doc.on.doc")
-                                            .font(.system(size: 9))
-                                            .foregroundColor(.secondary)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .help("Copy process path and PID")
-                                    .accessibilityLabel(ClavisUIStrings.Accessibility.copyProcessInfo)
-                                }
-                                .padding(.leading, 8)
-                            }
-                        }
-                        .padding(6)
-                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
-                        .cornerRadius(6)
-                    }
+        if case .plaintext(let sens) = unsealResult {
+            if let host = sens.host, !host.isEmpty {
+                Button(action: { copyToClipboard(host) }) {
+                    Label("Copy Host", systemImage: "network")
                 }
             }
-            .padding(.leading, 24)
-            .padding(.vertical, 4)
+            if let firstProc = sens.processChain.first {
+                Button(action: { copyToClipboard(firstProc.executablePath) }) {
+                    Label("Copy Process Path", systemImage: "terminal")
+                }
+            }
+        }
+
+        Button(action: {
+            let summary = formatFullRecordSummary(record, unsealResult: unsealResult)
+            copyToClipboard(summary)
+        }) {
+            Label("Copy Full Row Details", systemImage: "doc.text")
+        }
+
+        Divider()
+
+        Button(action: {
+            showingIntegritySheet = true
+            viewModel.checkIntegrity()
+        }) {
+            Label(ClavisUIStrings.History.checkIntegrity, systemImage: "checkmark.shield")
+        }
+
+        Button(action: exportHistory) {
+            Label(ClavisUIStrings.History.export, systemImage: "square.and.arrow.up")
         }
     }
 
-    private func detailItem(label: String, value: String, copyValue: String? = nil, isMonospace: Bool = false) -> some View {
-        HStack(spacing: 6) {
-            Text("\(label):")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.secondary)
-                .frame(minWidth: 90, alignment: .leading)
-            Text(value)
-                .font(isMonospace ? .system(size: 11, design: .monospaced) : .system(size: 11))
+    // MARK: - Supporting Views & Helpers
+
+    private func activeSessionBanner(sessionID: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "cpu")
+                .foregroundColor(.purple)
+                .font(.system(size: 11))
+            Text("Session: \(sessionID)")
+                .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(.primary)
-                .textSelection(.enabled)
-            if let toCopy = copyValue ?? (value.isEmpty ? nil : value) {
+            Button(action: {
+                viewModel.query.sessionID = nil
+                viewModel.reload()
+            }) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(ClavisUIStrings.Common.cancel)
+
+            Spacer()
+
+            if AppState.shared.agentSessions.contains(where: { $0.id == sessionID }) {
                 Button(action: {
-                    copyToClipboard(toCopy)
+                    AppState.shared.endAgentSession(id: sessionID)
                 }) {
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
+                    Text(ClavisUIStrings.AgentSession.historyEndSession)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.red)
                 }
                 .buttonStyle(.plain)
-                .help("Copy \(label)")
-                .accessibilityLabel(ClavisUIStrings.Accessibility.copyItem(label: label))
             }
         }
+        .padding(.horizontal, 35)
+        .padding(.vertical, 6)
+        .background(Color.purple.opacity(0.1))
+    }
+
+    private var emptyHistoryStateView: some View {
+        VStack(spacing: 7) {
+            Text("No matching signatures")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.primary)
+            Text("Try another host, date, or search term.")
+                .font(.system(size: 12))
+                .foregroundColor(DesignTokens.textSecondary)
+        }
+        .multilineTextAlignment(.center)
+        .padding(.vertical, 35)
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func errorStateView(message: String) -> some View {
+        VStack(spacing: 8) {
+            Text(ClavisUIStrings.Common.error)
+                .font(.headline)
+                .foregroundColor(Color.red)
+            Text(message)
+                .font(.subheadline)
+                .foregroundColor(DesignTokens.textSecondary)
+            Button("Retry") {
+                viewModel.reload()
+            }
+        }
+        .padding(.vertical, 35)
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var historyLoadStateFooter: some View {
+        if !viewModel.records.isEmpty {
+            HStack(spacing: 6) {
+                Spacer()
+                if viewModel.isLoadingMore {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading more events…")
+                        .font(.system(size: 11))
+                        .foregroundColor(DesignTokens.textSecondary)
+                } else if viewModel.hasMore {
+                    Button(action: {
+                        viewModel.loadMore()
+                    }) {
+                        Text("\(viewModel.records.count.formatted()) loaded · scroll for more")
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundColor(DesignTokens.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Text("End of history")
+                        .font(.system(size: 11))
+                        .foregroundColor(DesignTokens.textSecondary)
+                }
+                Spacer()
+            }
+            .padding(.top, 20)
+            .padding(.bottom, 12)
+        }
+    }
+
+    private func gapRow(fromSeq: Int64, toSeq: Int64, count: Int64) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+                .font(.system(size: 13))
+
+            Text(ClavisUIStrings.History.gapBanner(count: count))
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.orange)
+
+            Spacer()
+
+            Text(fromSeq == toSeq ? "seq \(fromSeq)" : "seq \(fromSeq)..\(toSeq)")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.orange.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.orange.opacity(0.3), lineWidth: 1)
+        )
+        .padding(.vertical, 4)
+    }
+
+    private func resolveUnsealResult(for record: AuditRecord) -> AuditUnsealResult {
+        if let res = viewModel.sensitive[record.seq] {
+            return res
+        } else if record.sensitiveFormat == 0 {
+            return .plaintext(record.event.sensitive)
+        } else if record.sensitiveFormat == 2 {
+            return .omitted
+        } else {
+            return .unreadable
+        }
+    }
+
+    private func loadKeys() {
+        if AppState.shared.keys.isEmpty {
+            AppState.shared.refresh()
+        }
+        availableKeys = AppState.shared.keys
+    }
+
+    private func syncFiltersFromQuery() {
+        selectedKeyFingerprint = viewModel.query.keyFingerprint ?? ""
+        hostInputText = viewModel.filterRemoteHost ?? ""
+    }
+
+    private func resetAllFilters() {
+        hostInputText = ""
+        selectedKeyFingerprint = ""
+        isHostSuggestionsVisible = false
+        highlightedHostIndex = -1
+        AppState.shared.historyFilterKeyFingerprint = nil
+        viewModel.resetFilters()
+        viewModel.reload()
     }
 
     private func copyToClipboard(_ text: String) {
@@ -742,11 +936,10 @@ public struct HistoryView: View {
     private func formatFullRecordSummary(_ record: AuditRecord, unsealResult: AuditUnsealResult) -> String {
         let event = record.event
         let digest = AuditWitness.digest(for: record)
-        let isoFormatter = ISO8601DateFormatter()
         var lines: [String] = []
         lines.append("Sequence: \(record.seq)")
         lines.append("Event ID: \(event.id.uuidString.lowercased())")
-        lines.append("Timestamp: \(isoFormatter.string(from: event.time))")
+        lines.append("Timestamp: \(Self.isoFormatter.string(from: event.time))")
         lines.append("Type: \(event.type.rawValue)")
         lines.append("Result: \(event.result.rawValue)")
         if let reason = event.reason {
@@ -774,67 +967,6 @@ public struct HistoryView: View {
         }
         lines.append("SHA-256 Digest: \(digest)")
         return lines.joined(separator: "\n")
-    }
-
-    private func gapRow(fromSeq: Int64, toSeq: Int64, count: Int64) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.orange)
-                .font(.system(size: 13))
-
-            Text(ClavisUIStrings.History.gapBanner(count: count))
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.orange)
-
-            Spacer()
-
-            Text(fromSeq == toSeq ? "seq \(fromSeq)" : "seq \(fromSeq)..\(toSeq)")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(.secondary)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.orange.opacity(0.12))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color.orange.opacity(0.3), lineWidth: 1)
-        )
-        .padding(.vertical, 2)
-    }
-
-    private func resultBadge(for result: AuditResult) -> some View {
-        let (title, color): (String, Color) = {
-            switch result {
-            case .allowed: return (ClavisUIStrings.History.resultAllowed, DesignTokens.accentGreen)
-            case .denied: return (ClavisUIStrings.History.resultDenied, .red)
-            case .cancelled: return (ClavisUIStrings.History.resultCancelled, DesignTokens.accentOrange)
-            case .failed: return (ClavisUIStrings.History.resultFailed, .red)
-            case .info: return (ClavisUIStrings.History.resultInfo, DesignTokens.accentBlue)
-            }
-        }()
-
-        return Text(title)
-            .font(.system(size: 11, weight: .semibold))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2.5)
-            .background(Capsule().fill(color.opacity(0.15)))
-            .foregroundColor(color)
-    }
-
-    private func loadKeys() {
-        if AppState.shared.keys.isEmpty {
-            AppState.shared.refresh()
-        }
-        availableKeys = AppState.shared.keys
-    }
-
-    private func syncFiltersFromQuery() {
-        if let fp = viewModel.query.keyFingerprint {
-            selectedKeyFingerprint = fp
-        }
     }
 
     private func exportHistory() {

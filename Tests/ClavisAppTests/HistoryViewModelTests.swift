@@ -685,4 +685,111 @@ final class HistoryViewModelTests {
         #expect(viewModel.records.count == 400)
         #expect(viewModel.hasMore == false)
     }
+
+    @Test func testHostSuggestionsWithLiveCountsAndQuery() async throws {
+        let store = try createTestStore()
+        try store.insert(AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k1", host: "github.com")))
+        try store.insert(AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k1", host: "github.com")))
+        try store.insert(AuditEvent(type: .signature, result: .denied, sensitive: AuditSensitive(keyLabel: "k2", host: "gitlab.com")))
+        try store.insert(AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k3", host: "staging.internal")))
+
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
+        await viewModel.reload().value
+
+        let allSuggestions = viewModel.hostSuggestions()
+        #expect(allSuggestions.count == 3)
+        #expect(allSuggestions.first(where: { $0.host == "github.com" })?.count == 2)
+        #expect(allSuggestions.first(where: { $0.host == "gitlab.com" })?.count == 1)
+        #expect(allSuggestions.first(where: { $0.host == "staging.internal" })?.count == 1)
+
+        // Filtering by query text
+        let gitSuggestions = viewModel.hostSuggestions(matching: "git")
+        #expect(gitSuggestions.count == 2)
+        #expect(gitSuggestions.map(\.host).contains("github.com"))
+        #expect(gitSuggestions.map(\.host).contains("gitlab.com"))
+
+        // Active searchText filter updates live counts while ignoring filterRemoteHost
+        viewModel.filterRemoteHost = "github.com"
+        viewModel.searchText = "rejected"
+        let rejectedSuggestions = viewModel.hostSuggestions()
+        #expect(rejectedSuggestions.first(where: { $0.host == "gitlab.com" })?.count == 1)
+        #expect(rejectedSuggestions.first(where: { $0.host == "github.com" })?.count == 0)
+    }
+
+    @Test func testOperationAndStatusSearchAndDateGrouping() async throws {
+        let store = try createTestStore()
+        let calendar = Calendar.current
+        let today = Date()
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
+        let twoDaysAgo = calendar.date(byAdding: .day, value: -2, to: today)!
+
+        let e1 = AuditEvent(
+            time: twoDaysAgo,
+            type: .signature,
+            result: .allowed,
+            reason: .viaGitGrant,
+            sensitive: AuditSensitive(keyLabel: "git-key", processChain: [AuditProcess(executablePath: "/usr/bin/git", pid: 101)], host: "github.com")
+        )
+        let e2 = AuditEvent(
+            time: yesterday,
+            type: .signature,
+            result: .denied,
+            reason: .userCancelled,
+            sensitive: AuditSensitive(keyLabel: "ssh-key", processChain: [AuditProcess(executablePath: "/usr/bin/ssh", pid: 102)], host: "bastion.internal")
+        )
+        let e3 = AuditEvent(
+            time: today,
+            type: .signature,
+            result: .allowed,
+            keyKind: .agent,
+            sensitive: AuditSensitive(keyLabel: "agent-key", processChain: [AuditProcess(executablePath: "/usr/bin/ssh", pid: 103)], host: "build.internal")
+        )
+        try store.insert(e1)
+        try store.insert(e2)
+        try store.insert(e3)
+
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
+        await viewModel.reload().value
+        #expect(viewModel.records.count == 3)
+
+        // Grouped sections (Today, Yesterday, 2 days ago)
+        let sections = viewModel.groupedSections(referenceDate: today, calendar: calendar)
+        #expect(sections.count == 3)
+        #expect(sections[0].title.hasPrefix("Today · "))
+        #expect(sections[0].totalCount == 1)
+        #expect(sections[1].title.hasPrefix("Yesterday · "))
+        #expect(sections[1].totalCount == 1)
+        #expect(sections[2].totalCount == 1)
+
+        // Search by operation or status ("rejected", "git commit", "agent signature")
+        viewModel.searchText = "rejected"
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.result == .denied)
+
+        viewModel.searchText = "git commit"
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.sensitive.keyLabel == "git-key")
+
+        viewModel.searchText = "agent signature"
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.keyKind == .agent)
+
+        // Filter by selectedDate and resetFilters
+        viewModel.searchText = ""
+        viewModel.selectedDate = yesterday
+        #expect(viewModel.records.count == 1)
+        #expect(viewModel.records[0].event.sensitive.keyLabel == "ssh-key")
+
+        viewModel.clearDateFilter()
+        #expect(viewModel.selectedDate == nil)
+        #expect(viewModel.records.count == 3)
+
+        viewModel.selectedDate = today
+        viewModel.filterRemoteHost = "build.internal"
+        viewModel.resetFilters()
+        #expect(viewModel.selectedDate == nil)
+        #expect(viewModel.filterRemoteHost == nil)
+        #expect(viewModel.records.count == 3)
+    }
 }
+
