@@ -23,6 +23,51 @@ import Testing
         #expect(ClavisUIStrings.Inspector.deleteAlertMessage(label: "test", fingerprint: "SHA256:abc") == "Are you sure you want to delete 'test' (SHA256:abc)? This action cannot be undone.")
     }
 
+    @Test func testInspectorNewLocalizationStrings() {
+        // Section headers & buttons
+        #expect(ClavisUIStrings.Inspector.activeGitSessionSection == "ACTIVE GIT SIGNING SESSION")
+        #expect(ClavisUIStrings.Inspector.revokeGitSessionButton == "Revoke")
+
+        // Purpose change feedback toasts
+        #expect(ClavisUIStrings.Inspector.feedbackChangedPurposeToAgent == "Changed purpose to Agent")
+        #expect(ClavisUIStrings.Inspector.feedbackChangedPurposeToGeneral == "Changed purpose to General")
+        #expect(ClavisUIStrings.Inspector.feedbackChangedPurpose(to: .agent) == "Changed purpose to Agent")
+        #expect(ClavisUIStrings.Inspector.feedbackChangedPurpose(to: .general) == "Changed purpose to General")
+
+        // Destructive description
+        #expect(
+            ClavisUIStrings.Inspector.deleteKeyDescription(label: "prod-key", fingerprint: "SHA256:abc")
+            == "Permanently remove 'prod-key' (SHA256:abc) from the Secure Enclave."
+        )
+
+        // Socket names
+        #expect(ClavisUIStrings.Inspector.socketNameSSHAgent == "ssh-agent socket")
+        #expect(ClavisUIStrings.Inspector.socketNameAgent == "agent socket")
+
+        // Security badges
+        #expect(ClavisUIStrings.Inspector.badgeSilent == "Silent")
+        #expect(ClavisUIStrings.Inspector.badgeNotify == "Notify")
+        #expect(ClavisUIStrings.Inspector.badgeGraceActive == "Grace Active")
+
+        // Dynamic subtitles
+        #expect(ClavisUIStrings.Inspector.subtitleGitGraceActive == "Hardware Isolated · Git signing grace active")
+        #expect(ClavisUIStrings.Inspector.subtitleAgentSilent == "Hardware Isolated · Silent agent lease")
+        #expect(ClavisUIStrings.Inspector.subtitleAgentNotify == "Hardware Isolated · Agent lease with notification")
+        #expect(ClavisUIStrings.Inspector.subtitleAgentAsk == "Hardware Isolated · Touch ID prompt per agent signature")
+        #expect(ClavisUIStrings.Inspector.subtitleGitSigningOnly == "Hardware Isolated · Git commit signing only")
+
+        // Posture titles & descriptions
+        #expect(ClavisUIStrings.Inspector.postureAgentTitle == "Hardware Isolation (Agent Policy)")
+        #expect(ClavisUIStrings.Inspector.postureAgentSilentDesc(lease: "8h").contains("operate silently without prompts"))
+        #expect(ClavisUIStrings.Inspector.postureAgentNotifyDesc(lease: "2h").contains("post a notification on each signature"))
+        #expect(ClavisUIStrings.Inspector.postureAgentAskDesc.contains("explicit Touch ID user confirmation"))
+        #expect(ClavisUIStrings.Inspector.postureGitSigningOnlyTitle == "Hardware Isolation (Git Signing Only)")
+        #expect(ClavisUIStrings.Inspector.postureGitSigningOnlyDesc.contains("Restricted strictly to local Git commit"))
+        #expect(ClavisUIStrings.Inspector.postureGitGraceActiveSuffix.contains("5-minute Git signing grace session is currently active"))
+        #expect(ClavisUIStrings.Inspector.postureGeneralStrictDesc.contains("Secure Enclave strictly requires Touch ID"))
+        #expect(ClavisUIStrings.Inspector.postureGeneralPresenceDesc.contains("Signatures require Touch ID user presence"))
+    }
+
     @Test func testFeedbackStrings() {
         #expect(ClavisUIStrings.Inspector.feedbackLockedKey("id_rsa") == "Locked 'id_rsa'")
     }
