@@ -6,9 +6,17 @@ public struct LockedPlaceholderView: View {
     @ObservedObject var lock: PanelLockController
     @ObservedObject private var appState: AppState = .shared
 
+    @State private var password: String = ""
+    @State private var isPasswordVisible: Bool = false
+    @State private var passwordError: String? = nil
+    @FocusState private var isPasswordFocused: Bool
+
     public static let clarificationNotice = "Locking the control panel does not disable background SSH signing. Active SSH sessions and Git operations continue in the background."
     public static let subtitleText = "Unlock to manage your keys and security settings."
     public static let bottomContinuationNotice = "SSH and Git signing continue while the panel is locked."
+    public static let passwordFieldLabel = "Mac login password"
+    public static let passwordFieldPlaceholder = "Enter password"
+    public static let incorrectPasswordText = "Incorrect password. Try again or use Touch ID."
 
     public init() {
         self.init(lock: .shared)
@@ -55,31 +63,7 @@ public struct LockedPlaceholderView: View {
                 if lock.currentMode.requiresPIN {
                     PinEntryView(lock: lock)
                 } else {
-                    VStack(spacing: 12) {
-                        Button(action: {
-                            Task {
-                                await lock.unlock()
-                            }
-                        }) {
-                            HStack(spacing: 8) {
-                                Image(systemName: "touchid")
-                                    .font(.system(size: 15))
-                                Text("Unlock with Touch ID")
-                                    .font(.system(size: 13, weight: .medium))
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 28)
-                        }
-                        .liquidGlassButton(prominent: true)
-                        .controlSize(.large)
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(lock.isUnlocking)
-                        .accessibilityLabel(ClavisUIStrings.PanelLock.unlock)
-
-                        Text("Use Touch ID, Apple Watch, or your Mac login password.")
-                            .font(.system(size: 11))
-                            .foregroundColor(DesignTokens.textTertiary)
-                            .multilineTextAlignment(.center)
-                    }
+                    passwordAndTouchIDUnlockForm
                 }
             }
             .frame(width: 320)
@@ -115,6 +99,119 @@ public struct LockedPlaceholderView: View {
             }
             .ignoresSafeArea()
         )
+        .onDisappear {
+            password = ""
+            passwordError = nil
+        }
+    }
+
+    private var passwordAndTouchIDUnlockForm: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text(Self.passwordFieldLabel)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.primary)
+
+                HStack(spacing: 6) {
+                    Group {
+                        if isPasswordVisible {
+                            TextField(Self.passwordFieldPlaceholder, text: $password)
+                        } else {
+                            SecureField(Self.passwordFieldPlaceholder, text: $password)
+                        }
+                    }
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .focused($isPasswordFocused)
+                    .disabled(lock.isUnlocking)
+                    .accessibilityLabel(Self.passwordFieldLabel)
+                    .onChange(of: password) { _ in
+                        if passwordError != nil {
+                            passwordError = nil
+                        }
+                    }
+                    .onSubmit {
+                        submitLoginPassword()
+                    }
+
+                    Button(action: { isPasswordVisible.toggle() }) {
+                        Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(DesignTokens.textSecondary)
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .help(isPasswordVisible ? "Hide password" : "Show password")
+                    .accessibilityLabel(isPasswordVisible ? "Hide password" : "Show password")
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 34)
+                .liquidGlassCapsuleControl(isFocused: isPasswordFocused)
+
+                if let passwordError {
+                    Text(passwordError)
+                        .font(.system(size: 11))
+                        .foregroundColor(DesignTokens.dangerRed)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Button(action: submitLoginPassword) {
+                Text("Unlock")
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(maxWidth: .infinity, minHeight: 28)
+            }
+            .liquidGlassButton(prominent: true)
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
+            .disabled(password.isEmpty || lock.isUnlocking)
+            .accessibilityLabel("Unlock")
+
+            HStack(spacing: 12) {
+                Rectangle()
+                    .fill(DesignTokens.cardBorder)
+                    .frame(height: 1)
+                Text("or")
+                    .font(.system(size: 11))
+                    .foregroundColor(DesignTokens.textSecondary)
+                Rectangle()
+                    .fill(DesignTokens.cardBorder)
+                    .frame(height: 1)
+            }
+            .padding(.vertical, 4)
+
+            Button(action: {
+                passwordError = nil
+                Task {
+                    await lock.unlock()
+                }
+            }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "touchid")
+                        .font(.system(size: 15))
+                    Text("Unlock with Touch ID")
+                        .font(.system(size: 13, weight: .medium))
+                }
+                .frame(maxWidth: .infinity, minHeight: 28)
+            }
+            .liquidGlassButton(prominent: false)
+            .controlSize(.large)
+            .disabled(lock.isUnlocking)
+            .accessibilityLabel(ClavisUIStrings.PanelLock.unlock)
+        }
+    }
+
+    private func submitLoginPassword() {
+        let candidate = password
+        guard !candidate.isEmpty, !lock.isUnlocking else { return }
+        password = ""
+        passwordError = nil
+        Task {
+            let unlocked = await lock.unlockWithLoginPassword(candidate)
+            if !unlocked {
+                passwordError = Self.incorrectPasswordText
+            }
+        }
     }
 }
 
