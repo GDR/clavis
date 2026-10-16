@@ -13,6 +13,7 @@ public struct HistoryView: View {
     @State private var isHostSuggestionsVisible: Bool = false
     @State private var highlightedHostIndex: Int = -1
     @State private var pickerDate: Date = Date()
+    @State private var isDatePopoverPresented: Bool = false
     @State private var expandedSeqs: Set<Int64> = []
     @State private var showingIntegritySheet: Bool = false
     @FocusState private var isHostFieldFocused: Bool
@@ -191,32 +192,22 @@ public struct HistoryView: View {
 
                 goToDateField
 
-                Button(action: {
+                Button("All dates") {
                     viewModel.clearDateFilter()
-                }) {
-                    Text("All dates")
-                        .font(.system(size: 11, weight: .medium))
-                        .padding(.horizontal, 10)
-                        .frame(height: 30)
-                        .liquidGlassControl(cornerRadius: 7)
                 }
-                .buttonStyle(.plain)
+                .liquidGlassButton()
+                .controlSize(.regular)
+                .frame(height: 30)
                 .disabled(viewModel.selectedDate == nil)
-                .opacity(viewModel.selectedDate == nil ? 0.42 : 1.0)
                 .accessibilityLabel("All dates")
 
                 Spacer(minLength: 8)
 
-                Button(action: resetAllFilters) {
-                    Text("Reset filters")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(DesignTokens.textSecondary)
-                        .padding(.horizontal, 10)
-                        .frame(height: 30)
-                        .liquidGlassControl(cornerRadius: 7)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Reset filters")
+                Button("Reset filters", action: resetAllFilters)
+                    .liquidGlassButton()
+                    .controlSize(.regular)
+                    .frame(height: 30)
+                    .accessibilityLabel("Reset filters")
             }
             .padding(.bottom, 10)
         }
@@ -424,22 +415,47 @@ public struct HistoryView: View {
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(DesignTokens.textSecondary)
 
-            DatePicker(
-                "Go to date",
-                selection: Binding(
-                    get: { viewModel.selectedDate ?? pickerDate },
-                    set: { newDate in
-                        pickerDate = newDate
-                        isHostSuggestionsVisible = false
-                        viewModel.selectedDate = newDate
-                    }
-                ),
-                in: ...Date(),
-                displayedComponents: [.date]
-            )
-            .labelsHidden()
-            .datePickerStyle(.compact)
+            Button(action: {
+                isHostSuggestionsVisible = false
+                isDatePopoverPresented.toggle()
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(viewModel.selectedDate != nil ? .primary : DesignTokens.textSecondary)
+
+                    Text(
+                        viewModel.selectedDate.map { Self.shortDateFormatter.string(from: $0) }
+                            ?? "Select date…"
+                    )
+                    .font(.system(size: 12).monospacedDigit())
+                    .foregroundColor(viewModel.selectedDate != nil ? .primary : DesignTokens.textSecondary)
+                }
+            }
+            .liquidGlassButton()
+            .controlSize(.regular)
             .frame(height: 30)
+            .popover(isPresented: $isDatePopoverPresented, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 8) {
+                    DatePicker(
+                        "Go to date",
+                        selection: Binding(
+                            get: { viewModel.selectedDate ?? pickerDate },
+                            set: { newDate in
+                                pickerDate = newDate
+                                isHostSuggestionsVisible = false
+                                viewModel.selectedDate = newDate
+                                isDatePopoverPresented = false
+                            }
+                        ),
+                        in: ...Date(),
+                        displayedComponents: [.date]
+                    )
+                    .datePickerStyle(.graphical)
+                    .labelsHidden()
+                }
+                .padding(10)
+            }
             .accessibilityLabel("Go to date")
         }
     }
