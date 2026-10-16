@@ -801,4 +801,42 @@ struct KeyDetailInspectorTests {
         #expect(secondOutsideClick == false)
         #expect(commitCount == 1)
     }
+
+    @Test
+    @MainActor
+    func testSettingsSheetModalAndOutsideClickDismissal() {
+        #expect(KeyManagerSheet.settings.id == "settings")
+        #expect(KeyManagerSheet.create.id == "create")
+
+        var dismissCount = 0
+        let bridge = SheetOutsideClickDismissBridge(onDismiss: { dismissCount += 1 })
+        let coordinator = bridge.makeCoordinator()
+
+        let parentWindow = NSWindow(
+            contentRect: NSRect(x: 100, y: 100, width: 600, height: 500),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        let sheetWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let probeView = NSView(frame: NSRect(x: 0, y: 0, width: 1, height: 1))
+        sheetWindow.contentView?.addSubview(probeView)
+        coordinator.probeView = probeView
+
+        parentWindow.beginSheet(sheetWindow)
+        defer { parentWindow.endSheet(sheetWindow) }
+
+        let sheetCenter = NSPoint(x: sheetWindow.frame.midX, y: sheetWindow.frame.midY)
+        #expect(coordinator.handleMouseDown(in: sheetWindow, screenLocation: sheetCenter) == false)
+        #expect(dismissCount == 0)
+
+        let outsideInParent = NSPoint(x: parentWindow.frame.minX + 12, y: parentWindow.frame.minY + 12)
+        #expect(coordinator.handleMouseDown(in: parentWindow, screenLocation: outsideInParent) == true)
+        #expect(dismissCount == 1)
+    }
 }

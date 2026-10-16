@@ -326,6 +326,9 @@ public struct KeyDetailInspectorView: View {
                     onShowToast?(message)
                 }
             )
+            .dismissOnOutsideClick {
+                showingPurposeSheet = false
+            }
         }
         .sheet(isPresented: $showingApprovalSheet) {
             KeyApprovalEditorSheet(
@@ -335,6 +338,9 @@ public struct KeyDetailInspectorView: View {
                     onShowToast?(message)
                 }
             )
+            .dismissOnOutsideClick {
+                showingApprovalSheet = false
+            }
         }
         .alert(Self.deleteConfirmationTitle(label: key.label), isPresented: $showingDeleteAlert) {
             Button(ClavisUIStrings.Common.delete, role: .destructive) {

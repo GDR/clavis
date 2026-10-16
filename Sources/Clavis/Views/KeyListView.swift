@@ -132,7 +132,7 @@ struct KeyListView: View {
                 .keyboardShortcut("n", modifiers: .command)
             Button("") { toggleHistoryPane() }
                 .keyboardShortcut("h", modifiers: [.command, .shift])
-            Button("") { WindowManager.shared.openSettings() }
+            Button("") { appState.activeSheet = .settings }
                 .keyboardShortcut(",", modifiers: .command)
             Button("") { PanelLockController.shared.lock(reason: .lockNow) }
                 .keyboardShortcut("l", modifiers: .command)
@@ -153,6 +153,15 @@ struct KeyListView: View {
                 switch sheet {
                 case .create:
                     CreateKeySheet(appState: appState)
+                        .dismissOnOutsideClick {
+                            appState.activeSheet = nil
+                        }
+                case .settings:
+                    SettingsView()
+                        .environmentObject(appState)
+                        .dismissOnOutsideClick {
+                            appState.activeSheet = nil
+                        }
                 }
             }
             .alert(ClavisUIStrings.Common.error, isPresented: isErrorAlertPresented) {
@@ -505,10 +514,11 @@ struct KeyListView: View {
                         icon: "gearshape",
                         size: 34,
                         iconSize: 15,
+                        isActive: appState.activeSheet == .settings,
                         helpText: "Settings (⌘,)",
                         accessibilityLabel: ClavisUIStrings.Accessibility.settings
                     ) {
-                        WindowManager.shared.openSettings()
+                        appState.activeSheet = .settings
                     }
                 }
             }

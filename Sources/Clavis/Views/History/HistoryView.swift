@@ -169,6 +169,9 @@ public struct HistoryView: View {
         }
         .sheet(isPresented: $showingIntegritySheet) {
             HistoryIntegritySheet(viewModel: viewModel, isPresented: $showingIntegritySheet)
+                .dismissOnOutsideClick {
+                    showingIntegritySheet = false
+                }
         }
     }
 

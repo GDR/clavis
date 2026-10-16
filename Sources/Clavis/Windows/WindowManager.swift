@@ -107,33 +107,7 @@ public class WindowManager: NSObject, NSWindowDelegate {
     }
 
     public func openSettings() {
-        dismissMenuBarExtra()
-        NSApp.setActivationPolicy(.regular)
-
-        if let window = settingsWindow {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        let settingsView = SettingsView().environmentObject(AppState.shared)
-        let hostingController = NSHostingController(rootView: settingsView)
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 520),
-            styleMask: [.titled, .closable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = ClavisUIStrings.Settings.windowTitle
-        window.contentViewController = hostingController
-        window.center()
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-
-        self.settingsWindow = window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        openKeyManager(sheet: .settings)
     }
 
     public func openHistory(keyFingerprint: String? = nil) {
