@@ -39,14 +39,7 @@ struct KeyPurposePicker: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(selection == purpose ? accent.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(selection == purpose ? accent : DesignTokens.cardBorder, lineWidth: 1)
-                        )
+                        .liquidGlassControl(cornerRadius: 8, isSelected: selection == purpose, tint: accent)
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(selection == purpose ? [.isSelected] : [])

@@ -29,17 +29,16 @@ public struct LockedPlaceholderView: View {
             // Centered lock card (320px)
             VStack(spacing: 0) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(DesignTokens.accentBlue.opacity(0.10))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .stroke(DesignTokens.accentBlue.opacity(0.16), lineWidth: 1)
-                        )
                     Image(systemName: "key.fill")
                         .font(.system(size: 26, weight: .medium))
                         .foregroundColor(DesignTokens.accentBlue)
                 }
                 .frame(width: 61, height: 64)
+                .glassCard(
+                    cornerRadius: 16,
+                    strokeColor: DesignTokens.accentBlue.opacity(0.16),
+                    tint: DesignTokens.accentBlue.opacity(0.10)
+                )
                 .padding(.bottom, 20)
 
                 Text(ClavisUIStrings.PanelLock.title)
@@ -70,7 +69,7 @@ public struct LockedPlaceholderView: View {
                             }
                             .frame(maxWidth: .infinity, minHeight: 28)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .liquidGlassButton(prominent: true)
                         .controlSize(.large)
                         .keyboardShortcut(.defaultAction)
                         .disabled(lock.isUnlocking)
@@ -197,7 +196,7 @@ public struct EmptyVaultOnboardingView: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .liquidGlassButton(prominent: true)
                     .controlSize(.regular)
 
                     if let onDismiss = onDismiss {
@@ -206,7 +205,7 @@ public struct EmptyVaultOnboardingView: View {
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 6)
                         }
-                        .buttonStyle(.bordered)
+                        .liquidGlassButton(prominent: false)
                         .controlSize(.regular)
                     }
                 }
@@ -258,7 +257,7 @@ public struct EmptyVaultOnboardingView: View {
                     }
                     .font(.system(size: 11))
                 }
-                .buttonStyle(.bordered)
+                .liquidGlassButton(prominent: false)
                 .controlSize(.small)
             }
             .padding(8)
@@ -266,12 +265,7 @@ public struct EmptyVaultOnboardingView: View {
             .cornerRadius(6)
         }
         .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
-        .cornerRadius(8)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
-        )
+        .glassCard(cornerRadius: 8)
     }
 }
 

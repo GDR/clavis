@@ -151,14 +151,7 @@ public struct CreateKeySheet: View {
                             }
                             .padding(10)
                             .frame(maxWidth: .infinity, minHeight: 74, alignment: .topLeading)
-                            .background(
-                                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor).opacity(0.6))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .stroke(isSelected ? Color.accentColor : DesignTokens.cardBorder, lineWidth: 1)
-                            )
+                            .liquidGlassControl(cornerRadius: 9, isSelected: isSelected)
                         }
                         .buttonStyle(.plain)
                         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
@@ -177,6 +170,7 @@ public struct CreateKeySheet: View {
                 Button(ClavisUIStrings.Common.cancel) {
                     dismiss()
                 }
+                .liquidGlassButton()
                 .keyboardShortcut(.cancelAction)
 
                 Spacer()
@@ -184,7 +178,7 @@ public struct CreateKeySheet: View {
                 Button(ClavisUIStrings.CreateKey.generateButton) {
                     createKey()
                 }
-                .buttonStyle(.borderedProminent)
+                .liquidGlassButton(prominent: true)
                 .keyboardShortcut(.defaultAction)
                 .disabled(isGenerateDisabled)
             }

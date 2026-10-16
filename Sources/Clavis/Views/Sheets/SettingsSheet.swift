@@ -47,7 +47,9 @@ public struct SettingsView: View {
 
     public init(modeChanger: PinModeChanger? = nil, isSettingsAuthenticated: Bool = false) {
         self.modeChanger = modeChanger ?? PinModeChanger.makeDefault()
-        self._isSettingsAuthenticated = State(initialValue: isSettingsAuthenticated)
+        self._isSettingsAuthenticated = State(
+            initialValue: isSettingsAuthenticated || !PanelLockController.shared.isEffectivelyLocked
+        )
     }
 
     public var body: some View {
@@ -79,7 +81,7 @@ public struct SettingsView: View {
                             .padding(.horizontal, 16)
                             .padding(.vertical, 8)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .liquidGlassButton(prominent: true)
                         .controlSize(.regular)
                         .keyboardShortcut(.defaultAction)
                         .disabled(isAuthenticating)
@@ -87,11 +89,6 @@ public struct SettingsView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(nsColor: .windowBackgroundColor))
-                .task {
-                    if !lock.currentMode.requiresPIN && !lock.isLocked {
-                        await authenticateSettings()
-                    }
-                }
             } else {
                 ScrollView {
                     VStack(spacing: 16) {
@@ -172,14 +169,14 @@ public struct SettingsView: View {
                                 Button(ClavisUIStrings.PinUnlock.changePIN) {
                                     activeSheet = .changePIN
                                 }
-                                .buttonStyle(.bordered)
+                                .liquidGlassButton()
                                 .controlSize(.small)
 
                                 Button(ClavisUIStrings.PinUnlock.forgotPIN) {
                                     ClavisLogger.promptDebug("calvis-ui", "SettingsSheet: displaying forgot PIN reset confirmation alert")
                                     showingResetAlert = true
                                 }
-                                .buttonStyle(.bordered)
+                                .liquidGlassButton()
                                 .controlSize(.small)
                             }
                             .padding(.top, 4)
@@ -246,13 +243,12 @@ public struct SettingsView: View {
                                     }
                                     .font(.system(size: 11, weight: .medium))
                                 }
-                                .buttonStyle(.bordered)
+                                .liquidGlassButton()
                                 .controlSize(.small)
                             }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 7)
-                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .liquidGlassControl(cornerRadius: 6)
                         }
                         .padding(.top, 2)
                     }
@@ -345,7 +341,7 @@ public struct SettingsView: View {
                                     Text(ClavisUIStrings.Settings.vaultRepairButton)
                                 }
                             }
-                            .buttonStyle(.borderedProminent)
+                            .liquidGlassButton(prominent: true)
                             .controlSize(.small)
                             .disabled(isRepairingVault)
                         }
@@ -463,10 +459,8 @@ public struct SettingsView: View {
         }
     }
     .frame(width: 480, height: 600)
-    .onChange(of: lock.isLocked) { isLocked in
-        if isLocked {
-            isSettingsAuthenticated = false
-        }
+    .onChange(of: lock.isLocked) { _ in
+        isSettingsAuthenticated = !lock.isEffectivelyLocked
     }
         .alert(ClavisUIStrings.PinUnlock.forgotPIN, isPresented: $showingResetAlert) {
             Button(ClavisUIStrings.PinUnlock.setPinTitle, role: .destructive) {
@@ -529,14 +523,9 @@ public struct SettingsView: View {
         guard !isAuthenticating && !isSettingsAuthenticated else { return }
         isAuthenticating = true
         defer { isAuthenticating = false }
-        do {
-            ClavisLogger.promptDebug("calvis-ui", "SettingsView: authenticating settings access")
-            _ = try await lock.authenticateUser()
-            await MainActor.run {
-                isSettingsAuthenticated = true
-            }
-        } catch {
-            // Cancelled or failed unlock stays in gate
+        await lock.unlock()
+        if !lock.isEffectivelyLocked {
+            isSettingsAuthenticated = true
         }
     }
 
@@ -694,6 +683,7 @@ struct PinModeChangeSheet: View {
                 Button(ClavisUIStrings.Common.cancel) {
                     onDismiss()
                 }
+                .liquidGlassButton()
                 .disabled(isProcessing)
 
                 Spacer()
@@ -707,7 +697,7 @@ struct PinModeChangeSheet: View {
                         Text(ClavisUIStrings.PinUnlock.setPinTitle)
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .liquidGlassButton(prominent: true)
                 .disabled(pin.count < 6 || pin != confirmPin || isProcessing)
             }
         }
@@ -765,12 +755,7 @@ private struct SettingsGroup<Content: View>: View {
                 content()
             }
             .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
-            )
+            .glassCard(cornerRadius: 10)
         }
     }
 }

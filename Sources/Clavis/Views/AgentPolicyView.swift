@@ -359,7 +359,7 @@ public struct AgentPolicyView: View {
                             Button("Open Settings") {
                                 openNotificationSettings()
                             }
-                            .buttonStyle(.bordered)
+                            .liquidGlassButton()
                             .controlSize(.small)
                         }
                         .padding(10)
@@ -422,14 +422,14 @@ public struct AgentPolicyView: View {
                                 .textFieldStyle(.roundedBorder)
                                 .onSubmit(addHost)
                             Button(ClavisUIStrings.AgentPolicy.addHostButton, action: addHost)
-                                .buttonStyle(.borderedProminent)
+                                .liquidGlassButton(prominent: true)
                                 .controlSize(.small)
                             Button(ClavisUIStrings.Common.cancel) {
                                 isAddingHost = false
                                 newHostText = ""
                                 hostError = nil
                             }
-                            .buttonStyle(.bordered)
+                            .liquidGlassButton()
                             .controlSize(.small)
                         }
                         if let err = hostError {
@@ -562,7 +562,7 @@ public struct AgentPolicyView: View {
                         }
                         .font(.system(size: 12, weight: .medium))
                     }
-                    .buttonStyle(.borderedProminent)
+                    .liquidGlassButton(prominent: true)
                     .tint(DesignTokens.accentBlue)
                     .disabled(isSaveDisabled)
                 }

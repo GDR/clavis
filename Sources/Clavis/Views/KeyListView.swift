@@ -245,15 +245,7 @@ struct KeyListView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .stroke(DesignTokens.cardBorder, lineWidth: 1)
-            )
+            .glassCard(cornerRadius: 11)
             .shadow(color: Color.black.opacity(0.25), radius: 14, x: 0, y: 6)
             .padding(.bottom, 22)
             .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -273,25 +265,27 @@ struct KeyListView: View {
                 HStack(spacing: 7) {
                     Spacer(minLength: 72)
 
-                    CircularGlassIconButton(
-                        icon: "lock",
-                        size: 33,
-                        iconSize: 14,
-                        helpText: "Lock control panel (⌘L)",
-                        accessibilityLabel: "Lock control panel"
-                    ) {
-                        PanelLockController.shared.lock(reason: .lockNow)
-                    }
+                    AdaptiveGlassEffectContainer(spacing: 7) {
+                        CircularGlassIconButton(
+                            icon: "lock",
+                            size: 33,
+                            iconSize: 14,
+                            helpText: "Lock control panel (⌘L)",
+                            accessibilityLabel: "Lock control panel"
+                        ) {
+                            PanelLockController.shared.lock(reason: .lockNow)
+                        }
 
-                    CircularGlassIconButton(
-                        icon: "plus",
-                        size: 33,
-                        iconSize: 15,
-                        isActive: appState.activeSheet == .create,
-                        helpText: "New key (⌘N)",
-                        accessibilityLabel: ClavisUIStrings.Accessibility.addKey
-                    ) {
-                        appState.activeSheet = .create
+                        CircularGlassIconButton(
+                            icon: "plus",
+                            size: 33,
+                            iconSize: 15,
+                            isActive: appState.activeSheet == .create,
+                            helpText: "New key (⌘N)",
+                            accessibilityLabel: ClavisUIStrings.Accessibility.addKey
+                        ) {
+                            appState.activeSheet = .create
+                        }
                     }
                 }
                 .padding(.leading, 16)
@@ -329,17 +323,7 @@ struct KeyListView: View {
                 }
                 .padding(.horizontal, 11)
                 .frame(height: Self.searchCapsuleHeight)
-                .background(
-                    Capsule()
-                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.65))
-                )
-                .overlay(
-                    Capsule()
-                        .stroke(
-                            isSearchFieldFocused ? DesignTokens.accentBlue.opacity(0.75) : DesignTokens.cardBorder,
-                            lineWidth: isSearchFieldFocused ? 1.5 : 1
-                        )
-                )
+                .liquidGlassCapsuleControl(isFocused: isSearchFieldFocused)
                 .padding(.horizontal, 8)
                 .padding(.bottom, 8)
 
@@ -505,25 +489,27 @@ struct KeyListView: View {
                         : ClavisUIStrings.Accessibility.statusOffline
                 )
 
-                CircularGlassIconButton(
-                    icon: "clock.arrow.circlepath",
-                    size: 34,
-                    iconSize: 15,
-                    isActive: appState.activeMainPane == .history,
-                    helpText: "History (⇧⌘H)",
-                    accessibilityLabel: "History"
-                ) {
-                    toggleHistoryPane()
-                }
+                AdaptiveGlassEffectContainer(spacing: 8) {
+                    CircularGlassIconButton(
+                        icon: "clock.arrow.circlepath",
+                        size: 34,
+                        iconSize: 15,
+                        isActive: appState.activeMainPane == .history,
+                        helpText: "History (⇧⌘H)",
+                        accessibilityLabel: "History"
+                    ) {
+                        toggleHistoryPane()
+                    }
 
-                CircularGlassIconButton(
-                    icon: "gearshape",
-                    size: 34,
-                    iconSize: 15,
-                    helpText: "Settings (⌘,)",
-                    accessibilityLabel: ClavisUIStrings.Accessibility.settings
-                ) {
-                    WindowManager.shared.openSettings()
+                    CircularGlassIconButton(
+                        icon: "gearshape",
+                        size: 34,
+                        iconSize: 15,
+                        helpText: "Settings (⌘,)",
+                        accessibilityLabel: ClavisUIStrings.Accessibility.settings
+                    ) {
+                        WindowManager.shared.openSettings()
+                    }
                 }
             }
         }
@@ -538,13 +524,12 @@ struct KeyListView: View {
 
             VStack(spacing: 0) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(DesignTokens.accentBlue.opacity(0.09))
                     Image(systemName: "key.fill")
                         .font(.system(size: 20, weight: .medium))
                         .foregroundColor(DesignTokens.accentBlue)
                 }
                 .frame(width: 41, height: 43)
+                .glassCard(cornerRadius: 11, tint: DesignTokens.accentBlue.opacity(0.09))
                 .padding(.bottom, 18)
 
                 Text(Self.emptyStateTitle)
@@ -573,7 +558,7 @@ struct KeyListView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
                 }
-                .buttonStyle(.borderedProminent)
+                .liquidGlassButton(prominent: true)
                 .controlSize(.large)
             }
             .padding(.horizontal, 24)

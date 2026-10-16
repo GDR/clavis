@@ -258,4 +258,39 @@ final class PanelLockTests {
         )
         _ = button.body
     }
+
+    @Test func test_lockedWindow_doesNotAutoPromptFingerprintOnOpen() async {
+        let fakeAuth = FakePanelAuthenticator()
+        let controller = PanelLockController(
+            defaults: testDefaults,
+            authenticator: fakeAuth,
+            vaultKeyCount: { 1 }
+        )
+
+        #expect(controller.isEffectivelyLocked)
+
+        let gate = PanelLockGate(lock: controller, showsEmptyState: false) {
+            Text("Protected Key List")
+        }
+        let hosting = NSHostingView(rootView: gate)
+        hosting.frame = NSRect(x: 0, y: 0, width: 911, height: 724)
+        hosting.layout()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        #expect(fakeAuth.authCount == 0, "Opening Clavis window while locked must show the locked screen without immediately prompting for Touch ID")
+        #expect(controller.isEffectivelyLocked)
+    }
+
+    @Test func test_liquidGlassModifiersAndContainer_renderCleanly() {
+        let container = AdaptiveGlassEffectContainer(spacing: 8) {
+            Text("Button A").liquidGlassControl(cornerRadius: 8, isFocused: true, isSelected: true)
+            Text("Button B").liquidGlassCapsuleControl(isFocused: false)
+            Button("Action") {}.liquidGlassButton(prominent: true)
+            Button("Secondary") {}.liquidGlassButton(prominent: false)
+        }
+        let hosting = NSHostingView(rootView: container)
+        hosting.frame = NSRect(x: 0, y: 0, width: 320, height: 80)
+        hosting.layout()
+        #expect(hosting.bounds.width == 320)
+    }
 }

@@ -293,13 +293,12 @@ public struct KeyDetailInspectorView: View {
     private var detailHeading: some View {
         HStack(alignment: .center, spacing: 12) {
             ZStack {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(DesignTokens.accentBlue.opacity(0.09))
                 Image(systemName: "key.fill")
                     .font(.system(size: 20, weight: .medium))
                     .foregroundColor(DesignTokens.accentBlue)
             }
             .frame(width: 41, height: 43)
+            .glassCard(cornerRadius: 11, tint: DesignTokens.accentBlue.opacity(0.09))
 
             VStack(alignment: .leading, spacing: 3) {
                 if isRenaming {
@@ -321,16 +320,14 @@ public struct KeyDetailInspectorView: View {
                             .foregroundColor(.primary)
                             .lineLimit(1)
 
-                        Button(action: beginInlineRename) {
-                            Image(systemName: "pencil")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(DesignTokens.textSecondary)
-                                .frame(width: 27, height: 27)
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .help("Rename \(key.label)")
-                        .accessibilityLabel("Rename \(key.label)")
+                        CircularGlassIconButton(
+                            icon: "pencil",
+                            size: 27,
+                            iconSize: 12,
+                            helpText: "Rename \(key.label)",
+                            accessibilityLabel: "Rename \(key.label)",
+                            action: beginInlineRename
+                        )
                     }
                 }
 
@@ -408,12 +405,7 @@ public struct KeyDetailInspectorView: View {
                     action: copyFingerprint
                 )
             }
-            .background(DesignTokens.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(DesignTokens.cardBorder, lineWidth: 1)
-            )
+            .glassCard(cornerRadius: 10)
         }
     }
 
@@ -442,7 +434,7 @@ public struct KeyDetailInspectorView: View {
                     .font(.system(size: 13))
                     .foregroundColor(DesignTokens.textSecondary)
                     .frame(width: 28, height: 28)
-                    .contentShape(RoundedRectangle(cornerRadius: 6))
+                    .liquidGlassControl(cornerRadius: 6)
             }
             .buttonStyle(.plain)
             .help(help)
@@ -559,13 +551,18 @@ public struct KeyDetailInspectorView: View {
                             Text("\(gitGrace.formattedTime) · \(gitGrace.remainingOperations) left")
                                 .font(.system(size: 12).monospacedDigit())
                                 .foregroundColor(DesignTokens.accentGreen)
-                            Button("Revoke") {
+                            Button(action: {
                                 appState.revokeGitGrace(keyLabel: key.label)
                                 onShowToast?("Signing window revoked")
+                            }) {
+                                Text("Revoke")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(DesignTokens.accentBlue)
+                                    .padding(.horizontal, 9)
+                                    .frame(minHeight: 24)
+                                    .liquidGlassControl(cornerRadius: 6)
                             }
                             .buttonStyle(.plain)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(DesignTokens.accentBlue)
                         }
                     }
                     .padding(.horizontal, 13)
@@ -573,12 +570,7 @@ public struct KeyDetailInspectorView: View {
                     .frame(height: 40)
                 }
             }
-            .background(DesignTokens.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(DesignTokens.cardBorder, lineWidth: 1)
-            )
+            .glassCard(cornerRadius: 10)
         }
     }
 
@@ -614,17 +606,21 @@ public struct KeyDetailInspectorView: View {
                     .lineLimit(1)
 
                 if isUnlocked {
-                    Button("Revoke") {
+                    Button(action: {
                         appState.revokeGitGrace(keyLabel: key.label)
                         if let session = activeAgentSessionForKey {
                             appState.endAgentSession(id: session.id)
                         }
                         onShowToast?("Grace window revoked · approval required")
+                    }) {
+                        Text("Revoke")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DesignTokens.accentBlue)
+                            .padding(.horizontal, 9)
+                            .frame(minWidth: 58, minHeight: 26)
+                            .liquidGlassControl(cornerRadius: 6)
                     }
                     .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(DesignTokens.accentBlue)
-                    .frame(minWidth: 58, minHeight: 26)
                 }
             }
         }
@@ -688,12 +684,7 @@ public struct KeyDetailInspectorView: View {
                 .padding(.vertical, 7)
                 .frame(minHeight: 38)
             }
-            .background(DesignTokens.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(DesignTokens.cardBorder, lineWidth: 1)
-            )
+            .glassCard(cornerRadius: 10)
         }
     }
 
@@ -734,14 +725,15 @@ private struct KeyPurposeEditorSheet: View {
                 Text("Key purpose")
                     .font(.system(size: 17, weight: .semibold))
                 Spacer()
-                Button(action: { dismiss() }) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(DesignTokens.textSecondary)
-                        .frame(width: 26, height: 26)
+                CircularGlassIconButton(
+                    icon: "xmark",
+                    size: 26,
+                    iconSize: 11,
+                    helpText: ClavisUIStrings.Common.cancel,
+                    accessibilityLabel: ClavisUIStrings.Common.cancel
+                ) {
+                    dismiss()
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(ClavisUIStrings.Common.cancel)
             }
             .padding(.horizontal, 23)
             .padding(.top, 20)
@@ -764,8 +756,7 @@ private struct KeyPurposeEditorSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     .padding(12)
-                    .background(DesignTokens.cardBackground)
-                    .cornerRadius(9)
+                    .glassCard(cornerRadius: 9)
                 } else {
                     VStack(alignment: .leading, spacing: 7) {
                         Text("Purpose")
@@ -787,8 +778,7 @@ private struct KeyPurposeEditorSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     .padding(12)
-                    .background(DesignTokens.cardBackground)
-                    .cornerRadius(9)
+                    .glassCard(cornerRadius: 9)
                 }
 
                 if let errorMessage {
@@ -807,13 +797,14 @@ private struct KeyPurposeEditorSheet: View {
                 Button(ClavisUIStrings.Common.cancel) {
                     dismiss()
                 }
+                .liquidGlassButton(prominent: false)
                 .keyboardShortcut(.cancelAction)
 
                 if key.purpose != .gitSigningOnly {
                     Button("Save purpose") {
                         savePurpose()
                     }
-                    .buttonStyle(.borderedProminent)
+                    .liquidGlassButton(prominent: true)
                     .keyboardShortcut(.defaultAction)
                     .disabled(selectedPurpose == key.purpose)
                 }
@@ -868,14 +859,15 @@ private struct KeyApprovalEditorSheet: View {
                 Text("Signing approval")
                     .font(.system(size: 17, weight: .semibold))
                 Spacer()
-                Button(action: { dismiss() }) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(DesignTokens.textSecondary)
-                        .frame(width: 26, height: 26)
+                CircularGlassIconButton(
+                    icon: "xmark",
+                    size: 26,
+                    iconSize: 11,
+                    helpText: ClavisUIStrings.Common.cancel,
+                    accessibilityLabel: ClavisUIStrings.Common.cancel
+                ) {
+                    dismiss()
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(ClavisUIStrings.Common.cancel)
             }
             .padding(.horizontal, 23)
             .padding(.top, 20)
@@ -966,19 +958,20 @@ private struct KeyApprovalEditorSheet: View {
                 Button(ClavisUIStrings.Common.cancel) {
                     dismiss()
                 }
+                .liquidGlassButton(prominent: false)
                 .keyboardShortcut(.cancelAction)
 
                 if key.purpose == .agent {
                     Button("Save changes") {
                         saveApprovalPolicy()
                     }
-                    .buttonStyle(.borderedProminent)
+                    .liquidGlassButton(prominent: true)
                     .keyboardShortcut(.defaultAction)
                 } else {
                     Button("Done") {
                         dismiss()
                     }
-                    .buttonStyle(.borderedProminent)
+                    .liquidGlassButton(prominent: true)
                     .keyboardShortcut(.defaultAction)
                 }
             }
@@ -1011,14 +1004,7 @@ private struct KeyApprovalEditorSheet: View {
                 Spacer()
             }
             .padding(10)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(isSelected ? DesignTokens.accentBlue.opacity(0.08) : Color.clear)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(isSelected ? DesignTokens.accentBlue.opacity(0.35) : DesignTokens.cardBorder, lineWidth: 1)
-            )
+            .liquidGlassControl(cornerRadius: 9, isSelected: isSelected)
         }
         .buttonStyle(.plain)
     }

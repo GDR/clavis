@@ -198,14 +198,7 @@ public struct HistoryView: View {
                         .font(.system(size: 11, weight: .medium))
                         .padding(.horizontal, 10)
                         .frame(height: 30)
-                        .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(DesignTokens.cardBackground)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(DesignTokens.cardBorder, lineWidth: 1)
-                        )
+                        .liquidGlassControl(cornerRadius: 7)
                 }
                 .buttonStyle(.plain)
                 .disabled(viewModel.selectedDate == nil)
@@ -218,9 +211,9 @@ public struct HistoryView: View {
                     Text("Reset filters")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(DesignTokens.textSecondary)
-                        .padding(.horizontal, 8)
+                        .padding(.horizontal, 10)
                         .frame(height: 30)
-                        .contentShape(Rectangle())
+                        .liquidGlassControl(cornerRadius: 7)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Reset filters")
@@ -289,17 +282,7 @@ public struct HistoryView: View {
             }
             .padding(.horizontal, 9)
             .frame(height: 30)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(DesignTokens.cardBackground)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(
-                        isHostFieldFocused ? DesignTokens.accentBlue.opacity(0.75) : DesignTokens.cardBorder,
-                        lineWidth: isHostFieldFocused ? 1.5 : 1
-                    )
-            )
+            .liquidGlassControl(cornerRadius: 7, isFocused: isHostFieldFocused)
             .overlay(alignment: .topLeading) {
                 if isHostSuggestionsVisible {
                     hostSuggestionsDropdown
@@ -363,15 +346,8 @@ public struct HistoryView: View {
         }
         .padding(5)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color(nsColor: .windowBackgroundColor))
-                .shadow(color: Color.black.opacity(0.28), radius: 14, x: 0, y: 8)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(DesignTokens.cardBorder, lineWidth: 1)
-        )
+        .glassCard(cornerRadius: 9, strokeColor: DesignTokens.cardBorder)
+        .shadow(color: Color.black.opacity(0.28), radius: 14, x: 0, y: 8)
         .zIndex(50)
     }
 
@@ -410,17 +386,7 @@ public struct HistoryView: View {
             }
             .padding(.horizontal, 9)
             .frame(height: 30)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(DesignTokens.cardBackground)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(
-                        isSearchFieldFocused ? DesignTokens.accentBlue.opacity(0.75) : DesignTokens.cardBorder,
-                        lineWidth: isSearchFieldFocused ? 1.5 : 1
-                    )
-            )
+            .liquidGlassControl(cornerRadius: 7, isFocused: isSearchFieldFocused)
         }
     }
 
@@ -516,6 +482,9 @@ public struct HistoryView: View {
         .background {
             if reduceTransparency {
                 DesignTokens.inspectorBackground
+            } else if #available(macOS 26.0, *) {
+                Color.clear
+                    .glassEffect(.regular, in: .rect(cornerRadius: 0))
             } else {
                 ZStack {
                     DesignTokens.inspectorBackground.opacity(0.72)
@@ -828,6 +797,7 @@ public struct HistoryView: View {
             Button("Retry") {
                 viewModel.reload()
             }
+            .liquidGlassButton()
         }
         .padding(.vertical, 35)
         .frame(maxWidth: .infinity)
@@ -1013,6 +983,7 @@ public struct HistoryIntegritySheet: View {
                 Button(ClavisUIStrings.Common.ok) {
                     isPresented = false
                 }
+                .liquidGlassButton(prominent: true)
                 .keyboardShortcut(.defaultAction)
             }
 

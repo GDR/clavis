@@ -4,18 +4,192 @@ import AppKit
 public struct GlassCardModifier: ViewModifier {
     public var cornerRadius: CGFloat = 10
     public var strokeColor: Color = DesignTokens.cardBorder
+    public var tint: Color? = nil
+    public var isInteractive: Bool = false
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
+    @ViewBuilder
     public func body(content: Content) -> some View {
-        content
-            .background(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color(nsColor: NSColor.controlBackgroundColor).opacity(0.4))
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(strokeColor, lineWidth: 0.8)
-            )
+        if #available(macOS 26.0, *), !reduceTransparency {
+            content
+                .glassEffect(
+                    resolvedGlass,
+                    in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                )
+        } else {
+            content
+                .background(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(
+                            tint ?? (
+                                reduceTransparency
+                                    ? Color(nsColor: .controlBackgroundColor)
+                                    : Color(nsColor: NSColor.controlBackgroundColor).opacity(0.4)
+                            )
+                        )
+                        .background(
+                            reduceTransparency ? .regularMaterial : .ultraThinMaterial,
+                            in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(strokeColor, lineWidth: 0.8)
+                )
+        }
+    }
+
+    @available(macOS 26.0, *)
+    private var resolvedGlass: Glass {
+        var glass: Glass = .regular
+        if let tint {
+            glass = glass.tint(tint)
+        }
+        if isInteractive {
+            glass = glass.interactive()
+        }
+        return glass
+    }
+}
+
+public struct AdaptiveGlassEffectContainer<Content: View>: View {
+    public var spacing: CGFloat
+    @ViewBuilder public let content: () -> Content
+
+    public init(spacing: CGFloat = 7, @ViewBuilder content: @escaping () -> Content) {
+        self.spacing = spacing
+        self.content = content
+    }
+
+    @ViewBuilder
+    public var body: some View {
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) {
+                HStack(spacing: spacing) {
+                    content()
+                }
+            }
+        } else {
+            HStack(spacing: spacing) {
+                content()
+            }
+        }
+    }
+}
+
+public struct LiquidGlassControlModifier: ViewModifier {
+    public var cornerRadius: CGFloat = 8
+    public var isFocused: Bool = false
+    public var isSelected: Bool = false
+    public var tint: Color? = nil
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    @ViewBuilder
+    public func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if #available(macOS 26.0, *), !reduceTransparency {
+            content
+                .glassEffect(resolvedGlass, in: shape)
+                .overlay(
+                    shape.stroke(
+                        isFocused
+                            ? DesignTokens.accentBlue.opacity(0.8)
+                            : (isSelected ? DesignTokens.accentBlue.opacity(0.55) : Color.clear),
+                        lineWidth: isFocused ? 1.5 : 1
+                    )
+                )
+        } else {
+            content
+                .background(
+                    shape.fill(
+                        tint ?? (isSelected ? Color.accentColor.opacity(0.12) : DesignTokens.cardBackground)
+                    )
+                )
+                .overlay(
+                    shape.stroke(
+                        isFocused
+                            ? DesignTokens.accentBlue.opacity(0.75)
+                            : (isSelected ? DesignTokens.accentBlue.opacity(0.45) : DesignTokens.cardBorder),
+                        lineWidth: isFocused ? 1.5 : 1
+                    )
+                )
+        }
+    }
+
+    @available(macOS 26.0, *)
+    private var resolvedGlass: Glass {
+        var glass: Glass = .regular
+        if let tint {
+            glass = glass.tint(tint)
+        } else if isSelected {
+            glass = glass.tint(DesignTokens.accentBlue.opacity(0.18))
+        }
+        return glass.interactive()
+    }
+}
+
+public struct LiquidGlassCapsuleControlModifier: ViewModifier {
+    public var isFocused: Bool = false
+    public var tint: Color? = nil
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    @ViewBuilder
+    public func body(content: Content) -> some View {
+        if #available(macOS 26.0, *), !reduceTransparency {
+            content
+                .glassEffect(resolvedGlass, in: .capsule)
+                .overlay(
+                    Capsule()
+                        .stroke(
+                            isFocused ? DesignTokens.accentBlue.opacity(0.8) : Color.clear,
+                            lineWidth: isFocused ? 1.5 : 1
+                        )
+                )
+        } else {
+            content
+                .background(
+                    Capsule()
+                        .fill(tint ?? Color(nsColor: .controlBackgroundColor).opacity(0.65))
+                )
+                .overlay(
+                    Capsule()
+                        .stroke(
+                            isFocused ? DesignTokens.accentBlue.opacity(0.75) : DesignTokens.cardBorder,
+                            lineWidth: isFocused ? 1.5 : 1
+                        )
+                )
+        }
+    }
+
+    @available(macOS 26.0, *)
+    private var resolvedGlass: Glass {
+        var glass: Glass = .regular
+        if let tint {
+            glass = glass.tint(tint)
+        }
+        return glass.interactive()
+    }
+}
+
+public struct LiquidGlassButtonStyleModifier: ViewModifier {
+    public var isProminent: Bool = false
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    @ViewBuilder
+    public func body(content: Content) -> some View {
+        if #available(macOS 26.0, *), !reduceTransparency {
+            if isProminent {
+                content.buttonStyle(.glassProminent)
+            } else {
+                content.buttonStyle(.glass)
+            }
+        } else {
+            if isProminent {
+                content.buttonStyle(.borderedProminent)
+            } else {
+                content.buttonStyle(.bordered)
+            }
+        }
     }
 }
 
@@ -149,8 +323,52 @@ public struct LiquidGlassSegmentModifier: ViewModifier {
 }
 
 public extension View {
-    func glassCard(cornerRadius: CGFloat = 10, strokeColor: Color = DesignTokens.cardBorder) -> some View {
-        self.modifier(GlassCardModifier(cornerRadius: cornerRadius, strokeColor: strokeColor))
+    func glassCard(
+        cornerRadius: CGFloat = 10,
+        strokeColor: Color = DesignTokens.cardBorder,
+        tint: Color? = nil,
+        isInteractive: Bool = false
+    ) -> some View {
+        self.modifier(
+            GlassCardModifier(
+                cornerRadius: cornerRadius,
+                strokeColor: strokeColor,
+                tint: tint,
+                isInteractive: isInteractive
+            )
+        )
+    }
+
+    func liquidGlassControl(
+        cornerRadius: CGFloat = 8,
+        isFocused: Bool = false,
+        isSelected: Bool = false,
+        tint: Color? = nil
+    ) -> some View {
+        self.modifier(
+            LiquidGlassControlModifier(
+                cornerRadius: cornerRadius,
+                isFocused: isFocused,
+                isSelected: isSelected,
+                tint: tint
+            )
+        )
+    }
+
+    func liquidGlassCapsuleControl(
+        isFocused: Bool = false,
+        tint: Color? = nil
+    ) -> some View {
+        self.modifier(
+            LiquidGlassCapsuleControlModifier(
+                isFocused: isFocused,
+                tint: tint
+            )
+        )
+    }
+
+    func liquidGlassButton(prominent: Bool = false) -> some View {
+        self.modifier(LiquidGlassButtonStyleModifier(isProminent: prominent))
     }
 
     func adaptiveGlassCapsule() -> some View {
@@ -331,10 +549,31 @@ public struct CircularGlassIconButton: View {
 
     public var body: some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: iconSize, weight: .semibold))
-                .foregroundColor(foregroundColor)
-                .frame(width: size, height: size)
+            iconLabel
+        }
+        .buttonStyle(.plain)
+        .help(helpText)
+        .accessibilityLabel(accessibilityLabelText ?? helpText)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.12)) {
+                isHovered = hovering
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var iconLabel: some View {
+        let baseIcon = Image(systemName: systemImage)
+            .font(.system(size: iconSize, weight: .semibold))
+            .foregroundColor(foregroundColor)
+            .frame(width: size, height: size)
+
+        if #available(macOS 26.0, *), !reduceTransparency {
+            baseIcon
+                .glassEffect(resolvedGlassEffect, in: .circle)
+                .contentShape(Circle())
+        } else {
+            baseIcon
                 .background(
                     ZStack {
                         if !reduceTransparency {
@@ -354,14 +593,21 @@ public struct CircularGlassIconButton: View {
                 )
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
-        .help(helpText)
-        .accessibilityLabel(accessibilityLabelText ?? helpText)
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.12)) {
-                isHovered = hovering
-            }
+    }
+
+    @available(macOS 26.0, *)
+    private var resolvedGlassEffect: Glass {
+        if isDanger {
+            return .regular
+                .tint(Color(nsColor: .systemRed).opacity(isHovered ? 0.24 : 0.12))
+                .interactive()
         }
+        if isActive {
+            return .regular
+                .tint(Color.accentColor.opacity(isHovered ? 0.28 : 0.18))
+                .interactive()
+        }
+        return .regular.interactive()
     }
 
     private var fillColor: Color {
@@ -387,6 +633,7 @@ public struct CircularGlassIconButton: View {
         return DesignTokens.cardBorder
     }
 }
+
 
 
 
