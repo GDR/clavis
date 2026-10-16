@@ -102,53 +102,51 @@ public struct SettingsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(nsColor: .windowBackgroundColor))
             } else {
-                ScrollView {
-                    VStack(spacing: 16) {
-                        // Control Panel Lock Section
-                        SettingsGroup(title: ClavisUIStrings.PanelLock.settingsSection) {
-                            VStack(alignment: .leading, spacing: 10) {
-                                SettingsRow(
-                                    icon: "lock.fill",
-                                    iconColor: Color(red: 0.88, green: 0.45, blue: 0.12),
-                                    title: ClavisUIStrings.PanelLock.settingsToggle,
-                                    subtitle: ""
-                                ) {
-                                    Toggle("", isOn: Binding(
-                                        get: { lock.isEnabled },
-                                        set: { newValue in
-                                            Task {
-                                                _ = await lock.setEnabled(newValue, authenticated: true)
-                                            }
+                Form {
+                    // Control Panel Lock Section
+                    SettingsGroup(title: ClavisUIStrings.PanelLock.settingsSection) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            SettingsRow(
+                                icon: "lock.fill",
+                                iconColor: Color(red: 0.88, green: 0.45, blue: 0.12),
+                                title: ClavisUIStrings.PanelLock.settingsToggle,
+                                subtitle: ""
+                            ) {
+                                Toggle("", isOn: Binding(
+                                    get: { lock.isEnabled },
+                                    set: { newValue in
+                                        Task {
+                                            _ = await lock.setEnabled(newValue, authenticated: true)
                                         }
-                                    ))
-                                    .toggleStyle(.switch)
+                                    }
+                                ))
+                                .toggleStyle(.switch)
+                                .labelsHidden()
+                            }
+
+                            if lock.isEnabled {
+                                Divider()
+
+                                SettingsRow(
+                                    icon: "timer",
+                                    iconColor: Color(red: 0.35, green: 0.78, blue: 0.98),
+                                    title: "Grace period",
+                                    subtitle: Self.inactivityGraceNote(minutes: lock.idleMinutes)
+                                ) {
+                                    Picker("", selection: Binding(
+                                        get: { lock.idleMinutes },
+                                        set: { lock.idleMinutes = $0 }
+                                    )) {
+                                        ForEach(PanelLockController.idleOptions, id: \.self) { minutes in
+                                            Text(Self.inactivityOptionLabel(minutes: minutes))
+                                                .tag(minutes)
+                                        }
+                                    }
                                     .labelsHidden()
                                 }
-
-                        if lock.isEnabled {
-                            Divider()
-
-                            SettingsRow(
-                                icon: "timer",
-                                iconColor: Color(red: 0.35, green: 0.78, blue: 0.98),
-                                title: "Grace period",
-                                subtitle: Self.inactivityGraceNote(minutes: lock.idleMinutes)
-                            ) {
-                                Picker("", selection: Binding(
-                                    get: { lock.idleMinutes },
-                                    set: { lock.idleMinutes = $0 }
-                                )) {
-                                    ForEach(PanelLockController.idleOptions, id: \.self) { minutes in
-                                        Text(Self.inactivityOptionLabel(minutes: minutes))
-                                            .tag(minutes)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .frame(width: 130)
                             }
                         }
                     }
-                }
 
                 // Unlock Method Section
                 SettingsGroup(title: ClavisUIStrings.PinUnlock.settingsSection) {
@@ -280,8 +278,7 @@ public struct SettingsView: View {
                                     .tag(minutes)
                             }
                         }
-                        .pickerStyle(.menu)
-                        .frame(width: 120)
+                        .labelsHidden()
                         .onChange(of: globalMaxLease) { newValue in
                             guard newValue != lastSavedGlobalMaxLease else { return }
                             globalPolicyError = nil
@@ -465,17 +462,17 @@ public struct SettingsView: View {
                         }
                     }
                 }
+                }
+                .formStyle(.grouped)
+                .scrollContentBackground(.hidden)
+                .onAppear {
+                    if let global = appState.getGlobalPolicy() {
+                        globalMaxLease = global.maxLeaseMinutes
+                        lastSavedGlobalMaxLease = global.maxLeaseMinutes
+                    }
+                    checkVaultSync()
+                }
             }
-            .padding(20)
-        }
-        .onAppear {
-            if let global = appState.getGlobalPolicy() {
-                globalMaxLease = global.maxLeaseMinutes
-                lastSavedGlobalMaxLease = global.maxLeaseMinutes
-            }
-            checkVaultSync()
-        }
-        }
     }
     .frame(width: 480, height: 600)
     .onChange(of: lock.state) { _ in
@@ -751,17 +748,8 @@ private struct SettingsGroup<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 4)
-
-            VStack(spacing: 0) {
-                content()
-            }
-            .padding(12)
-            .glassCard(cornerRadius: 10)
+        Section(title) {
+            content()
         }
     }
 }

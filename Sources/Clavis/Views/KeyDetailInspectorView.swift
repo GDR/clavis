@@ -232,17 +232,23 @@ public struct KeyDetailInspectorView: View {
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 0) {
                 detailHeading
-                    .padding(.bottom, 6)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 14)
+                    .padding(.bottom, 4)
 
-                publicIdentitySection
-                signingSection
-                activitySection
+                Form {
+                    publicIdentitySection
+                    signingSection
+                    activitySection
+                }
+                .formStyle(.grouped)
+                .scrollDisabled(true)
+                .scrollContentBackground(.hidden)
             }
-            .padding(.horizontal, 35)
-            .padding(.top, 14)
-            .padding(.bottom, 26)
+            .padding(.horizontal, 15)
+            .padding(.bottom, 20)
         }
         .background(Color.clear)
         .onAppear {
@@ -381,31 +387,20 @@ public struct KeyDetailInspectorView: View {
             ? key.fingerprint
             : "SHA256:\(key.fingerprint)"
 
-        return VStack(alignment: .leading, spacing: 6) {
-            Text("Public identity")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(DesignTokens.textSecondary)
-                .frame(minHeight: 28, alignment: .leading)
+        return Section("Public identity") {
+            identityCopyRow(
+                label: "Public key",
+                fullValue: key.publicKeyOpenSSH,
+                help: "Copy full public key",
+                action: copyOpenSSH
+            )
 
-            VStack(spacing: 0) {
-                identityCopyRow(
-                    label: "Public key",
-                    fullValue: key.publicKeyOpenSSH,
-                    help: "Copy full public key",
-                    action: copyOpenSSH
-                )
-
-                Divider()
-                    .background(DesignTokens.cardBorder)
-
-                identityCopyRow(
-                    label: "Fingerprint",
-                    fullValue: formattedFingerprint,
-                    help: "Copy full fingerprint",
-                    action: copyFingerprint
-                )
-            }
-            .glassCard(cornerRadius: 10)
+            identityCopyRow(
+                label: "Fingerprint",
+                fullValue: formattedFingerprint,
+                help: "Copy full fingerprint",
+                action: copyFingerprint
+            )
         }
     }
 
@@ -417,8 +412,8 @@ public struct KeyDetailInspectorView: View {
     ) -> some View {
         HStack(spacing: 12) {
             Text(label)
-                .font(.system(size: 12))
-                .foregroundColor(DesignTokens.textSecondary)
+                .font(.system(size: 13))
+                .foregroundColor(.primary)
                 .frame(width: 76, alignment: .leading)
 
             Text(Self.trimIdentity(fullValue))
@@ -431,18 +426,13 @@ public struct KeyDetailInspectorView: View {
 
             Button(action: action) {
                 Image(systemName: "doc.on.doc")
-                    .font(.system(size: 13))
+                    .font(.system(size: 12))
                     .foregroundColor(DesignTokens.textSecondary)
-                    .frame(width: 28, height: 28)
-                    .liquidGlassControl(cornerRadius: 6)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.borderless)
             .help(help)
             .accessibilityLabel(help)
         }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 5)
-        .frame(minHeight: 39)
     }
 
     // MARK: - Section 2: Signing
@@ -451,126 +441,62 @@ public struct KeyDetailInspectorView: View {
         let approvalText = Self.approvalSummaryText(for: key, agentPolicy: currentAgentPolicy)
         let approvalHelp = Self.approvalDescriptionText(for: key, agentPolicy: currentAgentPolicy)
 
-        return VStack(alignment: .leading, spacing: 6) {
-            Text("Signing")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(DesignTokens.textSecondary)
-                .frame(minHeight: 28, alignment: .leading)
-
-            VStack(spacing: 0) {
-                // Purpose row
-                HStack(spacing: 16) {
-                    Text("Purpose")
-                        .font(.system(size: 13))
-                        .foregroundColor(DesignTokens.textSecondary)
-                    Spacer()
-                    Button(action: { showingPurposeSheet = true }) {
-                        HStack(spacing: 6) {
-                            Text(key.purpose.inspectorLabel)
-                                .font(.system(size: 13))
-                                .foregroundColor(.primary)
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(DesignTokens.textSecondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 13)
-                .padding(.vertical, 7)
-                .frame(minHeight: 38)
-
-                Divider()
-                    .background(DesignTokens.cardBorder)
-
-                // Approval row
-                HStack(spacing: 16) {
-                    Text("Approval")
-                        .font(.system(size: 13))
-                        .foregroundColor(DesignTokens.textSecondary)
-                    Spacer()
-                    Button(action: { showingApprovalSheet = true }) {
-                        HStack(spacing: 6) {
-                            Text(approvalText)
-                                .font(.system(size: 13))
-                                .foregroundColor(.primary)
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(DesignTokens.textSecondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .help("Edit signing approval: \(approvalHelp)")
-                }
-                .padding(.horizontal, 13)
-                .padding(.vertical, 7)
-                .frame(minHeight: 38)
-
-                Divider()
-                    .background(DesignTokens.cardBorder)
-
-                // Grace period row
-                HStack(spacing: 16) {
-                    Text("Grace period")
-                        .font(.system(size: 13))
-                        .foregroundColor(DesignTokens.textSecondary)
-                    Spacer()
-                    Picker("", selection: gracePeriodBinding) {
-                        ForEach(KeyGracePeriod.allCases) { option in
-                            Text(option.title).tag(option)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 135)
-                    .help("How long this key stays available after approval. Per session lasts until Clavis quits; locking the key ends the window immediately.")
-                }
-                .padding(.horizontal, 13)
-                .padding(.vertical, 5)
-                .frame(minHeight: 38)
-
-                // Stable 40px Active window row when grace period != .always or session active
-                if currentGracePeriod != .always || activeGitGraceSession != nil || activeAgentSessionForKey != nil {
-                    Divider()
-                        .background(DesignTokens.cardBorder)
-
-                    activeWindowRow
-                }
-
-                // Git signing window row if active
-                if let gitGrace = activeGitGraceSession, key.purpose != .agent {
-                    Divider()
-                        .background(DesignTokens.cardBorder)
-
-                    HStack(spacing: 16) {
-                        Text("Git signing window")
+        return Section("Signing") {
+            LabeledContent("Purpose") {
+                Button(action: { showingPurposeSheet = true }) {
+                    HStack(spacing: 6) {
+                        Text(key.purpose.inspectorLabel)
                             .font(.system(size: 13))
+                            .foregroundColor(.primary)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundColor(DesignTokens.textSecondary)
-                        Spacer()
-                        HStack(spacing: 8) {
-                            Text("\(gitGrace.formattedTime) · \(gitGrace.remainingOperations) left")
-                                .font(.system(size: 12).monospacedDigit())
-                                .foregroundColor(DesignTokens.accentGreen)
-                            Button(action: {
-                                appState.revokeGitGrace(keyLabel: key.label)
-                                onShowToast?("Signing window revoked")
-                            }) {
-                                Text("Revoke")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(DesignTokens.accentBlue)
-                                    .padding(.horizontal, 9)
-                                    .frame(minHeight: 24)
-                                    .liquidGlassControl(cornerRadius: 6)
-                            }
-                            .buttonStyle(.plain)
-                        }
                     }
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 5)
-                    .frame(height: 40)
+                }
+                .buttonStyle(.plain)
+            }
+
+            LabeledContent("Approval") {
+                Button(action: { showingApprovalSheet = true }) {
+                    HStack(spacing: 6) {
+                        Text(approvalText)
+                            .font(.system(size: 13))
+                            .foregroundColor(.primary)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(DesignTokens.textSecondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("Edit signing approval: \(approvalHelp)")
+            }
+
+            Picker("Grace period", selection: gracePeriodBinding) {
+                ForEach(KeyGracePeriod.allCases) { option in
+                    Text(option.title).tag(option)
                 }
             }
-            .glassCard(cornerRadius: 10)
+            .help("How long this key stays available after approval. Per session lasts until Clavis quits; locking the key ends the window immediately.")
+
+            if currentGracePeriod != .always || activeGitGraceSession != nil || activeAgentSessionForKey != nil {
+                activeWindowRow
+            }
+
+            if let gitGrace = activeGitGraceSession, key.purpose != .agent {
+                LabeledContent("Git signing window") {
+                    HStack(spacing: 8) {
+                        Text("\(gitGrace.formattedTime) · \(gitGrace.remainingOperations) left")
+                            .font(.system(size: 12).monospacedDigit())
+                            .foregroundColor(DesignTokens.accentGreen)
+                        Button("Revoke") {
+                            appState.revokeGitGrace(keyLabel: key.label)
+                            onShowToast?("Signing window revoked")
+                        }
+                        .liquidGlassButton()
+                        .controlSize(.small)
+                    }
+                }
+            }
         }
     }
 
@@ -592,13 +518,7 @@ public struct KeyDetailInspectorView: View {
             return "Approval required"
         }()
 
-        return HStack(spacing: 12) {
-            Text("Active window")
-                .font(.system(size: 13))
-                .foregroundColor(DesignTokens.textSecondary)
-
-            Spacer(minLength: 0)
-
+        return LabeledContent("Active window") {
             HStack(spacing: 8) {
                 Text(statusText)
                     .font(.system(size: 12).monospacedDigit())
@@ -606,39 +526,37 @@ public struct KeyDetailInspectorView: View {
                     .lineLimit(1)
 
                 if isUnlocked {
-                    Button(action: {
+                    Button("Revoke") {
                         appState.revokeGitGrace(keyLabel: key.label)
                         if let session = activeAgentSessionForKey {
                             appState.endAgentSession(id: session.id)
                         }
                         onShowToast?("Grace window revoked · approval required")
-                    }) {
-                        Text("Revoke")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(DesignTokens.accentBlue)
-                            .padding(.horizontal, 9)
-                            .frame(minWidth: 58, minHeight: 26)
-                            .liquidGlassControl(cornerRadius: 6)
                     }
-                    .buttonStyle(.plain)
+                    .liquidGlassButton()
+                    .controlSize(.small)
                 }
             }
         }
-        .padding(.horizontal, 13)
-        .frame(height: 40)
     }
 
     // MARK: - Section 3: Activity
 
     private var activitySection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        Section {
+            LabeledContent("Created") {
+                Text(formattedDate)
+                    .foregroundColor(.secondary)
+            }
+
+            LabeledContent("Last activity") {
+                Text(formattedLastActivity)
+                    .foregroundColor(.secondary)
+            }
+        } header: {
             HStack {
                 Text("Activity")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(DesignTokens.textSecondary)
-
                 Spacer()
-
                 Button(action: {
                     appState.openHistoryPane(forKeyFingerprint: key.fingerprint)
                 }) {
@@ -652,39 +570,6 @@ public struct KeyDetailInspectorView: View {
                 }
                 .buttonStyle(.plain)
             }
-            .frame(minHeight: 28)
-
-            VStack(spacing: 0) {
-                HStack(spacing: 16) {
-                    Text("Created")
-                        .font(.system(size: 13))
-                        .foregroundColor(DesignTokens.textSecondary)
-                    Spacer()
-                    Text(formattedDate)
-                        .font(.system(size: 13))
-                        .foregroundColor(.primary)
-                }
-                .padding(.horizontal, 13)
-                .padding(.vertical, 7)
-                .frame(minHeight: 38)
-
-                Divider()
-                    .background(DesignTokens.cardBorder)
-
-                HStack(spacing: 16) {
-                    Text("Last activity")
-                        .font(.system(size: 13))
-                        .foregroundColor(DesignTokens.textSecondary)
-                    Spacer()
-                    Text(formattedLastActivity)
-                        .font(.system(size: 13))
-                        .foregroundColor(.primary)
-                }
-                .padding(.horizontal, 13)
-                .padding(.vertical, 7)
-                .frame(minHeight: 38)
-            }
-            .glassCard(cornerRadius: 10)
         }
     }
 
@@ -758,16 +643,15 @@ private struct KeyPurposeEditorSheet: View {
                     .padding(12)
                     .glassCard(cornerRadius: 9)
                 } else {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("Purpose")
-                            .font(.system(size: 12, weight: .semibold))
-                        Picker("Purpose", selection: $selectedPurpose) {
-                            Text(KeyPurpose.general.inspectorLabel).tag(KeyPurpose.general)
-                            Text(KeyPurpose.agent.inspectorLabel).tag(KeyPurpose.agent)
+                    Form {
+                        Section {
+                            Picker("Purpose", selection: $selectedPurpose) {
+                                Text(KeyPurpose.general.inspectorLabel).tag(KeyPurpose.general)
+                                Text(KeyPurpose.agent.inspectorLabel).tag(KeyPurpose.agent)
+                            }
                         }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
                     }
+                    .groupedEmbeddedForm(zeroMargins: true)
 
                     HStack(alignment: .center, spacing: 10) {
                         Image(systemName: "checkmark.shield")
