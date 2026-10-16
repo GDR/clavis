@@ -151,7 +151,7 @@ public struct LockedPlaceholderView: View {
                 if let passwordError {
                     Text(passwordError)
                         .font(.system(size: 11))
-                        .foregroundColor(DesignTokens.dangerRed)
+                        .foregroundColor(.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
