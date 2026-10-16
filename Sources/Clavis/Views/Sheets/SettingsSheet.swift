@@ -10,6 +10,7 @@ public enum PinModeUI {
 }
 
 public struct SettingsView: View {
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var appState: AppState
     @ObservedObject var lock: PanelLockController
     private let modeChanger: PinModeChanger?
@@ -65,7 +66,27 @@ public struct SettingsView: View {
     }
 
     public var body: some View {
-        Group {
+        VStack(spacing: 0) {
+            HStack {
+                Text(ClavisUIStrings.Settings.windowTitle)
+                    .font(.system(size: 19, weight: .bold))
+                Spacer()
+                CircularGlassIconButton(
+                    icon: "xmark",
+                    size: 28,
+                    iconSize: 11,
+                    helpText: ClavisUIStrings.Common.cancel,
+                    accessibilityLabel: ClavisUIStrings.Common.cancel
+                ) {
+                    dismiss()
+                }
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 18)
+            .padding(.bottom, 12)
+
+            Divider()
+
             if !isUnlocked {
                 VStack(spacing: 16) {
                     Image(systemName: "lock.fill")
@@ -100,7 +121,6 @@ public struct SettingsView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(nsColor: .windowBackgroundColor))
             } else {
                 Form {
                     // Control Panel Lock Section
@@ -475,6 +495,9 @@ public struct SettingsView: View {
             }
     }
     .frame(width: 480, height: 600)
+    .onExitCommand {
+        dismiss()
+    }
     .onChange(of: lock.state) { _ in
         isSettingsAuthenticated = !lock.isEffectivelyLocked
     }
@@ -525,6 +548,9 @@ public struct SettingsView: View {
                 },
                 onDismiss: { activeSheet = nil }
             )
+            .dismissOnOutsideClick {
+                activeSheet = nil
+            }
         }
     }
 

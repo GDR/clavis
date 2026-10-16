@@ -679,6 +679,114 @@ public struct CircularGlassIconButton: View {
     }
 }
 
+public struct SheetOutsideClickDismissBridge: NSViewRepresentable {
+    public var onDismiss: () -> Void
 
+    public init(onDismiss: @escaping () -> Void) {
+        self.onDismiss = onDismiss
+    }
 
+    public func makeCoordinator() -> Coordinator {
+        Coordinator(onDismiss: onDismiss)
+    }
 
+    public func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.probeView = view
+        context.coordinator.installMonitor()
+        return view
+    }
+
+    public func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onDismiss = onDismiss
+        context.coordinator.probeView = nsView
+    }
+
+    public static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.removeMonitor()
+    }
+
+    public final class Coordinator {
+        public var onDismiss: () -> Void
+        public weak var probeView: NSView?
+        private var eventMonitor: Any?
+        private var didDismiss = false
+
+        public init(onDismiss: @escaping () -> Void) {
+            self.onDismiss = onDismiss
+        }
+
+        deinit {
+            if let monitor = eventMonitor {
+                NSEvent.removeMonitor(monitor)
+            }
+        }
+
+        public func installMonitor() {
+            guard eventMonitor == nil else { return }
+            eventMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+            ) { [weak self] event in
+                guard let self else { return event }
+                let screenPoint: NSPoint
+                if let eventWindow = event.window {
+                    screenPoint = eventWindow.convertPoint(toScreen: event.locationInWindow)
+                } else {
+                    screenPoint = NSEvent.mouseLocation
+                }
+                if self.handleMouseDown(in: event.window, screenLocation: screenPoint) {
+                    return nil
+                }
+                return event
+            }
+        }
+
+        public func removeMonitor() {
+            if let monitor = eventMonitor {
+                NSEvent.removeMonitor(monitor)
+                eventMonitor = nil
+            }
+        }
+
+        @discardableResult
+        public func handleMouseDown(in eventWindow: NSWindow?, screenLocation: NSPoint) -> Bool {
+            guard !didDismiss,
+                  let sheetWindow = probeView?.window,
+                  sheetWindow.attachedSheet == nil else {
+                return false
+            }
+
+            // Ignore clicks inside child windows (popovers, popup menus) or floating panels above the sheet
+            if let eventWindow,
+               eventWindow !== sheetWindow,
+               eventWindow !== sheetWindow.sheetParent {
+                if eventWindow.parent === sheetWindow || eventWindow.level > sheetWindow.level {
+                    return false
+                }
+            }
+
+            if sheetWindow.frame.contains(screenLocation) {
+                return false
+            }
+
+            if let parentWindow = sheetWindow.sheetParent,
+               !parentWindow.frame.contains(screenLocation) {
+                return false
+            }
+
+            didDismiss = true
+            removeMonitor()
+            onDismiss()
+            return true
+        }
+    }
+}
+
+public extension View {
+    func dismissOnOutsideClick(_ onDismiss: @escaping () -> Void) -> some View {
+        self.background(
+            SheetOutsideClickDismissBridge(onDismiss: onDismiss)
+                .frame(width: 0, height: 0)
+        )
+    }
+}

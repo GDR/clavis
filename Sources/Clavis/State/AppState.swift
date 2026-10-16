@@ -5,6 +5,7 @@ import UserNotifications
 
 public enum KeyManagerSheet: String, Identifiable {
     case create
+    case settings
 
     public var id: String { rawValue }
 }
