@@ -171,17 +171,50 @@ public struct LiquidGlassCapsuleControlModifier: ViewModifier {
     }
 }
 
+private let macOSGlassRolloverTint = Color(nsColor: NSColor(name: nil) { appearance in
+    appearance.isDarkMode
+        ? NSColor(calibratedWhite: 1.0, alpha: 0.12)
+        : NSColor(calibratedWhite: 0.0, alpha: 0.06)
+})
+
 public struct LiquidGlassButtonStyleModifier: ViewModifier {
     public var isProminent: Bool = false
+    @State private var isHovered: Bool = false
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    private var rolloverBrightness: Double {
+        guard isHovered else { return 0 }
+        return colorScheme == .dark ? 0.08 : -0.04
+    }
 
     @ViewBuilder
     public func body(content: Content) -> some View {
         if #available(macOS 26.0, *), !reduceTransparency {
             if isProminent {
-                content.buttonStyle(.glassProminent)
+                content
+                    .buttonStyle(.glassProminent)
+                    .brightness(rolloverBrightness)
+                    .onHover { hovering in
+                        withAnimation(.easeInOut(duration: 0.12)) {
+                            isHovered = hovering
+                        }
+                    }
             } else {
-                content.buttonStyle(.glass)
+                content
+                    .buttonStyle(
+                        .glass(
+                            isHovered
+                                ? .regular.tint(macOSGlassRolloverTint).interactive()
+                                : .regular.interactive()
+                        )
+                    )
+                    .brightness(rolloverBrightness)
+                    .onHover { hovering in
+                        withAnimation(.easeInOut(duration: 0.12)) {
+                            isHovered = hovering
+                        }
+                    }
             }
         } else {
             if isProminent {
@@ -493,6 +526,7 @@ public struct CircularGlassIconButton: View {
     public let action: () -> Void
 
     @State private var isHovered: Bool = false
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     public init(
@@ -547,6 +581,11 @@ public struct CircularGlassIconButton: View {
         return .primary
     }
 
+    private var rolloverBrightness: Double {
+        guard isHovered else { return 0 }
+        return colorScheme == .dark ? 0.08 : -0.04
+    }
+
     public var body: some View {
         Button(action: action) {
             iconLabel
@@ -571,6 +610,7 @@ public struct CircularGlassIconButton: View {
         if #available(macOS 26.0, *), !reduceTransparency {
             baseIcon
                 .glassEffect(resolvedGlassEffect, in: .circle)
+                .brightness(rolloverBrightness)
                 .contentShape(Circle())
         } else {
             baseIcon
@@ -605,6 +645,11 @@ public struct CircularGlassIconButton: View {
         if isActive {
             return .regular
                 .tint(Color.accentColor.opacity(isHovered ? 0.28 : 0.18))
+                .interactive()
+        }
+        if isHovered {
+            return .regular
+                .tint(macOSGlassRolloverTint)
                 .interactive()
         }
         return .regular.interactive()
