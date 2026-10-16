@@ -318,83 +318,81 @@ public struct AgentPolicyView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 14) {
-                // Approval Mode
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        HStack(spacing: 6) {
-                            Text(ClavisUIStrings.AgentPolicy.modeTitle)
-                                .font(.system(size: 13, weight: .semibold))
-                            if isModeDirty {
-                                AgentPolicyUnsavedBadge()
+            Form {
+                Section {
+                    VStack(alignment: .leading, spacing: 14) {
+                        // Approval Mode
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                HStack(spacing: 6) {
+                                    Text(ClavisUIStrings.AgentPolicy.modeTitle)
+                                        .font(.system(size: 13, weight: .semibold))
+                                    if isModeDirty {
+                                        AgentPolicyUnsavedBadge()
+                                    }
+                                }
+                                Spacer()
+                                Picker("", selection: $mode) {
+                                    Text(ClavisUIStrings.AgentPolicy.modeNone).tag(AgentKeyPolicy.Mode.none)
+                                    Text(ClavisUIStrings.AgentPolicy.modeNotify).tag(AgentKeyPolicy.Mode.notify)
+                                    Text(ClavisUIStrings.AgentPolicy.modeAsk).tag(AgentKeyPolicy.Mode.ask)
+                                }
+                                .labelsHidden()
+                            }
+
+                            // Notification permissions warning banner (#98)
+                            if showNotificationWarning {
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundColor(.orange)
+                                        .font(.system(size: 13))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Notifications Disabled")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundColor(.primary)
+                                        Text("Clavis notification banners are disabled in macOS System Settings. In Notify mode, agent signatures will proceed without visual alerts.")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(DesignTokens.textSecondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    Spacer()
+                                    Button("Open Settings") {
+                                        openNotificationSettings()
+                                    }
+                                    .liquidGlassButton()
+                                    .controlSize(.small)
+                                }
+                                .padding(10)
+                                .background(Color.orange.opacity(0.12))
+                                .cornerRadius(8)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.orange.opacity(0.3), lineWidth: 1)
+                                )
                             }
                         }
-                        Spacer()
-                        Picker("", selection: $mode) {
-                            Text(ClavisUIStrings.AgentPolicy.modeNone).tag(AgentKeyPolicy.Mode.none)
-                            Text(ClavisUIStrings.AgentPolicy.modeNotify).tag(AgentKeyPolicy.Mode.notify)
-                            Text(ClavisUIStrings.AgentPolicy.modeAsk).tag(AgentKeyPolicy.Mode.ask)
-                        }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                        .frame(width: 170)
-                    }
 
-                    // Notification permissions warning banner (#98)
-                    if showNotificationWarning {
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(.orange)
-                                .font(.system(size: 13))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Notifications Disabled")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.primary)
-                                Text("Clavis notification banners are disabled in macOS System Settings. In Notify mode, agent signatures will proceed without visual alerts.")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(DesignTokens.textSecondary)
-                                    .fixedSize(horizontal: false, vertical: true)
+                        Divider().background(DesignTokens.cardBorder)
+
+                        // Session Length
+                        HStack {
+                            HStack(spacing: 6) {
+                                Text(ClavisUIStrings.AgentPolicy.leaseTitle)
+                                    .font(.system(size: 13, weight: .semibold))
+                                if isLeaseDirty {
+                                    AgentPolicyUnsavedBadge()
+                                }
                             }
                             Spacer()
-                            Button("Open Settings") {
-                                openNotificationSettings()
+                            Picker("", selection: $leaseMinutes) {
+                                ForEach(Self.leaseOptions, id: \.self) { minutes in
+                                    Text(ClavisUIStrings.PanelLock.minutesFormat(minutes)).tag(minutes)
+                                }
                             }
-                            .liquidGlassButton()
-                            .controlSize(.small)
+                            .labelsHidden()
                         }
-                        .padding(10)
-                        .background(Color.orange.opacity(0.12))
-                        .cornerRadius(8)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.orange.opacity(0.3), lineWidth: 1)
-                        )
-                    }
-                }
 
-                Divider().background(DesignTokens.cardBorder)
-
-                // Session Length
-                HStack {
-                    HStack(spacing: 6) {
-                        Text(ClavisUIStrings.AgentPolicy.leaseTitle)
-                            .font(.system(size: 13, weight: .semibold))
-                        if isLeaseDirty {
-                            AgentPolicyUnsavedBadge()
-                        }
-                    }
-                    Spacer()
-                    Picker("", selection: $leaseMinutes) {
-                        ForEach(Self.leaseOptions, id: \.self) { minutes in
-                            Text(ClavisUIStrings.PanelLock.minutesFormat(minutes)).tag(minutes)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .frame(width: 120)
-                }
-
-                Divider().background(DesignTokens.cardBorder)
+                        Divider().background(DesignTokens.cardBorder)
 
                 // Allowed Hosts (#97)
                 VStack(alignment: .leading, spacing: 8) {
@@ -565,10 +563,11 @@ public struct AgentPolicyView: View {
                     .liquidGlassButton(prominent: true)
                     .tint(DesignTokens.accentBlue)
                     .disabled(isSaveDisabled)
+                        }
+                    }
                 }
             }
-            .padding(14)
-            .glassCard(cornerRadius: 10)
+            .groupedEmbeddedForm(zeroMargins: true)
         }
         .onAppear {
             loadPolicy()

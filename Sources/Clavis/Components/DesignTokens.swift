@@ -80,3 +80,21 @@ extension NSAppearance {
     }
 }
 
+public extension View {
+    @ViewBuilder
+    func groupedEmbeddedForm(zeroMargins: Bool = false) -> some View {
+        if #available(macOS 14.0, *), zeroMargins {
+            self
+                .formStyle(.grouped)
+                .scrollDisabled(true)
+                .scrollContentBackground(.hidden)
+                .contentMargins(.zero, for: .scrollContent)
+        } else {
+            self
+                .formStyle(.grouped)
+                .scrollDisabled(true)
+                .scrollContentBackground(.hidden)
+        }
+    }
+}
+
