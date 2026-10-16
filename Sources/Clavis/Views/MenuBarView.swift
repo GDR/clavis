@@ -128,9 +128,8 @@ public struct MenuBarView: View {
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(Color.red.opacity(0.15))
                         .foregroundColor(.red)
-                        .clipShape(Capsule())
+                        .liquidGlassCapsuleControl(tint: Color.red.opacity(0.15))
                     }
                     .buttonStyle(.plain)
                 }
@@ -200,8 +199,7 @@ public struct MenuBarView: View {
                             .font(.system(size: 10, weight: .medium))
                             .padding(.horizontal, 7)
                             .padding(.vertical, 3)
-                            .background(Color.secondary.opacity(0.15))
-                            .cornerRadius(4)
+                            .liquidGlassControl(cornerRadius: 4, tint: Color.secondary.opacity(0.15))
                     }
                     .buttonStyle(.plain)
                 }
@@ -266,8 +264,7 @@ public struct MenuBarView: View {
                                     .font(.system(size: 10, weight: .medium))
                                     .padding(.horizontal, 7)
                                     .padding(.vertical, 3)
-                                    .background(Color.secondary.opacity(0.15))
-                                    .cornerRadius(4)
+                                    .liquidGlassControl(cornerRadius: 4, tint: Color.secondary.opacity(0.15))
                             }
                             .menuStyle(.borderlessButton)
                             .fixedSize()
@@ -279,8 +276,7 @@ public struct MenuBarView: View {
                                     .font(.system(size: 10, weight: .medium))
                                     .padding(.horizontal, 7)
                                     .padding(.vertical, 3)
-                                    .background(Color.secondary.opacity(0.15))
-                                    .cornerRadius(4)
+                                    .liquidGlassControl(cornerRadius: 4, tint: Color.secondary.opacity(0.15))
                             }
                             .buttonStyle(.plain)
                         }
@@ -345,13 +341,8 @@ public struct MenuBarView: View {
                         icon: "lock.open.fill",
                         shortcut: "⌘U"
                     ) {
-                        ClavisLogger.promptDebug("calvis-ui", "MenuBarView: unlock triggered by user")
-                        Task {
-                            await lock.unlock()
-                            if !lock.isEffectivelyLocked {
-                                WindowManager.shared.openKeyManager()
-                            }
-                        }
+                        ClavisLogger.promptDebug("calvis-ui", "MenuBarView: unlock triggered by user — opening locked window")
+                        WindowManager.shared.openKeyManager()
                     }
                 }
 
@@ -543,9 +534,8 @@ struct MenuBarIdentityRow: View {
                 }
                 .padding(.horizontal, 9)
                 .padding(.vertical, 4)
-                .background(isCopied ? Color.green.opacity(0.20) : Color.primary.opacity(0.08))
                 .foregroundColor(isCopied ? .green : .primary)
-                .clipShape(Capsule())
+                .liquidGlassCapsuleControl(tint: isCopied ? Color.green.opacity(0.20) : Color.primary.opacity(0.08))
             }
             .buttonStyle(.plain)
             .accessibilityLabel(ClavisUIStrings.Accessibility.copyPublicKey)
@@ -731,8 +721,7 @@ struct MenuBarIdleTimerItem: View {
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Color.secondary.opacity(0.15))
-                    .cornerRadius(4)
+                    .liquidGlassControl(cornerRadius: 4, tint: Color.secondary.opacity(0.15))
             }
             .menuStyle(.borderlessButton)
             .fixedSize()

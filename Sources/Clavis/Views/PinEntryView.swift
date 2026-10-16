@@ -145,14 +145,7 @@ public struct PinEntryView: View {
         }
         .padding(.horizontal, 10)
         .frame(height: 34)
-        .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.65))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(DesignTokens.cardBorder, lineWidth: 1)
-        )
+        .liquidGlassControl(cornerRadius: 9)
     }
 
     private var unlockButton: some View {
@@ -166,7 +159,7 @@ public struct PinEntryView: View {
                     .frame(maxWidth: isInlineBanner ? nil : .infinity)
             }
         }
-        .buttonStyle(.borderedProminent)
+        .liquidGlassButton(prominent: true)
         .controlSize(.large)
         .keyboardShortcut(.defaultAction)
         .disabled(pin.count < 6 || waitRemaining > 0 || isSubmitting)
@@ -180,7 +173,7 @@ public struct PinEntryView: View {
                     .frame(maxWidth: isInlineBanner ? nil : .infinity)
             }
         }
-        .buttonStyle(.bordered)
+        .liquidGlassButton(prominent: false)
         .controlSize(.large)
         .disabled(isSubmitting)
     }
