@@ -9,6 +9,11 @@ public enum KeyManagerSheet: String, Identifiable {
     public var id: String { rawValue }
 }
 
+public enum MainWindowPane: String, Equatable, Sendable {
+    case keys
+    case history
+}
+
 public struct ActiveGitGraceInfo: Equatable, Identifiable, Sendable {
     public var id: String { keyLabel }
     public let keyLabel: String
@@ -131,6 +136,14 @@ public class AppState: ObservableObject {
                 settingsViewModel.activeSheet = activeSheet
             }
         }
+    }
+
+    @Published public var activeMainPane: MainWindowPane = .keys
+    @Published public var historyFilterKeyFingerprint: String? = nil
+
+    public func openHistoryPane(forKeyFingerprint fingerprint: String? = nil) {
+        self.historyFilterKeyFingerprint = fingerprint
+        self.activeMainPane = .history
     }
 
     // MARK: - Focused Child ViewModels
@@ -486,6 +499,15 @@ public class AppState: ObservableObject {
         try keyManagementViewModel.deleteKey(label: label)
     }
 
+    @discardableResult
+    public func renameKey(from oldLabel: String, to newLabel: String) throws -> SSHKeyInfo {
+        defer {
+            self.keys = keyManagementViewModel.keys
+            self.errorMessage = keyManagementViewModel.errorMessage
+        }
+        return try keyManagementViewModel.renameKey(from: oldLabel, to: newLabel)
+    }
+
     public func changeKeyKind(label: String, to newPurpose: KeyPurpose) throws {
         defer {
             self.keys = keyManagementViewModel.keys
@@ -504,6 +526,35 @@ public class AppState: ObservableObject {
             self.errorMessage = keyManagementViewModel.errorMessage
         }
         try keyManagementViewModel.lockKey(label: label)
+    }
+
+    public func gracePeriod(for key: SSHKeyInfo) -> KeyGracePeriod {
+        keyManagementViewModel.gracePeriod(for: key)
+    }
+
+    public func setGracePeriod(_ period: KeyGracePeriod, for key: SSHKeyInfo) {
+        keyManagementViewModel.setGracePeriod(period, for: key)
+        if period == .always {
+            revokeGitGrace(for: key.label)
+            for session in agentSessions where session.keyFingerprint == key.fingerprint {
+                endAgentSession(id: session.id)
+            }
+        }
+        objectWillChange.send()
+    }
+
+    public func isKeyUnlocked(_ key: SSHKeyInfo) -> Bool {
+        let now = Date()
+        let hasActiveGrace = activeGitGraces.contains { $0.keyLabel == key.label && $0.remainingSeconds > 0 }
+        let hasActiveSession = agentSessions.contains { $0.keyFingerprint == key.fingerprint && $0.expiresAt > now }
+        return hasActiveGrace || hasActiveSession
+    }
+
+    public func lastActivityDate(for key: SSHKeyInfo) -> Date? {
+        var query = AuditQuery()
+        query.keyFingerprint = key.fingerprint
+        query.limit = 1
+        return (try? AuditStore().query(query).first)?.event.time
     }
 
     public func clearError() {

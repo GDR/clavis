@@ -53,7 +53,7 @@ public final class PanelLockController: ObservableObject {
     public static let didLockNotification = NSNotification.Name("com.clavis.panelDidLock")
     public static let enabledKey = "panelLock.enabled"
     public static let idleMinutesKey = "panelLock.idleMinutes"
-    public static let idleOptions = [1, 5, 15, 60]
+    public static let idleOptions = [1, 5, 15, 30, 60]
 
     private let defaults: UserDefaults
     private let authenticator: PanelAuthenticating

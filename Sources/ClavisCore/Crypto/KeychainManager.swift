@@ -882,6 +882,124 @@ public class KeychainManager {
         }
     }
 
+    /// Rename an existing key label across the private key store, shadow vault, and public key store.
+    @discardableResult
+    public func renameKey(from oldLabel: String, to newLabel: String) throws -> SSHKeyInfo {
+        #if DEBUG
+        if let context = self.testContext, TestContextScope.current == nil {
+            return try TestContextScope.$current.withValue(context) {
+                try self.renameKey(from: oldLabel, to: newLabel)
+            }
+        }
+        #endif
+
+        let trimmedNew = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        try validateLabel(trimmedNew)
+
+        guard let key = try fetchKeyInfo(label: oldLabel) else {
+            throw KeychainManagerError.keyNotFound(label: oldLabel)
+        }
+
+        if trimmedNew == oldLabel {
+            return key
+        }
+
+        if try fetchKeyInfo(label: trimmedNew) != nil
+            || privateKeyStore.contains(label: trimmedNew)
+            || vaultStore.hasRecord(label: trimmedNew) {
+            throw KeychainManagerError.keyAlreadyExists(label: trimmedNew)
+        }
+
+        let nonInteractiveContext = LAContext()
+        nonInteractiveContext.interactionNotAllowed = true
+        var rawRecordData: Data? = try? privateKeyStore.load(label: oldLabel, context: nonInteractiveContext, prompt: "")
+        if rawRecordData == nil {
+            rawRecordData = try? privateKeyStore.load(label: oldLabel, context: LAContext(), prompt: "")
+        }
+
+        var loadedRecord: StoredPrivateKeyRecord? = nil
+        if let rawRecordData {
+            loadedRecord = try? StoredPrivateKeyRecord.decode(from: rawRecordData)
+        }
+        if loadedRecord == nil, vaultStore.hasRecord(label: oldLabel) {
+            loadedRecord = try? vaultStore.loadRecord(label: oldLabel, context: nil)
+        }
+
+        guard var record = loadedRecord else {
+            throw KeychainManagerError.privateKeyNotFound(label: oldLabel)
+        }
+        defer { record.wipe() }
+
+        var updatedRecord = StoredPrivateKeyRecord(
+            version: record.version,
+            label: trimmedNew,
+            algorithm: record.algorithm,
+            storageType: record.storageType,
+            biometricPolicy: record.biometricPolicy,
+            keyPurpose: record.keyPurpose,
+            keyData: record.keyData,
+            createdAt: record.createdAt
+        )
+        defer { updatedRecord.wipe() }
+
+        var recordData = try updatedRecord.encode()
+        defer { Self.wipeData(&recordData) }
+
+        let hadVaultRecord = vaultStore.hasRecord(label: oldLabel)
+        try privateKeyStore.save(label: trimmedNew, data: recordData, accessControlFlags: [])
+        do {
+            if hadVaultRecord {
+                try vaultStore.saveRecord(updatedRecord)
+            }
+        } catch {
+            try? privateKeyStore.remove(label: trimmedNew, context: nonInteractiveContext, prompt: "")
+            throw error
+        }
+
+        let openSSH: String
+        if let signer = try? signerRegistry.signer(forAlgorithmName: key.algorithm) {
+            openSSH = signer.formatOpenSSHPublicKey(publicKeyBlob: key.publicKeyBlob, label: trimmedNew)
+        } else {
+            let parts = key.publicKeyOpenSSH.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            if parts.count >= 2 {
+                openSSH = "\(parts[0]) \(parts[1]) \(trimmedNew)"
+            } else {
+                openSSH = key.publicKeyOpenSSH
+            }
+        }
+
+        let updatedKeyInfo = SSHKeyInfo(
+            label: trimmedNew,
+            publicKeyOpenSSH: openSSH,
+            publicKeyBlob: key.publicKeyBlob,
+            fingerprint: key.fingerprint,
+            createdAt: key.createdAt,
+            algorithmName: key.algorithmName,
+            storage: key.storage,
+            biometricPolicy: key.biometricPolicy,
+            keyPurpose: key.keyPurpose
+        )
+
+        do {
+            try PublicKeyStore.saveChecked(updatedKeyInfo)
+            try PublicKeyStore.removeChecked(label: oldLabel)
+        } catch {
+            try? privateKeyStore.remove(label: trimmedNew, context: nonInteractiveContext, prompt: "")
+            if hadVaultRecord {
+                vaultStore.removeRecord(label: trimmedNew)
+            }
+            throw error
+        }
+
+        try? privateKeyStore.remove(label: oldLabel, context: nonInteractiveContext, prompt: "")
+        if hadVaultRecord {
+            vaultStore.removeRecord(label: oldLabel)
+        }
+        try? revokeKeyCapabilities(label: oldLabel)
+        ClavisLogger.log("KEY_RENAME", "Renamed key '\(oldLabel)' to '\(trimmedNew)'.")
+        return updatedKeyInfo
+    }
+
     public func syncVault(repair: Bool = false) throws -> VaultSyncReport {
         #if DEBUG
         if let context = self.testContext, TestContextScope.current == nil {

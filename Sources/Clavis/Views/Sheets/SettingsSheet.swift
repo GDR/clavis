@@ -81,13 +81,14 @@ public struct SettingsView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.regular)
+                        .keyboardShortcut(.defaultAction)
                         .disabled(isAuthenticating)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(nsColor: .windowBackgroundColor))
                 .task {
-                    if !lock.currentMode.requiresPIN {
+                    if !lock.currentMode.requiresPIN && !lock.isLocked {
                         await authenticateSettings()
                     }
                 }
@@ -121,20 +122,20 @@ public struct SettingsView: View {
                             SettingsRow(
                                 icon: "timer",
                                 iconColor: Color(red: 0.35, green: 0.78, blue: 0.98),
-                                title: ClavisUIStrings.PanelLock.settingsIdle,
-                                subtitle: ""
+                                title: "Grace period",
+                                subtitle: Self.inactivityGraceNote(minutes: lock.idleMinutes)
                             ) {
                                 Picker("", selection: Binding(
                                     get: { lock.idleMinutes },
                                     set: { lock.idleMinutes = $0 }
                                 )) {
                                     ForEach(PanelLockController.idleOptions, id: \.self) { minutes in
-                                        Text(ClavisUIStrings.PanelLock.minutesFormat(minutes))
+                                        Text(Self.inactivityOptionLabel(minutes: minutes))
                                             .tag(minutes)
                                     }
                                 }
                                 .pickerStyle(.menu)
-                                .frame(width: 120)
+                                .frame(width: 130)
                             }
                         }
                     }
@@ -560,6 +561,15 @@ public struct SettingsView: View {
         } else {
             activeSheet = .modeChange(mode)
         }
+    }
+
+    public static func inactivityGraceNote(minutes: Int) -> String {
+        let unit = minutes == 1 ? "minute" : "minutes"
+        return "Lock the Clavis window after \(minutes) \(unit) of inactivity."
+    }
+
+    public static func inactivityOptionLabel(minutes: Int) -> String {
+        minutes == 1 ? "1 minute" : "\(minutes) minutes"
     }
 
     private func modeTitle(for mode: AuditReadMode) -> String {

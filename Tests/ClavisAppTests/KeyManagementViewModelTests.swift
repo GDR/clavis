@@ -150,4 +150,39 @@ final class KeyManagementViewModelTests {
             #expect(viewModel.errorMessage == nil)
         }
     }
+
+    @Test @MainActor
+    func testRenameKeyUpdatesLabelAndPreservesFingerprint() async throws {
+        try await withTestEnv { viewModel, keyManager in
+            let original = try viewModel.generateKey(label: "old-name", keyPurpose: .general)
+            let renamed = try viewModel.renameKey(from: "old-name", to: "new-name")
+
+            #expect(renamed.label == "new-name")
+            #expect(renamed.fingerprint == original.fingerprint)
+            #expect(renamed.publicKeyOpenSSH.hasSuffix("new-name"))
+            #expect(viewModel.keys.count == 1)
+            #expect(viewModel.keys.first?.label == "new-name")
+            #expect((try keyManager.fetchKeyInfo(label: "old-name")) == nil)
+            #expect((try keyManager.fetchKeyInfo(label: "new-name"))?.fingerprint == original.fingerprint)
+
+            // Reject empty / whitespace-only rename
+            #expect(throws: KeychainManagerError.invalidLabel) {
+                try viewModel.renameKey(from: "new-name", to: "   ")
+            }
+        }
+    }
+
+    @Test @MainActor
+    func testGracePeriodDefaultAndPersistenceAcrossRename() async throws {
+        try await withTestEnv { viewModel, _ in
+            let key = try viewModel.generateKey(label: "grace-key", keyPurpose: .general)
+            #expect(viewModel.gracePeriod(for: key) == .fifteenMinutes)
+
+            viewModel.setGracePeriod(.fiveMinutes, for: key)
+            #expect(viewModel.gracePeriod(for: key) == .fiveMinutes)
+
+            let renamed = try viewModel.renameKey(from: "grace-key", to: "grace-key-renamed")
+            #expect(viewModel.gracePeriod(for: renamed) == .fiveMinutes)
+        }
+    }
 }

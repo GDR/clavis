@@ -417,6 +417,10 @@ public struct MenuBarView: View {
                 }
 
                 if visibleSections.contains(.settings) {
+                    if lock.isEnabled {
+                        MenuBarIdleTimerItem(lock: lock)
+                    }
+
                     MenuBarActionItem(
                         title: ClavisUIStrings.MenuBar.settings,
                         icon: "gearshape",
@@ -692,6 +696,55 @@ struct MenuBarActionItem: View {
         } else {
             button
         }
+    }
+}
+
+struct MenuBarIdleTimerItem: View {
+    @ObservedObject var lock: PanelLockController
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "timer")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+                .frame(width: 16)
+            Text(ClavisUIStrings.PanelLock.settingsIdle)
+                .font(.system(size: 12, weight: .regular))
+                .foregroundColor(.primary)
+            Spacer()
+            Menu {
+                ForEach(PanelLockController.idleOptions, id: \.self) { minutes in
+                    Button {
+                        lock.idleMinutes = minutes
+                    } label: {
+                        if lock.idleMinutes == minutes {
+                            Label(ClavisUIStrings.PanelLock.minutesFormat(minutes), systemImage: "checkmark")
+                        } else {
+                            Text(ClavisUIStrings.PanelLock.minutesFormat(minutes))
+                        }
+                    }
+                }
+            } label: {
+                Text(ClavisUIStrings.PanelLock.minutesFormat(lock.idleMinutes))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.15))
+                    .cornerRadius(4)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
     }
 }
 
