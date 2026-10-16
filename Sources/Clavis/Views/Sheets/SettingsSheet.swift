@@ -11,7 +11,7 @@ public enum PinModeUI {
 
 public struct SettingsView: View {
     @EnvironmentObject var appState: AppState
-    @ObservedObject var lock = PanelLockController.shared
+    @ObservedObject var lock: PanelLockController
     private let modeChanger: PinModeChanger?
     @State private var globalMaxLease: Int = 1440
     @State private var lastSavedGlobalMaxLease: Int = 1440
@@ -45,16 +45,28 @@ public struct SettingsView: View {
         }
     }
 
-    public init(modeChanger: PinModeChanger? = nil, isSettingsAuthenticated: Bool = false) {
+    public init(
+        lock: PanelLockController? = nil,
+        modeChanger: PinModeChanger? = nil,
+        isSettingsAuthenticated: Bool = false
+    ) {
+        let resolvedLock = lock ?? PanelLockController.shared
+        self.lock = resolvedLock
         self.modeChanger = modeChanger ?? PinModeChanger.makeDefault()
         self._isSettingsAuthenticated = State(
-            initialValue: isSettingsAuthenticated || !PanelLockController.shared.isEffectivelyLocked
+            initialValue: isSettingsAuthenticated || !resolvedLock.isEffectivelyLocked
         )
+    }
+
+    /// Settings is unlocked whenever Clavis itself is unlocked (`!lock.isEffectivelyLocked`)
+    /// or when explicitly authenticated in-place.
+    public var isUnlocked: Bool {
+        isSettingsAuthenticated || !lock.isEffectivelyLocked
     }
 
     public var body: some View {
         Group {
-            if !isSettingsAuthenticated {
+            if !isUnlocked {
                 VStack(spacing: 16) {
                     Image(systemName: "lock.fill")
                         .font(.system(size: 48))
@@ -456,10 +468,17 @@ public struct SettingsView: View {
             }
             .padding(20)
         }
+        .onAppear {
+            if let global = appState.getGlobalPolicy() {
+                globalMaxLease = global.maxLeaseMinutes
+                lastSavedGlobalMaxLease = global.maxLeaseMinutes
+            }
+            checkVaultSync()
+        }
         }
     }
     .frame(width: 480, height: 600)
-    .onChange(of: lock.isLocked) { _ in
+    .onChange(of: lock.state) { _ in
         isSettingsAuthenticated = !lock.isEffectivelyLocked
     }
         .alert(ClavisUIStrings.PinUnlock.forgotPIN, isPresented: $showingResetAlert) {
@@ -510,17 +529,10 @@ public struct SettingsView: View {
                 onDismiss: { activeSheet = nil }
             )
         }
-        .onAppear {
-            if let global = appState.getGlobalPolicy() {
-                globalMaxLease = global.maxLeaseMinutes
-                lastSavedGlobalMaxLease = global.maxLeaseMinutes
-            }
-            checkVaultSync()
-        }
     }
 
     private func authenticateSettings() async {
-        guard !isAuthenticating && !isSettingsAuthenticated else { return }
+        guard !isAuthenticating && !isUnlocked else { return }
         isAuthenticating = true
         defer { isAuthenticating = false }
         await lock.unlock()
@@ -575,18 +587,14 @@ public struct SettingsView: View {
     private func checkVaultSync() {
         guard !isCheckingVault else { return }
         isCheckingVault = true
-        Task {
+        Task { @MainActor in
             do {
-                let report = try KeychainManager.shared.syncVault(repair: false)
-                await MainActor.run {
-                    self.vaultSyncReport = report
-                    self.isCheckingVault = false
-                }
+                let report = try appState.syncVault(repair: false)
+                self.vaultSyncReport = report
+                self.isCheckingVault = false
             } catch {
-                await MainActor.run {
-                    self.vaultRepairErrorMessage = error.localizedDescription
-                    self.isCheckingVault = false
-                }
+                self.vaultRepairErrorMessage = error.localizedDescription
+                self.isCheckingVault = false
             }
         }
     }
@@ -596,21 +604,19 @@ public struct SettingsView: View {
         isRepairingVault = true
         vaultRepairSuccessMessage = nil
         vaultRepairErrorMessage = nil
-        Task {
+        Task { @MainActor in
             do {
-                let report = try KeychainManager.shared.syncVault(repair: true)
-                _ = try? KeychainManager.shared.repairVault(replacePin: false)
-                await MainActor.run {
-                    self.vaultSyncReport = report
-                    self.isRepairingVault = false
-                    self.vaultRepairSuccessMessage = ClavisUIStrings.Settings.vaultRepaired
-                    self.appState.refresh()
+                let report = try appState.syncVault(repair: true)
+                if !ClavisEnvironment.isTesting {
+                    _ = try? KeychainManager.shared.repairVault(replacePin: false)
                 }
+                self.vaultSyncReport = report
+                self.isRepairingVault = false
+                self.vaultRepairSuccessMessage = ClavisUIStrings.Settings.vaultRepaired
+                self.appState.refresh()
             } catch {
-                await MainActor.run {
-                    self.isRepairingVault = false
-                    self.vaultRepairErrorMessage = error.localizedDescription
-                }
+                self.isRepairingVault = false
+                self.vaultRepairErrorMessage = error.localizedDescription
             }
         }
     }

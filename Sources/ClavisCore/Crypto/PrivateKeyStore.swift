@@ -109,14 +109,17 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
     }
 
     public func allLabels() throws -> [String] {
+        let context = LAContext()
+        context.interactionNotAllowed = true
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecReturnAttributes as String: true,
-            kSecMatchLimit as String: kSecMatchLimitAll
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecUseAuthenticationContext as String: context
         ]
         let (status, result) = copyItem(query as CFDictionary)
-        if status == errSecItemNotFound {
+        if status == errSecItemNotFound || status == errSecInteractionNotAllowed {
             return []
         }
         guard status == errSecSuccess else {
