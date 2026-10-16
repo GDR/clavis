@@ -107,6 +107,28 @@ public enum KeyPurpose: String, CaseIterable, Identifiable, Codable {
             return ClavisUIStrings.KeyPurposeStrings.agentSubtitle
         }
     }
+
+    public var sidebarLabel: String {
+        switch self {
+        case .general:
+            return "SSH & Git"
+        case .gitSigningOnly:
+            return "Git signing"
+        case .agent:
+            return "Agent"
+        }
+    }
+
+    public var inspectorLabel: String {
+        switch self {
+        case .general:
+            return "SSH & Git"
+        case .gitSigningOnly:
+            return "Git signing only"
+        case .agent:
+            return "Agent"
+        }
+    }
 }
 
 public enum KeyPurposeError: LocalizedError, Equatable {
@@ -124,8 +146,8 @@ public enum KeyPurposeError: LocalizedError, Equatable {
 }
 
 public enum BiometricPolicy: String, CaseIterable, Identifiable, Codable {
-    case userPresence = "userPresence"
     case biometryCurrentSet = "biometryCurrentSet"
+    case userPresence = "userPresence"
 
     public var id: String { rawValue }
 
@@ -162,6 +184,73 @@ public enum BiometricPolicy: String, CaseIterable, Identifiable, Codable {
             return [.privateKeyUsage, .userPresence]
         case .biometryCurrentSet:
             return [.privateKeyUsage, .biometryCurrentSet]
+        }
+    }
+}
+
+public enum KeyGracePeriod: String, CaseIterable, Identifiable, Codable, Equatable, Sendable {
+    case always = "always"
+    case session = "session"
+    case oneMinute = "1"
+    case twoMinutes = "2"
+    case fiveMinutes = "5"
+    case tenMinutes = "10"
+    case fifteenMinutes = "15"
+    case oneHour = "60"
+    case twoHours = "120"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .always: return "Always asks"
+        case .session: return "Per session"
+        case .oneMinute: return "1 min"
+        case .twoMinutes: return "2 min"
+        case .fiveMinutes: return "5 min"
+        case .tenMinutes: return "10 min"
+        case .fifteenMinutes: return "15 min"
+        case .oneHour: return "1 hour"
+        case .twoHours: return "2 hours"
+        }
+    }
+
+    public var durationSeconds: TimeInterval? {
+        switch self {
+        case .always: return nil
+        case .session: return 8 * 3600
+        case .oneMinute: return 60
+        case .twoMinutes: return 120
+        case .fiveMinutes: return 300
+        case .tenMinutes: return 600
+        case .fifteenMinutes: return 900
+        case .oneHour: return 3600
+        case .twoHours: return 7200
+        }
+    }
+
+    public var leaseMinutes: Int? {
+        switch self {
+        case .always: return nil
+        case .session: return 480
+        case .oneMinute: return 1
+        case .twoMinutes: return 2
+        case .fiveMinutes: return 5
+        case .tenMinutes: return 10
+        case .fifteenMinutes: return 15
+        case .oneHour: return 60
+        case .twoHours: return 120
+        }
+    }
+
+    public static func defaultPeriod(for purpose: KeyPurpose) -> KeyGracePeriod {
+        switch self.init(rawValue: "") {
+        default:
+            switch purpose {
+            case .general: return .fifteenMinutes
+            case .gitSigningOnly: return .fiveMinutes
+            case .agent: return .session
+            }
         }
     }
 }

@@ -204,6 +204,9 @@ final class PanelLockControllerTests {
         controller.idleMinutes = 15
         #expect(controller.idleMinutes == 15)
 
+        controller.idleMinutes = 30
+        #expect(controller.idleMinutes == 30)
+
         controller.idleMinutes = 60
         #expect(controller.idleMinutes == 60)
 

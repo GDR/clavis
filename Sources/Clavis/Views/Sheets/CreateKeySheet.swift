@@ -36,11 +36,17 @@ public struct CreateKeySheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var appState: AppState
 
+    public static let defaultBiometricPolicy: BiometricPolicy = .biometryCurrentSet
+    public static let defaultPurpose: KeyPurpose = .general
+    public static let subtitleText = "Choose how this key authorizes signatures and where it can be used."
+    public static let namePlaceholderText = "e.g. Personal age, Work GitHub, staging-server"
+    public static let secureEnclaveExplanation = "Your key is generated inside the Apple Secure Enclave using NIST P-256. The private key stays in hardware and cannot be exported."
+
     @FocusState private var isLabelFocused: Bool
     @State private var keyName: String = ""
     @State private var selectedPreset: KeyTypePreset = .hardware
-    @State private var selectedBiometricPolicy: BiometricPolicy = .userPresence
-    @State private var selectedPurpose: KeyPurpose = .general
+    @State private var selectedBiometricPolicy: BiometricPolicy = Self.defaultBiometricPolicy
+    @State private var selectedPurpose: KeyPurpose = Self.defaultPurpose
     @State private var isCreating = false
     @State private var errorMessage: String? = nil
 
@@ -48,15 +54,18 @@ public struct CreateKeySheet: View {
         self.appState = appState
     }
 
+    public var isGenerateDisabled: Bool {
+        keyName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCreating
+    }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             // Header
             VStack(alignment: .leading, spacing: 4) {
                 Text(ClavisUIStrings.CreateKey.title)
-                    .font(.title2)
-                    .fontWeight(.bold)
-                Text(ClavisUIStrings.CreateKey.subtitle)
-                    .font(.subheadline)
+                    .font(.system(size: 19, weight: .bold))
+                Text(Self.subtitleText)
+                    .font(.system(size: 12))
                     .foregroundColor(DesignTokens.textSecondary)
             }
 
@@ -77,135 +86,90 @@ public struct CreateKeySheet: View {
             // Name Field
             VStack(alignment: .leading, spacing: 6) {
                 Text(ClavisUIStrings.CreateKey.nameLabel)
-                    .font(.caption)
-                    .fontWeight(.semibold)
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(DesignTokens.textSecondary)
-                TextField(ClavisUIStrings.CreateKey.nameExamplePlaceholder, text: $keyName)
+                TextField(Self.namePlaceholderText, text: $keyName)
                     .textFieldStyle(.roundedBorder)
                     .focused($isLabelFocused)
-            }
-
-            // Key Architecture (Secure Enclave Informational Card)
-            VStack(alignment: .leading, spacing: 8) {
-                Text(ClavisUIStrings.CreateKey.typeLabel)
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(DesignTokens.textSecondary)
-
-                let isEnclaveAvailable = SecureEnclave.isAvailable
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: KeyTypePreset.hardware.icon)
-                        .font(.system(size: 20))
-                        .foregroundColor(DesignTokens.accentGreen)
-                        .frame(width: 24, height: 24)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            Text(KeyTypePreset.hardware.title)
-                                .font(.subheadline)
-                                .fontWeight(.semibold)
-                                .foregroundColor(.primary)
-                            Text(KeyTypePreset.hardware.badge)
-                                .font(.system(size: 9, weight: .bold))
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(DesignTokens.accentGreen.opacity(0.20))
-                                .foregroundColor(DesignTokens.accentGreen)
-                                .cornerRadius(3)
+                    .onSubmit {
+                        if !isGenerateDisabled {
+                            createKey()
                         }
-
-                        Text(isEnclaveAvailable ? KeyTypePreset.hardware.subtitle : ClavisUIStrings.CreateKey.enclaveUnavailable)
-                            .font(.caption2)
-                            .foregroundColor(DesignTokens.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        HStack(spacing: 6) {
-                            WorkflowTag(name: ClavisUIStrings.CreateKey.tagSSH, isSupported: true)
-                            WorkflowTag(name: ClavisUIStrings.CreateKey.tagGitSigning, isSupported: true)
-                        }
-                        .padding(.top, 4)
                     }
-
-                    Spacer()
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .background(
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(DesignTokens.cardBackground)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(DesignTokens.cardBorder, lineWidth: 1)
-                )
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(KeyTypePreset.hardware.title), \(KeyTypePreset.hardware.badge)")
             }
 
-            // Biometric Policy Selection
+            // Plain Secure Enclave Explanation Row (no Key Type heading, card, or badges)
+            let isEnclaveAvailable = SecureEnclave.isAvailable
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "cpu")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(DesignTokens.textSecondary)
+                    .frame(width: 18, height: 18)
+                    .padding(.top, 1)
+
+                Text(isEnclaveAvailable ? Self.secureEnclaveExplanation : ClavisUIStrings.CreateKey.enclaveUnavailable)
+                    .font(.system(size: 12))
+                    .foregroundColor(DesignTokens.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 2)
+            .accessibilityElement(children: .combine)
+
+            // Biometric Policy Selection (Strict Biometrics first and default, User Presence second)
             VStack(alignment: .leading, spacing: 6) {
                 Text(ClavisUIStrings.CreateKey.biometricPolicyLabel)
-                    .font(.caption)
-                    .fontWeight(.semibold)
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(DesignTokens.textSecondary)
 
                 HStack(spacing: 10) {
                     ForEach(BiometricPolicy.allCases) { policy in
+                        let isSelected = selectedBiometricPolicy == policy
                         Button(action: {
                             selectedBiometricPolicy = policy
                         }) {
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack {
                                     Image(systemName: policy == .biometryCurrentSet ? "touchid" : "person.badge.key.fill")
-                                        .foregroundColor(selectedBiometricPolicy == policy ? DesignTokens.accentGreen : .secondary)
+                                        .foregroundColor(isSelected ? .accentColor : .secondary)
                                     Spacer()
-                                    if selectedBiometricPolicy == policy {
+                                    if isSelected {
                                         Image(systemName: "checkmark.circle.fill")
-                                            .foregroundColor(DesignTokens.accentGreen)
+                                            .foregroundColor(.accentColor)
                                             .font(.caption)
                                     }
                                 }
                                 Text(policy.title)
-                                    .font(.subheadline)
-                                    .fontWeight(.medium)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.primary)
                                 Text(policy.subtitle)
-                                    .font(.caption2)
+                                    .font(.system(size: 11))
                                     .foregroundColor(DesignTokens.textSecondary)
                                     .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                             .padding(10)
-                            .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
+                            .frame(maxWidth: .infinity, minHeight: 74, alignment: .topLeading)
                             .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(selectedBiometricPolicy == policy ? DesignTokens.accentGreen.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor).opacity(0.6))
                             )
                             .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(selectedBiometricPolicy == policy ? DesignTokens.accentGreen : DesignTokens.cardBorder, lineWidth: 1)
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .stroke(isSelected ? Color.accentColor : DesignTokens.cardBorder, lineWidth: 1)
                             )
                         }
                         .buttonStyle(.plain)
+                        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                     }
-                }
-
-                if selectedBiometricPolicy == .biometryCurrentSet {
-                    HStack(spacing: 6) {
-                        Image(systemName: "exclamationmark.shield.fill")
-                            .foregroundColor(DesignTokens.accentOrange)
-                            .font(.caption2)
-                        Text(ClavisUIStrings.CreateKey.biometricWarning)
-                            .font(.caption2)
-                            .foregroundColor(DesignTokens.textSecondary)
-                    }
-                    .padding(.horizontal, 4)
-                    .padding(.top, 2)
                 }
             }
 
-            // Key Purpose (Domain Isolation)
+            // Key Purpose & Scope
             KeyPurposePicker(
                 selection: $selectedPurpose,
-                accent: DesignTokens.accentGreen
+                accent: .accentColor
             )
 
             // Footer / Actions
@@ -221,14 +185,13 @@ public struct CreateKeySheet: View {
                     createKey()
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(DesignTokens.accentGreen)
                 .keyboardShortcut(.defaultAction)
-                .disabled(keyName.trimmingCharacters(in: .whitespaces).isEmpty || isCreating)
+                .disabled(isGenerateDisabled)
             }
-            .padding(.top, 8)
+            .padding(.top, 6)
         }
-        .padding(24)
-        .frame(width: 580)
+        .padding(22)
+        .frame(width: 560)
         .onAppear {
             isLabelFocused = true
             ClavisLogger.promptDebug("calvis-ui", "CreateKeySheet: presenting create key sheet")
@@ -236,7 +199,7 @@ public struct CreateKeySheet: View {
     }
 
     private func createKey() {
-        let label = keyName.trimmingCharacters(in: .whitespaces)
+        let label = keyName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !label.isEmpty else { return }
         ClavisLogger.promptDebug("calvis-ui", "CreateKeySheet: submitting create key for '\(label)' (preset: \(selectedPreset.rawValue), purpose: \(selectedPurpose.rawValue))")
 
@@ -256,20 +219,5 @@ public struct CreateKeySheet: View {
             errorMessage = error.localizedDescription
             isCreating = false
         }
-    }
-}
-
-private struct WorkflowTag: View {
-    let name: String
-    let isSupported: Bool
-
-    var body: some View {
-        Text(name)
-            .font(.system(size: 10, weight: .medium))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(isSupported ? Color.white.opacity(0.08) : Color.red.opacity(0.12))
-            .foregroundColor(isSupported ? DesignTokens.textSecondary : .red.opacity(0.8))
-            .cornerRadius(4)
     }
 }

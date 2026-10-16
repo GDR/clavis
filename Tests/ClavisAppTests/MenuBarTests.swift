@@ -292,4 +292,23 @@ final class MenuBarTests {
         #expect(!lockedWithSessions.contains(.identities))
         #expect(!lockedWithSessions.contains(.openKeyManager))
     }
+
+    @Test
+    func testMenuBarIdleTimerItem() {
+        let suite = "com.clavis.tests.menubar.idle.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let controller = PanelLockController(defaults: defaults)
+        #expect(controller.idleMinutes == 5)
+
+        let item = MenuBarIdleTimerItem(lock: controller)
+        let hosting = NSHostingView(rootView: item)
+        hosting.frame = NSRect(x: 0, y: 0, width: 320, height: 32)
+        hosting.layout()
+
+        controller.idleMinutes = 15
+        #expect(controller.idleMinutes == 15)
+        hosting.layout()
+    }
 }

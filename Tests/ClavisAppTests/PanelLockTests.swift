@@ -191,4 +191,54 @@ final class PanelLockTests {
         let onboardingView = EmptyVaultOnboardingView(lock: controller)
         _ = onboardingView.body
     }
+
+    @Test func test_idleLock_doesNotAutoPromptAuthentication() async {
+        let fakeAuth = FakePanelAuthenticator()
+        var currentTime = Date(timeIntervalSince1970: 1000)
+        let controller = PanelLockController(
+            defaults: testDefaults,
+            authenticator: fakeAuth,
+            now: { currentTime },
+            vaultKeyCount: { 1 }
+        )
+
+        await controller.unlock()
+        #expect(fakeAuth.authCount == 1)
+        #expect(!controller.isEffectivelyLocked)
+
+        let gate = PanelLockGate(lock: controller) {
+            Text("Protected Content")
+        }
+        let hosting = NSHostingView(rootView: gate)
+        hosting.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+        hosting.layout()
+
+        // Advance past idleMinutes so tick() locks the controller
+        currentTime += Double(controller.idleMinutes * 60 + 1)
+        controller.tick()
+        #expect(controller.isEffectivelyLocked)
+
+        hosting.layout()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        #expect(fakeAuth.authCount == 1, "Locking on idle must not automatically re-prompt authentication")
+        #expect(controller.isEffectivelyLocked)
+    }
+
+    @Test func test_windowWillClose_clearsContentViewController() {
+        let wm = WindowManager()
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = NSHostingController(rootView: Text("Test"))
+        wm.keyManagerWindow = window
+
+        wm.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: window))
+
+        #expect(wm.keyManagerWindow == nil)
+        #expect(window.contentViewController == nil)
+    }
 }

@@ -54,11 +54,6 @@ public struct LockedPlaceholderView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
-        .task {
-            if !lock.currentMode.requiresPIN {
-                await lock.unlock()
-            }
-        }
     }
 }
 

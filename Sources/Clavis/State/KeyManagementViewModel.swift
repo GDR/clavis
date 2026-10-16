@@ -10,13 +10,16 @@ public class KeyManagementViewModel: ObservableObject {
 
     private let keyManager: KeychainManager
     private let agentLifecycle: any AgentControlling
+    private let defaults: UserDefaults
 
     public init(
         keyManager: KeychainManager = .shared,
-        agentLifecycle: any AgentControlling = AgentLifecycleManager.shared
+        agentLifecycle: any AgentControlling = AgentLifecycleManager.shared,
+        defaults: UserDefaults = .standard
     ) {
         self.keyManager = keyManager
         self.agentLifecycle = agentLifecycle
+        self.defaults = defaults
         refresh()
     }
 
@@ -52,6 +55,12 @@ public class KeyManagementViewModel: ObservableObject {
         try keyManager.deleteKey(label: label)
     }
 
+    @discardableResult
+    public func renameKey(from oldLabel: String, to newLabel: String) throws -> SSHKeyInfo {
+        defer { refresh() }
+        return try keyManager.renameKey(from: oldLabel, to: newLabel)
+    }
+
     public func changeKeyKind(label: String, to newPurpose: KeyPurpose) throws {
         defer { refresh() }
         try keyManager.changeKind(label: label, to: newPurpose)
@@ -64,6 +73,22 @@ public class KeyManagementViewModel: ObservableObject {
     public func lockKey(label: String) throws {
         try keyManager.lockKey(label: label)
         refresh()
+    }
+
+    public func gracePeriod(for key: SSHKeyInfo) -> KeyGracePeriod {
+        if let raw = defaults.string(forKey: "keyGracePeriod.\(key.fingerprint)"),
+           let period = KeyGracePeriod(rawValue: raw) {
+            return period
+        }
+        return KeyGracePeriod.defaultPeriod(for: key.purpose)
+    }
+
+    public func setGracePeriod(_ period: KeyGracePeriod, for key: SSHKeyInfo) {
+        defaults.set(period.rawValue, forKey: "keyGracePeriod.\(key.fingerprint)")
+        if period == .always {
+            try? keyManager.lockKey(label: key.label)
+        }
+        objectWillChange.send()
     }
 
     public func clearError() {

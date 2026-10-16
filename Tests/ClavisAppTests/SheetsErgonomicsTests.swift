@@ -34,6 +34,11 @@ final class SheetsErgonomicsTests {
         let appState = AppState(keyManager: keyManager)
         let sheet = CreateKeySheet(appState: appState)
         #expect(sheet.appState === appState)
+        #expect(sheet.isGenerateDisabled)
+        #expect(CreateKeySheet.defaultBiometricPolicy == .biometryCurrentSet)
+        #expect(CreateKeySheet.defaultPurpose == .general)
+        #expect(BiometricPolicy.allCases == [.biometryCurrentSet, .userPresence])
+        #expect(CreateKeySheet.secureEnclaveExplanation.contains("Apple Secure Enclave using NIST P-256"))
     }
 
     @Test func testAboutProvenanceVersionAndCommit() {
@@ -104,5 +109,10 @@ final class SheetsErgonomicsTests {
         let settingsView = SettingsView()
         _ = settingsSheet.body
         _ = settingsView.body
+        #expect(PanelLockController.idleOptions == [1, 5, 15, 30, 60])
+        #expect(SettingsView.inactivityGraceNote(minutes: 1) == "Lock the Clavis window after 1 minute of inactivity.")
+        #expect(SettingsView.inactivityGraceNote(minutes: 15) == "Lock the Clavis window after 15 minutes of inactivity.")
+        #expect(SettingsView.inactivityOptionLabel(minutes: 1) == "1 minute")
+        #expect(SettingsView.inactivityOptionLabel(minutes: 30) == "30 minutes")
     }
 }

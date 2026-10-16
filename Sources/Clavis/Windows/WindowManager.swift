@@ -173,10 +173,13 @@ public class WindowManager: NSObject, NSWindowDelegate {
     public func windowWillClose(_ notification: Notification) {
         if let closedWindow = notification.object as? NSWindow {
             if closedWindow === keyManagerWindow {
+                closedWindow.contentViewController = nil
                 keyManagerWindow = nil
             } else if closedWindow === settingsWindow {
+                closedWindow.contentViewController = nil
                 settingsWindow = nil
             } else if closedWindow === historyWindow {
+                closedWindow.contentViewController = nil
                 historyWindow = nil
                 historyViewModel = nil
             }
