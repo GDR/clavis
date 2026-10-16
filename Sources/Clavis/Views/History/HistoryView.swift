@@ -394,6 +394,8 @@ public struct HistoryView: View {
                 }
             }
             .labelsHidden()
+            .pickerStyle(.menu)
+            .controlSize(.regular)
             .frame(minWidth: 120, maxWidth: 180)
             .frame(height: 30)
             .onChange(of: selectedKeyFingerprint) { newValue in

@@ -82,7 +82,7 @@
           default = apps.clavis;
         };
 
-        devShells.default = pkgs.mkShell {
+        devShells.default = pkgs.mkShellNoCC {
           name = "clavis-dev-shell";
 
           packages = with pkgs; [
@@ -115,7 +115,7 @@
 
             if [ -n "$DEVELOPER_DIR" ] && [ -x /usr/bin/xcrun ]; then
               export SDKROOT="$(DEVELOPER_DIR="$DEVELOPER_DIR" env -u SDKROOT /usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null)"
-              export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
+              export PATH="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin:$DEVELOPER_DIR/usr/bin:$PATH"
             elif [ -x /usr/bin/xcrun ]; then
               export SDKROOT="$(env -u SDKROOT /usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null)"
             fi
