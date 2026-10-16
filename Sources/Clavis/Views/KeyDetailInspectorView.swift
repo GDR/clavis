@@ -53,6 +53,10 @@ struct InlineKeyRenameField: NSViewRepresentable {
         }
     }
 
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextField, context: Context) -> CGSize {
+        CGSize(width: proposal.width ?? 220, height: 28)
+    }
+
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: InlineKeyRenameField
         private var didFinish = false
@@ -308,13 +312,13 @@ public struct KeyDetailInspectorView: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 if isRenaming {
-                    VStack(alignment: .leading, spacing: 2) {
-                        InlineKeyRenameField(
-                            text: $draftKeyName,
-                            onCommit: commitInlineRename,
-                            onCancel: cancelInlineRename
-                        )
-                        .frame(height: 28)
+                    InlineKeyRenameField(
+                        text: $draftKeyName,
+                        onCommit: commitInlineRename,
+                        onCancel: cancelInlineRename
+                    )
+                    .frame(height: 28, alignment: .leading)
+                    .overlay(alignment: .bottom) {
                         Rectangle()
                             .fill(DesignTokens.accentBlue)
                             .frame(height: 1)
@@ -326,15 +330,16 @@ public struct KeyDetailInspectorView: View {
                             .foregroundColor(.primary)
                             .lineLimit(1)
 
-                        CircularGlassIconButton(
-                            icon: "pencil",
-                            size: 27,
-                            iconSize: 12,
-                            helpText: "Rename \(key.label)",
-                            accessibilityLabel: "Rename \(key.label)",
-                            action: beginInlineRename
-                        )
+                        Button(action: beginInlineRename) {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(DesignTokens.textSecondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Rename \(key.label)")
+                        .accessibilityLabel("Rename \(key.label)")
                     }
+                    .frame(height: 28, alignment: .leading)
                 }
 
                 Text("\(key.isHardware ? "Secure Enclave" : "Software") · \(key.algorithm)")
