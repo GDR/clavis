@@ -742,4 +742,63 @@ struct KeyDetailInspectorTests {
         )
         #expect(hosting.fittingSize.height == 28)
     }
+
+    @Test
+    @MainActor
+    func testInlineRenameFieldClickOutsideCommitsAndLosesFocus() {
+        var draft = "initial-name"
+        var commitCount = 0
+        var cancelCount = 0
+
+        let field = InlineKeyRenameField(
+            text: Binding(get: { draft }, set: { draft = $0 }),
+            onCommit: { commitCount += 1 },
+            onCancel: { cancelCount += 1 }
+        )
+        let coordinator = field.makeCoordinator()
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        window.contentView = container
+
+        let textField = NSTextField(frame: NSRect(x: 20, y: 240, width: 180, height: 28))
+        textField.stringValue = draft
+        textField.delegate = coordinator
+        container.addSubview(textField)
+        coordinator.textField = textField
+
+        window.makeFirstResponder(textField)
+        textField.stringValue = "renamed-key"
+
+        // Clicking inside the text field bounds must not commit
+        let insideClickHandled = coordinator.handleMouseDown(
+            in: window,
+            locationInWindow: NSPoint(x: 50, y: 250)
+        )
+        #expect(insideClickHandled == false)
+        #expect(commitCount == 0)
+
+        // Clicking outside the text field bounds resigns focus and commits once
+        let outsideClickHandled = coordinator.handleMouseDown(
+            in: window,
+            locationInWindow: NSPoint(x: 200, y: 100)
+        )
+        #expect(outsideClickHandled == true)
+        #expect(commitCount == 1)
+        #expect(cancelCount == 0)
+        #expect(draft == "renamed-key")
+
+        // Subsequent outside clicks after finish must be ignored
+        let secondOutsideClick = coordinator.handleMouseDown(
+            in: window,
+            locationInWindow: NSPoint(x: 200, y: 100)
+        )
+        #expect(secondOutsideClick == false)
+        #expect(commitCount == 1)
+    }
 }

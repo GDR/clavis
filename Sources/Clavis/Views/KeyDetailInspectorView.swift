@@ -34,6 +34,8 @@ struct InlineKeyRenameField: NSViewRepresentable {
         textField.lineBreakMode = .byTruncatingTail
         textField.cell?.isScrollable = true
         textField.cell?.wraps = false
+        context.coordinator.textField = textField
+        context.coordinator.installOutsideClickMonitor()
 
         DispatchQueue.main.async {
             guard let window = textField.window else { return }
@@ -48,9 +50,14 @@ struct InlineKeyRenameField: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSTextField, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.textField = nsView
         if nsView.stringValue != text {
             nsView.stringValue = text
         }
+    }
+
+    static func dismantleNSView(_ nsView: NSTextField, coordinator: Coordinator) {
+        coordinator.removeOutsideClickMonitor()
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextField, context: Context) -> CGSize {
@@ -59,10 +66,53 @@ struct InlineKeyRenameField: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: InlineKeyRenameField
+        weak var textField: NSTextField?
         private var didFinish = false
+        private var outsideClickMonitor: Any?
 
         init(_ parent: InlineKeyRenameField) {
             self.parent = parent
+        }
+
+        deinit {
+            if let monitor = outsideClickMonitor {
+                NSEvent.removeMonitor(monitor)
+            }
+        }
+
+        func installOutsideClickMonitor() {
+            guard outsideClickMonitor == nil else { return }
+            outsideClickMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+            ) { [weak self] event in
+                self?.handleMouseDown(in: event.window, locationInWindow: event.locationInWindow)
+                return event
+            }
+        }
+
+        func removeOutsideClickMonitor() {
+            if let monitor = outsideClickMonitor {
+                NSEvent.removeMonitor(monitor)
+                outsideClickMonitor = nil
+            }
+        }
+
+        @discardableResult
+        func handleMouseDown(in eventWindow: NSWindow?, locationInWindow: NSPoint) -> Bool {
+            guard !didFinish, let textField else { return false }
+            if let fieldWindow = textField.window, let eventWindow, eventWindow !== fieldWindow {
+                return false
+            }
+            let fieldBoundsInWindow = textField.convert(textField.bounds, to: nil)
+            guard !fieldBoundsInWindow.contains(locationInWindow) else { return false }
+            textField.window?.makeFirstResponder(nil)
+            parent.text = textField.stringValue
+            if !didFinish {
+                didFinish = true
+                removeOutsideClickMonitor()
+                parent.onCommit()
+            }
+            return true
         }
 
         func controlTextDidChange(_ obj: Notification) {
@@ -82,12 +132,14 @@ struct InlineKeyRenameField: NSViewRepresentable {
                     return true
                 }
                 didFinish = true
+                removeOutsideClickMonitor()
                 parent.onCommit()
                 return true
             }
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
                 guard !didFinish else { return true }
                 didFinish = true
+                removeOutsideClickMonitor()
                 parent.onCancel()
                 return true
             }
@@ -96,7 +148,11 @@ struct InlineKeyRenameField: NSViewRepresentable {
 
         func controlTextDidEndEditing(_ obj: Notification) {
             guard !didFinish else { return }
+            if let field = obj.object as? NSTextField {
+                parent.text = field.stringValue
+            }
             didFinish = true
+            removeOutsideClickMonitor()
             parent.onCommit()
         }
     }
