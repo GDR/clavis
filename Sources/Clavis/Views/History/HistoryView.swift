@@ -196,8 +196,7 @@ public struct HistoryView: View {
                     viewModel.clearDateFilter()
                 }
                 .liquidGlassButton()
-                .controlSize(.regular)
-                .frame(height: 30)
+                .controlSize(.large)
                 .disabled(viewModel.selectedDate == nil)
                 .accessibilityLabel("All dates")
 
@@ -205,8 +204,7 @@ public struct HistoryView: View {
 
                 Button("Reset filters", action: resetAllFilters)
                     .liquidGlassButton()
-                    .controlSize(.regular)
-                    .frame(height: 30)
+                    .controlSize(.large)
                     .accessibilityLabel("Reset filters")
             }
             .padding(.bottom, 10)
@@ -271,13 +269,13 @@ public struct HistoryView: View {
                     .accessibilityLabel("Show suggested hosts")
                 }
             }
-            .padding(.horizontal, 9)
-            .frame(height: 30)
-            .liquidGlassControl(cornerRadius: 7, isFocused: isHostFieldFocused)
+            .padding(.horizontal, 11)
+            .frame(height: 28)
+            .liquidGlassCapsuleControl(isFocused: isHostFieldFocused)
             .overlay(alignment: .topLeading) {
                 if isHostSuggestionsVisible {
                     hostSuggestionsDropdown
-                        .offset(y: 35)
+                        .offset(y: 33)
                 }
             }
         }
@@ -375,9 +373,9 @@ public struct HistoryView: View {
                     .accessibilityLabel(ClavisUIStrings.Common.cancel)
                 }
             }
-            .padding(.horizontal, 9)
-            .frame(height: 30)
-            .liquidGlassControl(cornerRadius: 7, isFocused: isSearchFieldFocused)
+            .padding(.horizontal, 11)
+            .frame(height: 28)
+            .liquidGlassCapsuleControl(isFocused: isSearchFieldFocused)
         }
     }
 
@@ -395,9 +393,8 @@ public struct HistoryView: View {
             }
             .labelsHidden()
             .pickerStyle(.menu)
-            .controlSize(.regular)
+            .controlSize(.large)
             .frame(minWidth: 120, maxWidth: 180)
-            .frame(height: 30)
             .onChange(of: selectedKeyFingerprint) { newValue in
                 let fp = newValue.isEmpty ? nil : newValue
                 if viewModel.query.keyFingerprint != fp {
@@ -435,8 +432,7 @@ public struct HistoryView: View {
                 }
             }
             .liquidGlassButton()
-            .controlSize(.regular)
-            .frame(height: 30)
+            .controlSize(.large)
             .popover(isPresented: $isDatePopoverPresented, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 8) {
                     DatePicker(

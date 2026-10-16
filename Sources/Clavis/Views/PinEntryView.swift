@@ -143,9 +143,9 @@ public struct PinEntryView: View {
             .help(isPinVisible ? "Hide PIN" : "Show PIN")
             .accessibilityLabel(isPinVisible ? "Hide PIN" : "Show PIN")
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 12)
         .frame(height: 34)
-        .liquidGlassControl(cornerRadius: 9)
+        .liquidGlassCapsuleControl()
     }
 
     private var unlockButton: some View {
