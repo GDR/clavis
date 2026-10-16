@@ -1,6 +1,7 @@
 @testable import ClavisTestSupport
 import Testing
 import Foundation
+import SwiftUI
 @testable import ClavisCore
 @testable import Clavis
 
@@ -254,7 +255,8 @@ struct KeyDetailInspectorTests {
 
         try await fixture.run {
             let keyManager = fixture.makeKeyManager(authenticator: AllowingAuthenticator())
-            let appState = AppState(keyManager: keyManager)
+            let settingsVM = SettingsViewModel(agentLifecycle: MockAgentController())
+            let appState = AppState(keyManager: keyManager, settingsViewModel: settingsVM)
 
             let keyA = try appState.generateKey(label: "key-a", keyPurpose: .general)
             let keyB = try appState.generateKey(label: "key-b", keyPurpose: .general)
@@ -720,5 +722,24 @@ struct KeyDetailInspectorTests {
         #expect(KeyDetailInspectorView.approvalSummaryText(for: agentKey, agentPolicy: AgentKeyPolicy(mode: .none)) == "Autonomous")
         #expect(KeyDetailInspectorView.approvalSummaryText(for: agentKey, agentPolicy: AgentKeyPolicy(mode: .notify)) == "Notify only")
         #expect(KeyDetailInspectorView.approvalSummaryText(for: agentKey, agentPolicy: AgentKeyPolicy(mode: .ask)) == "User presence")
+    }
+
+    @Test
+    @MainActor
+    func testInlineRenameFieldPreserves28ptHeight() {
+        var draft = "test 2"
+        let field = InlineKeyRenameField(
+            text: Binding(get: { draft }, set: { draft = $0 }),
+            onCommit: {},
+            onCancel: {}
+        )
+        let hosting = NSHostingView(
+            rootView: field
+                .frame(height: 28, alignment: .leading)
+                .overlay(alignment: .bottom) {
+                    Rectangle().frame(height: 1)
+                }
+        )
+        #expect(hosting.fittingSize.height == 28)
     }
 }
