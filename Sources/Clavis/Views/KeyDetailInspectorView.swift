@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import ClavisCore
 
 public extension SSHKeyInfo {
@@ -10,25 +11,177 @@ public extension SSHKeyInfo {
     }
 }
 
+// MARK: - Native Inline Key Rename Field (Caret at End, Commit on Blur/Enter, Cancel on Escape)
+
+struct InlineKeyRenameField: NSViewRepresentable {
+    @Binding var text: String
+    var onCommit: () -> Void
+    var onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let textField = NSTextField()
+        textField.stringValue = text
+        textField.isBordered = false
+        textField.drawsBackground = false
+        textField.focusRingType = .none
+        textField.font = NSFont.systemFont(ofSize: 23, weight: .semibold)
+        textField.textColor = NSColor.labelColor
+        textField.delegate = context.coordinator
+        textField.lineBreakMode = .byTruncatingTail
+        textField.cell?.isScrollable = true
+        textField.cell?.wraps = false
+
+        DispatchQueue.main.async {
+            guard let window = textField.window else { return }
+            window.makeFirstResponder(textField)
+            if let editor = textField.currentEditor() {
+                let endPosition = (textField.stringValue as NSString).length
+                editor.selectedRange = NSRange(location: endPosition, length: 0)
+            }
+        }
+        return textField
+    }
+
+    func updateNSView(_ nsView: NSTextField, context: Context) {
+        context.coordinator.parent = self
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: InlineKeyRenameField
+        private var didFinish = false
+
+        init(_ parent: InlineKeyRenameField) {
+            self.parent = parent
+        }
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            if field.stringValue.count > 60 {
+                field.stringValue = String(field.stringValue.prefix(60))
+            }
+            parent.text = field.stringValue
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                guard !didFinish else { return true }
+                let trimmed = parent.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    NSSound.beep()
+                    return true
+                }
+                didFinish = true
+                parent.onCommit()
+                return true
+            }
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                guard !didFinish else { return true }
+                didFinish = true
+                parent.onCancel()
+                return true
+            }
+            return false
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            guard !didFinish else { return }
+            didFinish = true
+            parent.onCommit()
+        }
+    }
+}
+
 public struct KeyDetailInspectorView: View {
     public let key: SSHKeyInfo
     @ObservedObject var appState: AppState
     public let onDelete: () -> Void
+    public var onShowToast: ((String) -> Void)?
 
-    @State private var copyFeedback: String? = nil
+    @State private var isRenaming: Bool = false
+    @State private var draftKeyName: String = ""
     @State private var showingDeleteAlert: Bool = false
-    @State private var showingChangePurposeAlert: Bool = false
+    @State private var showingPurposeSheet: Bool = false
+    @State private var showingApprovalSheet: Bool = false
     @State private var changePurposeError: String? = nil
     @State private var showingChangePurposeError: Bool = false
+    @State private var lastActivityDate: Date? = nil
 
-    public init(key: SSHKeyInfo, appState: AppState, onDelete: @escaping () -> Void) {
+    public init(
+        key: SSHKeyInfo,
+        appState: AppState,
+        onDelete: @escaping () -> Void,
+        onShowToast: ((String) -> Void)? = nil
+    ) {
         self.key = key
         self.appState = appState
         self.onDelete = onDelete
+        self.onShowToast = onShowToast
+    }
+
+    public static func trimIdentity(_ value: String) -> String {
+        guard value.count > 51 else { return value }
+        return "\(value.prefix(32))…\(value.suffix(14))"
+    }
+
+    public static func approvalSummaryText(
+        for key: SSHKeyInfo,
+        agentPolicy: AgentKeyPolicy? = nil
+    ) -> String {
+        if key.purpose == .agent, let policy = agentPolicy {
+            switch policy.mode {
+            case .none:
+                return "Autonomous"
+            case .notify:
+                return "Notify only"
+            case .ask:
+                return key.biometricPolicy == .biometryCurrentSet ? "Strict biometrics" : "User presence"
+            }
+        }
+        return key.biometricPolicy == .biometryCurrentSet ? "Strict biometrics" : "User presence"
+    }
+
+    public static func approvalDescriptionText(
+        for key: SSHKeyInfo,
+        agentPolicy: AgentKeyPolicy? = nil
+    ) -> String {
+        if key.purpose == .agent, let policy = agentPolicy {
+            switch policy.mode {
+            case .none:
+                return "Only use with workflows and hosts you trust."
+            case .notify:
+                return "A notification appears each time this agent key is used."
+            case .ask:
+                break
+            }
+        }
+        return key.biometricPolicy == .biometryCurrentSet
+            ? "Touch ID only. Invalidated if enrolled fingerprints change."
+            : "Touch ID, Apple Watch, or your Mac password."
     }
 
     private var currentAgentPolicy: AgentKeyPolicy? {
         appState.getAgentPolicy(fingerprint: key.fingerprint)
+    }
+
+    private var currentGracePeriod: KeyGracePeriod {
+        appState.gracePeriod(for: key)
+    }
+
+    private var gracePeriodBinding: Binding<KeyGracePeriod> {
+        Binding(
+            get: { appState.gracePeriod(for: key) },
+            set: { newValue in
+                appState.setGracePeriod(newValue, for: key)
+                onShowToast?("Key grace period updated")
+            }
+        )
     }
 
     private var activeGitGraceSession: (remainingSeconds: Int, remainingOperations: Int, formattedTime: String)? {
@@ -47,59 +200,9 @@ public struct KeyDetailInspectorView: View {
         return nil
     }
 
-    private var securityBadgeText: String {
-        Self.securityBadgeText(
-            for: key,
-            agentPolicy: currentAgentPolicy,
-            hasActiveGitGrace: activeGitGraceSession != nil
-        )
+    private var activeAgentSessionForKey: AgentSessionSummary? {
+        appState.agentSessions.first(where: { $0.keyFingerprint == key.fingerprint })
     }
-
-    private var securityPosture: (title: String, description: String) {
-        Self.securityPostureInfo(
-            for: key,
-            agentPolicy: currentAgentPolicy,
-            hasActiveGitGrace: activeGitGraceSession != nil
-        )
-    }
-
-    private var socketInfo: (name: String, socketPath: String, status: String, isActive: Bool) {
-        Self.socketStatusInfo(for: key, isSocketActive: appState.isSocketActive)
-    }
-
-    private var badgeIcon: String {
-        switch key.purpose {
-        case .agent:
-            switch currentAgentPolicy?.mode ?? .none {
-            case .none:
-                return "bolt.shield.fill"
-            case .notify:
-                return "bell.badge.fill"
-            case .ask:
-                return "hand.raised.fill"
-            }
-        case .gitSigningOnly:
-            return "arrow.triangle.branch"
-        case .general:
-            return "hand.raised.fill"
-        }
-    }
-
-    private var badgeColor: Color {
-        switch key.purpose {
-        case .agent:
-            return DesignTokens.accentPurple
-        case .gitSigningOnly:
-            return DesignTokens.accentBlue
-        case .general:
-            return DesignTokens.accentGreen
-        }
-    }
-
-    private var postureIcon: String {
-        Self.postureIcon(for: key)
-    }
-
 
     private var formattedDate: String {
         let formatter = DateFormatter()
@@ -108,317 +211,65 @@ public struct KeyDetailInspectorView: View {
         return formatter.string(from: key.createdAt)
     }
 
+    private var formattedLastActivity: String {
+        guard let date = lastActivityDate else {
+            return "Not used yet"
+        }
+        let calendar = Calendar.current
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "HH:mm"
+        if calendar.isDateInToday(date) {
+            return "Today at \(timeFormatter.string(from: date))"
+        } else if calendar.isDateInYesterday(date) {
+            return "Yesterday at \(timeFormatter.string(from: date))"
+        } else {
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateStyle = .medium
+            dateFormatter.timeStyle = .none
+            return dateFormatter.string(from: date)
+        }
+    }
+
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                // Inspector Header
-                HStack(alignment: .center, spacing: 14) {
-                    Image(systemName: "key.fill")
-                        .font(.system(size: 28))
-                        .foregroundColor(DesignTokens.accentBlue)
-                        .frame(width: 44, height: 44)
-                        .background(DesignTokens.accentBlue.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 18) {
+                detailHeading
+                    .padding(.bottom, 6)
 
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(key.label)
-                            .font(.title2)
-                            .fontWeight(.bold)
-                            .foregroundColor(.primary)
-
-                        Text(ClavisUIStrings.Inspector.keySubtitle(algorithm: key.algorithm, isHardware: key.isHardware))
-                            .font(.subheadline)
-                            .foregroundColor(DesignTokens.textSecondary)
-                    }
-
-                    Spacer()
-
-                    if key.isHardware {
-                        HStack(spacing: 4) {
-                            Image(systemName: badgeIcon)
-                                .font(.system(size: 10))
-                            Text(securityBadgeText)
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(badgeColor.opacity(0.12))
-                        .foregroundColor(badgeColor)
-                        .clipShape(Capsule())
-                    }
-
-                    Button(action: {
-                        WindowManager.shared.openHistory(keyFingerprint: key.fingerprint)
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "clock.arrow.circlepath")
-                            Text(ClavisUIStrings.History.showHistory)
-                        }
-                        .font(.caption)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                    }
-                    .buttonStyle(.bordered)
-
-                    // Context Menu
-                    Menu {
-                        if key.purpose == .agent {
-                            Button(action: copyDeployKey) {
-                                Label(ClavisUIStrings.KeyDetail.copyDeployKey, systemImage: "key.fill")
-                            }
-                        }
-                        Button(action: copyOpenSSH) {
-                            Label(ClavisUIStrings.Inspector.copyOpenSSHKeyMenu, systemImage: "terminal")
-                        }
-                        Button(action: copyFingerprint) {
-                            Label(ClavisUIStrings.Inspector.copyFingerprintMenu, systemImage: "number")
-                        }
-                        if key.purpose == .general || key.purpose == .agent {
-                            Divider()
-                            Button(action: {
-                                showingChangePurposeAlert = true
-                            }) {
-                                Label(ClavisUIStrings.Inspector.changePurpose, systemImage: "arrow.triangle.2.circlepath")
-                            }
-                        }
-                        Divider()
-                        Button(role: .destructive, action: {
-                            ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: displaying delete confirmation alert for '\(key.label)'")
-                            showingDeleteAlert = true
-                        }) {
-                            Label(ClavisUIStrings.Inspector.deleteKeyMenu, systemImage: "trash")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .frame(width: 28, height: 28)
-                    }
-                    .menuStyle(.borderlessButton)
-                    .accessibilityLabel(ClavisUIStrings.Accessibility.moreActions)
-                    .frame(width: 32)
-                }
-                .padding(.bottom, 4)
-
-                // Copy notification banner if any
-                if let feedback = copyFeedback {
-                    HStack {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(DesignTokens.accentGreen)
-                        Text(feedback)
-                            .font(.caption)
-                            .foregroundColor(DesignTokens.accentGreen)
-                        Spacer()
-                    }
-                    .padding(8)
-                    .background(DesignTokens.accentGreen.opacity(0.12))
-                    .cornerRadius(6)
-                    .transition(.opacity)
-                }
-
-                // Public Identity Section
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(ClavisUIStrings.Inspector.publicIdentitySection)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(DesignTokens.textTertiary)
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        // OpenSSH Key (Primary for GitHub / servers)
-                        HStack(alignment: .top) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(ClavisUIStrings.Inspector.openSSHPublicKey)
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.primary)
-                                Text(key.publicKeyOpenSSH)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                    .textSelection(.enabled)
-                                Text(ClavisUIStrings.Inspector.openSSHDescription)
-                                    .font(.caption2)
-                                    .foregroundColor(DesignTokens.textSecondary)
-                            }
-                            Spacer()
-                            if key.purpose == .agent {
-                                Button(ClavisUIStrings.KeyDetail.copyDeployKey, action: copyDeployKey)
-                                    .buttonStyle(.borderedProminent)
-                                    .tint(DesignTokens.accentPurple)
-                                    .controlSize(.small)
-                            } else {
-                                Button(ClavisUIStrings.Inspector.copySSHKeyButton, action: copyOpenSSH)
-                                    .buttonStyle(.borderedProminent)
-                                    .tint(DesignTokens.accentBlue)
-                                    .controlSize(.small)
-                            }
-                        }
-
-                        Divider().background(DesignTokens.cardBorder)
-
-                        // SHA-256 Fingerprint (Verification only)
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 4) {
-                                    Text(ClavisUIStrings.Inspector.fingerprint)
-                                        .font(.caption2)
-                                        .foregroundColor(DesignTokens.textSecondary)
-                                    Text(ClavisUIStrings.Inspector.fingerprintVerificationHint)
-                                        .font(.system(size: 10))
-                                        .foregroundColor(DesignTokens.textTertiary)
-                                }
-                                Text(key.fingerprint)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .textSelection(.enabled)
-                            }
-                            Spacer()
-                            Button(action: copyFingerprint) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "doc.on.doc")
-                                    Text(ClavisUIStrings.Common.copy)
-                                }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .accessibilityLabel(ClavisUIStrings.Accessibility.copyFingerprint)
-                            .help(ClavisUIStrings.Inspector.copyFingerprintHelp)
-                        }
-                    }
-                    .padding(14)
-                    .glassCard(cornerRadius: 10)
-                }
-
-                // Active Git Signing Grace Session (#94 UI)
-                if let gitGrace = activeGitGraceSession {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(ClavisUIStrings.Inspector.activeGitSessionSection)
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(DesignTokens.textTertiary)
-                            Spacer()
-                        }
-
-                        HStack(alignment: .center, spacing: 12) {
-                            Image(systemName: "arrow.triangle.branch")
-                                .font(.system(size: 20))
-                                .foregroundColor(DesignTokens.accentBlue)
-
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(ClavisUIStrings.MenuBar.gitSessionTitle(label: key.label))
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundColor(.primary)
-
-                                Text(ClavisUIStrings.MenuBar.gitSessionDetails(timeRemaining: gitGrace.formattedTime, opsLeft: gitGrace.remainingOperations))
-                                    .font(.caption)
-                                    .foregroundColor(DesignTokens.textSecondary)
-                            }
-
-                            Spacer()
-
-                            Button(action: {
-                                appState.revokeGitGrace(keyLabel: key.label)
-                            }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "xmark.circle")
-                                    Text(ClavisUIStrings.Inspector.revokeGitSessionButton)
-                                }
-                                .font(.caption)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.red.opacity(0.85))
-                            .controlSize(.small)
-                        }
-                        .padding(14)
-                        .glassCard(cornerRadius: 10)
-                    }
-                }
-
-                // Security Inspector
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(ClavisUIStrings.Inspector.securitySection)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(DesignTokens.textTertiary)
-
-                    VStack(spacing: 8) {
-                        SecurityPropertyRow(
-                            label: ClavisUIStrings.Inspector.storageLabel,
-                            value: ClavisUIStrings.Inspector.storageHardwareEnclave
-                        )
-                        Divider().background(DesignTokens.cardBorder)
-                        SecurityPropertyRow(
-                            label: ClavisUIStrings.Inspector.authenticationLabel,
-                            value: key.biometricPolicy == .biometryCurrentSet ? ClavisUIStrings.Inspector.authTouchIdOnlyStrict : ClavisUIStrings.Inspector.authUserPresence
-                        )
-                        Divider().background(DesignTokens.cardBorder)
-                        SecurityPropertyRow(label: ClavisUIStrings.Inspector.created, value: formattedDate)
-                        Divider().background(DesignTokens.cardBorder)
-                        HStack {
-                            Text(ClavisUIStrings.Inspector.keyPurpose)
-                                .font(.caption)
-                                .foregroundColor(DesignTokens.textSecondary)
-                            Spacer()
-                            Text(key.purpose.title)
-                                .font(.caption)
-                                .fontWeight(.medium)
-                            if key.purpose == .general || key.purpose == .agent {
-                                Button(action: {
-                                    showingChangePurposeAlert = true
-                                }) {
-                                    Text(ClavisUIStrings.Inspector.changePurpose)
-                                        .font(.caption2)
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.mini)
-                            }
-                        }
-                        Divider().background(DesignTokens.cardBorder)
-                        IntegrationRow(
-                            name: socketInfo.name,
-                            detail: socketInfo.socketPath,
-                            status: socketInfo.status,
-                            isActive: socketInfo.isActive
-                        )
-                    }
-                    .padding(14)
-                    .glassCard(cornerRadius: 10)
-
-                    if key.isHardware {
-                        HStack(alignment: .top, spacing: 6) {
-                            Image(systemName: postureIcon)
-                                .font(.caption)
-                                .foregroundColor(DesignTokens.accentGreen)
-                            Text(securityPosture.description)
-                                .font(.caption)
-                                .foregroundColor(DesignTokens.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .padding(.horizontal, 4)
-                        .padding(.top, 2)
-                    }
-                }
-
-                if key.purpose == .agent {
-                    AgentPolicyView(key: key, appState: appState)
-                }
-
-                // Inspector Footer: Clean Localized Destructive Delete Button (Milestone M5 / R5)
-                HStack {
-                    Spacer()
-                    Button(role: .destructive, action: {
-                        ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: displaying delete confirmation alert for '\(key.label)'")
-                        showingDeleteAlert = true
-                    }) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "trash")
-                            Text(ClavisUIStrings.Inspector.deleteKey)
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                    .controlSize(.regular)
-                    Spacer()
-                }
-                .padding(.top, 8)
+                publicIdentitySection
+                signingSection
+                activitySection
             }
-            .padding(24)
+            .padding(.horizontal, 35)
+            .padding(.top, 14)
+            .padding(.bottom, 26)
         }
         .background(Color.clear)
+        .onAppear {
+            lastActivityDate = appState.lastActivityDate(for: key)
+        }
+        .onChange(of: key.id) { _ in
+            isRenaming = false
+            lastActivityDate = appState.lastActivityDate(for: key)
+        }
+        .sheet(isPresented: $showingPurposeSheet) {
+            KeyPurposeEditorSheet(
+                key: key,
+                appState: appState,
+                onSaved: { message in
+                    onShowToast?(message)
+                }
+            )
+        }
+        .sheet(isPresented: $showingApprovalSheet) {
+            KeyApprovalEditorSheet(
+                key: key,
+                appState: appState,
+                onSaved: { message in
+                    onShowToast?(message)
+                }
+            )
+        }
         .alert(Self.deleteConfirmationTitle(label: key.label), isPresented: $showingDeleteAlert) {
             Button(ClavisUIStrings.Common.delete, role: .destructive) {
                 ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: user confirmed deletion of key '\(key.label)'")
@@ -430,22 +281,6 @@ public struct KeyDetailInspectorView: View {
         } message: {
             Text(Self.deleteConfirmationMessage(label: key.label, shortFingerprint: key.shortFingerprint))
         }
-        .alert(ClavisUIStrings.Inspector.changePurpose, isPresented: $showingChangePurposeAlert) {
-            let target = (key.purpose == .agent) ? KeyPurpose.general : KeyPurpose.agent
-            Button(ClavisUIStrings.KeyDetail.changePurposeConfirm) {
-                do {
-                    try appState.changeKeyKind(label: key.label, to: target)
-                    showFeedback(ClavisUIStrings.Inspector.feedbackChangedPurpose(to: target))
-                } catch {
-                    changePurposeError = error.localizedDescription
-                    showingChangePurposeError = true
-                }
-            }
-            Button(ClavisUIStrings.Common.cancel, role: .cancel) {}
-        } message: {
-            let target = (key.purpose == .agent) ? KeyPurpose.general : KeyPurpose.agent
-            Text(ClavisUIStrings.KeyDetail.changePurposeAlertMessage(label: key.label, newPurpose: target))
-        }
         .alert(ClavisUIStrings.Common.error, isPresented: $showingChangePurposeError) {
             Button(ClavisUIStrings.Common.ok, role: .cancel) {}
         } message: {
@@ -453,79 +288,751 @@ public struct KeyDetailInspectorView: View {
         }
     }
 
-    private func copyDeployKey() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(key.publicKeyOpenSSH, forType: .string)
-        showFeedback(ClavisUIStrings.Inspector.feedbackCopiedOpenSSH)
+    // MARK: - Detail Heading
+
+    private var detailHeading: some View {
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(DesignTokens.accentBlue.opacity(0.09))
+                Image(systemName: "key.fill")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundColor(DesignTokens.accentBlue)
+            }
+            .frame(width: 41, height: 43)
+
+            VStack(alignment: .leading, spacing: 3) {
+                if isRenaming {
+                    VStack(alignment: .leading, spacing: 2) {
+                        InlineKeyRenameField(
+                            text: $draftKeyName,
+                            onCommit: commitInlineRename,
+                            onCancel: cancelInlineRename
+                        )
+                        .frame(height: 28)
+                        Rectangle()
+                            .fill(DesignTokens.accentBlue)
+                            .frame(height: 1)
+                    }
+                } else {
+                    HStack(spacing: 8) {
+                        Text(key.label)
+                            .font(.system(size: 23, weight: .semibold))
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+
+                        Button(action: beginInlineRename) {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(DesignTokens.textSecondary)
+                                .frame(width: 27, height: 27)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Rename \(key.label)")
+                        .accessibilityLabel("Rename \(key.label)")
+                    }
+                }
+
+                Text("\(key.isHardware ? "Secure Enclave" : "Software") · \(key.algorithm)")
+                    .font(.system(size: 11))
+                    .foregroundColor(DesignTokens.textSecondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            CircularGlassIconButton(
+                icon: "trash",
+                size: 34,
+                iconSize: 15,
+                isDanger: true,
+                helpText: "Delete key",
+                accessibilityLabel: "Delete \(key.label)"
+            ) {
+                showingDeleteAlert = true
+            }
+        }
+        .frame(minHeight: 43)
+    }
+
+    private func beginInlineRename() {
+        draftKeyName = key.label
+        isRenaming = true
+    }
+
+    private func commitInlineRename() {
+        let trimmed = draftKeyName.trimmingCharacters(in: .whitespacesAndNewlines)
+        isRenaming = false
+        guard !trimmed.isEmpty, trimmed != key.label else { return }
+        do {
+            try appState.renameKey(from: key.label, to: trimmed)
+            onShowToast?("Key renamed")
+        } catch {
+            changePurposeError = error.localizedDescription
+            showingChangePurposeError = true
+        }
+    }
+
+    private func cancelInlineRename() {
+        draftKeyName = key.label
+        isRenaming = false
+    }
+
+    // MARK: - Section 1: Public identity
+
+    private var publicIdentitySection: some View {
+        let formattedFingerprint = key.fingerprint.hasPrefix("SHA256:")
+            ? key.fingerprint
+            : "SHA256:\(key.fingerprint)"
+
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("Public identity")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(DesignTokens.textSecondary)
+                .frame(minHeight: 28, alignment: .leading)
+
+            VStack(spacing: 0) {
+                identityCopyRow(
+                    label: "Public key",
+                    fullValue: key.publicKeyOpenSSH,
+                    help: "Copy full public key",
+                    action: copyOpenSSH
+                )
+
+                Divider()
+                    .background(DesignTokens.cardBorder)
+
+                identityCopyRow(
+                    label: "Fingerprint",
+                    fullValue: formattedFingerprint,
+                    help: "Copy full fingerprint",
+                    action: copyFingerprint
+                )
+            }
+            .background(DesignTokens.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(DesignTokens.cardBorder, lineWidth: 1)
+            )
+        }
+    }
+
+    private func identityCopyRow(
+        label: String,
+        fullValue: String,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 12) {
+            Text(label)
+                .font(.system(size: 12))
+                .foregroundColor(DesignTokens.textSecondary)
+                .frame(width: 76, alignment: .leading)
+
+            Text(Self.trimIdentity(fullValue))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(DesignTokens.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(fullValue)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button(action: action) {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 13))
+                    .foregroundColor(DesignTokens.textSecondary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+            .help(help)
+            .accessibilityLabel(help)
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 5)
+        .frame(minHeight: 39)
+    }
+
+    // MARK: - Section 2: Signing
+
+    private var signingSection: some View {
+        let approvalText = Self.approvalSummaryText(for: key, agentPolicy: currentAgentPolicy)
+        let approvalHelp = Self.approvalDescriptionText(for: key, agentPolicy: currentAgentPolicy)
+
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("Signing")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(DesignTokens.textSecondary)
+                .frame(minHeight: 28, alignment: .leading)
+
+            VStack(spacing: 0) {
+                // Purpose row
+                HStack(spacing: 16) {
+                    Text("Purpose")
+                        .font(.system(size: 13))
+                        .foregroundColor(DesignTokens.textSecondary)
+                    Spacer()
+                    Button(action: { showingPurposeSheet = true }) {
+                        HStack(spacing: 6) {
+                            Text(key.purpose.inspectorLabel)
+                                .font(.system(size: 13))
+                                .foregroundColor(.primary)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(DesignTokens.textSecondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 7)
+                .frame(minHeight: 38)
+
+                Divider()
+                    .background(DesignTokens.cardBorder)
+
+                // Approval row
+                HStack(spacing: 16) {
+                    Text("Approval")
+                        .font(.system(size: 13))
+                        .foregroundColor(DesignTokens.textSecondary)
+                    Spacer()
+                    Button(action: { showingApprovalSheet = true }) {
+                        HStack(spacing: 6) {
+                            Text(approvalText)
+                                .font(.system(size: 13))
+                                .foregroundColor(.primary)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(DesignTokens.textSecondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help("Edit signing approval: \(approvalHelp)")
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 7)
+                .frame(minHeight: 38)
+
+                Divider()
+                    .background(DesignTokens.cardBorder)
+
+                // Grace period row
+                HStack(spacing: 16) {
+                    Text("Grace period")
+                        .font(.system(size: 13))
+                        .foregroundColor(DesignTokens.textSecondary)
+                    Spacer()
+                    Picker("", selection: gracePeriodBinding) {
+                        ForEach(KeyGracePeriod.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 135)
+                    .help("How long this key stays available after approval. Per session lasts until Clavis quits; locking the key ends the window immediately.")
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 5)
+                .frame(minHeight: 38)
+
+                // Stable 40px Active window row when grace period != .always or session active
+                if currentGracePeriod != .always || activeGitGraceSession != nil || activeAgentSessionForKey != nil {
+                    Divider()
+                        .background(DesignTokens.cardBorder)
+
+                    activeWindowRow
+                }
+
+                // Git signing window row if active
+                if let gitGrace = activeGitGraceSession, key.purpose != .agent {
+                    Divider()
+                        .background(DesignTokens.cardBorder)
+
+                    HStack(spacing: 16) {
+                        Text("Git signing window")
+                            .font(.system(size: 13))
+                            .foregroundColor(DesignTokens.textSecondary)
+                        Spacer()
+                        HStack(spacing: 8) {
+                            Text("\(gitGrace.formattedTime) · \(gitGrace.remainingOperations) left")
+                                .font(.system(size: 12).monospacedDigit())
+                                .foregroundColor(DesignTokens.accentGreen)
+                            Button("Revoke") {
+                                appState.revokeGitGrace(keyLabel: key.label)
+                                onShowToast?("Signing window revoked")
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DesignTokens.accentBlue)
+                        }
+                    }
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 5)
+                    .frame(height: 40)
+                }
+            }
+            .background(DesignTokens.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(DesignTokens.cardBorder, lineWidth: 1)
+            )
+        }
+    }
+
+    private var activeWindowRow: some View {
+        let isUnlocked = appState.isKeyUnlocked(key)
+        let statusText: String = {
+            if let gitGrace = activeGitGraceSession {
+                return "\(gitGrace.formattedTime) remaining"
+            }
+            if let session = activeAgentSessionForKey {
+                let remaining = max(0, Int(session.expiresAt.timeIntervalSinceNow))
+                let mins = remaining / 60
+                let secs = remaining % 60
+                return String(format: "%d:%02d remaining", mins, secs)
+            }
+            if currentGracePeriod == .session && isUnlocked {
+                return "This session"
+            }
+            return "Approval required"
+        }()
+
+        return HStack(spacing: 12) {
+            Text("Active window")
+                .font(.system(size: 13))
+                .foregroundColor(DesignTokens.textSecondary)
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 8) {
+                Text(statusText)
+                    .font(.system(size: 12).monospacedDigit())
+                    .foregroundColor(isUnlocked ? DesignTokens.accentGreen : DesignTokens.textSecondary)
+                    .lineLimit(1)
+
+                if isUnlocked {
+                    Button("Revoke") {
+                        appState.revokeGitGrace(keyLabel: key.label)
+                        if let session = activeAgentSessionForKey {
+                            appState.endAgentSession(id: session.id)
+                        }
+                        onShowToast?("Grace window revoked · approval required")
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DesignTokens.accentBlue)
+                    .frame(minWidth: 58, minHeight: 26)
+                }
+            }
+        }
+        .padding(.horizontal, 13)
+        .frame(height: 40)
+    }
+
+    // MARK: - Section 3: Activity
+
+    private var activitySection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Activity")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DesignTokens.textSecondary)
+
+                Spacer()
+
+                Button(action: {
+                    appState.openHistoryPane(forKeyFingerprint: key.fingerprint)
+                }) {
+                    HStack(spacing: 4) {
+                        Text("View activity")
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DesignTokens.accentBlue)
+                }
+                .buttonStyle(.plain)
+            }
+            .frame(minHeight: 28)
+
+            VStack(spacing: 0) {
+                HStack(spacing: 16) {
+                    Text("Created")
+                        .font(.system(size: 13))
+                        .foregroundColor(DesignTokens.textSecondary)
+                    Spacer()
+                    Text(formattedDate)
+                        .font(.system(size: 13))
+                        .foregroundColor(.primary)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 7)
+                .frame(minHeight: 38)
+
+                Divider()
+                    .background(DesignTokens.cardBorder)
+
+                HStack(spacing: 16) {
+                    Text("Last activity")
+                        .font(.system(size: 13))
+                        .foregroundColor(DesignTokens.textSecondary)
+                    Spacer()
+                    Text(formattedLastActivity)
+                        .font(.system(size: 13))
+                        .foregroundColor(.primary)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 7)
+                .frame(minHeight: 38)
+            }
+            .background(DesignTokens.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(DesignTokens.cardBorder, lineWidth: 1)
+            )
+        }
     }
 
     private func copyFingerprint() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(key.fingerprint, forType: .string)
-        showFeedback(ClavisUIStrings.Inspector.feedbackCopiedFingerprint)
+        onShowToast?("Copied to clipboard")
     }
 
     private func copyOpenSSH() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(key.publicKeyOpenSSH, forType: .string)
-        showFeedback(ClavisUIStrings.Inspector.feedbackCopiedOpenSSH)
+        onShowToast?("Copied to clipboard")
+    }
+}
+
+// MARK: - Key Purpose Sheet
+
+private struct KeyPurposeEditorSheet: View {
+    let key: SSHKeyInfo
+    @ObservedObject var appState: AppState
+    var onSaved: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedPurpose: KeyPurpose
+    @State private var errorMessage: String?
+
+    init(key: SSHKeyInfo, appState: AppState, onSaved: @escaping (String) -> Void) {
+        self.key = key
+        self.appState = appState
+        self.onSaved = onSaved
+        self._selectedPurpose = State(initialValue: key.purpose)
     }
 
-    private func showFeedback(_ text: String) {
-        withAnimation {
-            copyFeedback = text
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            withAnimation {
-                if copyFeedback == text {
-                    copyFeedback = nil
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Key purpose")
+                    .font(.system(size: 17, weight: .semibold))
+                Spacer()
+                Button(action: { dismiss() }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(DesignTokens.textSecondary)
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(ClavisUIStrings.Common.cancel)
+            }
+            .padding(.horizontal, 23)
+            .padding(.top, 20)
+            .padding(.bottom, 16)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Choose where you want to use \(key.label).")
+                    .font(.system(size: 12))
+                    .foregroundColor(DesignTokens.textSecondary)
+
+                if key.purpose == .gitSigningOnly {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "lock.shield")
+                            .foregroundColor(DesignTokens.accentBlue)
+                        Text("Git-signing-only keys are permanently scoped to local Git commit and tag signing and cannot be converted into SSH or Agent keys.")
+                            .font(.system(size: 12))
+                            .foregroundColor(DesignTokens.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(12)
+                    .background(DesignTokens.cardBackground)
+                    .cornerRadius(9)
+                } else {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Purpose")
+                            .font(.system(size: 12, weight: .semibold))
+                        Picker("Purpose", selection: $selectedPurpose) {
+                            Text(KeyPurpose.general.inspectorLabel).tag(KeyPurpose.general)
+                            Text(KeyPurpose.agent.inspectorLabel).tag(KeyPurpose.agent)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                    }
+
+                    HStack(alignment: .center, spacing: 10) {
+                        Image(systemName: "checkmark.shield")
+                            .foregroundColor(DesignTokens.accentBlue)
+                        Text("Changing purpose resets approval to “Always ask”. You can edit the policy afterward.")
+                            .font(.system(size: 12))
+                            .foregroundColor(DesignTokens.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(12)
+                    .background(DesignTokens.cardBackground)
+                    .cornerRadius(9)
+                }
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 11))
+                        .foregroundColor(.red)
                 }
             }
+            .padding(.horizontal, 23)
+            .padding(.vertical, 20)
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button(ClavisUIStrings.Common.cancel) {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                if key.purpose != .gitSigningOnly {
+                    Button("Save purpose") {
+                        savePurpose()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(selectedPurpose == key.purpose)
+                }
+            }
+            .padding(.horizontal, 23)
+            .padding(.vertical, 14)
+        }
+        .frame(width: 440)
+    }
+
+    private func savePurpose() {
+        do {
+            try appState.changeKeyKind(label: key.label, to: selectedPurpose)
+            dismiss()
+            onSaved("Key purpose updated")
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }
 
-private struct IntegrationRow: View {
-    let name: String
-    let detail: String
-    let status: String
-    let isActive: Bool
+// MARK: - Signing Approval Sheet
+
+private struct KeyApprovalEditorSheet: View {
+    let key: SSHKeyInfo
+    @ObservedObject var appState: AppState
+    var onSaved: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedMode: AgentKeyPolicy.Mode
+    @State private var maxRatePerMinute: Int
+    @State private var allowedHostsText: String
+    @State private var errorMessage: String?
+
+    init(key: SSHKeyInfo, appState: AppState, onSaved: @escaping (String) -> Void) {
+        self.key = key
+        self.appState = appState
+        self.onSaved = onSaved
+        let policy = appState.getAgentPolicy(fingerprint: key.fingerprint) ?? AgentKeyPolicy()
+        self._selectedMode = State(initialValue: policy.mode)
+        self._maxRatePerMinute = State(initialValue: policy.refillPerMinute)
+        self._allowedHostsText = State(
+            initialValue: policy.allowedHosts.isEmpty
+                ? "github.com"
+                : policy.allowedHosts.map(\.name).joined(separator: ", ")
+        )
+    }
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                    .font(.caption)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Signing approval")
+                    .font(.system(size: 17, weight: .semibold))
+                Spacer()
+                Button(action: { dismiss() }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(DesignTokens.textSecondary)
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(ClavisUIStrings.Common.cancel)
+            }
+            .padding(.horizontal, 23)
+            .padding(.top, 20)
+            .padding(.bottom, 16)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Choose how \(key.label) authorizes signatures.")
+                    .font(.system(size: 12))
                     .foregroundColor(DesignTokens.textSecondary)
-                Text(detail)
-                    .font(.caption2)
-                    .foregroundColor(DesignTokens.textTertiary)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Authentication")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(key.biometricPolicy == .biometryCurrentSet ? "Strict biometrics (Touch ID only)" : "User presence (Touch ID, Apple Watch, or Mac password)")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.primary)
+                    Text("Hardware access control is bound inside the Secure Enclave when the key is created.")
+                        .font(.system(size: 11))
+                        .foregroundColor(DesignTokens.textSecondary)
+                }
+
+                if key.purpose == .agent {
+                    VStack(alignment: .leading, spacing: 8) {
+                        approvalRadioRow(
+                            mode: .ask,
+                            title: "Always ask for approval",
+                            subtitle: "Use the hardware authentication method when approval is required."
+                        )
+                        approvalRadioRow(
+                            mode: .notify,
+                            title: "Notify only",
+                            subtitle: "Show a notification for each signature. No approval required."
+                        )
+                        approvalRadioRow(
+                            mode: .none,
+                            title: "Autonomous",
+                            subtitle: "Sign silently within your host and rate limits."
+                        )
+                    }
+
+                    if selectedMode != .ask {
+                        Text("Signatures can be approved without your presence. Only allow hosts you trust.")
+                            .font(.system(size: 12))
+                            .foregroundColor(DesignTokens.accentOrange)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(DesignTokens.accentOrange.opacity(0.10))
+                            .cornerRadius(7)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Maximum signatures per minute")
+                            .font(.system(size: 12, weight: .semibold))
+                        TextField("20", value: $maxRatePerMinute, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Allowed hosts")
+                            .font(.system(size: 12, weight: .semibold))
+                        TextField("github.com, *.internal", text: $allowedHostsText)
+                            .textFieldStyle(.roundedBorder)
+                        Text("Comma-separated host patterns, e.g. github.com, *.internal")
+                            .font(.system(size: 11))
+                            .foregroundColor(DesignTokens.textSecondary)
+                    }
+                } else {
+                    Text("Automated signing options are available for keys with the Agent purpose.")
+                        .font(.system(size: 11))
+                        .foregroundColor(DesignTokens.textSecondary)
+                }
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 11))
+                        .foregroundColor(.red)
+                }
             }
-            Spacer()
-            HStack(spacing: 5) {
-                StatusDot(isActive: isActive)
-                Text(status)
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundColor(isActive ? DesignTokens.accentGreen : DesignTokens.textSecondary)
+            .padding(.horizontal, 23)
+            .padding(.vertical, 18)
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button(ClavisUIStrings.Common.cancel) {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                if key.purpose == .agent {
+                    Button("Save changes") {
+                        saveApprovalPolicy()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                }
             }
+            .padding(.horizontal, 23)
+            .padding(.vertical, 14)
         }
+        .frame(width: 460)
     }
-}
 
-private struct SecurityPropertyRow: View {
-    let label: String
-    let value: String
+    private func approvalRadioRow(
+        mode: AgentKeyPolicy.Mode,
+        title: String,
+        subtitle: String
+    ) -> some View {
+        let isSelected = (selectedMode == mode)
+        return Button(action: { selectedMode = mode }) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                    .foregroundColor(isSelected ? DesignTokens.accentBlue : DesignTokens.textSecondary)
+                    .font(.system(size: 13))
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.primary)
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundColor(DesignTokens.textSecondary)
+                }
+                Spacer()
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(isSelected ? DesignTokens.accentBlue.opacity(0.08) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(isSelected ? DesignTokens.accentBlue.opacity(0.35) : DesignTokens.cardBorder, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
 
-    var body: some View {
-        HStack {
-            Text(label)
-                .font(.caption)
-                .foregroundColor(DesignTokens.textSecondary)
-            Spacer()
-            Text(value)
-                .font(.caption)
-                .fontWeight(.medium)
+    private func saveApprovalPolicy() {
+        var policy = appState.getAgentPolicy(fingerprint: key.fingerprint) ?? AgentKeyPolicy()
+        policy.mode = selectedMode
+        policy.refillPerMinute = max(1, min(600, maxRatePerMinute))
+        do {
+            try appState.setAgentPolicy(policy, fingerprint: key.fingerprint)
+            dismiss()
+            onSaved("Signing approval updated")
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }
@@ -888,7 +1395,7 @@ public extension KeyDetailInspectorView {
     // MARK: - Destructive Delete Footer Control (Milestone M5 / Refs clavis-uta)
 
     /// Semantic attributes for the localized destructive delete footer control.
-    public struct DeleteFooterAttributes: Equatable, Sendable {
+    struct DeleteFooterAttributes: Equatable, Sendable {
         public let buttonTitle: String
         public let iconSystemName: String
         public let alertTitle: String
@@ -911,7 +1418,7 @@ public extension KeyDetailInspectorView {
     }
 
     /// Computes semantic attributes for the inspector delete footer control.
-    public static func deleteFooterAttributes(for key: SSHKeyInfo) -> DeleteFooterAttributes {
+    static func deleteFooterAttributes(for key: SSHKeyInfo) -> DeleteFooterAttributes {
         DeleteFooterAttributes(
             buttonTitle: ClavisUIStrings.Inspector.deleteKey,
             iconSystemName: "trash",
@@ -921,4 +1428,3 @@ public extension KeyDetailInspectorView {
         )
     }
 }
-

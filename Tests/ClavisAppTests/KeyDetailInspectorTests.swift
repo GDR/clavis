@@ -692,4 +692,33 @@ struct KeyDetailInspectorTests {
         #expect(generalSocket.socketPath == "~/.ssh/clavis.sock")
         #expect(generalSocket.status == "Offline")
     }
+
+    @Test
+    func testTrimIdentityMiddleTruncation() {
+        let short = "SHA256:short"
+        #expect(KeyDetailInspectorView.trimIdentity(short) == short)
+
+        let longKey = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBJ8s9Ak7mD4Kx2vUqW5fYh3nPb6gRz0eLcVt1oHiE8wQjN7yM5Sa2x6bF4kU9dC0rThG3vP1eZ8s5QlN6nY= test"
+        let trimmed = KeyDetailInspectorView.trimIdentity(longKey)
+        #expect(trimmed.hasPrefix(String(longKey.prefix(32))))
+        #expect(trimmed.hasSuffix(String(longKey.suffix(14))))
+        #expect(trimmed.contains("…"))
+        #expect(trimmed.count == 32 + 1 + 14)
+    }
+
+    @Test
+    func testApprovalSummaryAndDescriptionTexts() {
+        let strictGeneral = makeTestKey(purpose: .general, biometricPolicy: .biometryCurrentSet)
+        #expect(KeyDetailInspectorView.approvalSummaryText(for: strictGeneral) == "Strict biometrics")
+        #expect(KeyDetailInspectorView.approvalDescriptionText(for: strictGeneral).contains("Touch ID only"))
+
+        let presenceGeneral = makeTestKey(purpose: .general, biometricPolicy: .userPresence)
+        #expect(KeyDetailInspectorView.approvalSummaryText(for: presenceGeneral) == "User presence")
+        #expect(KeyDetailInspectorView.approvalDescriptionText(for: presenceGeneral).contains("Apple Watch"))
+
+        let agentKey = makeTestKey(purpose: .agent, biometricPolicy: .userPresence)
+        #expect(KeyDetailInspectorView.approvalSummaryText(for: agentKey, agentPolicy: AgentKeyPolicy(mode: .none)) == "Autonomous")
+        #expect(KeyDetailInspectorView.approvalSummaryText(for: agentKey, agentPolicy: AgentKeyPolicy(mode: .notify)) == "Notify only")
+        #expect(KeyDetailInspectorView.approvalSummaryText(for: agentKey, agentPolicy: AgentKeyPolicy(mode: .ask)) == "User presence")
+    }
 }

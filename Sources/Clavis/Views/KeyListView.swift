@@ -429,6 +429,9 @@ struct KeyListView: View {
                         appState: appState,
                         onDelete: {
                             deleteKey(label: key.label)
+                        },
+                        onShowToast: { msg in
+                            statusMessage = msg
                         }
                     )
                 } else {
