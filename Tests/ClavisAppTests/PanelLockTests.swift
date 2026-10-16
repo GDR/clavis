@@ -293,4 +293,39 @@ final class PanelLockTests {
         hosting.layout()
         #expect(hosting.bounds.width == 320)
     }
+
+    @Test func test_settingsView_isAlreadyUnlockedWhenClavisUnlocked_withoutPromptingTouchID() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let appState = AppState(keyManager: fixture.makeKeyManager())
+        let fakeAuth = FakePanelAuthenticator()
+        let controller = PanelLockController(
+            defaults: testDefaults,
+            authenticator: fakeAuth,
+            vaultKeyCount: { 1 }
+        )
+
+        // 1. Before Clavis is unlocked, Settings is locked and does not auto-prompt
+        let lockedSettings = SettingsView(lock: controller)
+        #expect(!lockedSettings.isUnlocked)
+        #expect(fakeAuth.authCount == 0)
+
+        // 2. Unlock Clavis once
+        await controller.unlock()
+        #expect(fakeAuth.authCount == 1)
+        #expect(!controller.isEffectivelyLocked)
+
+        //Even an already-created SettingsView immediately reflects unlocked state
+        #expect(lockedSettings.isUnlocked)
+
+        // 3. Opening Settings when Clavis is already unlocked must be unlocked immediately with 0 extra Touch ID prompts
+        let unlockedSettings = SettingsView(lock: controller)
+        #expect(unlockedSettings.isUnlocked)
+        let hosting = NSHostingView(rootView: unlockedSettings.environmentObject(appState))
+        hosting.frame = NSRect(x: 0, y: 0, width: 480, height: 600)
+        hosting.layout()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        #expect(fakeAuth.authCount == 1, "Settings must not prompt for Touch ID again when Clavis is already unlocked")
+    }
 }
