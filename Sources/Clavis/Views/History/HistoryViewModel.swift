@@ -26,6 +26,32 @@ public enum HistoryItem: Identifiable, Equatable, Sendable {
     }
 }
 
+public struct HistoryHostSuggestion: Identifiable, Equatable, Sendable {
+    public let host: String
+    public let count: Int
+
+    public var id: String { host }
+
+    public init(host: String, count: Int) {
+        self.host = host
+        self.count = count
+    }
+}
+
+public struct HistoryDaySection: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let totalCount: Int
+    public let items: [HistoryItem]
+
+    public init(id: String, title: String, totalCount: Int, items: [HistoryItem]) {
+        self.id = id
+        self.title = title
+        self.totalCount = totalCount
+        self.items = items
+    }
+}
+
 extension AuditQuery {
     public var hasFiltersExceptTimeRange: Bool {
         !types.isEmpty || !results.isEmpty || keyFingerprint != nil || keyKind != nil || sessionID != nil
@@ -70,6 +96,13 @@ public final class HistoryViewModel: ObservableObject {
     @Published public var filterProcessOrPID: String? {
         didSet {
             if filterProcessOrPID != oldValue {
+                applyFiltering()
+            }
+        }
+    }
+    @Published public var selectedDate: Date? = nil {
+        didSet {
+            if selectedDate != oldValue {
                 applyFiltering()
             }
         }
@@ -224,18 +257,107 @@ public final class HistoryViewModel: ObservableObject {
             || (filterKeyLabel != nil && !filterKeyLabel!.isEmpty)
             || (filterRemoteHost != nil && !filterRemoteHost!.isEmpty)
             || (filterProcessOrPID != nil && !filterProcessOrPID!.isEmpty)
+            || selectedDate != nil
     }
 
-    public func recordMatchesFilter(_ record: AuditRecord) -> Bool {
+    public func resolvedSensitive(for record: AuditRecord) -> AuditSensitive {
+        if let unsealed = sensitive[record.seq], case .plaintext(let sens) = unsealed {
+            return sens
+        }
+        return record.event.sensitive
+    }
+
+    public nonisolated static func operationTitle(
+        for record: AuditRecord,
+        sensitive: AuditSensitive? = nil
+    ) -> String {
+        let sens = sensitive ?? record.event.sensitive
+        switch record.event.type {
+        case .signature:
+            if record.event.keyKind == .agent || record.event.reason == .viaAgentSession {
+                return "Agent signature"
+            }
+            let isGit = record.event.reason == .viaGitGrant
+                || record.event.reason == .gitOnlyKeyNonGitPayload
+                || record.event.reason == .gitAnchorUnavailable
+                || sens.processChain.contains { proc in
+                    let name = (proc.executablePath as NSString).lastPathComponent.lowercased()
+                    return name == "git" || name.hasPrefix("git-") || name == "ssh-keygen"
+                }
+            if isGit {
+                return "Git commit signature"
+            }
+            return "SSH authentication"
+        case .sessionStart:
+            return "Agent session started"
+        case .sessionExtend:
+            return "Agent session extended"
+        case .sessionRevoke:
+            return "Agent session revoked"
+        case .sessionEnd:
+            return "Agent session ended"
+        case .policyChange:
+            return "Signing policy updated"
+        case .keyCreate:
+            return "Key created"
+        case .keyImport:
+            return "Key imported"
+        case .keyDelete:
+            return "Key deleted"
+        case .keyKindChange:
+            return "Key purpose updated"
+        case .lock:
+            return "Control panel locked"
+        case .securityAlert:
+            return "Security alert"
+        case .suppressed:
+            return "Suppressed signing events"
+        }
+    }
+
+    public nonisolated static func statusLabel(for result: AuditResult) -> String {
+        switch result {
+        case .allowed:
+            return "Approved"
+        case .denied, .cancelled, .failed:
+            return "Rejected"
+        case .info:
+            return "Recorded"
+        }
+    }
+
+    public func recordMatchesFilter(_ record: AuditRecord, ignoreRemoteHost: Bool = false) -> Bool {
         let unsealed = sensitive[record.seq]
         let eventSensitive = record.event.sensitive
+        let resolvedSens = resolvedSensitive(for: record)
 
-        // 1. Search text (matches key label, fingerprint, remote host, process or PID, session ID)
+        // 0. Selected date filter (calendar day match)
+        if let selectedDate {
+            if !Calendar.current.isDate(record.event.time, inSameDayAs: selectedDate) {
+                return false
+            }
+        }
+
+        // 1. Search text (matches operation, result status, key label, fingerprint, remote host, process or PID, session ID)
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !q.isEmpty {
             var matched = false
+            // Operation title & event type
+            let opTitle = Self.operationTitle(for: record, sensitive: resolvedSens)
+            if opTitle.localizedCaseInsensitiveContains(q)
+                || record.event.type.rawValue.localizedCaseInsensitiveContains(q) {
+                matched = true
+            }
+            // Result status ("Approved" / "Rejected" / rawValue)
+            if !matched {
+                let status = Self.statusLabel(for: record.event.result)
+                if status.localizedCaseInsensitiveContains(q)
+                    || record.event.result.rawValue.localizedCaseInsensitiveContains(q) {
+                    matched = true
+                }
+            }
             // Fingerprint
-            if let fp = record.event.keyFingerprint, fp.localizedCaseInsensitiveContains(q) {
+            if !matched, let fp = record.event.keyFingerprint, fp.localizedCaseInsensitiveContains(q) {
                 matched = true
             }
             // Session ID
@@ -299,7 +421,7 @@ public final class HistoryViewModel: ObservableObject {
         }
 
         // 3. Specific remote host filter
-        if let remoteHost = filterRemoteHost, !remoteHost.isEmpty {
+        if !ignoreRemoteHost, let remoteHost = filterRemoteHost, !remoteHost.isEmpty {
             let host: String? = {
                 if let unsealed, case .plaintext(let sens) = unsealed {
                     return sens.host
@@ -330,6 +452,133 @@ public final class HistoryViewModel: ObservableObject {
         }
 
         return true
+    }
+
+    public func hostSuggestions(matching queryText: String = "") -> [HistoryHostSuggestion] {
+        let trimmed = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var distinctHosts: [String] = []
+        var seenHosts = Set<String>()
+        var countsByHost: [String: Int] = [:]
+
+        for record in rawRecords {
+            let sens = resolvedSensitive(for: record)
+            guard let rawHost = sens.host?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !rawHost.isEmpty else {
+                continue
+            }
+            if !seenHosts.contains(rawHost) {
+                seenHosts.insert(rawHost)
+                distinctHosts.append(rawHost)
+            }
+            if recordMatchesFilter(record, ignoreRemoteHost: true) {
+                countsByHost[rawHost, default: 0] += 1
+            }
+        }
+
+        let matchingHosts = distinctHosts.filter { host in
+            trimmed.isEmpty || host.localizedCaseInsensitiveContains(trimmed)
+        }
+        return matchingHosts.map { host in
+            HistoryHostSuggestion(host: host, count: countsByHost[host, default: 0])
+        }
+    }
+
+    public nonisolated static func dayLabel(
+        for date: Date,
+        referenceDate: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "MMMM d, yyyy"
+        let formattedDate = formatter.string(from: date)
+        if calendar.isDate(date, inSameDayAs: referenceDate) {
+            return "Today · \(formattedDate)"
+        }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: referenceDate),
+           calendar.isDate(date, inSameDayAs: yesterday) {
+            return "Yesterday · \(formattedDate)"
+        }
+        return formattedDate
+    }
+
+    public func groupedSections(
+        referenceDate: Date = Date(),
+        calendar: Calendar = .current
+    ) -> [HistoryDaySection] {
+        guard !items.isEmpty else { return [] }
+
+        let keyFormatter = DateFormatter()
+        keyFormatter.locale = Locale(identifier: "en_US_POSIX")
+        keyFormatter.calendar = calendar
+        keyFormatter.timeZone = calendar.timeZone
+        keyFormatter.dateFormat = "yyyy-MM-dd"
+
+        var sectionOrder: [String] = []
+        var sectionTitles: [String: String] = [:]
+        var sectionItems: [String: [HistoryItem]] = [:]
+        var sectionRecordCounts: [String: Int] = [:]
+
+        var currentKey: String?
+
+        for item in items {
+            switch item {
+            case .record(let record):
+                let dayKey = keyFormatter.string(from: record.event.time)
+                currentKey = dayKey
+                if sectionItems[dayKey] == nil {
+                    sectionOrder.append(dayKey)
+                    sectionTitles[dayKey] = Self.dayLabel(
+                        for: record.event.time,
+                        referenceDate: referenceDate,
+                        calendar: calendar
+                    )
+                    sectionItems[dayKey] = []
+                    sectionRecordCounts[dayKey] = 0
+                }
+                sectionItems[dayKey]?.append(item)
+                sectionRecordCounts[dayKey, default: 0] += 1
+            case .gap:
+                let targetKey = currentKey ?? sectionOrder.last ?? "gaps"
+                if sectionItems[targetKey] == nil {
+                    sectionOrder.append(targetKey)
+                    sectionTitles[targetKey] = "Integrity Alerts"
+                    sectionItems[targetKey] = []
+                }
+                sectionItems[targetKey]?.append(item)
+            }
+        }
+
+        return sectionOrder.map { key in
+            HistoryDaySection(
+                id: key,
+                title: sectionTitles[key] ?? key,
+                totalCount: sectionRecordCounts[key] ?? 0,
+                items: sectionItems[key] ?? []
+            )
+        }
+    }
+
+    public func clearDateFilter() {
+        selectedDate = nil
+    }
+
+    public func resetFilters() {
+        searchText = ""
+        filterKeyLabel = nil
+        filterRemoteHost = nil
+        filterProcessOrPID = nil
+        selectedDate = nil
+        query.keyFingerprint = nil
+        query.keyKind = nil
+        query.results = []
+        query.types = []
+        query.from = nil
+        query.to = nil
+        query.sessionID = nil
+        applyFiltering()
     }
 
     public func applyFiltering(prunedSeq: Int64? = nil) {
