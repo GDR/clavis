@@ -9,6 +9,7 @@ public struct PinEntryView: View {
     var onUnlockSuccess: ((LAContext?) -> Void)?
 
     @State private var pin: String = ""
+    @State private var isPinVisible: Bool = false
     @State private var outcome: PinUnlockService.Outcome?
     @State private var waitRemaining: Int = 0
     @State private var waitTimer: Timer?
@@ -42,7 +43,7 @@ public struct PinEntryView: View {
     }
 
     public var body: some View {
-        VStack(spacing: isInlineBanner ? 8 : 14) {
+        VStack(spacing: isInlineBanner ? 8 : 10) {
             if isInlineBanner {
                 HStack(spacing: 8) {
                     Image(systemName: "lock.shield.fill")
@@ -53,68 +54,56 @@ public struct PinEntryView: View {
                 }
             }
 
-            HStack(spacing: 8) {
-                SecureField(ClavisUIStrings.PinUnlock.pinPlaceholder, text: $pin)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: isInlineBanner ? 160 : 200)
-                    .disabled(waitRemaining > 0 || isSubmitting)
-                    .accessibilityLabel(ClavisUIStrings.PinUnlock.pinLabel)
-                    .accessibilityValue(maskedPin)
-                    .onSubmit {
-                        submitPIN()
-                    }
-
-                Button(action: submitPIN) {
-                    HStack(spacing: 4) {
-                        if isSubmitting {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "lock.open.fill")
-                        }
-                        Text(ClavisUIStrings.PinUnlock.unlock)
+            if isInlineBanner {
+                HStack(spacing: 8) {
+                    pinInputField
+                        .frame(maxWidth: 180)
+                    unlockButton
+                    if lock.currentMode == .biometryOrPIN {
+                        touchIdButton
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
-                .keyboardShortcut(.defaultAction)
-                .disabled(pin.count < 6 || waitRemaining > 0 || isSubmitting)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(ClavisUIStrings.PinUnlock.pinLabel)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(DesignTokens.textSecondary)
+                    pinInputField
+                }
+                .frame(maxWidth: .infinity)
+
+                unlockButton
+                    .frame(maxWidth: .infinity)
 
                 if lock.currentMode == .biometryOrPIN {
-                    Button(action: submitTouchID) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "touchid")
-                            Text(ClavisUIStrings.PinUnlock.useTouchID)
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
-                    .disabled(isSubmitting)
+                    touchIdButton
+                        .frame(maxWidth: .infinity)
                 }
             }
 
             if waitRemaining > 0 {
                 Text(ClavisUIStrings.PinUnlock.waitFormat(waitRemaining))
-                    .font(.system(size: 12))
+                    .font(.system(size: 11))
                     .foregroundColor(.orange)
             } else if outcome == .wrongPIN {
                 Text(ClavisUIStrings.PinUnlock.wrongPIN)
-                    .font(.system(size: 12))
+                    .font(.system(size: 11))
                     .foregroundColor(.red)
             } else if outcome == .passwordRequired {
                 Text(ClavisUIStrings.PinUnlock.passwordRequired)
-                    .font(.system(size: 12))
+                    .font(.system(size: 11))
                     .foregroundColor(.red)
             }
 
             if !isInlineBanner {
                 Button(action: submitPassword) {
                     Text(ClavisUIStrings.PinUnlock.usePassword)
-                        .font(.system(size: 12))
+                        .font(.system(size: 11))
                         .foregroundColor(.accentColor)
                 }
                 .buttonStyle(.link)
                 .disabled(isSubmitting)
+                .padding(.top, 2)
             }
         }
         .accessibilityElement(children: .contain)
@@ -123,6 +112,77 @@ public struct PinEntryView: View {
             waitTimer?.invalidate()
             waitTimer = nil
         }
+    }
+
+    @ViewBuilder
+    private var pinInputField: some View {
+        HStack(spacing: 6) {
+            Group {
+                if isPinVisible {
+                    TextField(ClavisUIStrings.PinUnlock.pinPlaceholder, text: $pin)
+                } else {
+                    SecureField(ClavisUIStrings.PinUnlock.pinPlaceholder, text: $pin)
+                }
+            }
+            .textFieldStyle(.plain)
+            .font(.system(size: 12))
+            .disabled(waitRemaining > 0 || isSubmitting)
+            .accessibilityLabel(ClavisUIStrings.PinUnlock.pinLabel)
+            .accessibilityValue(maskedPin)
+            .onSubmit {
+                submitPIN()
+            }
+
+            Button(action: { isPinVisible.toggle() }) {
+                Image(systemName: isPinVisible ? "eye.slash" : "eye")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DesignTokens.textSecondary)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .help(isPinVisible ? "Hide PIN" : "Show PIN")
+            .accessibilityLabel(isPinVisible ? "Hide PIN" : "Show PIN")
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 34)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.65))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(DesignTokens.cardBorder, lineWidth: 1)
+        )
+    }
+
+    private var unlockButton: some View {
+        Button(action: submitPIN) {
+            HStack(spacing: 6) {
+                if isSubmitting {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text(ClavisUIStrings.PinUnlock.unlock)
+                    .frame(maxWidth: isInlineBanner ? nil : .infinity)
+            }
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .keyboardShortcut(.defaultAction)
+        .disabled(pin.count < 6 || waitRemaining > 0 || isSubmitting)
+    }
+
+    private var touchIdButton: some View {
+        Button(action: submitTouchID) {
+            HStack(spacing: 6) {
+                Image(systemName: "touchid")
+                Text("Unlock with Touch ID")
+                    .frame(maxWidth: isInlineBanner ? nil : .infinity)
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
+        .disabled(isSubmitting)
     }
 
     private func submitPIN() {

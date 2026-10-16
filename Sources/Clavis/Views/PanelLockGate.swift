@@ -4,8 +4,11 @@ import ClavisCore
 @MainActor
 public struct LockedPlaceholderView: View {
     @ObservedObject var lock: PanelLockController
+    @ObservedObject private var appState: AppState = .shared
 
     public static let clarificationNotice = "Locking the control panel does not disable background SSH signing. Active SSH sessions and Git operations continue in the background."
+    public static let subtitleText = "Unlock to manage your keys and security settings."
+    public static let bottomContinuationNotice = "SSH and Git signing continue while the panel is locked."
 
     public init() {
         self.init(lock: .shared)
@@ -16,44 +19,103 @@ public struct LockedPlaceholderView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "lock.fill")
-                .font(.system(size: 48))
-                .foregroundColor(.secondary)
+        VStack(spacing: 0) {
+            // Top traffic-light clearance bar (58px)
+            Color.clear
+                .frame(height: 58)
 
-            Text(ClavisUIStrings.PanelLock.title)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.primary)
+            Spacer(minLength: 16)
 
-            Text(Self.clarificationNotice)
-                .font(.system(size: 12))
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 340)
-
-            if lock.currentMode.requiresPIN {
-                PinEntryView(lock: lock)
-            } else {
-                Button(action: {
-                    Task {
-                        await lock.unlock()
-                    }
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "lock.open.fill")
-                        Text(ClavisUIStrings.PanelLock.unlock)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
+            // Centered lock card (320px)
+            VStack(spacing: 0) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(DesignTokens.accentBlue.opacity(0.10))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(DesignTokens.accentBlue.opacity(0.16), lineWidth: 1)
+                        )
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 26, weight: .medium))
+                        .foregroundColor(DesignTokens.accentBlue)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
-                .keyboardShortcut(.defaultAction)
-                .disabled(lock.isUnlocking)
+                .frame(width: 61, height: 64)
+                .padding(.bottom, 20)
+
+                Text(ClavisUIStrings.PanelLock.title)
+                    .font(.system(size: 23, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .padding(.bottom, 7)
+
+                Text(Self.subtitleText)
+                    .font(.system(size: 12))
+                    .foregroundColor(DesignTokens.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.bottom, 24)
+
+                if lock.currentMode.requiresPIN {
+                    PinEntryView(lock: lock)
+                } else {
+                    VStack(spacing: 12) {
+                        Button(action: {
+                            Task {
+                                await lock.unlock()
+                            }
+                        }) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "touchid")
+                                    .font(.system(size: 15))
+                                Text("Unlock with Touch ID")
+                                    .font(.system(size: 13, weight: .medium))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 28)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(lock.isUnlocking)
+                        .accessibilityLabel(ClavisUIStrings.PanelLock.unlock)
+
+                        Text("Use Touch ID, Apple Watch, or your Mac login password.")
+                            .font(.system(size: 11))
+                            .foregroundColor(DesignTokens.textTertiary)
+                            .multilineTextAlignment(.center)
+                    }
+                }
             }
+            .frame(width: 320)
+            .padding(.horizontal, 18)
+
+            Spacer(minLength: 16)
+
+            // Bottom agent status bar
+            HStack(spacing: 12) {
+                HStack(spacing: 5) {
+                    StatusDot(isActive: appState.isSocketActive)
+                    Text(appState.isSocketActive ? "Agent active" : "Agent offline")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(DesignTokens.textSecondary)
+                }
+                Text("·")
+                    .font(.system(size: 10))
+                    .foregroundColor(DesignTokens.textTertiary)
+                Text(Self.bottomContinuationNotice)
+                    .font(.system(size: 10))
+                    .foregroundColor(DesignTokens.textSecondary)
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 19)
+            .accessibilityElement(children: .combine)
+            .accessibilityHint(Self.clarificationNotice)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(
+            ZStack {
+                VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow)
+                DesignTokens.windowBackground
+            }
+            .ignoresSafeArea()
+        )
     }
 }
 

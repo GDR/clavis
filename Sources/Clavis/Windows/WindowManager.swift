@@ -56,10 +56,15 @@ public class WindowManager: NSObject, NSWindowDelegate {
         return nil
     }
 
+    public static let defaultWindowSize = NSSize(width: 911, height: 724)
+    public static let minimumWindowSize = NSSize(width: 620, height: 530)
+
     public func openKeyManager(sheet: KeyManagerSheet? = nil) {
         dismissMenuBarExtra()
         NSApp.setActivationPolicy(.regular)
-        AppState.shared.activeSheet = sheet
+        if let sheet {
+            AppState.shared.activeSheet = sheet
+        }
 
         if let window = keyManagerWindow {
             window.makeKeyAndOrderFront(nil)
@@ -67,13 +72,13 @@ public class WindowManager: NSObject, NSWindowDelegate {
             return
         }
 
-        let keyListView = PanelLockGate {
+        let keyListView = PanelLockGate(showsEmptyState: false) {
             KeyListView().environmentObject(AppState.shared)
         }
         let hostingController = NSHostingController(rootView: keyListView)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 880, height: 720),
+            contentRect: NSRect(origin: .zero, size: Self.defaultWindowSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -90,7 +95,7 @@ public class WindowManager: NSObject, NSWindowDelegate {
         hostingController.view.wantsLayer = true
         hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
 
-        window.minSize = NSSize(width: 820, height: 640)
+        window.minSize = Self.minimumWindowSize
         window.contentViewController = hostingController
         window.center()
         window.isReleasedWhenClosed = false
@@ -132,42 +137,12 @@ public class WindowManager: NSObject, NSWindowDelegate {
     }
 
     public func openHistory(keyFingerprint: String? = nil) {
-        dismissMenuBarExtra()
-        NSApp.setActivationPolicy(.regular)
-
-        if let window = historyWindow {
-            if let keyFingerprint {
-                historyViewModel?.query.keyFingerprint = keyFingerprint
-                historyViewModel?.reload()
-            }
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
+        AppState.shared.openHistoryPane(forKeyFingerprint: keyFingerprint)
+        if let historyViewModel {
+            historyViewModel.query.keyFingerprint = keyFingerprint
+            historyViewModel.reload()
         }
-
-        let viewModel = HistoryViewModel(initialKeyFingerprint: keyFingerprint)
-        self.historyViewModel = viewModel
-        let historyView = PanelLockGate {
-            HistoryView(viewModel: viewModel)
-        }
-        let hostingController = NSHostingController(rootView: historyView)
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = ClavisUIStrings.History.windowTitle
-        window.minSize = NSSize(width: 750, height: 500)
-        window.contentViewController = hostingController
-        window.center()
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-
-        self.historyWindow = window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        openKeyManager()
     }
 
     public func windowWillClose(_ notification: Notification) {

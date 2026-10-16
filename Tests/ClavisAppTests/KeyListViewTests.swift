@@ -300,5 +300,53 @@ struct KeyListViewTests {
         #expect(ClavisUIStrings.Accessibility.lockAll == "Lock all active keys")
         #expect(ClavisUIStrings.Accessibility.settings == "Settings")
     }
+
+    @Test
+    func testContactsSidebarAndEmptyStateConstants() {
+        #expect(KeyListView.sidebarWidth == 222)
+        #expect(KeyListView.toolbarHeight == 58)
+        #expect(KeyListView.searchCapsuleHeight == 36)
+        #expect(KeyListView.emptyStateTitle == "A key that stays on your Mac.")
+        #expect(KeyListView.emptyStateSubtitle.contains("Secure Enclave"))
+        #expect(KeyListView.emptyStateCreateButtonTitle == "Create your first key")
+        #expect(KeyListView.historyVerifiedTooltip.contains("linked hashes"))
+    }
+
+    @Test
+    func testKeySidebarRowSubtitleAndDividerState() {
+        let keys = makeSampleKeys()
+        let generalKey = keys[0]
+        let agentKey = keys[1]
+        let gitKey = keys[2]
+
+        let lockedGeneralRow = KeySidebarRowView(
+            key: generalKey,
+            isSelected: false,
+            isUnlocked: false,
+            showDivider: true,
+            onSelect: {}
+        )
+        #expect(lockedGeneralRow.subtitleText == "SSH & Git · Locked")
+        #expect(lockedGeneralRow.showDivider == true)
+
+        let unlockedAgentRow = KeySidebarRowView(
+            key: agentKey,
+            isSelected: true,
+            isUnlocked: true,
+            showDivider: false,
+            onSelect: {}
+        )
+        #expect(unlockedAgentRow.subtitleText == "Agent · Unlocked")
+        #expect(unlockedAgentRow.showDivider == false)
+
+        let lockedGitRow = KeySidebarRowView(
+            key: gitKey,
+            isSelected: false,
+            isUnlocked: false,
+            showDivider: true,
+            onSelect: {}
+        )
+        #expect(lockedGitRow.subtitleText == "Git signing · Locked")
+    }
 }
 
