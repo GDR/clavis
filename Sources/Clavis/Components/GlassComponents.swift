@@ -264,4 +264,129 @@ public struct LiquidGlassRowSelectionModifier: ViewModifier {
     }
 }
 
+public struct CircularGlassIconButton: View {
+    public let systemImage: String
+    public var size: CGFloat = 34
+    public var iconSize: CGFloat = 13
+    public var isActive: Bool = false
+    public var isDanger: Bool = false
+    public var helpText: String
+    public var accessibilityLabelText: String? = nil
+    public let action: () -> Void
+
+    @State private var isHovered: Bool = false
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    public init(
+        systemImage: String,
+        size: CGFloat = 34,
+        iconSize: CGFloat = 13,
+        isActive: Bool = false,
+        isDanger: Bool = false,
+        helpText: String,
+        accessibilityLabelText: String? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.systemImage = systemImage
+        self.size = size
+        self.iconSize = iconSize
+        self.isActive = isActive
+        self.isDanger = isDanger
+        self.helpText = helpText
+        self.accessibilityLabelText = accessibilityLabelText
+        self.action = action
+    }
+
+    public init(
+        icon: String,
+        size: CGFloat = 34,
+        iconSize: CGFloat = 13,
+        isActive: Bool = false,
+        isDanger: Bool = false,
+        helpText: String,
+        accessibilityLabel: String? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.init(
+            systemImage: icon,
+            size: size,
+            iconSize: iconSize,
+            isActive: isActive,
+            isDanger: isDanger,
+            helpText: helpText,
+            accessibilityLabelText: accessibilityLabel,
+            action: action
+        )
+    }
+
+    private var foregroundColor: Color {
+        if isDanger {
+            return Color(nsColor: .systemRed)
+        }
+        if isActive {
+            return .accentColor
+        }
+        return .primary
+    }
+
+    public var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: iconSize, weight: .semibold))
+                .foregroundColor(foregroundColor)
+                .frame(width: size, height: size)
+                .background(
+                    ZStack {
+                        if !reduceTransparency {
+                            Circle()
+                                .fill(.ultraThinMaterial)
+                        } else {
+                            Circle()
+                                .fill(Color(nsColor: .controlBackgroundColor))
+                        }
+                        Circle()
+                            .fill(fillColor)
+                    }
+                )
+                .overlay(
+                    Circle()
+                        .stroke(borderColor, lineWidth: 1)
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(helpText)
+        .accessibilityLabel(accessibilityLabelText ?? helpText)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.12)) {
+                isHovered = hovering
+            }
+        }
+    }
+
+    private var fillColor: Color {
+        if isDanger {
+            return Color(nsColor: .systemRed).opacity(isHovered ? 0.16 : 0.06)
+        }
+        if isActive {
+            return Color.accentColor.opacity(isHovered ? 0.22 : 0.14)
+        }
+        if isHovered {
+            return Color.primary.opacity(0.08)
+        }
+        return Color(nsColor: .controlBackgroundColor).opacity(0.45)
+    }
+
+    private var borderColor: Color {
+        if isDanger && isHovered {
+            return Color(nsColor: .systemRed).opacity(0.35)
+        }
+        if isActive {
+            return Color.accentColor.opacity(0.45)
+        }
+        return DesignTokens.cardBorder
+    }
+}
+
+
 

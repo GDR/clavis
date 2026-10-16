@@ -241,4 +241,21 @@ final class PanelLockTests {
         #expect(wm.keyManagerWindow == nil)
         #expect(window.contentViewController == nil)
     }
+
+    @Test func test_lockedPlaceholderAndWindowDimensions() {
+        #expect(LockedPlaceholderView.subtitleText == "Unlock to manage your keys and security settings.")
+        #expect(LockedPlaceholderView.bottomContinuationNotice == "SSH and Git signing continue while the panel is locked.")
+        #expect(WindowManager.defaultWindowSize == NSSize(width: 911, height: 724))
+        #expect(WindowManager.minimumWindowSize == NSSize(width: 620, height: 530))
+
+        let button = CircularGlassIconButton(
+            icon: "lock",
+            size: 33,
+            iconSize: 14,
+            isActive: false,
+            helpText: "Lock control panel (⌘L)",
+            action: {}
+        )
+        _ = button.body
+    }
 }
