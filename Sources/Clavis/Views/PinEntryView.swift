@@ -76,6 +76,19 @@ public struct PinEntryView: View {
                     .frame(maxWidth: .infinity)
 
                 if lock.currentMode == .biometryOrPIN {
+                    HStack(spacing: 12) {
+                        Rectangle()
+                            .fill(DesignTokens.cardBorder)
+                            .frame(height: 1)
+                        Text("or")
+                            .font(.system(size: 11))
+                            .foregroundColor(DesignTokens.textSecondary)
+                        Rectangle()
+                            .fill(DesignTokens.cardBorder)
+                            .frame(height: 1)
+                    }
+                    .padding(.vertical, 4)
+
                     touchIdButton
                         .frame(maxWidth: .infinity)
                 }

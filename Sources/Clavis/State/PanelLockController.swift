@@ -1,5 +1,6 @@
 import Foundation
 @preconcurrency import LocalAuthentication
+import OpenDirectory
 import ClavisCore
 
 public enum PanelLockReason: String, CaseIterable, Equatable {
@@ -63,6 +64,7 @@ public final class PanelLockController: ObservableObject {
     private let now: () -> Date
     private var lastActivity: Date
     private var vaultKeyCountProvider: (() -> Int)?
+    private let loginPasswordVerifier: @Sendable (String) -> Bool
 
     public var currentMode: AuditReadMode {
         (try? keyring?.currentMode()) ?? .passwordOrBiometry
@@ -129,6 +131,24 @@ public final class PanelLockController: ObservableObject {
         return { PublicKeyStore.loadAll().count }
     }
 
+    /// Verifies the current macOS user's login password against local OpenDirectory without storing it.
+    public nonisolated static func verifyLocalAccountPassword(_ password: String) -> Bool {
+        guard !password.isEmpty else { return false }
+        do {
+            let session = ODSession.default()
+            let node = try ODNode(session: session, type: ODNodeType(kODNodeTypeLocalNodes))
+            let record = try node.record(
+                withRecordType: kODRecordTypeUsers,
+                name: NSUserName(),
+                attributes: nil
+            )
+            try record.verifyPassword(password)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     public init(
         defaults: UserDefaults = .standard,
         authenticator: PanelAuthenticating = LAPanelAuthenticator(),
@@ -136,7 +156,8 @@ public final class PanelLockController: ObservableObject {
         pinUnlockService: PinUnlockService? = nil,
         recorder: AuditRecording = AuditRecorder.shared,
         now: @escaping () -> Date = Date.init,
-        vaultKeyCount: (() -> Int)? = PanelLockController.makeDefaultVaultKeyCountProvider()
+        vaultKeyCount: (() -> Int)? = PanelLockController.makeDefaultVaultKeyCountProvider(),
+        loginPasswordVerifier: @escaping @Sendable (String) -> Bool = PanelLockController.verifyLocalAccountPassword
     ) {
         self.defaults = defaults
         self.authenticator = authenticator
@@ -144,6 +165,7 @@ public final class PanelLockController: ObservableObject {
         self.recorder = recorder
         self.now = now
         self.vaultKeyCountProvider = vaultKeyCount
+        self.loginPasswordVerifier = loginPasswordVerifier
         let currentTime = now()
         self.lastActivity = currentTime
 
@@ -243,6 +265,33 @@ public final class PanelLockController: ObservableObject {
             applyUnlock(context: context)
         }
         return outcome
+    }
+
+    @discardableResult
+    public func unlockWithLoginPassword(_ password: String) async -> Bool {
+        guard isLocked, !shouldBypassLock else { return true }
+        guard !password.isEmpty else { return false }
+        if isUnlocking {
+            while isUnlocking {
+                await Task.yield()
+            }
+            return !isLocked
+        }
+
+        isUnlocking = true
+        defer { isUnlocking = false }
+
+        ClavisLogger.promptDebug("calvis-ui", "PanelLockController: verifying Mac login password via OpenDirectory")
+        let verifier = self.loginPasswordVerifier
+        let verified = await Task.detached {
+            verifier(password)
+        }.value
+
+        if verified {
+            applyUnlock(context: nil)
+            return true
+        }
+        return false
     }
 
     public func applyUnlock(context: LAContext?) {

@@ -328,4 +328,37 @@ final class PanelLockTests {
 
         #expect(fakeAuth.authCount == 1, "Settings must not prompt for Touch ID again when Clavis is already unlocked")
     }
+
+    @Test func test_lockedPlaceholderView_macLoginPasswordUnlock() async {
+        let fakeAuth = FakePanelAuthenticator()
+        let controller = PanelLockController(
+            defaults: testDefaults,
+            authenticator: fakeAuth,
+            vaultKeyCount: { 1 },
+            loginPasswordVerifier: { candidate in
+                candidate == "correct-mac-password"
+            }
+        )
+
+        #expect(controller.isEffectivelyLocked)
+        #expect(LockedPlaceholderView.passwordFieldLabel == "Mac login password")
+        #expect(LockedPlaceholderView.passwordFieldPlaceholder == "Enter password")
+
+        // Wrong password keeps panel locked
+        let wrongResult = await controller.unlockWithLoginPassword("wrong-password")
+        #expect(!wrongResult)
+        #expect(controller.isEffectivelyLocked)
+        #expect(fakeAuth.authCount == 0)
+
+        // Empty password rejected without calling verifier
+        let emptyResult = await controller.unlockWithLoginPassword("")
+        #expect(!emptyResult)
+        #expect(controller.isEffectivelyLocked)
+
+        // Correct Mac login password unlocks panel without prompting Touch ID
+        let okResult = await controller.unlockWithLoginPassword("correct-mac-password")
+        #expect(okResult)
+        #expect(!controller.isEffectivelyLocked)
+        #expect(fakeAuth.authCount == 0)
+    }
 }
