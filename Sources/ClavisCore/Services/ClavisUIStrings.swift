@@ -194,6 +194,7 @@ public enum ClavisUIStrings {
         // Active Git Signing Grace Session
         public static var activeGitSessionSection: String { localized("inspector.active_git_session_section", "ACTIVE GIT SIGNING SESSION") }
         public static var revokeGitSession: String { localized("inspector.revoke_git_session", "Revoke Session") }
+        public static var revokeGitSessionButton: String { localized("inspector.revoke_git_session_button", "Revoke") }
         public static func gitSessionOperationsLeft(_ count: Int) -> String {
             localizedFormat("inspector.git_session_operations_left", "%d operations remaining", count)
         }
@@ -209,6 +210,84 @@ public enum ClavisUIStrings {
         public static var feedbackCopiedOpenSSH: String { localized("inspector.feedback_copied_openssh", "Copied OpenSSH public key to clipboard") }
         public static func feedbackLockedKey(_ label: String) -> String {
             localizedFormat("inspector.feedback_locked_key", "Locked '%@'", label)
+        }
+        public static var feedbackChangedPurposeToAgent: String {
+            localized("inspector.feedback_changed_purpose_agent", "Changed purpose to Agent")
+        }
+        public static var feedbackChangedPurposeToGeneral: String {
+            localized("inspector.feedback_changed_purpose_general", "Changed purpose to General")
+        }
+        public static func feedbackChangedPurpose(to target: KeyPurpose) -> String {
+            switch target {
+            case .agent:
+                return feedbackChangedPurposeToAgent
+            case .general, .gitSigningOnly:
+                return feedbackChangedPurposeToGeneral
+            }
+        }
+
+        // Destructive Section & Footprint Hint
+        public static func deleteKeyDescription(label: String, fingerprint: String) -> String {
+            localizedFormat("inspector.delete_key_description", "Permanently remove '%1$@' (%2$@) from the Secure Enclave.", label, fingerprint)
+        }
+
+        // Socket Display Names
+        public static var socketNameSSHAgent: String {
+            localized("inspector.socket_name_ssh_agent", "ssh-agent socket")
+        }
+        public static var socketNameAgent: String {
+            localized("inspector.socket_name_agent", "agent socket")
+        }
+
+        // Security Badges
+        public static var badgeSilent: String { localized("inspector.badge_silent", "Silent") }
+        public static var badgeNotify: String { localized("inspector.badge_notify", "Notify") }
+        public static var badgeGraceActive: String { localized("inspector.badge_grace_active", "Grace Active") }
+
+        // Dynamic Security Subtitles
+        public static var subtitleGitGraceActive: String {
+            localized("inspector.subtitle_git_grace_active", "Hardware Isolated · Git signing grace active")
+        }
+        public static var subtitleAgentSilent: String {
+            localized("inspector.subtitle_agent_silent", "Hardware Isolated · Silent agent lease")
+        }
+        public static var subtitleAgentNotify: String {
+            localized("inspector.subtitle_agent_notify", "Hardware Isolated · Agent lease with notification")
+        }
+        public static var subtitleAgentAsk: String {
+            localized("inspector.subtitle_agent_ask", "Hardware Isolated · Touch ID prompt per agent signature")
+        }
+        public static var subtitleGitSigningOnly: String {
+            localized("inspector.subtitle_git_signing_only", "Hardware Isolated · Git commit signing only")
+        }
+
+        // Security Posture Footnotes & Titles
+        public static var postureAgentTitle: String {
+            localized("inspector.posture_agent_title", "Hardware Isolation (Agent Policy)")
+        }
+        public static func postureAgentSilentDesc(lease: String) -> String {
+            localizedFormat("inspector.posture_agent_silent_desc", "Agent sessions operate silently without prompts for up to %@ once authorized. Private key material remains hardware-bound in the Apple Secure Enclave.", lease)
+        }
+        public static func postureAgentNotifyDesc(lease: String) -> String {
+            localizedFormat("inspector.posture_agent_notify_desc", "Agent sessions post a notification on each signature without prompting for up to %@. Private key material remains hardware-bound in the Apple Secure Enclave.", lease)
+        }
+        public static var postureAgentAskDesc: String {
+            localized("inspector.posture_agent_ask_desc", "Every agent signature requires explicit Touch ID user confirmation. Private key material remains hardware-bound in the Apple Secure Enclave.")
+        }
+        public static var postureGitSigningOnlyTitle: String {
+            localized("inspector.posture_git_signing_only_title", "Hardware Isolation (Git Signing Only)")
+        }
+        public static var postureGitSigningOnlyDesc: String {
+            localized("inspector.posture_git_signing_only_desc", "Restricted strictly to local Git commit and tag signing. Forwarded agent requests are blocked. Every signature requires Touch ID per operation (optional 5-minute process-scoped Git signing grace window).")
+        }
+        public static var postureGitGraceActiveSuffix: String {
+            localized("inspector.posture_git_grace_active_suffix", " A 5-minute Git signing grace session is currently active for this key.")
+        }
+        public static var postureGeneralStrictDesc: String {
+            localized("inspector.posture_general_strict_desc", "Secure Enclave strictly requires Touch ID matching current biometric enrollment. Every signature requires explicit Touch ID per operation (optional 5-minute process-scoped Git signing grace window). Device password fallback is disabled.")
+        }
+        public static var postureGeneralPresenceDesc: String {
+            localized("inspector.posture_general_presence_desc", "Signatures require Touch ID user presence per operation (optional 5-minute process-scoped Git signing grace window). Keys cannot be cached in general session memory.")
         }
     }
 

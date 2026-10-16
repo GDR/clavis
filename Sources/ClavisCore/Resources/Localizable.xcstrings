@@ -6511,6 +6511,397 @@
           }
         }
       }
+    },
+    "inspector.revoke_git_session_button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revoke"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Отозвать"
+          }
+        }
+      }
+    },
+    "inspector.feedback_changed_purpose_agent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Changed purpose to Agent"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Назначение изменено на «Агент»"
+          }
+        }
+      }
+    },
+    "inspector.feedback_changed_purpose_general": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Changed purpose to General"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Назначение изменено на «Общий»"
+          }
+        }
+      }
+    },
+    "inspector.delete_key_description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permanently remove '%1$@' (%2$@) from the Secure Enclave."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Безвозвратно удалить «%1$@» (%2$@) из Secure Enclave."
+          }
+        }
+      }
+    },
+    "inspector.socket_name_agent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "agent socket"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "сокет агента"
+          }
+        }
+      }
+    },
+    "inspector.socket_name_ssh_agent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ssh-agent socket"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "сокет ssh-agent"
+          }
+        }
+      }
+    },
+    "inspector.badge_silent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Silent"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Без запросов"
+          }
+        }
+      }
+    },
+    "inspector.badge_notify": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notify"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Уведомление"
+          }
+        }
+      }
+    },
+    "inspector.badge_grace_active": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grace Active"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Льготный период"
+          }
+        }
+      }
+    },
+    "inspector.subtitle_git_grace_active": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hardware Isolated · Git signing grace active"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Аппаратная изоляция · активен льготный период Git"
+          }
+        }
+      }
+    },
+    "inspector.subtitle_agent_silent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hardware Isolated · Silent agent lease"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Аппаратная изоляция · тихая аренда агента"
+          }
+        }
+      }
+    },
+    "inspector.subtitle_agent_notify": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hardware Isolated · Agent lease with notification"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Аппаратная изоляция · аренда агента с уведомлением"
+          }
+        }
+      }
+    },
+    "inspector.subtitle_agent_ask": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hardware Isolated · Touch ID prompt per agent signature"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Аппаратная изоляция · Touch ID на каждую подпись агента"
+          }
+        }
+      }
+    },
+    "inspector.subtitle_git_signing_only": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hardware Isolated · Git commit signing only"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Аппаратная изоляция · только подпись коммитов Git"
+          }
+        }
+      }
+    },
+    "inspector.posture_agent_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hardware Isolation (Agent Policy)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Аппаратная изоляция (политика агента)"
+          }
+        }
+      }
+    },
+    "inspector.posture_agent_silent_desc": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent sessions operate silently without prompts for up to %@ once authorized. Private key material remains hardware-bound in the Apple Secure Enclave."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сессии агента работают тихо без запросов до %@ после авторизации. Закрытый ключ остается аппаратно изолированным в Apple Secure Enclave."
+          }
+        }
+      }
+    },
+    "inspector.posture_agent_notify_desc": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent sessions post a notification on each signature without prompting for up to %@. Private key material remains hardware-bound in the Apple Secure Enclave."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сессии агента отправляют уведомление при каждой подписи без запроса до %@. Закрытый ключ остается аппаратно изолированным в Apple Secure Enclave."
+          }
+        }
+      }
+    },
+    "inspector.posture_agent_ask_desc": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Every agent signature requires explicit Touch ID user confirmation. Private key material remains hardware-bound in the Apple Secure Enclave."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Каждая подпись агента требует явного подтверждения через Touch ID. Закрытый ключ остается аппаратно изолированным в Apple Secure Enclave."
+          }
+        }
+      }
+    },
+    "inspector.posture_git_signing_only_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hardware Isolation (Git Signing Only)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Аппаратная изоляция (только подпись Git)"
+          }
+        }
+      }
+    },
+    "inspector.posture_git_signing_only_desc": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restricted strictly to local Git commit and tag signing. Forwarded agent requests are blocked. Every signature requires Touch ID per operation (optional 5-minute process-scoped Git signing grace window)."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ограничено исключительно локальной подписью коммитов и тегов Git. Запросы через forwarded agent блокируются. Каждая подпись требует Touch ID (доступен 5-минутный льготный период для процесса Git)."
+          }
+        }
+      }
+    },
+    "inspector.posture_git_grace_active_suffix": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " A 5-minute Git signing grace session is currently active for this key."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " Для этого ключа активен 5-минутный льготный период подписи Git."
+          }
+        }
+      }
+    },
+    "inspector.posture_general_strict_desc": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Secure Enclave strictly requires Touch ID matching current biometric enrollment. Every signature requires explicit Touch ID per operation (optional 5-minute process-scoped Git signing grace window). Device password fallback is disabled."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Secure Enclave строго требует Touch ID, соответствующий текущим биометрическим данным. Каждая подпись требует Touch ID (доступен 5-минутный льготный период для процесса Git). Ввод пароля отключен."
+          }
+        }
+      }
+    },
+    "inspector.posture_general_presence_desc": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signatures require Touch ID user presence per operation (optional 5-minute process-scoped Git signing grace window). Keys cannot be cached in general session memory."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Подписи требуют подтверждения присутствия через Touch ID (доступен 5-минутный льготный период для процесса Git). Ключи не кэшируются в общей памяти сессии."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -288,7 +288,7 @@ public struct KeyDetailInspectorView: View {
                 if let gitGrace = activeGitGraceSession {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("ACTIVE GIT SIGNING SESSION")
+                            Text(ClavisUIStrings.Inspector.activeGitSessionSection)
                                 .font(.system(size: 11, weight: .bold))
                                 .foregroundColor(DesignTokens.textTertiary)
                             Spacer()
@@ -316,7 +316,7 @@ public struct KeyDetailInspectorView: View {
                             }) {
                                 HStack(spacing: 4) {
                                     Image(systemName: "xmark.circle")
-                                    Text("Revoke")
+                                    Text(ClavisUIStrings.Inspector.revokeGitSessionButton)
                                 }
                                 .font(.caption)
                             }
@@ -397,37 +397,22 @@ public struct KeyDetailInspectorView: View {
                     AgentPolicyView(key: key, appState: appState)
                 }
 
-                // Danger Zone (#102: Separate Delete from Copy Public Key, isolated at bottom)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(ClavisUIStrings.Inspector.deleteKey.uppercased())
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(DesignTokens.textTertiary)
-
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
+                // Inspector Footer: Clean Localized Destructive Delete Button (Milestone M5 / R5)
+                HStack {
+                    Spacer()
+                    Button(role: .destructive, action: {
+                        ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: displaying delete confirmation alert for '\(key.label)'")
+                        showingDeleteAlert = true
+                    }) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "trash")
                             Text(ClavisUIStrings.Inspector.deleteKey)
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.red)
-                            Text("Permanently remove '\(key.label)' (\(key.shortFingerprint)) from the Secure Enclave.")
-                                .font(.caption)
-                                .foregroundColor(DesignTokens.textSecondary)
                         }
-                        Spacer()
-                        Button(role: .destructive, action: {
-                            ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: displaying delete confirmation alert for '\(key.label)'")
-                            showingDeleteAlert = true
-                        }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "trash")
-                                Text(ClavisUIStrings.Inspector.deleteKey)
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.red)
-                        .controlSize(.small)
                     }
-                    .padding(14)
-                    .glassCard(cornerRadius: 10)
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                    .controlSize(.regular)
+                    Spacer()
                 }
                 .padding(.top, 8)
             }
@@ -450,7 +435,7 @@ public struct KeyDetailInspectorView: View {
             Button(ClavisUIStrings.KeyDetail.changePurposeConfirm) {
                 do {
                     try appState.changeKeyKind(label: key.label, to: target)
-                    showFeedback(target == .agent ? "Changed purpose to Agent" : "Changed purpose to General")
+                    showFeedback(ClavisUIStrings.Inspector.feedbackChangedPurpose(to: target))
                 } catch {
                     changePurposeError = error.localizedDescription
                     showingChangePurposeError = true
@@ -553,16 +538,7 @@ public extension KeyDetailInspectorView {
     }
 
     static func deleteConfirmationMessage(label: String, shortFingerprint: String) -> String {
-        let base = ClavisUIStrings.Inspector.deleteAlertMessage(label: label)
-        if base.contains("'\(label)'") {
-            return base.replacingOccurrences(of: "'\(label)'", with: "'\(label)' (\(shortFingerprint))")
-        } else if base.contains("«\(label)»") {
-            return base.replacingOccurrences(of: "«\(label)»", with: "«\(label)» (\(shortFingerprint))")
-        } else if base.contains(label) {
-            return base.replacingOccurrences(of: label, with: "\(label) (\(shortFingerprint))")
-        } else {
-            return "Are you sure you want to delete '\(label)' (\(shortFingerprint))? This action cannot be undone."
-        }
+        ClavisUIStrings.Inspector.deleteAlertMessage(label: label, fingerprint: shortFingerprint)
     }
 
     static func securityBadgeText(
@@ -574,20 +550,20 @@ public extension KeyDetailInspectorView {
         case .agent:
             switch agentPolicy?.mode ?? .none {
             case .none:
-                return "Silent"
+                return ClavisUIStrings.Inspector.badgeSilent
             case .notify:
-                return "Notify"
+                return ClavisUIStrings.Inspector.badgeNotify
             case .ask:
                 return ClavisUIStrings.Inspector.alwaysPromptBadge
             }
         case .gitSigningOnly:
             if hasActiveGitGrace {
-                return "Grace Active"
+                return ClavisUIStrings.Inspector.badgeGraceActive
             }
-            return "Git Only"
+            return ClavisUIStrings.Badges.gitOnly
         case .general:
             if hasActiveGitGrace {
-                return "Grace Active"
+                return ClavisUIStrings.Inspector.badgeGraceActive
             }
             return ClavisUIStrings.Inspector.alwaysPromptBadge
         }
@@ -599,20 +575,20 @@ public extension KeyDetailInspectorView {
         hasActiveGitGrace: Bool = false
     ) -> String {
         if hasActiveGitGrace {
-            return "Hardware Isolated · Git signing grace active"
+            return ClavisUIStrings.Inspector.subtitleGitGraceActive
         }
         switch key.purpose {
         case .agent:
             switch agentPolicy?.mode ?? .none {
             case .none:
-                return "Hardware Isolated · Silent agent lease"
+                return ClavisUIStrings.Inspector.subtitleAgentSilent
             case .notify:
-                return "Hardware Isolated · Agent lease with notification"
+                return ClavisUIStrings.Inspector.subtitleAgentNotify
             case .ask:
-                return "Hardware Isolated · Touch ID prompt per agent signature"
+                return ClavisUIStrings.Inspector.subtitleAgentAsk
             }
         case .gitSigningOnly:
-            return "Hardware Isolated · Git commit signing only"
+            return ClavisUIStrings.Inspector.subtitleGitSigningOnly
         case .general:
             return ClavisUIStrings.Inspector.hardwareIsolated
         }
@@ -629,23 +605,23 @@ public extension KeyDetailInspectorView {
             let leaseHours = leaseMins / 60
             let leaseStr = (leaseHours > 0 && leaseMins % 60 == 0) ? "\(leaseHours)h" : "\(leaseMins)m"
             let mode = agentPolicy?.mode ?? .none
-            let title = "Hardware Isolation (Agent Policy)"
+            let title = ClavisUIStrings.Inspector.postureAgentTitle
             let desc: String
             switch mode {
             case .none:
-                desc = "Agent sessions operate silently without prompts for up to \(leaseStr) once authorized. Private key material remains hardware-bound in the Apple Secure Enclave."
+                desc = ClavisUIStrings.Inspector.postureAgentSilentDesc(lease: leaseStr)
             case .notify:
-                desc = "Agent sessions post a notification on each signature without prompting for up to \(leaseStr). Private key material remains hardware-bound in the Apple Secure Enclave."
+                desc = ClavisUIStrings.Inspector.postureAgentNotifyDesc(lease: leaseStr)
             case .ask:
-                desc = "Every agent signature requires explicit Touch ID user confirmation. Private key material remains hardware-bound in the Apple Secure Enclave."
+                desc = ClavisUIStrings.Inspector.postureAgentAskDesc
             }
             return (title, desc)
 
         case .gitSigningOnly:
-            let title = "Hardware Isolation (Git Signing Only)"
-            var desc = "Restricted strictly to local Git commit and tag signing. Forwarded agent requests are blocked. Every signature requires Touch ID per operation (optional 5-minute process-scoped Git signing grace window)."
+            let title = ClavisUIStrings.Inspector.postureGitSigningOnlyTitle
+            var desc = ClavisUIStrings.Inspector.postureGitSigningOnlyDesc
             if hasActiveGitGrace {
-                desc += " A 5-minute Git signing grace session is currently active for this key."
+                desc += ClavisUIStrings.Inspector.postureGitGraceActiveSuffix
             }
             return (title, desc)
 
@@ -655,12 +631,12 @@ public extension KeyDetailInspectorView {
                 : ClavisUIStrings.Inspector.hardwareIsolationPresenceTitle
             var desc: String
             if key.biometricPolicy == .biometryCurrentSet {
-                desc = "Secure Enclave strictly requires Touch ID matching current biometric enrollment. Every signature requires explicit Touch ID per operation (optional 5-minute process-scoped Git signing grace window). Device password fallback is disabled."
+                desc = ClavisUIStrings.Inspector.postureGeneralStrictDesc
             } else {
-                desc = "Signatures require Touch ID user presence per operation (optional 5-minute process-scoped Git signing grace window). Keys cannot be cached in general session memory."
+                desc = ClavisUIStrings.Inspector.postureGeneralPresenceDesc
             }
             if hasActiveGitGrace {
-                desc += " A 5-minute Git signing grace session is currently active for this key."
+                desc += ClavisUIStrings.Inspector.postureGitGraceActiveSuffix
             }
             return (title, desc)
         }
@@ -674,10 +650,10 @@ public extension KeyDetailInspectorView {
         let path: String
         switch key.purpose {
         case .agent:
-            name = "agent socket"
+            name = ClavisUIStrings.Inspector.socketNameAgent
             path = "~/.ssh/clavis-agent.sock"
         case .general, .gitSigningOnly:
-            name = "ssh-agent socket"
+            name = ClavisUIStrings.Inspector.socketNameSSHAgent
             path = "~/.ssh/clavis.sock"
         }
         let status = isSocketActive ? ClavisUIStrings.Inspector.statusActive : ClavisUIStrings.Inspector.statusOffline
@@ -906,6 +882,42 @@ public extension KeyDetailInspectorView {
             actionLabel: ClavisUIStrings.Inspector.changePurpose,
             confirmButton: ClavisUIStrings.KeyDetail.changePurposeConfirm,
             alertTitle: ClavisUIStrings.Inspector.changePurpose
+        )
+    }
+
+    // MARK: - Destructive Delete Footer Control (Milestone M5 / Refs clavis-uta)
+
+    /// Semantic attributes for the localized destructive delete footer control.
+    public struct DeleteFooterAttributes: Equatable, Sendable {
+        public let buttonTitle: String
+        public let iconSystemName: String
+        public let alertTitle: String
+        public let confirmButtonTitle: String
+        public let cancelButtonTitle: String
+
+        public init(
+            buttonTitle: String,
+            iconSystemName: String = "trash",
+            alertTitle: String,
+            confirmButtonTitle: String,
+            cancelButtonTitle: String
+        ) {
+            self.buttonTitle = buttonTitle
+            self.iconSystemName = iconSystemName
+            self.alertTitle = alertTitle
+            self.confirmButtonTitle = confirmButtonTitle
+            self.cancelButtonTitle = cancelButtonTitle
+        }
+    }
+
+    /// Computes semantic attributes for the inspector delete footer control.
+    public static func deleteFooterAttributes(for key: SSHKeyInfo) -> DeleteFooterAttributes {
+        DeleteFooterAttributes(
+            buttonTitle: ClavisUIStrings.Inspector.deleteKey,
+            iconSystemName: "trash",
+            alertTitle: deleteConfirmationTitle(label: key.label),
+            confirmButtonTitle: ClavisUIStrings.Common.delete,
+            cancelButtonTitle: ClavisUIStrings.Common.cancel
         )
     }
 }

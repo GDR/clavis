@@ -606,4 +606,90 @@ struct KeyDetailInspectorTests {
         #expect(msg.contains("Agent"))
         #expect(msg.contains("purpose") || msg.contains("назначение"))
     }
+
+    // MARK: - Destructive Delete Footer Control & Inspector Localization (M5 / clavis-uta)
+
+    @Test
+    func testDeleteFooterAttributes() {
+        let key = makeTestKey(label: "deploy-key", fingerprint: "SHA256:abc1234567890def")
+        let footer = KeyDetailInspectorView.deleteFooterAttributes(for: key)
+
+        #expect(footer.buttonTitle == ClavisUIStrings.Inspector.deleteKey)
+        #expect(footer.buttonTitle == "Delete Key")
+        #expect(footer.iconSystemName == "trash")
+        #expect(footer.alertTitle == "\(ClavisUIStrings.Inspector.deleteAlertTitle) (deploy-key)")
+        #expect(footer.confirmButtonTitle == ClavisUIStrings.Common.delete)
+        #expect(footer.confirmButtonTitle == "Delete")
+        #expect(footer.cancelButtonTitle == ClavisUIStrings.Common.cancel)
+        #expect(footer.cancelButtonTitle == "Cancel")
+    }
+
+    @Test
+    func testDeleteConfirmationAlertMessageExactFormatting() {
+        let key = makeTestKey(
+            label: "production-deploy",
+            fingerprint: "SHA256:uD734VbKz8x91011121314151617181920212223242"
+        )
+
+        let message = KeyDetailInspectorView.deleteConfirmationMessage(
+            label: key.label,
+            shortFingerprint: key.shortFingerprint
+        )
+
+        #expect(message == "Are you sure you want to delete 'production-deploy' (SHA256:uD734VbKz)? This action cannot be undone.")
+    }
+
+    @Test
+    func testActiveGitSessionStringsAndRevocation() {
+        #expect(ClavisUIStrings.Inspector.activeGitSessionSection == "ACTIVE GIT SIGNING SESSION")
+        #expect(ClavisUIStrings.Inspector.revokeGitSessionButton == "Revoke")
+        #expect(ClavisUIStrings.Inspector.revokeGitSession == "Revoke Session")
+    }
+
+    @Test
+    func testSecurityBadgeTextLocalization() {
+        let agentKey = makeTestKey(purpose: .agent)
+        #expect(KeyDetailInspectorView.securityBadgeText(for: agentKey, agentPolicy: AgentKeyPolicy(mode: .none)) == "Silent")
+        #expect(KeyDetailInspectorView.securityBadgeText(for: agentKey, agentPolicy: AgentKeyPolicy(mode: .notify)) == "Notify")
+        #expect(KeyDetailInspectorView.securityBadgeText(for: agentKey, agentPolicy: AgentKeyPolicy(mode: .ask)) == "Always Prompt")
+
+        let gitKey = makeTestKey(purpose: .gitSigningOnly)
+        #expect(KeyDetailInspectorView.securityBadgeText(for: gitKey, hasActiveGitGrace: false) == "Git Only")
+        #expect(KeyDetailInspectorView.securityBadgeText(for: gitKey, hasActiveGitGrace: true) == "Grace Active")
+
+        let generalKey = makeTestKey(purpose: .general)
+        #expect(KeyDetailInspectorView.securityBadgeText(for: generalKey, hasActiveGitGrace: false) == "Always Prompt")
+        #expect(KeyDetailInspectorView.securityBadgeText(for: generalKey, hasActiveGitGrace: true) == "Grace Active")
+    }
+
+    @Test
+    func testDynamicSecuritySubtitleLocalization() {
+        let agentKey = makeTestKey(purpose: .agent)
+        #expect(KeyDetailInspectorView.dynamicSecuritySubtitle(for: agentKey, agentPolicy: AgentKeyPolicy(mode: .none)) == "Hardware Isolated · Silent agent lease")
+        #expect(KeyDetailInspectorView.dynamicSecuritySubtitle(for: agentKey, agentPolicy: AgentKeyPolicy(mode: .notify)) == "Hardware Isolated · Agent lease with notification")
+        #expect(KeyDetailInspectorView.dynamicSecuritySubtitle(for: agentKey, agentPolicy: AgentKeyPolicy(mode: .ask)) == "Hardware Isolated · Touch ID prompt per agent signature")
+
+        let gitKey = makeTestKey(purpose: .gitSigningOnly)
+        #expect(KeyDetailInspectorView.dynamicSecuritySubtitle(for: gitKey, hasActiveGitGrace: false) == "Hardware Isolated · Git commit signing only")
+        #expect(KeyDetailInspectorView.dynamicSecuritySubtitle(for: gitKey, hasActiveGitGrace: true) == "Hardware Isolated · Git signing grace active")
+
+        let generalKey = makeTestKey(purpose: .general)
+        #expect(KeyDetailInspectorView.dynamicSecuritySubtitle(for: generalKey, hasActiveGitGrace: false) == "Hardware Isolated · Touch ID per operation")
+        #expect(KeyDetailInspectorView.dynamicSecuritySubtitle(for: generalKey, hasActiveGitGrace: true) == "Hardware Isolated · Git signing grace active")
+    }
+
+    @Test
+    func testSocketStatusInfoLocalization() {
+        let agentKey = makeTestKey(purpose: .agent)
+        let agentSocket = KeyDetailInspectorView.socketStatusInfo(for: agentKey, isSocketActive: true)
+        #expect(agentSocket.name == "agent socket")
+        #expect(agentSocket.socketPath == "~/.ssh/clavis-agent.sock")
+        #expect(agentSocket.status == "Active")
+
+        let generalKey = makeTestKey(purpose: .general)
+        let generalSocket = KeyDetailInspectorView.socketStatusInfo(for: generalKey, isSocketActive: false)
+        #expect(generalSocket.name == "ssh-agent socket")
+        #expect(generalSocket.socketPath == "~/.ssh/clavis.sock")
+        #expect(generalSocket.status == "Offline")
+    }
 }
