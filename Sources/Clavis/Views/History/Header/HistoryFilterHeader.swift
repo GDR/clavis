@@ -300,6 +300,7 @@ struct HistoryDatePopover: View {
 
     private var calendar: Calendar { viewModel.calendar }
     private var bounds: HistoryDateBounds { viewModel.filter.dateBounds }
+    private var today: CalendarDay { CalendarDay(Date(), calendar: calendar) }
 
     var body: some View {
         VStack(spacing: 10) {
@@ -315,7 +316,8 @@ struct HistoryDatePopover: View {
                     selected: editing == .from ? bounds.from : bounds.to,
                     anchor: CalendarDay(anchor(for: editing), calendar: calendar),
                     minDay: editing == .to ? bounds.from : nil,    // From can't pass To and vice versa
-                    maxDay: editing == .from ? bounds.to : nil
+                    // Today is a hard cap for both bounds (UI-level; the model stays clock-free).
+                    maxDay: min(editing == .from ? (bounds.to ?? today) : today, today)
                 ) { day in
                     let ok = editing == .from ? viewModel.setDateFrom(day) : viewModel.setDateTo(day)
                     if ok { self.editing = nil }
@@ -418,13 +420,58 @@ struct HistoryMonthCalendar: View {
         self.maxDay = maxDay
         self.onSelect = onSelect
         self.today = CalendarDay(Date(), calendar: calendar)
-        _month = State(initialValue: CalendarDay(year: anchor.year, month: anchor.month, day: 1))
+        var start = anchor.year * 12 + anchor.month - 1
+        if let hi = maxDay { start = min(start, hi.year * 12 + hi.month - 1) }
+        if let lo = minDay { start = max(start, lo.year * 12 + lo.month - 1) }
+        _month = State(initialValue: CalendarDay(year: start / 12, month: start % 12 + 1, day: 1))
     }
 
     private var firstOfMonth: Date { month.startOfDay(in: calendar) }
 
-    private var title: String {
-        firstOfMonth.formatted(Date.FormatStyle(timeZone: calendar.timeZone).month(.wide).year())
+    private func monthIndex(_ d: CalendarDay) -> Int { d.year * 12 + d.month - 1 }
+    private var lowIndex: Int? { minDay.map(monthIndex) }
+    private var highIndex: Int? { maxDay.map(monthIndex) }
+
+    private func go(toIndex index: Int) {
+        let clamped = max(lowIndex ?? .min, min(highIndex ?? .max, index))
+        month = CalendarDay(year: clamped / 12, month: clamped % 12 + 1, day: 1)
+    }
+
+    private var years: [Int] {
+        let high = maxDay?.year ?? today.year
+        let low = minDay?.year ?? (high - 10)
+        return Array((min(low, high)...high).reversed())
+    }
+
+    private var monthPicker: some View {
+        Menu {
+            ForEach(Array(calendar.monthSymbols.enumerated()), id: \.offset) { i, name in
+                let idx = month.year * 12 + i
+                Button(name) { go(toIndex: idx) }
+                    .disabled(idx < (lowIndex ?? .min) || idx > (highIndex ?? .max))
+            }
+        } label: {
+            Text(calendar.monthSymbols[month.month - 1]).font(.system(size: 13, weight: .semibold))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("Month")
+        .accessibilityValue(calendar.monthSymbols[month.month - 1])
+    }
+
+    private var yearPicker: some View {
+        Menu {
+            ForEach(years, id: \.self) { y in
+                // Keep the month where possible; `go` clamps into the allowed window.
+                Button(String(y)) { go(toIndex: y * 12 + month.month - 1) }
+            }
+        } label: {
+            Text(String(month.year)).font(.system(size: 13, weight: .semibold).monospacedDigit())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("Year")
+        .accessibilityValue(String(month.year))
     }
 
     private var weekdaySymbols: [String] {
@@ -442,20 +489,16 @@ struct HistoryMonthCalendar: View {
         return out
     }
 
-    private func shiftMonth(_ delta: Int) {
-        guard let d = calendar.date(byAdding: .month, value: delta, to: firstOfMonth) else { return }
-        month = CalendarDay(year: calendar.component(.year, from: d), month: calendar.component(.month, from: d), day: 1)
-    }
-
     var body: some View {
         VStack(spacing: 6) {
             HStack(spacing: 4) {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .accessibilityAddTraits(.isHeader)
+                monthPicker
+                yearPicker
                 Spacer()
-                navButton("chevron.left", label: "Previous month") { shiftMonth(-1) }
-                navButton("chevron.right", label: "Next month") { shiftMonth(1) }
+                navButton("chevron.left", label: "Previous month",
+                          disabled: lowIndex.map { monthIndex(month) <= $0 } ?? false) { go(toIndex: monthIndex(month) - 1) }
+                navButton("chevron.right", label: "Next month",
+                          disabled: highIndex.map { monthIndex(month) >= $0 } ?? false) { go(toIndex: monthIndex(month) + 1) }
             }
 
             let columns = Array(repeating: GridItem(.flexible(), spacing: 0), count: 7)
@@ -478,7 +521,7 @@ struct HistoryMonthCalendar: View {
         }
     }
 
-    private func navButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
+    private func navButton(_ symbol: String, label: String, disabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 11, weight: .semibold))
@@ -487,6 +530,8 @@ struct HistoryMonthCalendar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.3 : 1)
         .accessibilityLabel(label)
     }
 
