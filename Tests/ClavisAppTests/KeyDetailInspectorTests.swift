@@ -885,7 +885,7 @@ struct KeyDetailInspectorTests {
     func testSidebarAndMainPaneUseFullHeightScrollViewsWithTopGlassBars() {
         let appState = AppState()
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 911, height: 724),
+            contentRect: NSRect(x: 0, y: 0, width: 911, height: 400),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -895,9 +895,11 @@ struct KeyDetailInspectorTests {
 
         let hostingView = NSHostingView(rootView: KeyListView().environmentObject(appState))
         window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
         hostingView.layoutSubtreeIfNeeded()
-        appState.keys = [makeTestKey(label: "Test 2")]
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        appState.keys = (1...10).map { makeTestKey(label: "Test \($0)", fingerprint: "SHA256:abc1234567890def\($0)") }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         hostingView.layoutSubtreeIfNeeded()
 
         func collectScrollViews(in view: NSView) -> [NSScrollView] {
@@ -912,9 +914,17 @@ struct KeyDetailInspectorTests {
         }
 
         let scrollViews = collectScrollViews(in: hostingView)
-        // Both the sidebar (222pt wide) and main inspector pane (689pt wide) must extend the full 724pt window height
-        // so scrolled content passes underneath the transparent Liquid Glass top bars.
-        #expect(scrollViews.contains { abs($0.frame.width - 222) < 1 && abs($0.frame.height - 724) < 1 })
-        #expect(scrollViews.contains { abs($0.frame.width - 689) < 1 && abs($0.frame.height - 724) < 1 })
+        #expect(scrollViews.count == 2)
+        let leftSV = try! #require(scrollViews.first { abs($0.frame.width - 222) < 1 && abs($0.frame.height - 400) < 1 })
+        let rightSV = try! #require(scrollViews.first { abs($0.frame.width - 689) < 1 && abs($0.frame.height - 400) < 1 })
+        #expect(leftSV.contentInsets.top >= KeyListView.toolbarHeight)
+        #expect(rightSV.contentInsets.top >= KeyListView.toolbarHeight)
+
+        appState.activeMainPane = .history
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        hostingView.layoutSubtreeIfNeeded()
+        let historyScrollViews = collectScrollViews(in: hostingView)
+        let historyRightSV = try! #require(historyScrollViews.first { abs($0.frame.width - 689) < 1 && abs($0.frame.height - 400) < 1 })
+        #expect(historyRightSV.contentInsets.top >= KeyListView.toolbarHeight)
     }
 }

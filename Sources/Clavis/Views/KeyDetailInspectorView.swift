@@ -291,25 +291,20 @@ public struct KeyDetailInspectorView: View {
     }
 
     public var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+        Form {
+            Section {
+            } header: {
                 detailHeading
-                    .padding(.horizontal, 20)
-                    .padding(.top, 14)
+                    .textCase(nil)
                     .padding(.bottom, 4)
-
-                Form {
-                    publicIdentitySection
-                    signingSection
-                    activitySection
-                }
-                .formStyle(.grouped)
-                .scrollDisabled(true)
-                .scrollContentBackground(.hidden)
             }
-            .padding(.horizontal, 15)
-            .padding(.bottom, 20)
+
+            publicIdentitySection
+            signingSection
+            activitySection
         }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .background(Color.clear)
         .onAppear {
             lastActivityDate = appState.lastActivityDate(for: key)
