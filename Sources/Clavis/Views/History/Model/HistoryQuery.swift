@@ -283,6 +283,13 @@ public struct HistoryFilter: Equatable, Sendable {
         dateBounds = HistoryDateBounds()
     }
 
+    /// Whether "Clear Filters" would change anything (a lone preserved sidebar key does not count).
+    public var canClear: Bool {
+        var copy = self
+        copy.clearFilters()
+        return copy != self
+    }
+
     // MARK: Store query (SQL-answerable part)
 
     public func auditQuery(limit: Int, calendar: Calendar, sessionID: String?) -> AuditQuery {

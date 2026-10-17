@@ -140,10 +140,15 @@ public class AppState: ObservableObject {
     }
 
     @Published public var activeMainPane: MainWindowPane = .keys
+    /// One-shot request for the key History should open scoped to. The committed filter state
+    /// (including the sidebar selection derived from it) lives in `HistoryViewModel`.
     @Published public var historyFilterKeyFingerprint: String? = nil
+    /// Bumped on every open request so re-opening for another key works while History is showing.
+    @Published public private(set) var historyOpenRequestID: Int = 0
 
     public func openHistoryPane(forKeyFingerprint fingerprint: String? = nil) {
         self.historyFilterKeyFingerprint = fingerprint
+        self.historyOpenRequestID &+= 1
         self.activeMainPane = .history
     }
 

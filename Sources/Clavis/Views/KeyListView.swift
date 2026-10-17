@@ -6,6 +6,7 @@ import ClavisCore
 struct KeyListView: View {
     @EnvironmentObject var appState: AppState
     @StateObject private var historyViewModel = HistoryViewModel()
+    @StateObject private var historyUI = HistoryUIState()
 
     @State private var selectedKeyId: String? = nil
     @State private var statusMessage: String? = nil
@@ -85,11 +86,28 @@ struct KeyListView: View {
         }
     }
 
+    private var isHistoryActive: Bool { appState.activeMainPane == .history }
+
     private func toggleHistoryPane() {
         if appState.activeMainPane == .history {
-            appState.activeMainPane = .keys
+            leaveHistory()
         } else {
-            appState.openHistoryPane(forKeyFingerprint: nil)
+            // Opening from a key scopes History to exactly that key.
+            appState.openHistoryPane(forKeyFingerprint: selectedKey?.fingerprint)
+        }
+    }
+
+    /// Back restores the key/detail context; `selectedKeyId` is kept in step with the sidebar.
+    private func leaveHistory() {
+        historyUI.dismiss()
+        appState.activeMainPane = .keys
+    }
+
+    private func focusSearch() {
+        if isHistoryActive {
+            historyUI.requestSearchFocus(opensSuggestions: true)
+        } else {
+            isSearchFieldFocused = true
         }
     }
 
@@ -136,12 +154,17 @@ struct KeyListView: View {
                 .keyboardShortcut(",", modifiers: .command)
             Button("") { PanelLockController.shared.lock(reason: .lockNow) }
                 .keyboardShortcut("l", modifiers: .command)
-            Button("") { isSearchFieldFocused = true }
+            Button("") { focusSearch() }
                 .keyboardShortcut("f", modifiers: .command)
+            Button("") { if isHistoryActive { leaveHistory() } }
+                .keyboardShortcut("[", modifiers: .command)
+            // Bare arrows would steal ↑/↓ from the History search dropdown.
             Button("") { selectPreviousKey() }
                 .keyboardShortcut(.upArrow, modifiers: [])
+                .disabled(isHistoryActive)
             Button("") { selectNextKey() }
                 .keyboardShortcut(.downArrow, modifiers: [])
+                .disabled(isHistoryActive)
         }
         .opacity(0)
         .allowsHitTesting(false)
@@ -207,6 +230,7 @@ struct KeyListView: View {
                 if selectedKeyId == nil, let firstKey = appState.keys.first {
                     selectedKeyId = firstKey.id
                 }
+                if isHistoryActive { openHistoryFromRequest() }
             }
             .onChange(of: appState.keys) { newKeys in
                 if selectedKeyId == nil || !newKeys.contains(where: { $0.id == selectedKeyId }) {
@@ -214,19 +238,15 @@ struct KeyListView: View {
                 }
             }
             .onChange(of: appState.activeMainPane) { newPane in
-                if newPane == .history {
-                    historyViewModel.query.keyFingerprint = appState.historyFilterKeyFingerprint
-                    historyViewModel.reload()
-                    if historyViewModel.integrityReport == nil && !historyViewModel.isCheckingIntegrity {
-                        historyViewModel.checkIntegrity()
-                    }
+                if newPane == .history,
+                   historyViewModel.integrityReport == nil && !historyViewModel.isCheckingIntegrity {
+                    historyViewModel.checkIntegrity()
                 }
+                if newPane != .history { historyUI.dismiss() }
             }
-            .onChange(of: appState.historyFilterKeyFingerprint) { newFilter in
-                if appState.activeMainPane == .history {
-                    historyViewModel.query.keyFingerprint = newFilter
-                    historyViewModel.reload()
-                }
+            // Each open request resets the committed filter to exactly the requested key.
+            .onChange(of: appState.historyOpenRequestID) { _ in
+                openHistoryFromRequest()
             }
             .onChange(of: statusMessage) { newMessage in
                 guard let msg = newMessage, !msg.isEmpty else { return }
@@ -260,6 +280,21 @@ struct KeyListView: View {
             .transition(.opacity.combined(with: .move(edge: .bottom)))
             .zIndex(50)
         }
+    }
+
+    private func openHistoryFromRequest() {
+        let fingerprint = appState.historyFilterKeyFingerprint
+        historyViewModel.openForKey(fingerprint)
+        if let fingerprint, let key = appState.keys.first(where: { $0.fingerprint == fingerprint }) {
+            selectedKeyId = key.id
+        }
+        historyUI.dismiss()
+    }
+
+    /// Sidebar rows reflect the committed Key badges while History is open (derived, not stored).
+    private func isSidebarRowSelected(_ key: SSHKeyInfo) -> Bool {
+        if isHistoryActive { return historyViewModel.selectedKeyFingerprint == key.fingerprint }
+        return selectedKey?.id == key.id
     }
 
     // MARK: - Left Sidebar (222px Contacts-style library)
@@ -357,10 +392,10 @@ struct KeyListView: View {
                 } else {
                     LazyVStack(spacing: 0) {
                         ForEach(Array(filteredKeys.enumerated()), id: \.element.id) { index, key in
-                            let isRowSelected = (appState.activeMainPane == .keys && selectedKey?.id == key.id)
+                            let isRowSelected = isSidebarRowSelected(key)
                             let nextIsSelected: Bool = {
                                 guard index + 1 < filteredKeys.count else { return false }
-                                return appState.activeMainPane == .keys && selectedKey?.id == filteredKeys[index + 1].id
+                                return isSidebarRowSelected(filteredKeys[index + 1])
                             }()
                             KeySidebarRowView(
                                 key: key,
@@ -369,7 +404,12 @@ struct KeyListView: View {
                                 showDivider: !isRowSelected && !nextIsSelected,
                                 onSelect: {
                                     selectedKeyId = key.id
-                                    appState.activeMainPane = .keys
+                                    if isHistoryActive {
+                                        // Stay in History; replace the Key badge(s) with this key.
+                                        historyViewModel.selectSidebarKey(key.fingerprint)
+                                    } else {
+                                        appState.activeMainPane = .keys
+                                    }
                                 },
                                 onCopyPublicKey: {
                                     copyPublicKey(for: key)
@@ -411,7 +451,7 @@ struct KeyListView: View {
 
             Group {
                 if appState.activeMainPane == .history {
-                    HistoryView(viewModel: historyViewModel)
+                    HistoryView(viewModel: historyViewModel, ui: historyUI, keys: appState.keys)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if appState.keys.isEmpty {
                     emptyVaultFirstLaunchView
@@ -439,7 +479,17 @@ struct KeyListView: View {
                 }
             }
             .topLiquidGlassBar {
-                mainToolbar
+                VStack(spacing: 0) {
+                    mainToolbar
+                    if isHistoryActive {
+                        // One fixed region: search, badges and count never enter the scroll area.
+                        HistoryFilterHeader(viewModel: historyViewModel, ui: historyUI)
+                    }
+                }
+            }
+
+            if isHistoryActive {
+                HistorySuggestionOverlay(viewModel: historyViewModel, ui: historyUI)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -448,6 +498,19 @@ struct KeyListView: View {
     private var mainToolbar: some View {
         HStack(spacing: 12) {
             HStack(spacing: 13) {
+                if isHistoryActive {
+                    Button(action: leaveHistory) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(DesignTokens.textSecondary)
+                            .frame(width: 24, height: 34)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Back (⌘[)")
+                    .accessibilityLabel("Back")
+                }
+
                 Text(appState.activeMainPane == .history ? "History" : "Clavis")
                     .font(.system(size: 21, weight: .semibold))
                     .foregroundColor(.primary)
