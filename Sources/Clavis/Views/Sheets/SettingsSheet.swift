@@ -188,6 +188,7 @@ public struct SettingsView: View {
                                 }
                             }
                             .buttonStyle(.plain)
+                            .focusable(false)
                             .disabled(!isAvailable)
                             .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                         }

@@ -591,6 +591,8 @@ public struct CircularGlassIconButton: View {
             iconLabel
         }
         .buttonStyle(.plain)
+        .focusable(false)
+        .modifier(FocusEffectDisabledModifier())
         .help(helpText)
         .accessibilityLabel(accessibilityLabelText ?? helpText)
         .onHover { hovering in
@@ -676,6 +678,17 @@ public struct CircularGlassIconButton: View {
             return Color.accentColor.opacity(0.45)
         }
         return DesignTokens.cardBorder
+    }
+}
+
+private struct FocusEffectDisabledModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content.focusEffectDisabled()
+        } else {
+            content
+        }
     }
 }
 
