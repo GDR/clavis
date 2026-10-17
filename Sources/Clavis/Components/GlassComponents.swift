@@ -803,6 +803,19 @@ public extension View {
         )
     }
 
+    /// Lets a custom header (including its text) drag the window, like a titlebar.
+    @ViewBuilder
+    func windowDragHandle() -> some View {
+        if #available(macOS 15.0, *) {
+            self
+                .contentShape(Rectangle())
+                .gesture(WindowDragGesture())
+                .allowsWindowActivationEvents(true)
+        } else {
+            self
+        }
+    }
+
     /// Top bar that is plain (same surface as the content) at rest and turns into
     /// native glass only once content scrolls underneath it, like Contacts.
     func topLiquidGlassBar<Bar: View>(
@@ -828,9 +841,9 @@ private struct TopLiquidGlassBarModifier<Bar: View>: ViewModifier {
                 } action: { _, scrolled in
                     isScrolled = scrolled
                 }
-                .safeAreaBar(edge: .top, alignment: alignment, spacing: 0) { bar }
                 .scrollEdgeEffectStyle(.soft, for: .top)
                 .scrollEdgeEffectHidden(!isScrolled, for: .top)
+                .safeAreaBar(edge: .top, alignment: alignment, spacing: 0) { bar }
         } else {
             content
                 .safeAreaInset(edge: .top, alignment: alignment, spacing: 0) { bar }

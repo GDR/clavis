@@ -528,6 +528,10 @@ struct KeyListView: View {
         .padding(.leading, 35)
         .padding(.trailing, 35)
         .frame(height: Self.toolbarHeight)
+        // The scroll pocket replays the untinted window backdrop; re-apply the
+        // panel tint so the header matches the surface below it.
+        .background(DesignTokens.inspectorBackground.ignoresSafeArea(edges: .top))
+        .windowDragHandle()
     }
 
     private var emptyVaultFirstLaunchView: some View {
