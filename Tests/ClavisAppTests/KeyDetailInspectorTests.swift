@@ -839,4 +839,44 @@ struct KeyDetailInspectorTests {
         #expect(coordinator.handleMouseDown(in: parentWindow, screenLocation: outsideInParent) == true)
         #expect(dismissCount == 1)
     }
+
+    @Test
+    @MainActor
+    func testCircularGlassIconButtonDoesNotTakeSheetInitialFocus() {
+        let parentWindow = NSWindow(
+            contentRect: NSRect(x: 100, y: 100, width: 600, height: 500),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        let sheetWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let hostingView = NSHostingView(
+            rootView: VStack {
+                CircularGlassIconButton(
+                    icon: "xmark",
+                    size: 28,
+                    iconSize: 11,
+                    helpText: "Cancel",
+                    accessibilityLabel: "Cancel",
+                    action: {}
+                )
+            }
+            .frame(width: 300, height: 200)
+        )
+        sheetWindow.contentView = hostingView
+        hostingView.layoutSubtreeIfNeeded()
+
+        parentWindow.beginSheet(sheetWindow)
+        defer { parentWindow.endSheet(sheetWindow) }
+
+        sheetWindow.recalculateKeyViewLoop()
+        sheetWindow.selectNextKeyView(nil)
+
+        #expect(sheetWindow.firstResponder === sheetWindow)
+    }
 }
