@@ -281,26 +281,16 @@ final class HistoryDraftAndPagingTests {
         #expect(vm.showsDropdown)
     }
 
-    @Test func test_009_returnTargetPrefersExactThenFirstAndNeverForEmptyFragment() async throws {
+    @Test func test_009_partialValueIsNeverGuessedOnCommit() async throws {
         let store = try makeStore()
         try seed(store, count: 4, host: { $0 % 2 == 0 ? "github.com" : "gist.github.com" })
         let vm = makeViewModel(store)
         await vm.ensureSuggestionIndex().value
 
-        vm.updateDraft(text: "", caret: 0)
-        #expect(vm.returnTarget == nil)                  // empty fragment: Return commits instead
-
-        vm.updateDraft(text: "Ho", caret: 2)
-        #expect(vm.returnTarget?.title == "Host:")
-
-        vm.updateDraft(text: "Host:github.com", caret: 15)
-        #expect(vm.returnTarget?.title == "github.com")  // exact beats first-ranked substring match
-
         vm.updateDraft(text: "Host:git", caret: 8)
-        #expect(vm.returnTarget != nil)                  // best autocomplete
-
-        vm.updateDraft(text: "Host:nothing", caret: 12)
-        #expect(vm.returnTarget == nil)                  // nothing to accept: Return commits/diagnoses
+        #expect(!vm.suggestions.isEmpty)                 // suggestions narrow...
+        #expect(vm.commitDraft())                        // ...but Return commits exactly what was typed
+        #expect(vm.filter.criteria == [.host("git")])
     }
 
     @Test func test_009_allMatchingKeysAreOffered() throws {
