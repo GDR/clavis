@@ -31,12 +31,19 @@ struct HistorySearchBar: View {
                     }
                 },
                 onFocusChange: { focused in
-                    ui.searchFocusChanged(focused, draftIsEmpty: viewModel.draftText.isEmpty)
-                    if focused { viewModel.ensureSuggestionIndex() }
+                    ui.searchFocusChanged(focused)
+                    if focused { viewModel.beginSuggesting() }
                 },
                 onMove: move,
                 onReturn: commitOrAccept,
-                onEscape: escape
+                onEscape: escape,
+                onCaretGesture: {
+                    // Click / ← → Home End re-show the dropdown for the new caret position.
+                    ui.highlightedIndex = -1
+                    ui.surface = .suggestions
+                    viewModel.beginSuggesting()
+                },
+                onFocusRequestHandled: { ui.focusRequestHandled() }
             )
             .frame(height: 20)
 
@@ -63,7 +70,7 @@ struct HistorySearchBar: View {
     // MARK: Actions
 
     private var visibleSuggestions: [HistorySuggestion] {
-        ui.surface == .suggestions ? viewModel.suggestions : []
+        ui.surface == .suggestions && viewModel.showsDropdown ? viewModel.suggestions : []
     }
 
     /// `+ Filter` opens the same dropdown as focusing an empty field.
@@ -72,22 +79,38 @@ struct HistorySearchBar: View {
         ui.highlightedIndex = -1
         ui.surface = .suggestions
         ui.requestSearchFocus(opensSuggestions: false)
-        viewModel.ensureSuggestionIndex()
+        viewModel.beginSuggesting()
     }
 
+    /// ↑/↓ wrap around; from "nothing highlighted" ↓ goes to the first row and ↑ to the last.
+    /// When the dropdown is closed they open it first (prototype), and only then navigate.
     private func move(_ delta: Int) -> Bool {
-        let list = visibleSuggestions
-        guard !list.isEmpty else { return false }
-        let next = ui.highlightedIndex + delta
-        ui.highlightedIndex = min(max(next, -1), list.count - 1)
-        if ui.highlightedIndex < 0, delta < 0 { ui.highlightedIndex = list.count - 1 }
+        if ui.surface != .suggestions {
+            viewModel.beginSuggesting()
+            guard viewModel.showsDropdown, !viewModel.suggestions.isEmpty else { return false }
+            ui.surface = .suggestions
+        }
+        let count = visibleSuggestions.count
+        guard count > 0 else { return false }
+        let current = ui.highlightedIndex
+        if current < 0 {
+            ui.highlightedIndex = delta > 0 ? 0 : count - 1
+        } else {
+            ui.highlightedIndex = (current + delta + count) % count
+        }
         return true
     }
 
+    /// Return: highlighted row → accept it; dropdown open with a completable fragment → accept the
+    /// best match (prototype: first row); otherwise commit the typed expression.
     private func commitOrAccept() -> Bool {
         let list = visibleSuggestions
         if list.indices.contains(ui.highlightedIndex) {
             accept(list[ui.highlightedIndex])
+            return true
+        }
+        if ui.surface == .suggestions, let target = viewModel.returnTarget {
+            accept(target)
             return true
         }
         if viewModel.commitDraft() {
@@ -137,6 +160,40 @@ struct HistorySuggestionList: View {
         }
     }
 
+    private static let rowHeight: CGFloat = 30
+    private static let visibleRows = 8
+
+    /// Rows are keyboard-highlighted only; pointer hover is a separate visual state, so a resting
+    /// mouse can never change what Return accepts.
+    @ViewBuilder private var rows: some View {
+        let list = viewModel.suggestions
+        let content = VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(list.enumerated()), id: \.element.id) { index, suggestion in
+                HistorySuggestionRow(
+                    suggestion: suggestion,
+                    isHighlighted: index == ui.highlightedIndex
+                ) {
+                    HistorySuggestionActions.accept(suggestion, viewModel: viewModel, ui: ui)
+                }
+                .id(suggestion.id)
+            }
+        }
+        if list.count > Self.visibleRows {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    content
+                }
+                .frame(height: CGFloat(Self.visibleRows) * (Self.rowHeight + 2))
+                .onChange(of: ui.highlightedIndex) { index in
+                    guard list.indices.contains(index) else { return }
+                    proxy.scrollTo(list[index].id)
+                }
+            }
+        } else {
+            content
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
@@ -154,17 +211,7 @@ struct HistorySuggestionList: View {
                     .padding(.vertical, 6)
             }
 
-            ForEach(Array(viewModel.suggestions.enumerated()), id: \.element.id) { index, suggestion in
-                HistorySuggestionRow(
-                    suggestion: suggestion,
-                    isHighlighted: index == ui.highlightedIndex
-                ) {
-                    HistorySuggestionActions.accept(suggestion, viewModel: viewModel, ui: ui)
-                }
-                .onHover { hovering in
-                    if hovering { ui.highlightedIndex = index }
-                }
-            }
+            rows
         }
         .padding(6)
         .background(
@@ -184,6 +231,7 @@ private struct HistorySuggestionRow: View {
     let suggestion: HistorySuggestion
     let isHighlighted: Bool
     let action: () -> Void
+    @State private var isHovering = false
 
     var body: some View {
         Button(action: action) {
@@ -213,10 +261,12 @@ private struct HistorySuggestionRow: View {
             .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isHighlighted ? Color.accentColor.opacity(0.18) : .clear)
+                    .fill(isHighlighted ? Color.accentColor.opacity(0.18)
+                          : isHovering ? Color.primary.opacity(0.07) : .clear)
             )
         }
         .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
         .accessibilityLabel([suggestion.title, suggestion.caption].compactMap { $0 }.joined(separator: ", "))
         .accessibilityAddTraits(isHighlighted ? .isSelected : [])
     }
@@ -228,7 +278,9 @@ struct HistorySuggestionOverlay: View {
     @ObservedObject var viewModel: HistoryViewModel
     @ObservedObject var ui: HistoryUIState
 
-    private var isShown: Bool { ui.surface == .suggestions && ui.searchFieldFrame.width > 0 }
+    private var isShown: Bool {
+        ui.surface == .suggestions && viewModel.showsDropdown && ui.searchFieldFrame.width > 0
+    }
 
     var body: some View {
         GeometryReader { pane in

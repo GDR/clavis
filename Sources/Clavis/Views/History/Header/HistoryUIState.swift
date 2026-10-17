@@ -42,13 +42,20 @@ public final class HistoryUIState: ObservableObject {
         focusToken &+= 1
     }
 
-    public func searchFocusChanged(_ focused: Bool, draftIsEmpty: Bool) {
+    /// The field processed a programmatic focus request. If it already was first responder no
+    /// focus callback fired, so clear the suppression here or it would swallow the next real focus.
+    public func focusRequestHandled() {
+        suppressFocusOpen = false
+    }
+
+    public func searchFocusChanged(_ focused: Bool) {
         isSearchFocused = focused
         if focused {
             if suppressFocusOpen {
                 suppressFocusOpen = false
-            } else if draftIsEmpty {
-                // Focusing an empty field shows the same dropdown as `+ Filter`.
+            } else {
+                // Focusing shows the dropdown for wherever the caret is: the prefix list for an
+                // empty field (same content as `+ Filter`), values inside `Prefix:value`.
                 surface = .suggestions
                 highlightedIndex = -1
             }

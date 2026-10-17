@@ -17,6 +17,11 @@ struct HistorySearchTextField: NSViewRepresentable {
     var onMove: (Int) -> Bool
     var onReturn: () -> Bool
     var onEscape: () -> Bool
+    /// The user moved the caret with a click or Left/Right/Home/End (not typing, not programmatic).
+    /// Prototype: these re-show the dropdown for the new caret position.
+    var onCaretGesture: () -> Void = {}
+    /// A programmatic focus request finished (whether or not focus actually changed).
+    var onFocusRequestHandled: () -> Void = {}
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -36,6 +41,7 @@ struct HistorySearchTextField: NSViewRepresentable {
         field.onBecomeFirstResponder = { [weak coordinator = context.coordinator, weak field] in
             guard let coordinator, let field else { return }
             coordinator.attachSelectionObserver(to: field)
+            coordinator.syncCaret(from: field)   // the model's caret may be stale after a blur
             coordinator.parent.onFocusChange(true)
         }
         field.stringValue = text
@@ -65,13 +71,16 @@ struct HistorySearchTextField: NSViewRepresentable {
 
         if coordinator.lastFocusToken != focusToken {
             coordinator.lastFocusToken = focusToken
-            DispatchQueue.main.async { [weak field] in
+            DispatchQueue.main.async { [weak field, weak coordinator] in
                 guard let field, let window = field.window else { return }
+                coordinator?.isProgrammaticSelection = true
                 window.makeFirstResponder(field)
                 // makeFirstResponder selects all; keep the caret at the end instead.
                 if let editor = field.currentEditor() {
                     editor.selectedRange = NSRange(location: (editor.string as NSString).length, length: 0)
                 }
+                coordinator?.isProgrammaticSelection = false
+                coordinator?.parent.onFocusRequestHandled()
             }
         }
     }
@@ -99,6 +108,8 @@ struct HistorySearchTextField: NSViewRepresentable {
         var parent: HistorySearchTextField
         var lastFocusToken: Int
         var isApplyingModelChange = false
+        /// Set around our own focus/selection changes so they are never mistaken for a user gesture.
+        var isProgrammaticSelection = false
         private var selectionObserver: NSObjectProtocol?
 
         init(parent: HistorySearchTextField) {
@@ -115,7 +126,7 @@ struct HistorySearchTextField: NSViewRepresentable {
                 forName: NSTextView.didChangeSelectionNotification, object: editor, queue: .main
             ) { [weak self] note in
                 guard let self, let editor = note.object as? NSTextView else { return }
-                self.push(from: editor)
+                self.push(from: editor, isSelectionChange: true)
             }
         }
 
@@ -124,9 +135,29 @@ struct HistorySearchTextField: NSViewRepresentable {
             selectionObserver = nil
         }
 
-        private func push(from editor: NSTextView) {
+        private func push(from editor: NSTextView, isSelectionChange: Bool = false) {
             guard !isApplyingModelChange else { return }
             parent.onEdit(editor.string, editor.selectedRange().location)
+            if isSelectionChange, !isProgrammaticSelection, Self.isCaretGesture(NSApp.currentEvent) {
+                parent.onCaretGesture()
+            }
+        }
+
+        func syncCaret(from field: NSTextField) {
+            guard let editor = field.currentEditor() as? NSTextView else { return }
+            parent.onEdit(editor.string, editor.selectedRange().location)
+        }
+
+        /// Mouse clicks and the caret-only navigation keys (Left, Right, Home, End).
+        private static func isCaretGesture(_ event: NSEvent?) -> Bool {
+            guard let event else { return false }
+            switch event.type {
+            case .leftMouseDown, .leftMouseUp: return true
+            case .keyDown:
+                // 123 ←, 124 →, 115 Home, 119 End
+                return [123, 124, 115, 119].contains(event.keyCode)
+            default: return false
+            }
         }
 
         func controlTextDidChange(_ obj: Notification) {
