@@ -879,4 +879,42 @@ struct KeyDetailInspectorTests {
 
         #expect(sheetWindow.firstResponder === sheetWindow)
     }
+
+    @Test
+    @MainActor
+    func testSidebarAndMainPaneUseFullHeightScrollViewsWithTopGlassBars() {
+        let appState = AppState()
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 911, height: 724),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+
+        let hostingView = NSHostingView(rootView: KeyListView().environmentObject(appState))
+        window.contentView = hostingView
+        hostingView.layoutSubtreeIfNeeded()
+        appState.keys = [makeTestKey(label: "Test 2")]
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        hostingView.layoutSubtreeIfNeeded()
+
+        func collectScrollViews(in view: NSView) -> [NSScrollView] {
+            var result: [NSScrollView] = []
+            if let sv = view as? NSScrollView {
+                result.append(sv)
+            }
+            for sub in view.subviews {
+                result.append(contentsOf: collectScrollViews(in: sub))
+            }
+            return result
+        }
+
+        let scrollViews = collectScrollViews(in: hostingView)
+        // Both the sidebar (222pt wide) and main inspector pane (689pt wide) must extend the full 724pt window height
+        // so scrolled content passes underneath the transparent Liquid Glass top bars.
+        #expect(scrollViews.contains { abs($0.frame.width - 222) < 1 && abs($0.frame.height - 724) < 1 })
+        #expect(scrollViews.contains { abs($0.frame.width - 689) < 1 && abs($0.frame.height - 724) < 1 })
+    }
 }
