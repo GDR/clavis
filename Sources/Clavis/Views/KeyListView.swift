@@ -264,86 +264,89 @@ struct KeyListView: View {
 
     // MARK: - Left Sidebar (222px Contacts-style library)
 
+    private var sidebarHeader: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Top 58px sidebar toolbar (traffic lights on left, Lock + New Key on right)
+            HStack(spacing: 7) {
+                Spacer(minLength: 72)
+
+                AdaptiveGlassEffectContainer(spacing: 7) {
+                    CircularGlassIconButton(
+                        icon: "lock",
+                        size: 33,
+                        iconSize: 14,
+                        helpText: "Lock control panel (⌘L)",
+                        accessibilityLabel: "Lock control panel"
+                    ) {
+                        PanelLockController.shared.lock(reason: .lockNow)
+                    }
+
+                    CircularGlassIconButton(
+                        icon: "plus",
+                        size: 33,
+                        iconSize: 15,
+                        isActive: appState.activeSheet == .create,
+                        helpText: "New key (⌘N)",
+                        accessibilityLabel: ClavisUIStrings.Accessibility.addKey
+                    ) {
+                        appState.activeSheet = .create
+                    }
+                }
+            }
+            .padding(.leading, 16)
+            .padding(.trailing, 12)
+            .frame(height: Self.toolbarHeight)
+
+            // 36px Contacts-inspired search capsule
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(DesignTokens.textSecondary)
+                    .font(.system(size: 13))
+
+                TextField("Search", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .focused($isSearchFieldFocused)
+                    .accessibilityLabel("Search keys")
+                    .onExitCommand {
+                        if !searchText.isEmpty {
+                            searchText = ""
+                        } else {
+                            isSearchFieldFocused = false
+                        }
+                    }
+
+                if !searchText.isEmpty {
+                    Button(action: { searchText = "" }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(DesignTokens.textTertiary)
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(ClavisUIStrings.Common.cancel)
+                }
+            }
+            .padding(.horizontal, 11)
+            .frame(height: Self.searchCapsuleHeight)
+            .liquidGlassCapsuleControl(isFocused: isSearchFieldFocused)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
+
+            // "Keys" section header
+            Text("Keys")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(DesignTokens.textSecondary)
+                .padding(.horizontal, 17)
+                .padding(.bottom, 5)
+        }
+    }
+
     private var sidebarPane: some View {
         ZStack(alignment: .topLeading) {
             DesignTokens.sidebarBackground
                 .ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 0) {
-                // Top 58px sidebar toolbar (traffic lights on left, Lock + New Key on right)
-                HStack(spacing: 7) {
-                    Spacer(minLength: 72)
-
-                    AdaptiveGlassEffectContainer(spacing: 7) {
-                        CircularGlassIconButton(
-                            icon: "lock",
-                            size: 33,
-                            iconSize: 14,
-                            helpText: "Lock control panel (⌘L)",
-                            accessibilityLabel: "Lock control panel"
-                        ) {
-                            PanelLockController.shared.lock(reason: .lockNow)
-                        }
-
-                        CircularGlassIconButton(
-                            icon: "plus",
-                            size: 33,
-                            iconSize: 15,
-                            isActive: appState.activeSheet == .create,
-                            helpText: "New key (⌘N)",
-                            accessibilityLabel: ClavisUIStrings.Accessibility.addKey
-                        ) {
-                            appState.activeSheet = .create
-                        }
-                    }
-                }
-                .padding(.leading, 16)
-                .padding(.trailing, 12)
-                .frame(height: Self.toolbarHeight)
-
-                // 36px Contacts-inspired search capsule
-                HStack(spacing: 7) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundColor(DesignTokens.textSecondary)
-                        .font(.system(size: 13))
-
-                    TextField("Search", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13))
-                        .focused($isSearchFieldFocused)
-                        .accessibilityLabel("Search keys")
-                        .onExitCommand {
-                            if !searchText.isEmpty {
-                                searchText = ""
-                            } else {
-                                isSearchFieldFocused = false
-                            }
-                        }
-
-                    if !searchText.isEmpty {
-                        Button(action: { searchText = "" }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(DesignTokens.textTertiary)
-                                .font(.system(size: 12))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(ClavisUIStrings.Common.cancel)
-                    }
-                }
-                .padding(.horizontal, 11)
-                .frame(height: Self.searchCapsuleHeight)
-                .liquidGlassCapsuleControl(isFocused: isSearchFieldFocused)
-                .padding(.horizontal, 8)
-                .padding(.bottom, 8)
-
-                // "Keys" section header
-                Text("Keys")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(DesignTokens.textSecondary)
-                    .padding(.horizontal, 17)
-                    .padding(.bottom, 5)
-
-                // Key List
+            ScrollView {
                 if filteredKeys.isEmpty {
                     Text(appState.keys.isEmpty ? "No keys yet" : "No matching keys")
                         .font(.system(size: 11))
@@ -351,41 +354,41 @@ struct KeyListView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 18)
                         .padding(.horizontal, 8)
-                    Spacer()
                 } else {
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(filteredKeys.enumerated()), id: \.element.id) { index, key in
-                                let isRowSelected = (appState.activeMainPane == .keys && selectedKey?.id == key.id)
-                                let nextIsSelected: Bool = {
-                                    guard index + 1 < filteredKeys.count else { return false }
-                                    return appState.activeMainPane == .keys && selectedKey?.id == filteredKeys[index + 1].id
-                                }()
-                                KeySidebarRowView(
-                                    key: key,
-                                    isSelected: isRowSelected,
-                                    isUnlocked: appState.isKeyUnlocked(key),
-                                    showDivider: !isRowSelected && !nextIsSelected,
-                                    onSelect: {
-                                        selectedKeyId = key.id
-                                        appState.activeMainPane = .keys
-                                    },
-                                    onCopyPublicKey: {
-                                        copyPublicKey(for: key)
-                                    },
-                                    onCopyFingerprint: {
-                                        copyFingerprint(for: key)
-                                    },
-                                    onDelete: {
-                                        keyPendingDeletion = key
-                                    }
-                                )
-                            }
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(filteredKeys.enumerated()), id: \.element.id) { index, key in
+                            let isRowSelected = (appState.activeMainPane == .keys && selectedKey?.id == key.id)
+                            let nextIsSelected: Bool = {
+                                guard index + 1 < filteredKeys.count else { return false }
+                                return appState.activeMainPane == .keys && selectedKey?.id == filteredKeys[index + 1].id
+                            }()
+                            KeySidebarRowView(
+                                key: key,
+                                isSelected: isRowSelected,
+                                isUnlocked: appState.isKeyUnlocked(key),
+                                showDivider: !isRowSelected && !nextIsSelected,
+                                onSelect: {
+                                    selectedKeyId = key.id
+                                    appState.activeMainPane = .keys
+                                },
+                                onCopyPublicKey: {
+                                    copyPublicKey(for: key)
+                                },
+                                onCopyFingerprint: {
+                                    copyFingerprint(for: key)
+                                },
+                                onDelete: {
+                                    keyPendingDeletion = key
+                                }
+                            )
                         }
-                        .padding(.horizontal, 7)
-                        .padding(.bottom, 10)
                     }
+                    .padding(.horizontal, 7)
+                    .padding(.bottom, 10)
                 }
+            }
+            .topLiquidGlassBar(alignment: .leading) {
+                sidebarHeader
             }
             .frame(maxHeight: .infinity)
         }
@@ -406,11 +409,7 @@ struct KeyListView: View {
             DesignTokens.inspectorBackground
                 .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                // Top 58px translucent toolbar
-                mainToolbar
-
-                // Active destination
+            Group {
                 if appState.activeMainPane == .history {
                     HistoryView(viewModel: historyViewModel)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -438,6 +437,9 @@ struct KeyListView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+            }
+            .topLiquidGlassBar {
+                mainToolbar
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

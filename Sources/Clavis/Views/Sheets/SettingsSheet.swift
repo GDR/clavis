@@ -65,28 +65,28 @@ public struct SettingsView: View {
         isSettingsAuthenticated || !lock.isEffectivelyLocked
     }
 
-    public var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(ClavisUIStrings.Settings.windowTitle)
-                    .font(.system(size: 19, weight: .bold))
-                Spacer()
-                CircularGlassIconButton(
-                    icon: "xmark",
-                    size: 28,
-                    iconSize: 11,
-                    helpText: ClavisUIStrings.Common.cancel,
-                    accessibilityLabel: ClavisUIStrings.Common.cancel
-                ) {
-                    dismiss()
-                }
+    private var settingsHeader: some View {
+        HStack {
+            Text(ClavisUIStrings.Settings.windowTitle)
+                .font(.system(size: 19, weight: .bold))
+            Spacer()
+            CircularGlassIconButton(
+                icon: "xmark",
+                size: 28,
+                iconSize: 11,
+                helpText: ClavisUIStrings.Common.cancel,
+                accessibilityLabel: ClavisUIStrings.Common.cancel
+            ) {
+                dismiss()
             }
-            .padding(.horizontal, 22)
-            .padding(.top, 18)
-            .padding(.bottom, 12)
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 18)
+        .padding(.bottom, 12)
+    }
 
-            Divider()
-
+    public var body: some View {
+        Group {
             if !isUnlocked {
                 VStack(spacing: 16) {
                     Image(systemName: "lock.fill")
@@ -494,8 +494,11 @@ public struct SettingsView: View {
                     checkVaultSync()
                 }
             }
-    }
-    .frame(width: 480, height: 600)
+        }
+        .topLiquidGlassBar {
+            settingsHeader
+        }
+        .frame(width: 480, height: 600)
     .onExitCommand {
         dismiss()
     }

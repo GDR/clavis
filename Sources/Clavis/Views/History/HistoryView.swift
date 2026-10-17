@@ -76,25 +76,25 @@ public struct HistoryView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            if let activeSessionID = viewModel.query.sessionID {
-                activeSessionBanner(sessionID: activeSessionID)
-                Divider()
-            }
-
-            if viewModel.needsKeyContext {
-                PinEntryView(isInlineBanner: true) { _ in
-                    viewModel.reload()
+        // Single scroll surface containing both filters and date-grouped event sections
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if let activeSessionID = viewModel.query.sessionID {
+                    activeSessionBanner(sessionID: activeSessionID)
+                    Divider()
                 }
-                .padding(.horizontal, 30)
-                .padding(.vertical, 8)
-                .background(Color(nsColor: .controlBackgroundColor))
 
-                Divider()
-            }
+                if viewModel.needsKeyContext {
+                    PinEntryView(isInlineBanner: true) { _ in
+                        viewModel.reload()
+                    }
+                    .padding(.horizontal, 30)
+                    .padding(.vertical, 8)
+                    .background(Color(nsColor: .controlBackgroundColor))
 
-            // Single scroll surface containing both filters and date-grouped event sections
-            ScrollView {
+                    Divider()
+                }
+
                 VStack(alignment: .leading, spacing: 0) {
                     historyFilterControls
                         .zIndex(20)

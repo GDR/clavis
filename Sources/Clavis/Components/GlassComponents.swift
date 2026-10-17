@@ -802,4 +802,19 @@ public extension View {
                 .frame(width: 0, height: 0)
         )
     }
+
+    @ViewBuilder
+    func topLiquidGlassBar<Bar: View>(
+        alignment: HorizontalAlignment = .center,
+        @ViewBuilder content: () -> Bar
+    ) -> some View {
+        if #available(macOS 26.0, *) {
+            self
+                .safeAreaBar(edge: .top, alignment: alignment, spacing: 0, content: content)
+                .scrollEdgeEffectStyle(.soft, for: .top)
+        } else {
+            self
+                .safeAreaInset(edge: .top, alignment: alignment, spacing: 0, content: content)
+        }
+    }
 }
