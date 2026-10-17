@@ -56,8 +56,8 @@ public class WindowManager: NSObject, NSWindowDelegate {
         return nil
     }
 
-    public static let defaultWindowSize = NSSize(width: 911, height: 724)
-    public static let minimumWindowSize = NSSize(width: 620, height: 530)
+    public static let defaultWindowSize = NSSize(width: 958, height: 724)
+    public static let minimumWindowSize = NSSize(width: 713, height: 610)
 
     public func openKeyManager(sheet: KeyManagerSheet? = nil) {
         dismissMenuBarExtra()
@@ -97,6 +97,8 @@ public class WindowManager: NSObject, NSWindowDelegate {
 
         window.minSize = Self.minimumWindowSize
         window.contentViewController = hostingController
+        // Assigning contentViewController resets the window's content size to the hosting controller's initial frame; restore defaultWindowSize explicitly.
+        window.setContentSize(Self.defaultWindowSize)
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self
