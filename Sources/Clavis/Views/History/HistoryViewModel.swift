@@ -26,111 +26,90 @@ public enum HistoryItem: Identifiable, Equatable, Sendable {
     }
 }
 
-public struct HistoryHostSuggestion: Identifiable, Equatable, Sendable {
-    public let host: String
-    public let count: Int
-
-    public var id: String { host }
-
-    public init(host: String, count: Int) {
-        self.host = host
-        self.count = count
-    }
-}
-
 public struct HistoryDaySection: Identifiable, Equatable, Sendable {
     public let id: String
     public let title: String
     public let totalCount: Int
     public let items: [HistoryItem]
+    /// False while later events of this day may still be unloaded (the section is the last
+    /// loaded one and more history exists). Decides whether the last row may hand off the date.
+    public let isComplete: Bool
 
-    public init(id: String, title: String, totalCount: Int, items: [HistoryItem]) {
+    public init(id: String, title: String, totalCount: Int, items: [HistoryItem], isComplete: Bool = true) {
         self.id = id
         self.title = title
         self.totalCount = totalCount
         self.items = items
+        self.isComplete = isComplete
     }
 }
 
 extension AuditQuery {
     public var hasFiltersExceptTimeRange: Bool {
-        !types.isEmpty || !results.isEmpty || keyFingerprint != nil || keyKind != nil || sessionID != nil
+        !types.isEmpty || !results.isEmpty || keyFingerprint != nil || !keyFingerprints.isEmpty
+            || keyKind != nil || sessionID != nil
     }
 }
 
 @MainActor
 public final class HistoryViewModel: ObservableObject {
-    @Published public var records: [AuditRecord] = []
-    @Published public var items: [HistoryItem] = []
+    // MARK: Results
+    /// Matching events loaded so far, in the active sort order.
+    @Published public private(set) var records: [AuditRecord] = []
+    @Published public private(set) var items: [HistoryItem] = []
     @Published public var sensitive: [Int64: AuditUnsealResult] = [:]
-    @Published public var query: AuditQuery = AuditQuery()
     @Published public var errorMessage: String?
     @Published public var isLoading: Bool = false
+    @Published public var hasMore: Bool = false
+    @Published public var isLoadingMore: Bool = false
+    /// Exact total when the store can answer it (no decrypt-time criteria); otherwise nil.
+    @Published public private(set) var totalMatching: Int?
+    /// Scanned rows whose sealed fields could not be read (they cannot match host/process/text).
+    @Published public private(set) var unreadableScanned: Int = 0
+
     @Published public var integrityReport: AuditIntegrityReport?
     @Published public var isCheckingIntegrity: Bool = false
     @Published public var integrityCheckError: String?
     @Published public var needsKeyContext: Bool = false
 
-    // #122: Search and filtering properties
-    @Published public var searchText: String = "" {
-        didSet {
-            if searchText != oldValue {
-                applyFiltering()
-            }
-        }
-    }
-    @Published public var filterKeyLabel: String? {
-        didSet {
-            if filterKeyLabel != oldValue {
-                applyFiltering()
-            }
-        }
-    }
-    @Published public var filterRemoteHost: String? {
-        didSet {
-            if filterRemoteHost != oldValue {
-                applyFiltering()
-            }
-        }
-    }
-    @Published public var filterProcessOrPID: String? {
-        didSet {
-            if filterProcessOrPID != oldValue {
-                applyFiltering()
-            }
-        }
-    }
-    @Published public var selectedDate: Date? = nil {
-        didSet {
-            if selectedDate != oldValue {
-                applyFiltering()
-            }
-        }
-    }
+    // MARK: Committed query (single source of truth)
+    /// Base scope that is not a badge: page size and the optional session scope.
+    @Published public var query: AuditQuery = AuditQuery()
+    @Published public private(set) var filter = HistoryFilter()
 
-    /// Inclusive calendar-day range filter (start of `dateRangeStart` … end of `dateRangeEnd`).
-    @Published public var dateRangeStart: Date? = nil {
-        didSet { if dateRangeStart != oldValue { applyFiltering() } }
-    }
-    @Published public var dateRangeEnd: Date? = nil {
-        didSet { if dateRangeEnd != oldValue { applyFiltering() } }
-    }
+    // MARK: Draft (never affects results until committed)
+    @Published public private(set) var draftText: String = ""
+    @Published public private(set) var draftCaret: Int = 0
+    @Published public private(set) var suggestions: [HistorySuggestion] = []
+    @Published public private(set) var draftError: HistoryDraftDiagnostic?
 
-    // #123: Pagination properties
-    @Published public var hasMore: Bool = false
-    @Published public var isLoadingMore: Bool = false
+    // MARK: Suggestion catalog
+    @Published public private(set) var keyChoices: [HistoryKeyChoice] = []
+    @Published public private(set) var indexedHosts: [String] = []
+    @Published public private(set) var indexedProcessPaths: [String] = []
 
     // #121: Live audit event notification
     public static let didRecordAuditNotification = NSNotification.Name("com.clavis.auditEventRecorded")
 
+    public var calendar: Calendar
     private let storeFactory: () throws -> AuditStore
     private let keyring: AuditKeyring?
     private let contextProvider: @MainActor () -> LAContext?
     private var lockObserver: Any?
     private var localObservers: [NSObjectProtocol] = []
     private var distributedObservers: [NSObjectProtocol] = []
-    private var rawRecords: [AuditRecord] = []
     private var lastPrunedSeq: Int64 = 0
+    private var cursor: AuditCursor?
+    /// Bumped by every committed query change; stale async results are discarded.
+    private var generation: Int = 0
+    private var loadTask: Task<Void, Never>?
+    private var suggestionIndexStale = true
+    private var isIndexingSuggestions = false
+
+    /// Upper bound of rows examined per suggestion-index build (newest first).
+    nonisolated static let suggestionScanLimit = 5_000
+    /// Rows examined per batch while scanning for decrypt-time criteria.
+    nonisolated static let scanBatchSize = 500
 
     public nonisolated static func makeDefaultKeyring() -> AuditKeyring? {
         #if DEBUG
@@ -148,15 +127,17 @@ public final class HistoryViewModel: ObservableObject {
         store: @escaping () throws -> AuditStore = { try AuditStore() },
         keyring: AuditKeyring? = HistoryViewModel.makeDefaultKeyring(),
         contextProvider: @escaping @MainActor () -> LAContext? = { PanelLockController.shared.unlockContext },
-        notificationCenter: NotificationCenter = .default
+        notificationCenter: NotificationCenter = .default,
+        calendar: Calendar = .current
     ) {
         self.storeFactory = store
         self.keyring = keyring
         self.contextProvider = contextProvider
         self.notificationCenter = notificationCenter
+        self.calendar = calendar
         self.query.limit = 200
         if let initialKeyFingerprint {
-            self.query.keyFingerprint = initialKeyFingerprint
+            self.filter.open(forKey: initialKeyFingerprint)
         }
         self.lockObserver = notificationCenter.addObserver(
             forName: PanelLockController.didLockNotification,
@@ -164,25 +145,28 @@ public final class HistoryViewModel: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.sensitive.removeAll()
-                self?.needsKeyContext = false
+                guard let self else { return }
+                // Decrypted values must not outlive an unlocked panel.
+                self.sensitive.removeAll()
+                self.needsKeyContext = false
+                self.indexedHosts = []
+                self.indexedProcessPaths = []
+                self.suggestionIndexStale = true
+                self.refreshSuggestions()
             }
         }
 
         // #121: Live auto-reload observers
-        let localNames: [NSNotification.Name] = [
+        let liveNames: [NSNotification.Name] = [
             Self.didRecordAuditNotification,
             NSNotification.Name("com.clavis.agentSigned"),
             NSNotification.Name("com.clavis.agentRateLimited"),
             NSNotification.Name("com.clavis.agentSessionsChanged")
         ]
-        for name in localNames {
-            let obs = notificationCenter.addObserver(
-                forName: name,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
+        for name in liveNames {
+            let obs = notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in
+                    self?.suggestionIndexStale = true
                     self?.reload()
                 }
             }
@@ -191,19 +175,10 @@ public final class HistoryViewModel: ObservableObject {
 
         if notificationCenter === NotificationCenter.default && !ClavisEnvironment.isTesting {
             let distCenter = DistributedNotificationCenter.default()
-            let distNames: [NSNotification.Name] = [
-                Self.didRecordAuditNotification,
-                NSNotification.Name("com.clavis.agentSigned"),
-                NSNotification.Name("com.clavis.agentRateLimited"),
-                NSNotification.Name("com.clavis.agentSessionsChanged")
-            ]
-            for name in distNames {
-                let obs = distCenter.addObserver(
-                    forName: name,
-                    object: nil,
-                    queue: .main
-                ) { [weak self] _ in
+            for name in liveNames {
+                let obs = distCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                     Task { @MainActor [weak self] in
+                        self?.suggestionIndexStale = true
                         self?.reload()
                     }
                 }
@@ -225,50 +200,182 @@ public final class HistoryViewModel: ObservableObject {
         }
     }
 
-    public nonisolated static func computeItems(
-        from records: [AuditRecord],
-        prunedThroughSeq: Int64 = 0,
-        hasFilters: Bool = false
-    ) -> [HistoryItem] {
-        guard !hasFilters else {
-            return records.map { .record($0) }
-        }
-        guard records.count > 1 else {
-            return records.map { .record($0) }
-        }
-        var result: [HistoryItem] = []
-        result.reserveCapacity(records.count)
-        for i in 0 ..< records.count {
-            result.append(.record(records[i]))
-            if i < records.count - 1 {
-                let current = records[i]
-                let next = records[i + 1]
-                if current.seq - next.seq > 1 && next.seq > prunedThroughSeq {
-                    let missingCount = current.seq - next.seq - 1
-                    result.append(.gap(fromSeq: next.seq + 1, toSeq: current.seq - 1, missingCount: missingCount))
-                }
-            }
-        }
-        return result
+    // MARK: - Committed filter actions (one reducer boundary; each triggers at most one reload)
+
+    /// The sidebar selection, derived from the Key badges.
+    public var selectedKeyFingerprint: String? { filter.soleKey }
+
+    public func openForKey(_ fingerprint: String?) {
+        var next = filter
+        next.open(forKey: fingerprint)
+        draftReset()
+        apply(next, force: true)
     }
 
-    public func computeItems(from records: [AuditRecord], prunedThroughSeq: Int64) -> [HistoryItem] {
-        Self.computeItems(
-            from: records,
-            prunedThroughSeq: prunedThroughSeq,
-            hasFilters: query.hasFiltersExceptTimeRange || hasCustomFilters
-        )
+    public func selectSidebarKey(_ fingerprint: String) {
+        var next = filter
+        next.selectSidebarKey(fingerprint)
+        apply(next)
     }
 
-    private var hasCustomFilters: Bool {
-        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || (filterKeyLabel != nil && !filterKeyLabel!.isEmpty)
-            || (filterRemoteHost != nil && !filterRemoteHost!.isEmpty)
-            || (filterProcessOrPID != nil && !filterProcessOrPID!.isEmpty)
-            || selectedDate != nil
-            || dateRangeStart != nil
-            || dateRangeEnd != nil
+    @discardableResult
+    public func add(_ criterion: HistoryCriterion) -> Bool {
+        var next = filter
+        guard next.add(criterion) else { return false }
+        apply(next)
+        return true
     }
+
+    public func removeCriterion(id: String) {
+        var next = filter
+        guard next.remove(id: id) else { return }
+        apply(next)
+    }
+
+    public func clearFilters() {
+        var next = filter
+        next.clearFilters()
+        apply(next)
+    }
+
+    /// Returns false (state untouched) when the interval would be invalid.
+    @discardableResult
+    public func setDateFrom(_ day: CalendarDay?) -> Bool {
+        var next = filter
+        guard next.dateBounds.setFrom(day) else { return false }
+        apply(next)
+        return true
+    }
+
+    @discardableResult
+    public func setDateTo(_ day: CalendarDay?) -> Bool {
+        var next = filter
+        guard next.dateBounds.setTo(day) else { return false }
+        apply(next)
+        return true
+    }
+
+    public func setSortOrder(_ order: AuditSortOrder) {
+        var next = filter
+        next.sortOrder = order
+        apply(next)
+    }
+
+    /// Session scope (story 002 AC5) is separate from badges.
+    public func setSessionScope(_ sessionID: String?) {
+        guard query.sessionID != sessionID else { return }
+        query.sessionID = sessionID
+        reload()
+    }
+
+    private func apply(_ next: HistoryFilter, force: Bool = false) {
+        guard force || next != filter else { return }
+        filter = next
+        reload()
+    }
+
+    // MARK: - Draft
+
+    public func updateDraft(text: String, caret: Int) {
+        guard text != draftText || caret != draftCaret else { return }
+        draftText = text
+        draftCaret = caret
+        draftError = nil
+        refreshSuggestions()
+    }
+
+    private func draftReset() {
+        draftText = ""
+        draftCaret = 0
+        draftError = nil
+        suggestions = []
+    }
+
+    public var catalog: HistorySuggestionCatalog {
+        HistorySuggestionCatalog(keys: keyChoices, hosts: indexedHosts, processPaths: indexedProcessPaths)
+    }
+
+    /// Replaces the key list used for suggestions and for resolving typed key names.
+    public func updateKeys(_ keys: [SSHKeyInfo]) {
+        setKeyChoices(keys.map { HistoryKeyChoice(fingerprint: $0.fingerprint, label: $0.label) })
+    }
+
+    func setKeyChoices(_ choices: [HistoryKeyChoice]) {
+        guard choices != keyChoices else { return }
+        keyChoices = choices
+        refreshSuggestions()
+    }
+
+    public func label(forKeyFingerprint fingerprint: String) -> String {
+        keyChoices.first { $0.fingerprint == fingerprint }?.label ?? String(fingerprint.prefix(16))
+    }
+
+    public var completionContext: HistoryCompletionContext? {
+        HistoryCompletionEngine.context(text: draftText, caret: draftCaret)
+    }
+
+    /// `+ Filter`: start a fresh term after whatever is already typed, so the prefix list shows.
+    public func prepareForNewFilter() {
+        var text = draftText
+        if !text.isEmpty, let last = text.last, !last.isWhitespace { text += " " }
+        let caret = (text as NSString).length
+        draftText = text
+        draftCaret = caret
+        draftError = nil
+        refreshSuggestions()
+    }
+
+    /// Recomputes the dropdown for the caret position. Never touches committed state.
+    public func refreshSuggestions() {
+        guard let context = HistoryCompletionEngine.context(text: draftText, caret: draftCaret) else {
+            suggestions = []
+            return
+        }
+        suggestions = HistoryCompletionEngine.suggestions(for: context, catalog: catalog)
+    }
+
+    /// Accepting a prefix edits the draft; accepting a value commits one badge and consumes its token.
+    public func accept(_ suggestion: HistorySuggestion) {
+        guard let context = HistoryCompletionEngine.context(text: draftText, caret: draftCaret) else { return }
+        switch suggestion.kind {
+        case .prefix(let field):
+            let edit = HistoryCompletionEngine.insertPrefix(field, text: draftText, context: context)
+            draftText = edit.text
+            draftCaret = edit.caret
+            draftError = nil
+            refreshSuggestions()   // now offers the values for this prefix
+        case .value(let criterion):
+            let edit = HistoryCompletionEngine.removeToken(text: draftText, context: context)
+            draftText = edit.text
+            draftCaret = edit.caret
+            draftError = nil
+            add(criterion)
+            suggestions = []       // closed after committing; the field keeps focus
+        }
+    }
+
+    /// Return on a typed expression. Commits every term or none (and reports why).
+    @discardableResult
+    public func commitDraft() -> Bool {
+        let parse = HistoryExpressionParser.parse(draftText)
+        if let first = parse.diagnostics.first {
+            draftError = first
+            return false
+        }
+        guard !parse.hasIncompleteTerm, !parse.terms.isEmpty else { return false }
+        let resolved = HistoryDraftResolver.resolve(parse, catalog: catalog)
+        if let first = resolved.diagnostics.first {
+            draftError = first
+            return false
+        }
+        var next = filter
+        for c in resolved.criteria { next.add(c) }
+        draftReset()
+        apply(next)
+        return true
+    }
+
+    // MARK: - Display helpers
 
     public func resolvedSensitive(for record: AuditRecord) -> AuditSensitive {
         if let unsealed = sensitive[record.seq], case .plaintext(let sens) = unsealed {
@@ -326,193 +433,59 @@ public final class HistoryViewModel: ObservableObject {
     }
 
     public nonisolated static func statusLabel(for result: AuditResult) -> String {
-        switch result {
-        case .allowed:
-            return "Approved"
-        case .denied, .cancelled, .failed:
-            return "Rejected"
-        case .info:
-            return "Recorded"
-        }
+        HistoryResult(result).title
     }
 
-    public func recordMatchesFilter(_ record: AuditRecord, ignoreRemoteHost: Bool = false) -> Bool {
-        let unsealed = sensitive[record.seq]
-        let eventSensitive = record.event.sensitive
-        let resolvedSens = resolvedSensitive(for: record)
+    // MARK: - Gap detection
 
-        // 0. Selected date filter (calendar day match)
-        if let selectedDate {
-            if !Calendar.current.isDate(record.event.time, inSameDayAs: selectedDate) {
-                return false
+    public nonisolated static func computeItems(
+        from records: [AuditRecord],
+        prunedThroughSeq: Int64 = 0,
+        hasFilters: Bool = false
+    ) -> [HistoryItem] {
+        guard !hasFilters else {
+            return records.map { .record($0) }
+        }
+        guard records.count > 1 else {
+            return records.map { .record($0) }
+        }
+        var result: [HistoryItem] = []
+        result.reserveCapacity(records.count)
+        for i in 0 ..< records.count {
+            result.append(.record(records[i]))
+            if i < records.count - 1 {
+                let current = records[i]
+                let next = records[i + 1]
+                if current.seq - next.seq > 1 && next.seq > prunedThroughSeq {
+                    let missingCount = current.seq - next.seq - 1
+                    result.append(.gap(fromSeq: next.seq + 1, toSeq: current.seq - 1, missingCount: missingCount))
+                }
             }
         }
-        // 0b. Inclusive day range
-        let cal = Calendar.current
-        if let start = dateRangeStart, record.event.time < cal.startOfDay(for: start) {
-            return false
-        }
-        if let end = dateRangeEnd,
-           let limit = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: end)),
-           record.event.time >= limit {
-            return false
-        }
-
-        // 1. Search text (matches operation, result status, key label, fingerprint, remote host, process or PID, session ID)
-        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !q.isEmpty {
-            var matched = false
-            // Operation title & event type
-            let opTitle = Self.operationTitle(for: record, sensitive: resolvedSens)
-            if opTitle.localizedCaseInsensitiveContains(q)
-                || record.event.type.rawValue.localizedCaseInsensitiveContains(q) {
-                matched = true
-            }
-            // Result status ("Approved" / "Rejected" / rawValue)
-            if !matched {
-                let status = Self.statusLabel(for: record.event.result)
-                if status.localizedCaseInsensitiveContains(q)
-                    || record.event.result.rawValue.localizedCaseInsensitiveContains(q) {
-                    matched = true
-                }
-            }
-            // Fingerprint
-            if !matched, let fp = record.event.keyFingerprint, fp.localizedCaseInsensitiveContains(q) {
-                matched = true
-            }
-            // Session ID
-            if !matched, let sid = record.event.sessionID, sid.localizedCaseInsensitiveContains(q) {
-                matched = true
-            }
-            // Sensitive fields from unsealed result
-            if !matched, let unsealed, case .plaintext(let sens) = unsealed {
-                if let label = sens.keyLabel, label.localizedCaseInsensitiveContains(q) {
-                    matched = true
-                }
-                if !matched, let host = sens.host, host.localizedCaseInsensitiveContains(q) {
-                    matched = true
-                }
-                if !matched {
-                    for proc in sens.processChain {
-                        if proc.executablePath.localizedCaseInsensitiveContains(q)
-                            || (proc.executablePath as NSString).lastPathComponent.localizedCaseInsensitiveContains(q)
-                            || String(proc.pid).contains(q) {
-                            matched = true
-                            break
-                        }
-                    }
-                }
-            }
-            // Sensitive fields from event.sensitive fallback
-            if !matched {
-                if let label = eventSensitive.keyLabel, label.localizedCaseInsensitiveContains(q) {
-                    matched = true
-                }
-                if !matched, let host = eventSensitive.host, host.localizedCaseInsensitiveContains(q) {
-                    matched = true
-                }
-                if !matched {
-                    for proc in eventSensitive.processChain {
-                        if proc.executablePath.localizedCaseInsensitiveContains(q)
-                            || (proc.executablePath as NSString).lastPathComponent.localizedCaseInsensitiveContains(q)
-                            || String(proc.pid).contains(q) {
-                            matched = true
-                            break
-                        }
-                    }
-                }
-            }
-            if !matched {
-                return false
-            }
-        }
-
-        // 2. Specific key label filter
-        if let keyLabel = filterKeyLabel, !keyLabel.isEmpty {
-            let label: String? = {
-                if let unsealed, case .plaintext(let sens) = unsealed {
-                    return sens.keyLabel
-                }
-                return eventSensitive.keyLabel
-            }()
-            guard let l = label, l.localizedCaseInsensitiveContains(keyLabel) else {
-                return false
-            }
-        }
-
-        // 3. Specific remote host filter
-        if !ignoreRemoteHost, let remoteHost = filterRemoteHost, !remoteHost.isEmpty {
-            let host: String? = {
-                if let unsealed, case .plaintext(let sens) = unsealed {
-                    return sens.host
-                }
-                return eventSensitive.host
-            }()
-            guard let h = host, h.localizedCaseInsensitiveContains(remoteHost) else {
-                return false
-            }
-        }
-
-        // 4. Specific process or PID filter
-        if let processOrPID = filterProcessOrPID, !processOrPID.isEmpty {
-            let chain: [AuditProcess] = {
-                if let unsealed, case .plaintext(let sens) = unsealed {
-                    return sens.processChain
-                }
-                return eventSensitive.processChain
-            }()
-            let matched = chain.contains { proc in
-                proc.executablePath.localizedCaseInsensitiveContains(processOrPID)
-                    || (proc.executablePath as NSString).lastPathComponent.localizedCaseInsensitiveContains(processOrPID)
-                    || String(proc.pid).contains(processOrPID)
-            }
-            if !matched {
-                return false
-            }
-        }
-
-        return true
+        return result
     }
 
-    public func hostSuggestions(matching queryText: String = "") -> [HistoryHostSuggestion] {
-        let trimmed = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
-        var distinctHosts: [String] = []
-        var seenHosts = Set<String>()
-        var countsByHost: [String: Int] = [:]
-
-        for record in rawRecords {
-            let sens = resolvedSensitive(for: record)
-            guard let rawHost = sens.host?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !rawHost.isEmpty else {
-                continue
-            }
-            if !seenHosts.contains(rawHost) {
-                seenHosts.insert(rawHost)
-                distinctHosts.append(rawHost)
-            }
-            if recordMatchesFilter(record, ignoreRemoteHost: true) {
-                countsByHost[rawHost, default: 0] += 1
-            }
-        }
-
-        let matchingHosts = distinctHosts.filter { host in
-            trimmed.isEmpty || host.localizedCaseInsensitiveContains(trimmed)
-        }
-        return matchingHosts.map { host in
-            HistoryHostSuggestion(host: host, count: countsByHost[host, default: 0])
-        }
+    private func rebuildItems() {
+        // Sequence-gap tamper hints only make sense for the unfiltered, seq-descending view.
+        let seqDescending = zip(records, records.dropFirst()).allSatisfy { $0.seq > $1.seq }
+        let filtered = !filter.isEmpty || query.hasFiltersExceptTimeRange
+            || filter.sortOrder != .newestFirst || !seqDescending
+        items = Self.computeItems(from: records, prunedThroughSeq: lastPrunedSeq, hasFilters: filtered)
     }
+
+    // MARK: - Day grouping
 
     public nonisolated static func dayLabel(
         for date: Date,
         referenceDate: Date = Date(),
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        locale: Locale = .current
     ) -> String {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.locale = locale
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
-        formatter.dateFormat = "MMMM d, yyyy"
+        formatter.setLocalizedDateFormatFromTemplate("MMMMdyyyy")
         let formattedDate = formatter.string(from: date)
         if calendar.isDate(date, inSameDayAs: referenceDate) {
             return "Today · \(formattedDate)"
@@ -526,9 +499,11 @@ public final class HistoryViewModel: ObservableObject {
 
     public func groupedSections(
         referenceDate: Date = Date(),
-        calendar: Calendar = .current
+        calendar: Calendar? = nil,
+        locale: Locale = .current
     ) -> [HistoryDaySection] {
         guard !items.isEmpty else { return [] }
+        let calendar = calendar ?? self.calendar
 
         let keyFormatter = DateFormatter()
         keyFormatter.locale = Locale(identifier: "en_US_POSIX")
@@ -540,7 +515,6 @@ public final class HistoryViewModel: ObservableObject {
         var sectionTitles: [String: String] = [:]
         var sectionItems: [String: [HistoryItem]] = [:]
         var sectionRecordCounts: [String: Int] = [:]
-
         var currentKey: String?
 
         for item in items {
@@ -551,10 +525,7 @@ public final class HistoryViewModel: ObservableObject {
                 if sectionItems[dayKey] == nil {
                     sectionOrder.append(dayKey)
                     sectionTitles[dayKey] = Self.dayLabel(
-                        for: record.event.time,
-                        referenceDate: referenceDate,
-                        calendar: calendar
-                    )
+                        for: record.event.time, referenceDate: referenceDate, calendar: calendar, locale: locale)
                     sectionItems[dayKey] = []
                     sectionRecordCounts[dayKey] = 0
                 }
@@ -571,136 +542,259 @@ public final class HistoryViewModel: ObservableObject {
             }
         }
 
+        let lastKey = sectionOrder.last
         return sectionOrder.map { key in
             HistoryDaySection(
                 id: key,
                 title: sectionTitles[key] ?? key,
                 totalCount: sectionRecordCounts[key] ?? 0,
-                items: sectionItems[key] ?? []
+                items: sectionItems[key] ?? [],
+                // The last loaded day may continue in the next, unloaded batch.
+                isComplete: !(key == lastKey && hasMore)
             )
         }
     }
 
-    public func clearDateFilter() {
-        selectedDate = nil
-        dateRangeStart = nil
-        dateRangeEnd = nil
+    // MARK: - Loading
+
+    private struct Page: Sendable {
+        var matched: [AuditRecord] = []
+        var unsealed: [Int64: AuditUnsealResult] = [:]
+        var nextCursor: AuditCursor?
+        var exhausted = false
+        var unreadable = 0
     }
 
-    public func resetFilters() {
-        dateRangeStart = nil
-        dateRangeEnd = nil
-        searchText = ""
-        filterKeyLabel = nil
-        filterRemoteHost = nil
-        filterProcessOrPID = nil
-        selectedDate = nil
-        query.keyFingerprint = nil
-        query.keyKind = nil
-        query.results = []
-        query.types = []
-        query.from = nil
-        query.to = nil
-        query.sessionID = nil
-        applyFiltering()
+    private struct PageResult: Sendable {
+        var page: Page
+        var prunedSeq: Int64
+        var total: Int?
+        var needsKey: Bool
     }
 
-    public func applyFiltering(prunedSeq: Int64? = nil) {
-        if let prunedSeq {
-            self.lastPrunedSeq = prunedSeq
+    /// Scans newest/oldest-first batches until `pageSize` matches (or the data ends). SQL answers key,
+    /// result and date criteria; host/process/text are applied after decrypting each batch.
+    private nonisolated static func fetchPage(
+        factory: () throws -> AuditStore,
+        keyring: AuditKeyring?,
+        context: LAContext?,
+        filter: HistoryFilter,
+        base: AuditQuery,
+        calendar: Calendar,
+        cursor: AuditCursor?,
+        pageSize: Int,
+        wantTotal: Bool
+    ) throws -> (Page, Int64, Int?) {
+        let store = try factory()
+        let unsealer = AuditUnsealer(keyring: keyring, store: store, context: context)
+        // `base` carries scope that is not a badge (session, types, kind) plus any raw store
+        // constraints; badge-derived criteria are layered on top and only ever narrow it.
+        var template = filter.auditQuery(limit: pageSize, calendar: calendar, sessionID: base.sessionID)
+        template.types = base.types
+        template.keyKind = base.keyKind
+        template.keyFingerprint = base.keyFingerprint
+        if !base.results.isEmpty {
+            template.results = template.results.isEmpty ? base.results : template.results.intersection(base.results)
         }
-        let filtered = rawRecords.filter { recordMatchesFilter($0) }
-        self.records = filtered
-        let hasAnyFilter = query.hasFiltersExceptTimeRange || hasCustomFilters
-        self.items = HistoryViewModel.computeItems(
-            from: filtered,
-            prunedThroughSeq: self.lastPrunedSeq,
-            hasFilters: hasAnyFilter
-        )
+        if let from = base.from { template.from = max(from, template.from ?? from) }
+        if let to = base.to { template.to = to }
+        let scanning = filter.needsSensitiveScan
+        template.limit = scanning ? max(pageSize, scanBatchSize) : pageSize
+
+        var page = Page()
+        var current = cursor
+        while true {
+            try Task.checkCancellation()
+            var q = template
+            q.cursor = current
+            let batch = try store.query(q)
+            for record in batch {
+                let result = unsealer.open(record)
+                var readable: AuditSensitive?
+                if case .plaintext(let s) = result { readable = s } else { page.unreadable += 1 }
+                if filter.matchesSensitiveCriteria(record, sensitive: readable) {
+                    page.matched.append(record)
+                    page.unsealed[record.seq] = result
+                }
+            }
+            if let last = batch.last { current = AuditCursor(record: last) }
+            if batch.count < template.limit {
+                page.exhausted = true
+                break
+            }
+            if page.matched.count >= pageSize { break }
+        }
+        page.nextCursor = current
+
+        let prunedSeq = Int64((try? store.meta("pruned_through_seq")) ?? "0") ?? 0
+        var total: Int?
+        if wantTotal, !scanning {
+            var countQuery = template
+            countQuery.cursor = nil
+            total = try? store.count(countQuery)
+        }
+        return (page, prunedSeq, total)
+    }
+
+    /// Awaits the in-flight (and any superseding) load. For tests and scripted flows.
+    public func waitForLoad() async {
+        while let task = loadTask {
+            await task.value
+            if loadTask == task { break }
+        }
     }
 
     @discardableResult
     public func reload() -> Task<Void, Never> {
+        generation += 1
+        let gen = generation
+        loadTask?.cancel()
         isLoading = true
+        isLoadingMore = false
         errorMessage = nil
-        var currentQuery = query
-        currentQuery.beforeSeq = nil
 
-        let factory = self.storeFactory
-        let keyring = self.keyring
-        let context = self.contextProvider()
-        return Task.detached {
+        let factory = storeFactory
+        let keyring = keyring
+        let context = contextProvider()
+        let filter = filter
+        let base = query
+        let calendar = calendar
+        let pageSize = max(1, base.limit)
+
+        let task = Task.detached { [weak self] in
             let mode = (try? keyring?.currentMode()) ?? .passwordOrBiometry
             let needsKey = mode.requiresPIN && (keyring?.validateCurrent(context: context) != .ok)
             do {
-                let store = try factory()
-                let fetched = try store.query(currentQuery)
-                let prunedSeq = Int64((try? store.meta("pruned_through_seq")) ?? "0") ?? 0
-                let unsealer = AuditUnsealer(keyring: keyring, store: store, context: context)
-                var unsealedMap: [Int64: AuditUnsealResult] = [:]
-                for rec in fetched {
-                    unsealedMap[rec.seq] = unsealer.open(rec)
-                }
-                let finalMap = unsealedMap
+                let (page, pruned, total) = try Self.fetchPage(
+                    factory: factory, keyring: keyring, context: context, filter: filter,
+                    base: base, calendar: calendar, cursor: nil, pageSize: pageSize, wantTotal: true)
                 await MainActor.run {
-                    self.rawRecords = fetched
-                    self.sensitive = finalMap
+                    guard let self, self.generation == gen else { return }
+                    self.records = page.matched
+                    self.sensitive = page.unsealed
+                    self.cursor = page.nextCursor
+                    self.hasMore = !page.exhausted
+                    self.totalMatching = total ?? (page.exhausted ? page.matched.count : nil)
+                    self.unreadableScanned = page.unreadable
                     self.needsKeyContext = needsKey
-                    self.hasMore = fetched.count >= currentQuery.limit
+                    self.lastPrunedSeq = pruned
                     self.isLoading = false
-                    self.applyFiltering(prunedSeq: prunedSeq)
+                    self.rebuildItems()
                 }
+            } catch is CancellationError {
+                // Superseded by a newer query; that load owns the loading state.
             } catch {
                 await MainActor.run {
+                    guard let self, self.generation == gen else { return }
                     self.needsKeyContext = needsKey
                     self.errorMessage = error.localizedDescription
                     self.isLoading = false
                 }
             }
         }
+        loadTask = task
+        return task
     }
 
     @discardableResult
     public func loadMore() -> Task<Void, Never> {
-        guard !isLoadingMore else {
+        guard !isLoadingMore, !isLoading, hasMore, let cursor else {
             return Task {}
         }
-        guard let lastSeq = rawRecords.last?.seq else {
-            hasMore = false
-            return Task {}
-        }
+        let gen = generation
         isLoadingMore = true
-        var currentQuery = query
-        currentQuery.beforeSeq = lastSeq
 
-        let factory = self.storeFactory
-        let keyring = self.keyring
-        let context = self.contextProvider()
-        return Task.detached {
+        let factory = storeFactory
+        let keyring = keyring
+        let context = contextProvider()
+        let filter = filter
+        let base = query
+        let calendar = calendar
+        let pageSize = max(1, base.limit)
+
+        let task = Task.detached { [weak self] in
             do {
-                let store = try factory()
-                let fetched = try store.query(currentQuery)
-                let prunedSeq = Int64((try? store.meta("pruned_through_seq")) ?? "0") ?? 0
-                let unsealer = AuditUnsealer(keyring: keyring, store: store, context: context)
-                var unsealedMap: [Int64: AuditUnsealResult] = [:]
-                for rec in fetched {
-                    unsealedMap[rec.seq] = unsealer.open(rec)
-                }
-                let finalMap = unsealedMap
+                let (page, pruned, _) = try Self.fetchPage(
+                    factory: factory, keyring: keyring, context: context, filter: filter,
+                    base: base, calendar: calendar, cursor: cursor, pageSize: pageSize, wantTotal: false)
                 await MainActor.run {
-                    self.rawRecords.append(contentsOf: fetched)
-                    for (seq, res) in finalMap {
-                        self.sensitive[seq] = res
+                    guard let self, self.generation == gen else { return }
+                    // De-duplicate across batches by event identity.
+                    var seen = Set(self.records.map(\.event.id))
+                    for record in page.matched where seen.insert(record.event.id).inserted {
+                        self.records.append(record)
                     }
-                    self.hasMore = fetched.count >= currentQuery.limit
+                    for (seq, res) in page.unsealed { self.sensitive[seq] = res }
+                    self.cursor = page.nextCursor
+                    self.hasMore = !page.exhausted
+                    if page.exhausted { self.totalMatching = self.records.count }
+                    self.unreadableScanned += page.unreadable
+                    self.lastPrunedSeq = pruned
                     self.isLoadingMore = false
-                    self.applyFiltering(prunedSeq: prunedSeq)
+                    self.rebuildItems()
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    guard let self, self.generation == gen else { return }
+                    self.isLoadingMore = false
                 }
             } catch {
                 await MainActor.run {
+                    guard let self, self.generation == gen else { return }
                     self.errorMessage = error.localizedDescription
                     self.isLoadingMore = false
                 }
+            }
+        }
+        return task
+    }
+
+    // MARK: - Suggestion index (hosts / processes)
+
+    /// Builds host/process suggestions from a bounded scan of the newest events. The values are
+    /// decrypted data, so the cache is dropped on panel lock; unreadable rows contribute nothing.
+    @discardableResult
+    public func ensureSuggestionIndex() -> Task<Void, Never> {
+        guard suggestionIndexStale, !isIndexingSuggestions else { return Task {} }
+        isIndexingSuggestions = true
+        let factory = storeFactory
+        let keyring = keyring
+        let context = contextProvider()
+        return Task.detached { [weak self] in
+            var hostCounts: [String: Int] = [:]
+            var processCounts: [String: Int] = [:]
+            if let store = try? factory() {
+                let unsealer = AuditUnsealer(keyring: keyring, store: store, context: context)
+                var q = AuditQuery(limit: Self.scanBatchSize)
+                q.orderByTime = true
+                var scanned = 0
+                scan: while scanned < Self.suggestionScanLimit, !Task.isCancelled {
+                    guard let batch = try? store.query(q), !batch.isEmpty else { break }
+                    for record in batch {
+                        scanned += 1
+                        guard case .plaintext(let s) = unsealer.open(record) else { continue }
+                        if let host = s.host.map(HistoryCriterion.canonicalHost), !host.isEmpty {
+                            hostCounts[host, default: 0] += 1
+                        }
+                        if let peer = s.processChain.first {
+                            processCounts[peer.executablePath, default: 0] += 1
+                        }
+                    }
+                    if batch.count < q.limit { break scan }
+                    q.cursor = AuditCursor(record: batch.last!)
+                }
+            }
+            func ranked(_ d: [String: Int]) -> [String] {
+                d.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.map(\.key)
+            }
+            let hosts = ranked(hostCounts), procs = ranked(processCounts)
+            await MainActor.run {
+                guard let self else { return }
+                self.indexedHosts = hosts
+                self.indexedProcessPaths = procs
+                self.suggestionIndexStale = false
+                self.isIndexingSuggestions = false
+                self.refreshSuggestions()
             }
         }
     }

@@ -430,6 +430,64 @@ public enum ClavisUIStrings {
         public static var retry: String { ClavisUIStrings.Common.retry }
         public static var refresh: String { localized("history.refresh", "Refresh") }
         public static var refreshHelp: String { localized("history.refresh_help", "Refresh History (⌘R)") }
+
+        // MARK: Search tokens (story 009)
+        public static var searchField: String { localized("history.search_field_placeholder", "Search history") }
+        public static var searchFieldAccessibility: String { localized("history.search_field_accessibility", "Search history") }
+        public static var addFilter: String { localized("history.add_filter", "Filter") }
+        public static var addFilterAccessibility: String { localized("history.add_filter_accessibility", "Add filter") }
+        public static var filterBy: String { localized("history.filter_by", "Filter by") }
+        public static func matchAny(_ value: String) -> String {
+            localizedFormat("history.match_any", "Match any selected %@", value)
+        }
+        public static var noMatchingValues: String { localized("history.no_matching_values", "No matching values. You can continue typing.") }
+        public static var suggestionsAccessibility: String { localized("history.suggestions_accessibility", "Filter suggestions") }
+        public static var clearFilters: String { localized("history.clear_filters", "Clear Filters") }
+        public static var back: String { localized("history.back", "Back") }
+        public static var dateRange: String { localized("history.date_range", "Date range") }
+        public static var sortOrder: String { localized("history.sort_order", "Sort order") }
+        public static var dateFrom: String { localized("history.date_from", "From") }
+        public static var dateTo: String { localized("history.date_to", "To") }
+        public static var newestFirst: String { localized("history.newest_first", "Newest first") }
+        public static var oldestFirst: String { localized("history.oldest_first", "Oldest first") }
+        public static func removeBadge(_ value: String) -> String {
+            localizedFormat("history.remove_badge", "Remove %@", value)
+        }
+        public static func clearDate(_ value: String) -> String {
+            localizedFormat("history.clear_date", "Clear %@ date", value)
+        }
+        public static func matchingCount(_ value: String) -> String {
+            localizedFormat("history.matching_count", "%@ matching events", value)
+        }
+        public static var matchingCountOne: String { localized("history.matching_count_one", "1 matching event") }
+        public static func matchingSoFar(_ value: String) -> String {
+            localizedFormat("history.matching_so_far", "%@ matching events so far", value)
+        }
+        public static var matchingSoFarOne: String { localized("history.matching_so_far_one", "1 matching event so far") }
+        public static func unreadableCount(_ value: String) -> String {
+            localizedFormat("history.unreadable_count", "%@ unreadable", value)
+        }
+        public static var unreadableHelp: String { localized("history.unreadable_help", "These events have encrypted details that can't be read right now, so they can't match host, process or text filters.") }
+        public static var loadingEvents: String { localized("history.loading_events", "Loading events…") }
+        public static func sessionBanner(_ value: String) -> String {
+            localizedFormat("history.session_banner", "Session: %@", value)
+        }
+        public static var noEventsYet: String { localized("history.no_events_yet", "No events yet") }
+        public static var noMatchingEvents: String { localized("history.no_matching_events", "No matching events") }
+        public static var tryRemovingFilter: String { localized("history.try_removing_filter", "Try removing a filter or widening the dates.") }
+        public static var loadingMore: String { localized("history.loading_more", "Loading more events…") }
+        public static var endOfHistory: String { localized("history.end_of_history", "End of history") }
+        public static var copySessionID: String { localized("history.copy_session_id", "Copy Session ID") }
+        public static var copyFingerprint: String { localized("history.copy_fingerprint", "Copy Fingerprint") }
+        public static var filterByKey: String { localized("history.filter_by_key", "Filter by this Key") }
+        public static var copyHost: String { localized("history.copy_host", "Copy Host") }
+        public static var filterByHost: String { localized("history.filter_by_host", "Filter by this Host") }
+        public static var copyProcessPath: String { localized("history.copy_process_path", "Copy Process Path") }
+        public static var filterByProcess: String { localized("history.filter_by_process", "Filter by this Process") }
+        public static var copyFullRow: String { localized("history.copy_full_row", "Copy Full Row Details") }
+        public static func filterByHostNamed(_ value: String) -> String {
+            localizedFormat("history.filter_by_host_named", "Filter by host %@", value)
+        }
         public static var searchPlaceholder: String { localized("history.search_placeholder", "Search by key, host, or process...") }
         public static var filterHost: String { localized("history.filter_host", "Host") }
         public static var filterProcess: String { localized("history.filter_process", "Process") }
