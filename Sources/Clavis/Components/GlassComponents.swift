@@ -803,18 +803,37 @@ public extension View {
         )
     }
 
-    @ViewBuilder
+    /// Top bar that is plain (same surface as the content) at rest and turns into
+    /// native glass only once content scrolls underneath it, like Contacts.
     func topLiquidGlassBar<Bar: View>(
         alignment: HorizontalAlignment = .center,
         @ViewBuilder content: () -> Bar
     ) -> some View {
+        modifier(TopLiquidGlassBarModifier(alignment: alignment, bar: content()))
+    }
+}
+
+private struct TopLiquidGlassBarModifier<Bar: View>: ViewModifier {
+    let alignment: HorizontalAlignment
+    let bar: Bar
+    @State private var isScrolled = false
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
-            self
-                .safeAreaBar(edge: .top, alignment: alignment, spacing: 0, content: content)
+            content
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    // contentOffset starts at -contentInsets.top when resting at the top edge.
+                    geometry.contentOffset.y + geometry.contentInsets.top > 1
+                } action: { _, scrolled in
+                    isScrolled = scrolled
+                }
+                .safeAreaBar(edge: .top, alignment: alignment, spacing: 0) { bar }
                 .scrollEdgeEffectStyle(.soft, for: .top)
+                .scrollEdgeEffectHidden(!isScrolled, for: .top)
         } else {
-            self
-                .safeAreaInset(edge: .top, alignment: alignment, spacing: 0, content: content)
+            content
+                .safeAreaInset(edge: .top, alignment: alignment, spacing: 0) { bar }
         }
     }
 }
