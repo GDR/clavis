@@ -256,6 +256,59 @@ final class HistoryDraftAndPagingTests {
         await vm.waitForLoad()
         #expect(vm.records.contains { $0.event.id == id })      // same identity, new position
     }
+
+    // MARK: Suggestion behaviour (prototype parity)
+
+    @Test func test_009_freeTextThatMatchesNoPrefixShowsNoDropdown() throws {
+        let vm = makeViewModel(try makeStore())
+        vm.updateDraft(text: "git", caret: 3)
+        #expect(!vm.showsDropdown)                       // plain text, not a filter prefix
+        vm.updateDraft(text: "ho", caret: 2)
+        #expect(vm.showsDropdown)
+        vm.updateDraft(text: "Host:zzz", caret: 8)
+        #expect(vm.showsDropdown && vm.suggestions.isEmpty)   // value context hints "No matching values"
+    }
+
+    @Test func test_009_beginSuggestingRecomputesAfterCommitCleared() async throws {
+        let store = try makeStore()
+        try seed(store, count: 2)
+        let vm = makeViewModel(store)
+        vm.updateDraft(text: "Host:github.com", caret: 15)
+        #expect(vm.commitDraft())
+        #expect(vm.suggestions.isEmpty)                  // cleared by the commit
+        vm.beginSuggesting()                             // focusing the empty field
+        #expect(vm.suggestions.map(\.title) == ["Host:", "Process:", "Key:", "Result:"])
+        #expect(vm.showsDropdown)
+    }
+
+    @Test func test_009_returnTargetPrefersExactThenFirstAndNeverForEmptyFragment() async throws {
+        let store = try makeStore()
+        try seed(store, count: 4, host: { $0 % 2 == 0 ? "github.com" : "gist.github.com" })
+        let vm = makeViewModel(store)
+        await vm.ensureSuggestionIndex().value
+
+        vm.updateDraft(text: "", caret: 0)
+        #expect(vm.returnTarget == nil)                  // empty fragment: Return commits instead
+
+        vm.updateDraft(text: "Ho", caret: 2)
+        #expect(vm.returnTarget?.title == "Host:")
+
+        vm.updateDraft(text: "Host:github.com", caret: 15)
+        #expect(vm.returnTarget?.title == "github.com")  // exact beats first-ranked substring match
+
+        vm.updateDraft(text: "Host:git", caret: 8)
+        #expect(vm.returnTarget != nil)                  // best autocomplete
+
+        vm.updateDraft(text: "Host:nothing", caret: 12)
+        #expect(vm.returnTarget == nil)                  // nothing to accept: Return commits/diagnoses
+    }
+
+    @Test func test_009_allMatchingKeysAreOffered() throws {
+        let vm = makeViewModel(try makeStore())
+        vm.keyChoicesForTesting((0..<12).map { HistoryKeyChoice(fingerprint: "SHA256:\($0)", label: "Key \($0)") })
+        vm.updateDraft(text: "Key:", caret: 4)
+        #expect(vm.suggestions.count == 12)              // not truncated to the old 8
+    }
 }
 
 extension HistoryViewModel {

@@ -331,7 +331,38 @@ public final class HistoryViewModel: ObservableObject {
             suggestions = []
             return
         }
-        suggestions = HistoryCompletionEngine.suggestions(for: context, catalog: catalog)
+        suggestions = HistoryCompletionEngine.suggestions(for: context, catalog: catalog, limit: 50)
+    }
+
+    /// Called whenever the dropdown is (re)opened: focus, `+ Filter`, click, caret keys, ↑/↓.
+    /// Suggestions are cleared by commits and by key/lock changes, so they must be recomputed
+    /// here rather than trusted from the last edit (prototype: `showExpressionSuggestions`).
+    public func beginSuggesting() {
+        refreshSuggestions()
+        ensureSuggestionIndex()
+    }
+
+    /// Prototype rule: a prefix fragment that matches nothing is plain free text, so no dropdown
+    /// is shown; a value context always shows (with a "No matching values" hint when empty).
+    public var showsDropdown: Bool {
+        guard let context = completionContext else { return false }
+        if case .value = context.mode { return true }
+        return !suggestions.isEmpty
+    }
+
+    /// What Return accepts when nothing is highlighted (prototype: the first row). An exact title
+    /// match wins so typing `Host:github.com` never picks `gist.github.com`. An empty prefix
+    /// fragment (whitespace / empty draft) means "commit what is typed" instead.
+    public var returnTarget: HistorySuggestion? {
+        guard let context = completionContext, showsDropdown, !suggestions.isEmpty else { return nil }
+        switch context.mode {
+        case .prefix(let fragment):
+            guard !fragment.isEmpty else { return nil }
+            return suggestions.first
+        case .value(_, let fragment):
+            let f = fragment.lowercased()
+            return suggestions.first { $0.title.lowercased() == f } ?? suggestions.first
+        }
     }
 
     /// Accepting a prefix edits the draft; accepting a value commits one badge and consumes its token.
