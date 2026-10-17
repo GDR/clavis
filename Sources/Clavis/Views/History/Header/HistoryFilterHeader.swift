@@ -290,8 +290,13 @@ struct HistorySortPopover: View {
 
 struct HistoryDatePopover: View {
     @ObservedObject var viewModel: HistoryViewModel
-    private enum Bound { case from, to }
+    enum Bound { case from, to }
     @State private var editing: Bound?
+
+    init(viewModel: HistoryViewModel, initialEditing: Bound? = nil) {
+        self.viewModel = viewModel
+        _editing = State(initialValue: initialEditing)
+    }
 
     private var calendar: Calendar { viewModel.calendar }
     private var bounds: HistoryDateBounds { viewModel.filter.dateBounds }
@@ -303,16 +308,24 @@ struct HistoryDatePopover: View {
                 field(.to, day: bounds.to, name: HistoryText.to)
             }
             if let editing {
-                DatePicker("", selection: pickerBinding(editing), in: pickerRange(editing), displayedComponents: .date)
-                    .datePickerStyle(.graphical)
-                    .labelsHidden()
-                    .environment(\.calendar, calendar)
-                    .environment(\.timeZone, calendar.timeZone)
-                    .accessibilityLabel(editing == .from ? HistoryText.from : HistoryText.to)
+                // Own month grid instead of `DatePicker(.graphical)`: on macOS that control keeps a
+                // small fixed size with its own background, which looked lost in a wider popover.
+                HistoryMonthCalendar(
+                    calendar: calendar,
+                    selected: editing == .from ? bounds.from : bounds.to,
+                    anchor: CalendarDay(anchor(for: editing), calendar: calendar),
+                    minDay: editing == .to ? bounds.from : nil,    // From can't pass To and vice versa
+                    maxDay: editing == .from ? bounds.to : nil
+                ) { day in
+                    let ok = editing == .from ? viewModel.setDateFrom(day) : viewModel.setDateTo(day)
+                    if ok { self.editing = nil }
+                }
+                .id(editing)   // fresh month anchor per bound
+                .accessibilityLabel(editing == .from ? HistoryText.from : HistoryText.to)
             }
         }
         .padding(12)
-        .frame(width: 292)
+        .frame(width: 272)
     }
 
     private func formatted(_ day: CalendarDay) -> String {
@@ -382,32 +395,127 @@ struct HistoryDatePopover: View {
         case .to: return (bounds.to ?? bounds.from).map { $0.startOfDay(in: calendar) } ?? Date()
         }
     }
+}
 
-    private func pickerBinding(_ bound: Bound) -> Binding<Date> {
-        Binding(
-            get: {
-                switch bound {
-                case .from: return bounds.from.map { $0.startOfDay(in: calendar) } ?? anchor(for: .from)
-                case .to: return bounds.to.map { $0.startOfDay(in: calendar) } ?? anchor(for: .to)
-                }
-            },
-            set: { date in
-                let day = CalendarDay(date, calendar: calendar)
-                let ok: Bool
-                switch bound {
-                case .from: ok = viewModel.setDateFrom(day)
-                case .to: ok = viewModel.setDateTo(day)
-                }
-                if ok { editing = nil }
-            }
-        )
+// MARK: - Month grid
+
+/// Compact month calendar. Days outside `minDay...maxDay` are disabled (never silently swapped).
+struct HistoryMonthCalendar: View {
+    let calendar: Calendar
+    let selected: CalendarDay?
+    let minDay: CalendarDay?
+    let maxDay: CalendarDay?
+    let onSelect: (CalendarDay) -> Void
+
+    @State private var month: CalendarDay   // always day == 1
+    private let today: CalendarDay
+
+    init(calendar: Calendar, selected: CalendarDay?, anchor: CalendarDay,
+         minDay: CalendarDay?, maxDay: CalendarDay?, onSelect: @escaping (CalendarDay) -> Void) {
+        self.calendar = calendar
+        self.selected = selected
+        self.minDay = minDay
+        self.maxDay = maxDay
+        self.onSelect = onSelect
+        self.today = CalendarDay(Date(), calendar: calendar)
+        _month = State(initialValue: CalendarDay(year: anchor.year, month: anchor.month, day: 1))
     }
 
-    /// From can't pass To and vice versa; no fixture-based maximum.
-    private func pickerRange(_ bound: Bound) -> ClosedRange<Date> {
-        switch bound {
-        case .from: return Date.distantPast...(bounds.to.map { $0.startOfDay(in: calendar) } ?? Date.distantFuture)
-        case .to: return (bounds.from.map { $0.startOfDay(in: calendar) } ?? Date.distantPast)...Date.distantFuture
+    private var firstOfMonth: Date { month.startOfDay(in: calendar) }
+
+    private var title: String {
+        firstOfMonth.formatted(Date.FormatStyle(timeZone: calendar.timeZone).month(.wide).year())
+    }
+
+    private var weekdaySymbols: [String] {
+        let symbols = calendar.veryShortStandaloneWeekdaySymbols
+        let shift = calendar.firstWeekday - 1
+        return Array(symbols[shift...] + symbols[..<shift])
+    }
+
+    /// Leading blanks, then 1…N, padded to whole weeks.
+    private var cells: [Int?] {
+        let lead = (calendar.component(.weekday, from: firstOfMonth) - calendar.firstWeekday + 7) % 7
+        let count = calendar.range(of: .day, in: .month, for: firstOfMonth)?.count ?? 30
+        var out: [Int?] = Array(repeating: nil, count: lead) + (1...count).map { Optional($0) }
+        while out.count % 7 != 0 { out.append(nil) }
+        return out
+    }
+
+    private func shiftMonth(_ delta: Int) {
+        guard let d = calendar.date(byAdding: .month, value: delta, to: firstOfMonth) else { return }
+        month = CalendarDay(year: calendar.component(.year, from: d), month: calendar.component(.month, from: d), day: 1)
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                navButton("chevron.left", label: "Previous month") { shiftMonth(-1) }
+                navButton("chevron.right", label: "Next month") { shiftMonth(1) }
+            }
+
+            let columns = Array(repeating: GridItem(.flexible(), spacing: 0), count: 7)
+            LazyVGrid(columns: columns, spacing: 2) {
+                ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { _, symbol in
+                    Text(symbol)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DesignTokens.textSecondary)
+                        .frame(height: 20)
+                        .accessibilityHidden(true)
+                }
+                ForEach(Array(cells.enumerated()), id: \.offset) { _, value in
+                    if let value {
+                        dayButton(CalendarDay(year: month.year, month: month.month, day: value))
+                    } else {
+                        Color.clear.frame(height: 28)
+                    }
+                }
+            }
         }
+    }
+
+    private func navButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(DesignTokens.textSecondary)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    private func dayButton(_ day: CalendarDay) -> some View {
+        let isSelected = day == selected
+        let isToday = day == today
+        let disabled = (minDay.map { day < $0 } ?? false) || (maxDay.map { day > $0 } ?? false)
+        return Button { onSelect(day) } label: {
+            Text("\(day.day)")
+                .font(.system(size: 12, weight: isSelected ? .semibold : .regular).monospacedDigit())
+                .foregroundColor(isSelected ? Color(nsColor: .alternateSelectedControlTextColor) : .primary)
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .background(
+                    Circle()
+                        .fill(isSelected ? Color(nsColor: .selectedContentBackgroundColor) : .clear)
+                        .frame(width: 28, height: 28)
+                )
+                .overlay(
+                    Circle()
+                        .strokeBorder(isToday && !isSelected ? Color.accentColor : .clear, lineWidth: 1)
+                        .frame(width: 28, height: 28)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.3 : 1)
+        .accessibilityLabel(day.startOfDay(in: calendar)
+            .formatted(Date.FormatStyle(timeZone: calendar.timeZone).weekday(.wide).month(.wide).day().year()))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
