@@ -51,9 +51,39 @@ public struct AuditEpoch: Equatable, Sendable {
     }
 }
 
+public enum AuditSortOrder: String, Equatable, Sendable {
+    case newestFirst
+    case oldestFirst
+}
+
+/// Keyset position for time-ordered paging. `seq` is the unique tie-breaker
+/// for rows sharing a timestamp (the event UUID is random, so it cannot order).
+public struct AuditCursor: Equatable, Sendable {
+    public let time: Date
+    public let seq: Int64
+
+    public init(time: Date, seq: Int64) {
+        self.time = time
+        self.seq = seq
+    }
+
+    public init(record: AuditRecord) {
+        self.init(time: record.event.time, seq: record.seq)
+    }
+}
+
 public struct AuditQuery: Equatable {
     public var from: Date?
     public var to: Date?
+    /// Exclusive upper bound (`time < toExclusive`). Used for inclusive calendar-day ends.
+    public var toExclusive: Date?
+    /// Restricts to any of these key fingerprints (OR). Combined with `keyFingerprint` by AND.
+    public var keyFingerprints: Set<String> = []
+    public var sortOrder: AuditSortOrder = .newestFirst
+    /// Order by `(time, seq)` instead of the legacy `seq DESC`. Implied by `cursor`.
+    public var orderByTime: Bool = false
+    /// Time-ordered keyset cursor; takes effect together with `sortOrder`.
+    public var cursor: AuditCursor?
     public var types: Set<AuditEventType> = []
     public var results: Set<AuditResult> = []
     public var keyFingerprint: String?
@@ -395,85 +425,71 @@ public final class AuditStore {
         return try insert(event, sensitiveFormat: 0, sensitiveBlob: sensitiveData)
     }
 
-    public func query(_ q: AuditQuery) throws -> [AuditRecord] {
-        try queue.sync {
-            guard let dbHandle = db else {
-                throw AuditStoreError.stepFailed(SQLITE_MISUSE)
+    private typealias QueryBinder = (OpaquePointer, inout Int32) -> Void
+
+    /// Shared WHERE builder for `query` and `count`. Paging (cursor / beforeSeq) is
+    /// included only when `includePaging` is true so counts cover the whole result set.
+    private func whereClause(for q: AuditQuery, includePaging: Bool) -> (sql: String, binders: [QueryBinder]) {
+        var clauses: [String] = []
+        var binders: [QueryBinder] = []
+
+        func bindDouble(_ value: Double) {
+            binders.append { stmt, idx in
+                sqlite3_bind_double(stmt, idx, value)
+                idx += 1
             }
-
-            var clauses: [String] = []
-            typealias Binder = (OpaquePointer, inout Int32) -> Void
-            var binders: [Binder] = []
-
-            if let from = q.from {
-                clauses.append("time >= ?")
-                let t = from.timeIntervalSince1970
-                binders.append { stmt, idx in
-                    sqlite3_bind_double(stmt, idx, t)
-                    idx += 1
-                }
+        }
+        func bindText(_ value: String) {
+            binders.append { stmt, idx in
+                sqlite3_bind_text(stmt, idx, value, -1, Self.SQLITE_TRANSIENT)
+                idx += 1
             }
+        }
 
-            if let to = q.to {
-                clauses.append("time <= ?")
-                let t = to.timeIntervalSince1970
-                binders.append { stmt, idx in
-                    sqlite3_bind_double(stmt, idx, t)
-                    idx += 1
-                }
-            }
+        if let from = q.from {
+            clauses.append("time >= ?")
+            bindDouble(from.timeIntervalSince1970)
+        }
+        if let to = q.to {
+            clauses.append("time <= ?")
+            bindDouble(to.timeIntervalSince1970)
+        }
+        if let toExclusive = q.toExclusive {
+            clauses.append("time < ?")
+            bindDouble(toExclusive.timeIntervalSince1970)
+        }
 
-            if !q.types.isEmpty {
-                let placeholders = q.types.map { _ in "?" }.joined(separator: ", ")
-                clauses.append("type IN (\(placeholders))")
-                let sortedTypes = q.types.sorted(by: { $0.rawValue < $1.rawValue })
-                for t in sortedTypes {
-                    let raw = t.rawValue
-                    binders.append { stmt, idx in
-                        sqlite3_bind_text(stmt, idx, raw, -1, Self.SQLITE_TRANSIENT)
-                        idx += 1
-                    }
-                }
-            }
+        if !q.types.isEmpty {
+            clauses.append("type IN (\(q.types.map { _ in "?" }.joined(separator: ", ")))")
+            for t in q.types.sorted(by: { $0.rawValue < $1.rawValue }) { bindText(t.rawValue) }
+        }
 
-            if !q.results.isEmpty {
-                let placeholders = q.results.map { _ in "?" }.joined(separator: ", ")
-                clauses.append("result IN (\(placeholders))")
-                let sortedResults = q.results.sorted(by: { $0.rawValue < $1.rawValue })
-                for r in sortedResults {
-                    let raw = r.rawValue
-                    binders.append { stmt, idx in
-                        sqlite3_bind_text(stmt, idx, raw, -1, Self.SQLITE_TRANSIENT)
-                        idx += 1
-                    }
-                }
-            }
+        if !q.results.isEmpty {
+            clauses.append("result IN (\(q.results.map { _ in "?" }.joined(separator: ", ")))")
+            for r in q.results.sorted(by: { $0.rawValue < $1.rawValue }) { bindText(r.rawValue) }
+        }
 
-            if let kf = q.keyFingerprint {
-                clauses.append("key_fingerprint = ?")
-                binders.append { stmt, idx in
-                    sqlite3_bind_text(stmt, idx, kf, -1, Self.SQLITE_TRANSIENT)
-                    idx += 1
-                }
-            }
+        if let kf = q.keyFingerprint {
+            clauses.append("key_fingerprint = ?")
+            bindText(kf)
+        }
 
-            if let kk = q.keyKind {
-                clauses.append("key_kind = ?")
-                let raw = kk.rawValue
-                binders.append { stmt, idx in
-                    sqlite3_bind_text(stmt, idx, raw, -1, Self.SQLITE_TRANSIENT)
-                    idx += 1
-                }
-            }
+        if !q.keyFingerprints.isEmpty {
+            clauses.append("key_fingerprint IN (\(q.keyFingerprints.map { _ in "?" }.joined(separator: ", ")))")
+            for fp in q.keyFingerprints.sorted() { bindText(fp) }
+        }
 
-            if let sid = q.sessionID {
-                clauses.append("session_id = ?")
-                binders.append { stmt, idx in
-                    sqlite3_bind_text(stmt, idx, sid, -1, Self.SQLITE_TRANSIENT)
-                    idx += 1
-                }
-            }
+        if let kk = q.keyKind {
+            clauses.append("key_kind = ?")
+            bindText(kk.rawValue)
+        }
 
+        if let sid = q.sessionID {
+            clauses.append("session_id = ?")
+            bindText(sid)
+        }
+
+        if includePaging {
             if let bs = q.beforeSeq {
                 clauses.append("seq < ?")
                 binders.append { stmt, idx in
@@ -482,12 +498,46 @@ public final class AuditStore {
                 }
             }
 
-            let whereSQL = clauses.isEmpty ? "" : "WHERE " + clauses.joined(separator: " AND ")
+            if let cursor = q.cursor {
+                // Keyset: strictly after the cursor in the active sort direction.
+                let op = q.sortOrder == .newestFirst ? "<" : ">"
+                clauses.append("(time \(op) ? OR (time = ? AND seq \(op) ?))")
+                let t = cursor.time.timeIntervalSince1970
+                let seq = cursor.seq
+                binders.append { stmt, idx in
+                    sqlite3_bind_double(stmt, idx, t)
+                    idx += 1
+                    sqlite3_bind_double(stmt, idx, t)
+                    idx += 1
+                    sqlite3_bind_int64(stmt, idx, seq)
+                    idx += 1
+                }
+            }
+        }
+
+        return (clauses.isEmpty ? "" : "WHERE " + clauses.joined(separator: " AND "), binders)
+    }
+
+    public func query(_ q: AuditQuery) throws -> [AuditRecord] {
+        try queue.sync {
+            guard let dbHandle = db else {
+                throw AuditStoreError.stepFailed(SQLITE_MISUSE)
+            }
+
+            var (whereSQL, binders) = whereClause(for: q, includePaging: true)
+
+            // Legacy seq DESC is preserved unless the caller opts into time ordering
+            // (`orderByTime`, a cursor, or a non-default sort).
+            let timeOrdered = q.orderByTime || q.cursor != nil || q.sortOrder != .newestFirst
+            let direction = q.sortOrder == .newestFirst ? "DESC" : "ASC"
+            let orderSQL = timeOrdered
+                ? "ORDER BY time \(direction), seq \(direction)"
+                : "ORDER BY seq DESC"
             let sql = """
             SELECT seq, event_id, time, type, result, reason, key_fingerprint, key_kind, session_id, count, sensitive_format, sensitive
             FROM events
             \(whereSQL)
-            ORDER BY seq DESC
+            \(orderSQL)
             LIMIT ?;
             """
 
@@ -515,6 +565,30 @@ public final class AuditStore {
             }
 
             return records
+        }
+    }
+
+    /// Number of rows matching the query's filters, ignoring paging and limit.
+    public func count(_ q: AuditQuery) throws -> Int {
+        try queue.sync {
+            guard let dbHandle = db else {
+                throw AuditStoreError.stepFailed(SQLITE_MISUSE)
+            }
+            let (whereSQL, binders) = whereClause(for: q, includePaging: false)
+            let sql = "SELECT COUNT(*) FROM events \(whereSQL);"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(dbHandle, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw AuditStoreError.prepareFailed(sqlite3_errcode(dbHandle))
+            }
+            defer { sqlite3_finalize(stmt) }
+            var bindIndex: Int32 = 1
+            for binder in binders {
+                binder(stmt!, &bindIndex)
+            }
+            guard sqlite3_step(stmt) == SQLITE_ROW else {
+                throw AuditStoreError.stepFailed(sqlite3_errcode(dbHandle))
+            }
+            return Int(sqlite3_column_int64(stmt, 0))
         }
     }
 
