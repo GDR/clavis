@@ -106,7 +106,7 @@ public struct HistoryView: View {
                     } else if viewModel.items.isEmpty && !viewModel.isLoading {
                         emptyHistoryStateView
                     } else {
-                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(groupedSections) { section in
                                 Section(header: historyDayHeader(for: section)) {
                                     ForEach(section.items) { item in
@@ -177,288 +177,103 @@ public struct HistoryView: View {
 
     // MARK: - Filter Controls (Inside Scroll Surface)
 
+    /// Native grouped-form look (System Settings): one rounded card, rows separated by dividers.
     private var historyFilterControls: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Row 1: Host combobox + Operation/process/result search
-            HStack(alignment: .top, spacing: 10) {
-                hostFilterField
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .zIndex(30)
-
-                searchQueryField
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(spacing: 0) {
+            LabeledContent("Key") {
+                Picker("Key", selection: $selectedKeyFingerprint) {
+                    Text("All keys").tag("")
+                    ForEach(availableKeys, id: \.fingerprint) { key in
+                        Text(key.label).tag(key.fingerprint)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .fixedSize()
+                .onChange(of: selectedKeyFingerprint) { newValue in
+                    let fp = newValue.isEmpty ? nil : newValue
+                    if viewModel.query.keyFingerprint != fp {
+                        viewModel.query.keyFingerprint = fp
+                        AppState.shared.historyFilterKeyFingerprint = fp
+                        viewModel.reload()
+                    }
+                }
+                .accessibilityLabel("Key")
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
 
-            // Row 2: Key picker + Go to date + All dates + Reset filters
-            HStack(alignment: .bottom, spacing: 8) {
-                keyFilterField
+            Divider().padding(.leading, 12)
 
-                goToDateField
+            LabeledContent("Date range") {
+                Toggle("Date range", isOn: dateRangeEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
 
-                Button("All dates") {
+            if dateRangeEnabled.wrappedValue {
+                Divider().padding(.leading, 12)
+
+                LabeledContent("From") {
+                    DatePicker("From", selection: dateRangeStartBinding, in: ...dateRangeEndBinding.wrappedValue, displayedComponents: [.date])
+                        .labelsHidden()
+                        .datePickerStyle(.compact)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+
+                Divider().padding(.leading, 12)
+
+                LabeledContent("To") {
+                    DatePicker("To", selection: dateRangeEndBinding, in: dateRangeStartBinding.wrappedValue...Date(), displayedComponents: [.date])
+                        .labelsHidden()
+                        .datePickerStyle(.compact)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.6))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 0.5)
+        )
+        .padding(.bottom, 12)
+    }
+
+    private var dateRangeEnabled: Binding<Bool> {
+        Binding(
+            get: { viewModel.dateRangeStart != nil || viewModel.dateRangeEnd != nil },
+            set: { on in
+                if on {
+                    let today = Date()
+                    viewModel.dateRangeEnd = today
+                    viewModel.dateRangeStart = Calendar.current.date(byAdding: .day, value: -7, to: today) ?? today
+                } else {
                     viewModel.clearDateFilter()
                 }
-                .liquidGlassButton()
-                .controlSize(.large)
-                .disabled(viewModel.selectedDate == nil)
-                .accessibilityLabel("All dates")
-
-                Spacer(minLength: 8)
-
-                Button("Reset filters", action: resetAllFilters)
-                    .liquidGlassButton()
-                    .controlSize(.large)
-                    .accessibilityLabel("Reset filters")
             }
-            .padding(.bottom, 10)
-        }
+        )
     }
 
-    private var hostFilterField: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("Host")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(DesignTokens.textSecondary)
-
-            HStack(spacing: 6) {
-                TextField("Search or choose a host", text: $hostInputText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .focused($isHostFieldFocused)
-                    .onChange(of: hostInputText) { newValue in
-                        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                        viewModel.filterRemoteHost = trimmed.isEmpty ? nil : trimmed
-                        if isHostFieldFocused {
-                            isHostSuggestionsVisible = true
-                            highlightedHostIndex = -1
-                        }
-                    }
-                    .onSubmit {
-                        let suggestions = currentHostSuggestions
-                        if isHostSuggestionsVisible,
-                           highlightedHostIndex >= 0,
-                           highlightedHostIndex < suggestions.count {
-                            chooseHostSuggestion(suggestions[highlightedHostIndex].host)
-                        } else {
-                            isHostSuggestionsVisible = false
-                        }
-                    }
-                    .accessibilityLabel("Host")
-
-                if !hostInputText.isEmpty {
-                    Button(action: {
-                        hostInputText = ""
-                        viewModel.filterRemoteHost = nil
-                        highlightedHostIndex = -1
-                    }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundColor(DesignTokens.textSecondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Clear host filter")
-                } else {
-                    Button(action: {
-                        isHostSuggestionsVisible.toggle()
-                        if isHostSuggestionsVisible {
-                            isHostFieldFocused = true
-                        }
-                    }) {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(DesignTokens.textSecondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Show suggested hosts")
-                }
-            }
-            .padding(.horizontal, 11)
-            .frame(height: 28)
-            .liquidGlassCapsuleControl(isFocused: isHostFieldFocused)
-            .overlay(alignment: .topLeading) {
-                if isHostSuggestionsVisible {
-                    hostSuggestionsDropdown
-                        .offset(y: 33)
-                }
-            }
-        }
+    private var dateRangeStartBinding: Binding<Date> {
+        Binding(
+            get: { viewModel.dateRangeStart ?? Date() },
+            set: { viewModel.dateRangeStart = $0 }
+        )
     }
 
-    private var hostSuggestionsDropdown: some View {
-        let suggestions = currentHostSuggestions
-        return VStack(alignment: .leading, spacing: 2) {
-            if suggestions.isEmpty {
-                Text("No matching hosts")
-                    .font(.system(size: 11))
-                    .foregroundColor(DesignTokens.textSecondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(Array(suggestions.enumerated()), id: \.element.id) { index, item in
-                            Button(action: {
-                                chooseHostSuggestion(item.host)
-                            }) {
-                                HStack(spacing: 8) {
-                                    Text(item.host)
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.primary)
-                                        .lineLimit(1)
-                                    Spacer()
-                                    Text(item.count.formatted())
-                                        .font(.system(size: 10).monospacedDigit())
-                                        .foregroundColor(DesignTokens.textSecondary)
-                                }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 7)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .fill(
-                                            highlightedHostIndex == index
-                                                ? DesignTokens.accentBlue.opacity(0.22)
-                                                : Color.clear
-                                        )
-                                )
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .onHover { hovering in
-                                if hovering {
-                                    highlightedHostIndex = index
-                                }
-                            }
-                        }
-                    }
-                }
-                .frame(maxHeight: min(CGFloat(suggestions.count) * 32 + 6, 210))
-            }
-        }
-        .padding(5)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .glassCard(cornerRadius: 9, strokeColor: DesignTokens.cardBorder)
-        .shadow(color: Color.black.opacity(0.28), radius: 14, x: 0, y: 8)
-        .zIndex(50)
-    }
-
-    private func chooseHostSuggestion(_ host: String) {
-        hostInputText = host
-        viewModel.filterRemoteHost = host
-        isHostSuggestionsVisible = false
-        highlightedHostIndex = -1
-        isHostFieldFocused = false
-    }
-
-    private var searchQueryField: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("Operation, process, or result")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(DesignTokens.textSecondary)
-
-            HStack(spacing: 6) {
-                TextField("e.g. git, rejected", text: $viewModel.searchText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .focused($isSearchFieldFocused)
-                    .accessibilityLabel("Operation, process, or result")
-
-                if !viewModel.searchText.isEmpty {
-                    Button(action: {
-                        viewModel.searchText = ""
-                    }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundColor(DesignTokens.textSecondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(ClavisUIStrings.Common.cancel)
-                }
-            }
-            .padding(.horizontal, 11)
-            .frame(height: 28)
-            .liquidGlassCapsuleControl(isFocused: isSearchFieldFocused)
-        }
-    }
-
-    private var keyFilterField: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("Key")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(DesignTokens.textSecondary)
-
-            Picker("Key", selection: $selectedKeyFingerprint) {
-                Text("All keys").tag("")
-                ForEach(availableKeys, id: \.fingerprint) { key in
-                    Text(key.label).tag(key.fingerprint)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .controlSize(.large)
-            .frame(minWidth: 120, maxWidth: 180)
-            .onChange(of: selectedKeyFingerprint) { newValue in
-                let fp = newValue.isEmpty ? nil : newValue
-                if viewModel.query.keyFingerprint != fp {
-                    viewModel.query.keyFingerprint = fp
-                    AppState.shared.historyFilterKeyFingerprint = fp
-                    isHostSuggestionsVisible = false
-                    viewModel.reload()
-                }
-            }
-            .accessibilityLabel("Key")
-        }
-    }
-
-    private var goToDateField: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("Go to date")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(DesignTokens.textSecondary)
-
-            Button(action: {
-                isHostSuggestionsVisible = false
-                isDatePopoverPresented.toggle()
-            }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "calendar")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(viewModel.selectedDate != nil ? .primary : DesignTokens.textSecondary)
-
-                    Text(
-                        viewModel.selectedDate.map { Self.shortDateFormatter.string(from: $0) }
-                            ?? "Select date…"
-                    )
-                    .font(.system(size: 12).monospacedDigit())
-                    .foregroundColor(viewModel.selectedDate != nil ? .primary : DesignTokens.textSecondary)
-                }
-            }
-            .liquidGlassButton()
-            .controlSize(.large)
-            .popover(isPresented: $isDatePopoverPresented, arrowEdge: .bottom) {
-                VStack(alignment: .leading, spacing: 8) {
-                    DatePicker(
-                        "Go to date",
-                        selection: Binding(
-                            get: { viewModel.selectedDate ?? pickerDate },
-                            set: { newDate in
-                                pickerDate = newDate
-                                isHostSuggestionsVisible = false
-                                viewModel.selectedDate = newDate
-                                isDatePopoverPresented = false
-                            }
-                        ),
-                        in: ...Date(),
-                        displayedComponents: [.date]
-                    )
-                    .datePickerStyle(.graphical)
-                    .labelsHidden()
-                }
-                .padding(10)
-            }
-            .accessibilityLabel("Go to date")
-        }
+    private var dateRangeEndBinding: Binding<Date> {
+        Binding(
+            get: { viewModel.dateRangeEnd ?? Date() },
+            set: { viewModel.dateRangeEnd = $0 }
+        )
     }
 
     private var historyResultSummaryBar: some View {
@@ -491,24 +306,12 @@ public struct HistoryView: View {
 
             Spacer()
 
-            Text("\(section.totalCount.formatted()) events")
+            Text(section.totalCount == 1 ? "1 event" : "\(section.totalCount.formatted()) events")
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundColor(DesignTokens.textSecondary)
         }
-        .padding(.vertical, 10)
-        .background {
-            if reduceTransparency {
-                DesignTokens.inspectorBackground
-            } else if #available(macOS 26.0, *) {
-                Color.clear
-                    .glassEffect(.regular, in: .rect(cornerRadius: 0))
-            } else {
-                ZStack {
-                    DesignTokens.inspectorBackground.opacity(0.72)
-                    Rectangle().fill(.ultraThinMaterial)
-                }
-            }
-        }
+        .padding(.top, 16)
+        .padding(.bottom, 6)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(DesignTokens.cardBorder)

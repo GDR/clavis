@@ -108,6 +108,14 @@ public final class HistoryViewModel: ObservableObject {
         }
     }
 
+    /// Inclusive calendar-day range filter (start of `dateRangeStart` … end of `dateRangeEnd`).
+    @Published public var dateRangeStart: Date? = nil {
+        didSet { if dateRangeStart != oldValue { applyFiltering() } }
+    }
+    @Published public var dateRangeEnd: Date? = nil {
+        didSet { if dateRangeEnd != oldValue { applyFiltering() } }
+    }
+
     // #123: Pagination properties
     @Published public var hasMore: Bool = false
     @Published public var isLoadingMore: Bool = false
@@ -258,6 +266,8 @@ public final class HistoryViewModel: ObservableObject {
             || (filterRemoteHost != nil && !filterRemoteHost!.isEmpty)
             || (filterProcessOrPID != nil && !filterProcessOrPID!.isEmpty)
             || selectedDate != nil
+            || dateRangeStart != nil
+            || dateRangeEnd != nil
     }
 
     public func resolvedSensitive(for record: AuditRecord) -> AuditSensitive {
@@ -336,6 +346,16 @@ public final class HistoryViewModel: ObservableObject {
             if !Calendar.current.isDate(record.event.time, inSameDayAs: selectedDate) {
                 return false
             }
+        }
+        // 0b. Inclusive day range
+        let cal = Calendar.current
+        if let start = dateRangeStart, record.event.time < cal.startOfDay(for: start) {
+            return false
+        }
+        if let end = dateRangeEnd,
+           let limit = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: end)),
+           record.event.time >= limit {
+            return false
         }
 
         // 1. Search text (matches operation, result status, key label, fingerprint, remote host, process or PID, session ID)
@@ -563,9 +583,13 @@ public final class HistoryViewModel: ObservableObject {
 
     public func clearDateFilter() {
         selectedDate = nil
+        dateRangeStart = nil
+        dateRangeEnd = nil
     }
 
     public func resetFilters() {
+        dateRangeStart = nil
+        dateRangeEnd = nil
         searchText = ""
         filterKeyLabel = nil
         filterRemoteHost = nil
