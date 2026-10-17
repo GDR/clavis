@@ -179,6 +179,16 @@ import Testing
         #expect(ClavisUIStrings.Auth.errorRejected == "User authentication failed or was cancelled")
     }
 
+    @Test func test_009_historySearchTokenStrings() {
+        #expect(ClavisUIStrings.History.searchField == "Search history")
+        #expect(ClavisUIStrings.History.newestFirst == "Newest first")
+        #expect(ClavisUIStrings.History.oldestFirst == "Oldest first")
+        #expect(ClavisUIStrings.History.matchingCount("72") == "72 matching events")
+        #expect(ClavisUIStrings.History.matchingCountOne == "1 matching event")
+        #expect(ClavisUIStrings.History.removeBadge("Host: github.com") == "Remove Host: github.com")
+        #expect(ClavisUIStrings.History.clearDate("from") == "Clear from date")
+    }
+
     @Test func testXCStringsTranslationsIntegrity() throws {
         // Find Localizable.xcstrings in the repository
         let thisFile = URL(fileURLWithPath: #filePath)

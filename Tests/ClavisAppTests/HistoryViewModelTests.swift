@@ -66,7 +66,7 @@ final class HistoryViewModelTests {
         try store.insert(eventB)
 
         let viewModel = HistoryViewModel(initialKeyFingerprint: "fp-A", store: { store }, notificationCenter: notificationCenter)
-        #expect(viewModel.query.keyFingerprint == "fp-A")
+        #expect(viewModel.selectedKeyFingerprint == "fp-A")
 
         await viewModel.reload().value
 
@@ -294,94 +294,91 @@ final class HistoryViewModelTests {
         #expect(viewModel.records.count == 2)
     }
 
+    /// Commits a free-text badge and waits for the resulting reload.
+    private func commitText(_ vm: HistoryViewModel, _ text: String) async {
+        vm.add(.text(text))
+        await vm.waitForLoad()
+    }
+
     @Test func test_122_searchFilteringByKeyLabel() async throws {
         let store = try createTestStore()
-        let eventA = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "production-deploy-key"))
-        let eventB = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "staging-test-key"))
-        try store.insert(eventA)
-        try store.insert(eventB)
+        try store.insert(AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "production-deploy-key")))
+        try store.insert(AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "staging-test-key")))
 
         let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
         await viewModel.reload().value
         #expect(viewModel.records.count == 2)
 
-        viewModel.searchText = "production"
+        await commitText(viewModel, "production")
         #expect(viewModel.records.count == 1)
         #expect(viewModel.records[0].event.sensitive.keyLabel == "production-deploy-key")
 
-        viewModel.searchText = "staging"
+        viewModel.removeCriterion(id: HistoryCriterion.text("production").id)
+        await viewModel.waitForLoad()
+        await commitText(viewModel, "staging")
         #expect(viewModel.records.count == 1)
         #expect(viewModel.records[0].event.sensitive.keyLabel == "staging-test-key")
 
-        viewModel.searchText = ""
+        viewModel.clearFilters()
+        await viewModel.waitForLoad()
         #expect(viewModel.records.count == 2)
     }
 
     @Test func test_122_searchFilteringByFingerprint() async throws {
         let store = try createTestStore()
-        let eventA = AuditEvent(type: .signature, result: .allowed, keyFingerprint: "SHA256:alpha123", sensitive: AuditSensitive(keyLabel: "k1"))
-        let eventB = AuditEvent(type: .signature, result: .allowed, keyFingerprint: "SHA256:beta456", sensitive: AuditSensitive(keyLabel: "k2"))
-        try store.insert(eventA)
-        try store.insert(eventB)
+        try store.insert(AuditEvent(type: .signature, result: .allowed, keyFingerprint: "SHA256:alpha123", sensitive: AuditSensitive(keyLabel: "k1")))
+        try store.insert(AuditEvent(type: .signature, result: .allowed, keyFingerprint: "SHA256:beta456", sensitive: AuditSensitive(keyLabel: "k2")))
 
         let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
         await viewModel.reload().value
-        #expect(viewModel.records.count == 2)
 
-        viewModel.searchText = "alpha"
-        #expect(viewModel.records.count == 1)
-        #expect(viewModel.records[0].event.keyFingerprint == "SHA256:alpha123")
-
-        viewModel.searchText = "beta"
-        #expect(viewModel.records.count == 1)
-        #expect(viewModel.records[0].event.keyFingerprint == "SHA256:beta456")
+        await commitText(viewModel, "alpha")
+        #expect(viewModel.records.map(\.event.keyFingerprint) == ["SHA256:alpha123"])
     }
 
-    @Test func test_122_searchFilteringByRemoteHost() async throws {
+    @Test func test_122_hostBadgeMatchesExactHostOnly() async throws {
         let store = try createTestStore()
-        let eventA = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k1", host: "github.com"))
-        let eventB = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k2", host: "gitlab.com"))
-        try store.insert(eventA)
-        try store.insert(eventB)
+        try store.insert(AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k1", host: "github.com")))
+        try store.insert(AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k2", host: "gitlab.com")))
 
         let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
         await viewModel.reload().value
-        #expect(viewModel.records.count == 2)
 
-        viewModel.searchText = "github"
-        #expect(viewModel.records.count == 1)
-        #expect(viewModel.records[0].event.sensitive.host == "github.com")
+        viewModel.add(.host("github.com"))
+        await viewModel.waitForLoad()
+        #expect(viewModel.records.map(\.event.sensitive.host) == ["github.com"])
 
-        viewModel.searchText = "gitlab"
-        #expect(viewModel.records.count == 1)
-        #expect(viewModel.records[0].event.sensitive.host == "gitlab.com")
+        // A host is exact: a fragment is a different criterion and matches nothing.
+        viewModel.removeCriterion(id: HistoryCriterion.host("github.com").id)
+        viewModel.add(.host("github"))
+        await viewModel.waitForLoad()
+        #expect(viewModel.records.isEmpty)
     }
 
     @Test func test_122_searchFilteringByProcessAndPID() async throws {
         let store = try createTestStore()
         let proc1 = AuditProcess(executablePath: "/usr/bin/ssh", pid: 12345)
         let proc2 = AuditProcess(executablePath: "/opt/homebrew/bin/git", pid: 67890)
-        let eventA = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(processChain: [proc1]))
-        let eventB = AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(processChain: [proc2]))
-        try store.insert(eventA)
-        try store.insert(eventB)
+        try store.insert(AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(processChain: [proc1])))
+        try store.insert(AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(processChain: [proc2])))
 
         let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
         await viewModel.reload().value
-        #expect(viewModel.records.count == 2)
 
-        viewModel.searchText = "ssh"
+        await commitText(viewModel, "ssh")
         #expect(viewModel.records.count == 1)
         #expect(viewModel.records[0].event.sensitive.processChain.first?.executablePath == "/usr/bin/ssh")
 
-        viewModel.searchText = "67890"
-        #expect(viewModel.records.count == 1)
-        #expect(viewModel.records[0].event.sensitive.processChain.first?.pid == 67890)
+        viewModel.clearFilters()
+        await viewModel.waitForLoad()
+        await commitText(viewModel, "67890")
+        #expect(viewModel.records.first?.event.sensitive.processChain.first?.pid == 67890)
 
-        viewModel.searchText = ""
-        viewModel.filterProcessOrPID = "12345"
-        #expect(viewModel.records.count == 1)
-        #expect(viewModel.records[0].event.sensitive.processChain.first?.pid == 12345)
+        viewModel.clearFilters()
+        await viewModel.waitForLoad()
+        viewModel.add(.process(.path("/usr/bin/ssh")))
+        await viewModel.waitForLoad()
+        #expect(viewModel.records.first?.event.sensitive.processChain.first?.pid == 12345)
     }
 
     @Test func test_123_paginationBeyond200Events() async throws {
@@ -570,40 +567,43 @@ final class HistoryViewModelTests {
         await viewModel.reload().value
         #expect(viewModel.records.count == 600)
 
-        // 1. Search text filtering on host
-        viewModel.searchText = "bastion"
+        // 1. Host badge (decrypt-time criterion, scanned until the page is full)
+        viewModel.add(.host("bastion.prod.company.net"))
+        await viewModel.waitForLoad()
         #expect(viewModel.records.count == 200)
         #expect(viewModel.records.allSatisfy { $0.event.sensitive.host == "bastion.prod.company.net" })
         #expect(!viewModel.items.contains(where: { $0.isGap }))
 
-        // 2. Specific filterKeyLabel
-        viewModel.searchText = ""
-        viewModel.filterKeyLabel = "prod-deploy"
+        // 2. Key badge (SQL criterion; stable fingerprint, not the label)
+        viewModel.openForKey(nil)
+        viewModel.add(.key("SHA256:fingerprint-prod-deploy-key"))
+        await viewModel.waitForLoad()
         #expect(viewModel.records.count == 150)
         #expect(viewModel.records.allSatisfy { $0.event.sensitive.keyLabel == "prod-deploy-key" })
+        #expect(viewModel.totalMatching == 150)
 
-        // 3. Specific filterProcessOrPID
-        viewModel.filterKeyLabel = nil
-        viewModel.filterProcessOrPID = "homebrew"
+        // 3. Process badge by name
+        viewModel.openForKey(nil)   // fresh filter: Clear Filters would keep the lone key badge
+        viewModel.add(.process(.name("git")))
+        await viewModel.waitForLoad()
         #expect(viewModel.records.count == 300)
         #expect(viewModel.records.allSatisfy { $0.event.sensitive.processChain.first?.executablePath.contains("homebrew") == true })
 
-        // 4. Combined multi-field filtering
-        viewModel.filterKeyLabel = "staging-key"
-        viewModel.filterRemoteHost = "gitlab.internal"
-        viewModel.filterProcessOrPID = "homebrew"
-        viewModel.searchText = "staging"
+        // 4. Combined: AND across types
+        viewModel.openForKey(nil)
+        viewModel.add(.key("SHA256:fingerprint-staging-key"))
+        viewModel.add(.host("gitlab.internal"))
+        viewModel.add(.process(.name("git")))
+        await viewModel.waitForLoad()
         #expect(viewModel.records.allSatisfy { rec in
             rec.event.sensitive.keyLabel == "staging-key" &&
             rec.event.sensitive.host == "gitlab.internal" &&
             rec.event.sensitive.processChain.first?.executablePath.contains("homebrew") == true
         })
 
-        // 5. Clear all filters restores all 600
-        viewModel.searchText = ""
-        viewModel.filterKeyLabel = nil
-        viewModel.filterRemoteHost = nil
-        viewModel.filterProcessOrPID = nil
+        // 5. Removing every badge restores all 600
+        viewModel.openForKey(nil)
+        await viewModel.waitForLoad()
         #expect(viewModel.records.count == 600)
     }
 
@@ -686,110 +686,82 @@ final class HistoryViewModelTests {
         #expect(viewModel.hasMore == false)
     }
 
-    @Test func testHostSuggestionsWithLiveCountsAndQuery() async throws {
+    @Test func testSuggestionIndexRanksHostsAndProcessesAndDropsOnLock() async throws {
         let store = try createTestStore()
-        try store.insert(AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k1", host: "github.com")))
-        try store.insert(AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k1", host: "github.com")))
+        let ssh = AuditProcess(executablePath: "/usr/bin/ssh", pid: 1)
+        try store.insert(AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k1", processChain: [ssh], host: "github.com")))
+        try store.insert(AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k1", processChain: [ssh], host: "GitHub.com.")))
         try store.insert(AuditEvent(type: .signature, result: .denied, sensitive: AuditSensitive(keyLabel: "k2", host: "gitlab.com")))
-        try store.insert(AuditEvent(type: .signature, result: .allowed, sensitive: AuditSensitive(keyLabel: "k3", host: "staging.internal")))
 
         let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
-        await viewModel.reload().value
+        await viewModel.ensureSuggestionIndex().value
 
-        let allSuggestions = viewModel.hostSuggestions()
-        #expect(allSuggestions.count == 3)
-        #expect(allSuggestions.first(where: { $0.host == "github.com" })?.count == 2)
-        #expect(allSuggestions.first(where: { $0.host == "gitlab.com" })?.count == 1)
-        #expect(allSuggestions.first(where: { $0.host == "staging.internal" })?.count == 1)
+        // Canonicalised, most frequent first.
+        #expect(viewModel.indexedHosts == ["github.com", "gitlab.com"])
+        #expect(viewModel.indexedProcessPaths == ["/usr/bin/ssh"])
 
-        // Filtering by query text
-        let gitSuggestions = viewModel.hostSuggestions(matching: "git")
-        #expect(gitSuggestions.count == 2)
-        #expect(gitSuggestions.map(\.host).contains("github.com"))
-        #expect(gitSuggestions.map(\.host).contains("gitlab.com"))
-
-        // Active searchText filter updates live counts while ignoring filterRemoteHost
-        viewModel.filterRemoteHost = "github.com"
-        viewModel.searchText = "rejected"
-        let rejectedSuggestions = viewModel.hostSuggestions()
-        #expect(rejectedSuggestions.first(where: { $0.host == "gitlab.com" })?.count == 1)
-        #expect(rejectedSuggestions.first(where: { $0.host == "github.com" })?.count == 0)
+        // Decrypted values must not outlive an unlocked panel.
+        notificationCenter.post(name: PanelLockController.didLockNotification, object: nil)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(viewModel.indexedHosts.isEmpty && viewModel.indexedProcessPaths.isEmpty)
     }
 
     @Test func testOperationAndStatusSearchAndDateGrouping() async throws {
         let store = try createTestStore()
-        let calendar = Calendar.current
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
         let today = Date()
         let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
         let twoDaysAgo = calendar.date(byAdding: .day, value: -2, to: today)!
 
-        let e1 = AuditEvent(
-            time: twoDaysAgo,
-            type: .signature,
-            result: .allowed,
-            reason: .viaGitGrant,
-            sensitive: AuditSensitive(keyLabel: "git-key", processChain: [AuditProcess(executablePath: "/usr/bin/git", pid: 101)], host: "github.com")
-        )
-        let e2 = AuditEvent(
-            time: yesterday,
-            type: .signature,
-            result: .denied,
-            reason: .userCancelled,
-            sensitive: AuditSensitive(keyLabel: "ssh-key", processChain: [AuditProcess(executablePath: "/usr/bin/ssh", pid: 102)], host: "bastion.internal")
-        )
-        let e3 = AuditEvent(
-            time: today,
-            type: .signature,
-            result: .allowed,
-            keyKind: .agent,
-            sensitive: AuditSensitive(keyLabel: "agent-key", processChain: [AuditProcess(executablePath: "/usr/bin/ssh", pid: 103)], host: "build.internal")
-        )
-        try store.insert(e1)
-        try store.insert(e2)
-        try store.insert(e3)
+        try store.insert(AuditEvent(
+            time: twoDaysAgo, type: .signature, result: .allowed, reason: .viaGitGrant,
+            sensitive: AuditSensitive(keyLabel: "git-key", processChain: [AuditProcess(executablePath: "/usr/bin/git", pid: 101)], host: "github.com")))
+        try store.insert(AuditEvent(
+            time: yesterday, type: .signature, result: .denied, reason: .userCancelled,
+            sensitive: AuditSensitive(keyLabel: "ssh-key", processChain: [AuditProcess(executablePath: "/usr/bin/ssh", pid: 102)], host: "bastion.internal")))
+        try store.insert(AuditEvent(
+            time: today, type: .signature, result: .allowed, keyKind: .agent,
+            sensitive: AuditSensitive(keyLabel: "agent-key", processChain: [AuditProcess(executablePath: "/usr/bin/ssh", pid: 103)], host: "build.internal")))
 
-        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter)
+        let viewModel = HistoryViewModel(store: { store }, notificationCenter: notificationCenter, calendar: calendar)
         await viewModel.reload().value
         #expect(viewModel.records.count == 3)
 
-        // Grouped sections (Today, Yesterday, 2 days ago)
-        let sections = viewModel.groupedSections(referenceDate: today, calendar: calendar)
+        // Today / Yesterday come from the actual reference date and time zone.
+        let sections = viewModel.groupedSections(referenceDate: today, locale: Locale(identifier: "en_US"))
         #expect(sections.count == 3)
         #expect(sections[0].title.hasPrefix("Today · "))
-        #expect(sections[0].totalCount == 1)
         #expect(sections[1].title.hasPrefix("Yesterday · "))
-        #expect(sections[1].totalCount == 1)
-        #expect(sections[2].totalCount == 1)
+        #expect(sections.map(\.totalCount) == [1, 1, 1])
 
-        // Search by operation or status ("rejected", "git commit", "agent signature")
-        viewModel.searchText = "rejected"
-        #expect(viewModel.records.count == 1)
-        #expect(viewModel.records[0].event.result == .denied)
+        // Result badge uses the shared vocabulary.
+        viewModel.add(.result(.rejected))
+        await viewModel.waitForLoad()
+        #expect(viewModel.records.map(\.event.result) == [.denied])
+        viewModel.clearFilters()
+        await viewModel.waitForLoad()
 
-        viewModel.searchText = "git commit"
-        #expect(viewModel.records.count == 1)
-        #expect(viewModel.records[0].event.sensitive.keyLabel == "git-key")
+        await commitText(viewModel, "git commit")
+        #expect(viewModel.records.map(\.event.sensitive.keyLabel) == ["git-key"])
+        viewModel.clearFilters()
+        await viewModel.waitForLoad()
+        await commitText(viewModel, "agent signature")
+        #expect(viewModel.records.first?.event.keyKind == .agent)
+        viewModel.clearFilters()
+        await viewModel.waitForLoad()
 
-        viewModel.searchText = "agent signature"
-        #expect(viewModel.records.count == 1)
-        #expect(viewModel.records[0].event.keyKind == .agent)
+        // Day bounds are inclusive calendar days in the model's time zone.
+        let day = CalendarDay(yesterday, calendar: calendar)
+        viewModel.setDateFrom(day)
+        viewModel.setDateTo(day)
+        await viewModel.waitForLoad()
+        #expect(viewModel.records.map(\.event.sensitive.keyLabel) == ["ssh-key"])
+        #expect(viewModel.totalMatching == nil || viewModel.totalMatching == 1)
 
-        // Filter by selectedDate and resetFilters
-        viewModel.searchText = ""
-        viewModel.selectedDate = yesterday
-        #expect(viewModel.records.count == 1)
-        #expect(viewModel.records[0].event.sensitive.keyLabel == "ssh-key")
-
-        viewModel.clearDateFilter()
-        #expect(viewModel.selectedDate == nil)
-        #expect(viewModel.records.count == 3)
-
-        viewModel.selectedDate = today
-        viewModel.filterRemoteHost = "build.internal"
-        viewModel.resetFilters()
-        #expect(viewModel.selectedDate == nil)
-        #expect(viewModel.filterRemoteHost == nil)
+        viewModel.clearFilters()
+        await viewModel.waitForLoad()
+        #expect(viewModel.filter.dateBounds.isEmpty)
         #expect(viewModel.records.count == 3)
     }
 }
-
