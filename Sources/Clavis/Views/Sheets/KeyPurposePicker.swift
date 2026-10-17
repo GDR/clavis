@@ -30,16 +30,16 @@ struct KeyPurposePicker: View {
                                 }
                             }
                             Text(purpose.title)
-                                .font(.subheadline)
-                                .fontWeight(.medium)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.primary)
                             Text(purpose.subtitle)
-                                .font(.caption2)
+                                .font(.system(size: 11))
                                 .foregroundColor(DesignTokens.textSecondary)
-                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         .padding(10)
-                        .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
-                        .liquidGlassControl(cornerRadius: 8, isSelected: selection == purpose, tint: accent)
+                        .frame(maxWidth: .infinity, minHeight: 74, alignment: .topLeading)
+                        .liquidGlassControl(cornerRadius: 9, isSelected: selection == purpose)
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(selection == purpose ? [.isSelected] : [])
