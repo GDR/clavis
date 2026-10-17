@@ -525,8 +525,9 @@ struct KeyListView: View {
                 }
             }
         }
-        .padding(.leading, 35)
-        .padding(.trailing, 35)
+        // 20pt matches the grouped Form card inset below the header.
+        .padding(.leading, 20)
+        .padding(.trailing, 20)
         .frame(height: Self.toolbarHeight)
         // The scroll pocket replays the untinted window backdrop; re-apply the
         // panel tint so the header matches the surface below it.
