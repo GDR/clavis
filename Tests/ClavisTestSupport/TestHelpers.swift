@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 import LocalAuthentication
-@testable import ClavisCore
+import ClavisCore
 
 final class TrackableLAContext: LAContext {
     private(set) var isInvalidated: Bool = false
