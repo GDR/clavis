@@ -8,13 +8,13 @@ struct HistorySearchBar: View {
     @ObservedObject var viewModel: HistoryViewModel
     @ObservedObject var ui: HistoryUIState
 
-    var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 13))
-                .foregroundColor(DesignTokens.textSecondary)
-                .accessibilityHidden(true)
+    /// Width reserved inside the field for the overlaid `+ Filter` button.
+    private static let filterButtonReserve: CGFloat = 78
 
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            // Native NSSearchField supplies bezel, magnifier, cancel button, focus ring and
+            // material; no extra glass is layered on top of it.
             HistorySearchTextField(
                 text: viewModel.draftText,
                 caret: viewModel.draftCaret,
@@ -43,9 +43,11 @@ struct HistorySearchBar: View {
                     ui.surface = .suggestions
                     viewModel.beginSuggesting()
                 },
-                onFocusRequestHandled: { ui.focusRequestHandled() }
+                onFocusRequestHandled: { ui.focusRequestHandled() },
+                trailingReserve: Self.filterButtonReserve,
+                isExpanded: ui.surface == .suggestions && viewModel.showsDropdown
             )
-            .frame(height: 20)
+            .frame(height: 34)
 
             Button(action: addFilter) {
                 HStack(spacing: 4) {
@@ -55,16 +57,28 @@ struct HistorySearchBar: View {
                         .font(.system(size: 12))
                 }
                 .foregroundColor(DesignTokens.textSecondary)
+                .padding(.horizontal, 6)
+                .frame(height: 24)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .padding(.trailing, 8)
             .accessibilityLabel(HistoryText.addFilterAccessibility)
             .help(HistoryText.addFilterAccessibility)
         }
-        .padding(.horizontal, 11)
-        .frame(height: 34)
-        .liquidGlassCapsuleControl(isFocused: ui.isSearchFocused)
         .reportGlobalFrame { ui.searchFieldFrame = $0 }
+        // Any committed change (badge added/removed, sidebar key picked) closes the dropdown.
+        .onChange(of: viewModel.filter) { _ in
+            if ui.surface == .suggestions { ui.dismiss() }
+        }
+        // VoiceOver: announce the highlighted row (the field keeps keyboard focus).
+        .onChange(of: ui.highlightedIndex) { index in
+            let list = visibleSuggestions
+            guard list.indices.contains(index) else { return }
+            let row = list[index]
+            let text = [row.title, row.caption].compactMap { $0 }.joined(separator: ", ")
+            HistoryAccessibility.announce("\(text). \(index + 1) / \(list.count)")
+        }
     }
 
     // MARK: Actions
@@ -101,16 +115,12 @@ struct HistorySearchBar: View {
         return true
     }
 
-    /// Return: highlighted row → accept it; dropdown open with a completable fragment → accept the
-    /// best match (prototype: first row); otherwise commit the typed expression.
+    /// Return: highlighted row → accept it; otherwise commit the typed condition. Never guesses a
+    /// value from a partial one (`Host:git` is committed as typed, or rejected if incomplete).
     private func commitOrAccept() -> Bool {
         let list = visibleSuggestions
         if list.indices.contains(ui.highlightedIndex) {
             accept(list[ui.highlightedIndex])
-            return true
-        }
-        if ui.surface == .suggestions, let target = viewModel.returnTarget {
-            accept(target)
             return true
         }
         if viewModel.commitDraft() {
@@ -120,10 +130,11 @@ struct HistorySearchBar: View {
         return true
     }
 
+    /// Escape closes the dropdown and keeps the draft. It is consumed even when nothing is open:
+    /// NSSearchField's default would clear the text (use the native ✕ for that).
     private func escape() -> Bool {
-        guard ui.surface != .none else { return false }
-        ui.dismiss()   // the draft stays
-        return true
+        if ui.surface != .none { ui.dismiss(); return true }
+        return !viewModel.draftText.isEmpty
     }
 
     private func accept(_ suggestion: HistorySuggestion) {
@@ -240,18 +251,22 @@ private struct HistorySuggestionRow: View {
                     Image(systemName: symbol)
                         .font(.system(size: 12))
                         .frame(width: 16)
-                        .foregroundColor(DesignTokens.textSecondary)
+                        .foregroundColor(isHighlighted
+                                         ? Color(nsColor: .alternateSelectedControlTextColor)
+                                         : DesignTokens.textSecondary)
                         .accessibilityHidden(true)
                 }
                 Text(suggestion.title)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.primary)
+                    .foregroundColor(isHighlighted ? Color(nsColor: .alternateSelectedControlTextColor) : .primary)
                     .lineLimit(1)
                 Spacer(minLength: 12)
                 if let caption = suggestion.caption {
                     Text(caption)
                         .font(.system(size: 11))
-                        .foregroundColor(DesignTokens.textSecondary)
+                        .foregroundColor(isHighlighted
+                                         ? Color(nsColor: .alternateSelectedControlTextColor).opacity(0.8)
+                                         : DesignTokens.textSecondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -261,7 +276,7 @@ private struct HistorySuggestionRow: View {
             .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isHighlighted ? Color.accentColor.opacity(0.18)
+                    .fill(isHighlighted ? Color(nsColor: .selectedContentBackgroundColor)   // system selection
                           : isHovering ? Color.primary.opacity(0.07) : .clear)
             )
         }
@@ -302,5 +317,17 @@ struct HistorySuggestionOverlay: View {
             }
         }
         .allowsHitTesting(isShown)
+    }
+}
+
+enum HistoryAccessibility {
+    /// Posts a VoiceOver announcement without moving focus.
+    @MainActor
+    static func announce(_ message: String) {
+        guard let window = NSApp.keyWindow else { return }
+        NSAccessibility.post(
+            element: window,
+            notification: .announcementRequested,
+            userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue])
     }
 }

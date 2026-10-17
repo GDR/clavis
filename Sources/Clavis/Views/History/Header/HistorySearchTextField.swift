@@ -1,10 +1,13 @@
 import SwiftUI
 import AppKit
 
-/// Single-line `NSTextField` for the History draft expression.
+/// Native `NSSearchField` for the History draft expression.
 ///
-/// Why AppKit: SwiftUI's `TextField` exposes neither the caret position (needed to replace the
-/// fragment under the caret) nor ↑/↓/Return/Esc interception, nor marked-text (IME) state.
+/// Why AppKit: SwiftUI's `searchable`/`searchSuggestions` (macOS 13+) exposes neither the caret
+/// position (needed to replace the fragment under the caret), nor ↑/↓/Return/Esc interception,
+/// nor marked-text (IME) state, and the system owns the suggestion placement (it cannot span the
+/// field or carry leading icons + trailing explanations). `NSSearchField` keeps the system search
+/// bezel, magnifier, cancel button, focus ring and (on macOS 26) material.
 struct HistorySearchTextField: NSViewRepresentable {
     var text: String
     var caret: Int
@@ -22,20 +25,26 @@ struct HistorySearchTextField: NSViewRepresentable {
     var onCaretGesture: () -> Void = {}
     /// A programmatic focus request finished (whether or not focus actually changed).
     var onFocusRequestHandled: () -> Void = {}
+    /// Space kept free at the trailing edge for the overlaid `+ Filter` control.
+    var trailingReserve: CGFloat = 0
+    /// Mirrors whether the suggestions dropdown is open (VoiceOver: expanded / collapsed).
+    var isExpanded: Bool = false
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
     func makeNSView(context: Context) -> FieldView {
         let field = FieldView()
         field.delegate = context.coordinator
-        field.isBordered = false
-        field.drawsBackground = false
-        field.focusRingType = .none   // the capsule draws focus
-        field.font = .monospacedSystemFont(ofSize: 12.5, weight: .regular)
-        field.textColor = .labelColor
+        field.controlSize = .large   // 34 pt capsule, same height as the Calendar/Sort circles
+        field.font = .monospacedSystemFont(ofSize: 12.5, weight: .regular)   // `Prefix:value` syntax
         field.lineBreakMode = .byClipping
         field.usesSingleLineMode = true
         field.cell?.isScrollable = true
+        // Return/cancel are handled explicitly; the action only fires for the native cancel button.
+        field.sendsSearchStringImmediately = false
+        field.sendsWholeSearchString = true
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.searchFieldAction(_:))
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         field.onBecomeFirstResponder = { [weak coordinator = context.coordinator, weak field] in
@@ -54,6 +63,11 @@ struct HistorySearchTextField: NSViewRepresentable {
         coordinator.parent = self
         field.placeholderString = placeholder
         field.setAccessibilityLabel(accessibilityLabel)
+        field.setAccessibilityExpanded(isExpanded)
+        if let cell = field.cell as? FilterSearchFieldCell, cell.trailingReserve != trailingReserve {
+            cell.trailingReserve = trailingReserve
+            field.needsDisplay = true
+        }
 
         if let editor = field.currentEditor() as? NSTextView {
             // Never clobber IME composition, and only write when the model really differs so the
@@ -90,11 +104,28 @@ struct HistorySearchTextField: NSViewRepresentable {
         field.delegate = nil
     }
 
-    final class FieldView: NSTextField {
+    /// Keeps the system search cell but leaves room at the trailing edge for `+ Filter`
+    /// (text, cancel button and the editing rect all derive from these two rects).
+    final class FilterSearchFieldCell: NSSearchFieldCell {
+        var trailingReserve: CGFloat = 0
+
+        private func reduced(_ rect: NSRect) -> NSRect {
+            NSRect(x: rect.minX, y: rect.minY, width: max(0, rect.width - trailingReserve), height: rect.height)
+        }
+        override func searchTextRect(forBounds rect: NSRect) -> NSRect {
+            super.searchTextRect(forBounds: reduced(rect))
+        }
+        override func cancelButtonRect(forBounds rect: NSRect) -> NSRect {
+            super.cancelButtonRect(forBounds: reduced(rect))
+        }
+    }
+
+    final class FieldView: NSSearchField {
         var onBecomeFirstResponder: (() -> Void)?
 
-        override var intrinsicContentSize: NSSize {
-            NSSize(width: NSView.noIntrinsicMetric, height: 20)
+        override class var cellClass: AnyClass? {
+            get { FilterSearchFieldCell.self }
+            set {}
         }
 
         override func becomeFirstResponder() -> Bool {
@@ -104,7 +135,7 @@ struct HistorySearchTextField: NSViewRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, NSTextFieldDelegate {
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
         var parent: HistorySearchTextField
         var lastFocusToken: Int
         var isApplyingModelChange = false
@@ -163,6 +194,11 @@ struct HistorySearchTextField: NSViewRepresentable {
         func controlTextDidChange(_ obj: Notification) {
             guard let editor = obj.userInfo?["NSFieldEditor"] as? NSTextView else { return }
             push(from: editor)
+        }
+
+        /// Native cancel (✕) button: clears the draft. No suggestion is accepted or committed.
+        @objc func searchFieldAction(_ sender: NSSearchField) {
+            parent.onEdit(sender.stringValue, (sender.stringValue as NSString).length)
         }
 
         func controlTextDidEndEditing(_ obj: Notification) {

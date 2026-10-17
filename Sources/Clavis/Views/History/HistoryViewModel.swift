@@ -350,21 +350,6 @@ public final class HistoryViewModel: ObservableObject {
         return !suggestions.isEmpty
     }
 
-    /// What Return accepts when nothing is highlighted (prototype: the first row). An exact title
-    /// match wins so typing `Host:github.com` never picks `gist.github.com`. An empty prefix
-    /// fragment (whitespace / empty draft) means "commit what is typed" instead.
-    public var returnTarget: HistorySuggestion? {
-        guard let context = completionContext, showsDropdown, !suggestions.isEmpty else { return nil }
-        switch context.mode {
-        case .prefix(let fragment):
-            guard !fragment.isEmpty else { return nil }
-            return suggestions.first
-        case .value(_, let fragment):
-            let f = fragment.lowercased()
-            return suggestions.first { $0.title.lowercased() == f } ?? suggestions.first
-        }
-    }
-
     /// Accepting a prefix edits the draft; accepting a value commits one badge and consumes its token.
     public func accept(_ suggestion: HistorySuggestion) {
         guard let context = HistoryCompletionEngine.context(text: draftText, caret: draftCaret) else { return }
