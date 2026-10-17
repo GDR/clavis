@@ -296,6 +296,8 @@ public struct KeyDetailInspectorView: View {
             } header: {
                 detailHeading
                     .textCase(nil)
+                    // Grouped section headers are inset ~10pt from the card edge; cancel it.
+                    .padding(.horizontal, -10)
                     .padding(.bottom, 4)
             }
 
