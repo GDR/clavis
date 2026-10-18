@@ -259,11 +259,14 @@ final class PanelLockTests {
         _ = button.body
     }
 
-    @Test func test_lockedWindow_doesNotAutoPromptFingerprintOnOpen() async {
+    @Test func test_lockedWindow_autoPromptsTouchIDOnOpen() async {
         let fakeAuth = FakePanelAuthenticator()
+        fakeAuth.shouldFail = true
+        var currentTime = Date(timeIntervalSince1970: 1000)
         let controller = PanelLockController(
             defaults: testDefaults,
             authenticator: fakeAuth,
+            now: { currentTime },
             vaultKeyCount: { 1 }
         )
 
@@ -275,10 +278,24 @@ final class PanelLockTests {
         let hosting = NSHostingView(rootView: gate)
         hosting.frame = NSRect(x: 0, y: 0, width: 911, height: 724)
         hosting.layout()
-        try? await Task.sleep(nanoseconds: 20_000_000)
+        for _ in 0..<20 {
+            if fakeAuth.authCount >= 1 && !controller.isUnlocking { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
 
-        #expect(fakeAuth.authCount == 0, "Opening Clavis window while locked must show the locked screen without immediately prompting for Touch ID")
-        #expect(controller.isEffectivelyLocked)
+        #expect(fakeAuth.authCount == 1, "Opening Clavis window while locked must immediately prompt for Touch ID")
+        #expect(controller.isEffectivelyLocked, "Cancelling the Touch ID prompt keeps the window on the locked screen")
+
+        // Immediate window focus event after prompt dismissal must not re-trigger an infinite loop
+        await controller.unlockIfNeededOnWindowFocus(isWindowFocusEvent: true)
+        #expect(fakeAuth.authCount == 1)
+
+        // Focusing the locked window again after cooldown prompts Touch ID and unlocks when approved
+        currentTime += 2.0
+        fakeAuth.shouldFail = false
+        await controller.unlockIfNeededOnWindowFocus(isWindowFocusEvent: true)
+        #expect(fakeAuth.authCount == 2)
+        #expect(!controller.isEffectivelyLocked)
     }
 
     @Test func test_liquidGlassModifiersAndContainer_renderCleanly() {

@@ -99,6 +99,20 @@ public struct LockedPlaceholderView: View {
             }
             .ignoresSafeArea()
         )
+        .onAppear {
+            if lock.lastLockReason != .idle && lock.lastLockReason != .lockNow {
+                Task {
+                    await lock.unlockIfNeededOnWindowFocus()
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
+            guard let window = notification.object as? NSWindow,
+                  window === WindowManager.shared.keyManagerWindow else { return }
+            Task {
+                await lock.unlockIfNeededOnWindowFocus(isWindowFocusEvent: true)
+            }
+        }
         .onDisappear {
             password = ""
             passwordError = nil
