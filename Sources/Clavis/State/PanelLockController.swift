@@ -224,6 +224,34 @@ public final class PanelLockController: ObservableObject {
             applyUnlock(context: context)
         } catch {
             // Cancelled or failed unlock stays locked without error alert
+            lastPromptDismissedAt = now()
+        }
+    }
+
+    private var lastPromptDismissedAt: Date?
+
+    /// Prompts for biometric / system authentication when the user opens or focuses the locked window,
+    /// matching Bitwarden's auto-prompt behavior.
+    /// - Parameter isWindowFocusEvent: When true, suppresses immediate re-prompting right after the macOS
+    ///   system authentication sheet closes and returns key-window status to the Clavis window.
+    public func unlockIfNeededOnWindowFocus(isWindowFocusEvent: Bool = false) async {
+        guard isEffectivelyLocked, !isUnlocking else { return }
+        if isWindowFocusEvent,
+           let dismissedAt = lastPromptDismissedAt,
+           now().timeIntervalSince(dismissedAt) < 1.0 {
+            return
+        }
+        switch currentMode {
+        case .passwordOrBiometry:
+            await unlock()
+        case .biometryOrPIN:
+            let outcome = await unlockWithPIN(nil)
+            if outcome != .unlocked {
+                lastPromptDismissedAt = now()
+            }
+        case .biometryAndPIN:
+            // Requires PIN entry first
+            break
         }
     }
 
