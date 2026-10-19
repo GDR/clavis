@@ -154,8 +154,14 @@ public struct HistoryView: View {
         }
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        // A quiet, opaque system surface keeps pinned text legible over rows.
-        .background(DesignTokens.inspectorBackground)
+        // Re-sample the behind-window backdrop + inspector tint so pinned headers
+        // match the inspector surface exactly while occluding scrolled rows beneath.
+        .background {
+            ZStack {
+                VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow)
+                DesignTokens.inspectorBackground
+            }
+        }
         .overlay(alignment: .bottom) {
             Rectangle().fill(DesignTokens.cardBorder).frame(height: 1)
         }

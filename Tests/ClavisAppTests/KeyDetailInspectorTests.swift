@@ -920,11 +920,43 @@ struct KeyDetailInspectorTests {
         #expect(leftSV.contentInsets.top >= KeyListView.toolbarHeight)
         #expect(rightSV.contentInsets.top >= KeyListView.toolbarHeight)
 
-        appState.activeMainPane = .history
+        func pocketSubviews(in sv: NSScrollView) -> [NSView] {
+            sv.subviews.filter {
+                let name = String(describing: type(of: $0))
+                return name.contains("Pocket") || name.contains("BackdropView")
+            }
+        }
+
+        // At rest, scroll pocket and backdrop views are hidden so the header matches the pane surface.
+        #expect(!pocketSubviews(in: leftSV).isEmpty)
+        #expect(pocketSubviews(in: leftSV).allSatisfy { $0.isHidden })
+        #expect(!pocketSubviews(in: rightSV).isEmpty)
+        #expect(pocketSubviews(in: rightSV).allSatisfy { $0.isHidden })
+
+        // Scrolling reveals the liquid glass pocket.
+        leftSV.contentView.setBoundsOrigin(NSPoint(x: 0, y: -60))
+        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: leftSV.contentView)
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        #expect(pocketSubviews(in: leftSV).allSatisfy { !$0.isHidden })
+
+        // Returning to the top hides the pocket again.
+        leftSV.contentView.setBoundsOrigin(NSPoint(x: 0, y: -leftSV.contentInsets.top))
+        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: leftSV.contentView)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        #expect(pocketSubviews(in: leftSV).allSatisfy { $0.isHidden })
+
+        appState.activeMainPane = .history
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         hostingView.layoutSubtreeIfNeeded()
         let historyScrollViews = collectScrollViews(in: hostingView)
         let historyRightSV = try! #require(historyScrollViews.first { abs($0.frame.width - 689) < 1 && abs($0.frame.height - 400) < 1 })
         #expect(historyRightSV.contentInsets.top >= KeyListView.toolbarHeight)
+        #expect(!pocketSubviews(in: historyRightSV).isEmpty)
+        #expect(pocketSubviews(in: historyRightSV).allSatisfy { $0.isHidden })
+
+        historyRightSV.documentView?.setFrameSize(NSSize(width: 689, height: 800))
+        historyRightSV.contentView.setBoundsOrigin(NSPoint(x: 0, y: -60))
+        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: historyRightSV.contentView)
+        #expect(pocketSubviews(in: historyRightSV).allSatisfy { !$0.isHidden })
     }
 }

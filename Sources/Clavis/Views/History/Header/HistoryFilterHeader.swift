@@ -75,10 +75,6 @@ struct HistoryFilterHeader: View {
                 .accessibilityLabel(countText)
         }
         .padding(.horizontal, Self.horizontalInset)
-        .background(DesignTokens.inspectorBackground)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(DesignTokens.cardBorder).frame(height: 1)
-        }
     }
 
     private var countText: String {

@@ -843,10 +843,163 @@ private struct TopLiquidGlassBarModifier<Bar: View>: ViewModifier {
                 }
                 .scrollEdgeEffectStyle(.soft, for: .top)
                 .scrollEdgeEffectHidden(!isScrolled, for: .top)
-                .safeAreaBar(edge: .top, alignment: alignment, spacing: 0) { bar }
+                .safeAreaBar(edge: .top, alignment: alignment, spacing: 0) {
+                    bar.background(ScrollPocketVisibilityBridge(isScrolled: isScrolled))
+                }
         } else {
             content
                 .safeAreaInset(edge: .top, alignment: alignment, spacing: 0) { bar }
         }
     }
 }
+
+/// Synchronizes the enclosing `NSScrollView`'s `NSScrollPocket` and `BackdropView`
+/// visibility with the scroll state. On macOS 26, `.scrollEdgeEffectHidden(true)`
+/// hides `PocketMask`/`PocketBlur` but leaves `NSScrollPocket`'s `v8` thin-film
+/// backdrop layer visible at rest, which alters header opacity over tinted panes.
+private struct ScrollPocketVisibilityBridge: NSViewRepresentable {
+    var isScrolled: Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> ProbeView {
+        let view = ProbeView()
+        view.coordinator = context.coordinator
+        context.coordinator.probeView = view
+        return view
+    }
+
+    func updateNSView(_ nsView: ProbeView, context: Context) {
+        context.coordinator.probeView = nsView
+        context.coordinator.sync()
+        DispatchQueue.main.async {
+            context.coordinator.sync()
+        }
+    }
+
+    static func dismantleNSView(_ nsView: ProbeView, coordinator: Coordinator) {
+        coordinator.teardown()
+    }
+
+    final class ProbeView: NSView {
+        weak var coordinator: Coordinator?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            coordinator?.sync()
+            DispatchQueue.main.async { [weak self] in
+                self?.coordinator?.sync()
+            }
+        }
+
+        override func layout() {
+            super.layout()
+            coordinator?.sync()
+        }
+    }
+
+    final class Coordinator {
+        weak var probeView: NSView?
+        private var boundsObserver: NSObjectProtocol?
+        private var frameObserver: NSObjectProtocol?
+
+        deinit {
+            teardown()
+        }
+
+        func installObserversIfNeeded() {
+            guard boundsObserver == nil else { return }
+            boundsObserver = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                guard let self,
+                      let view = note.object as? NSView,
+                      let window = self.probeView?.window,
+                      view.window === window else { return }
+                self.applyVisibility()
+            }
+            frameObserver = NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                guard let self,
+                      let view = note.object as? NSView,
+                      let window = self.probeView?.window,
+                      view.window === window else { return }
+                self.applyVisibility()
+            }
+        }
+
+        func teardown() {
+            if let boundsObserver {
+                NotificationCenter.default.removeObserver(boundsObserver)
+                self.boundsObserver = nil
+            }
+            if let frameObserver {
+                NotificationCenter.default.removeObserver(frameObserver)
+                self.frameObserver = nil
+            }
+        }
+
+        func sync() {
+            guard let probeView, probeView.window != nil else { return }
+            installObserversIfNeeded()
+            applyVisibility()
+        }
+
+        private func applyVisibility() {
+            guard let probeView,
+                  let scrollView = findPairedScrollView(from: probeView) else { return }
+            if !scrollView.contentView.postsBoundsChangedNotifications {
+                scrollView.contentView.postsBoundsChangedNotifications = true
+            }
+            let insetTop = scrollView.contentInsets.top
+            let offsetY = scrollView.contentView.bounds.origin.y
+            let scrolled = insetTop > 0 && (offsetY + insetTop > 1)
+
+            for sub in scrollView.subviews {
+                let typeName = String(describing: type(of: sub))
+                if typeName.contains("Pocket") || typeName.contains("BackdropView") {
+                    if sub.isHidden == scrolled {
+                        sub.isHidden = !scrolled
+                    }
+                }
+            }
+        }
+
+        private func findPairedScrollView(from probe: NSView) -> NSScrollView? {
+            guard let root = probe.window?.contentView else { return nil }
+            let probeRectInRoot = probe.convert(probe.bounds, to: root)
+            let probeMidX = probeRectInRoot.midX
+
+            func collect(_ view: NSView) -> [NSScrollView] {
+                var result: [NSScrollView] = []
+                if let sv = view as? NSScrollView, !sv.isHidden, sv.frame.height > 50 {
+                    let hasPocket = sv.subviews.contains {
+                        let name = String(describing: type(of: $0))
+                        return name.contains("Pocket") || name.contains("BackdropView")
+                    }
+                    if hasPocket {
+                        result.append(sv)
+                    }
+                }
+                for sub in view.subviews {
+                    result.append(contentsOf: collect(sub))
+                }
+                return result
+            }
+
+            let candidates = collect(root)
+            return candidates.first { sv in
+                let svRect = sv.convert(sv.bounds, to: root)
+                return probeMidX >= svRect.minX && probeMidX <= svRect.maxX
+            }
+        }
+    }
+}
+
