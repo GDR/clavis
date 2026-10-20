@@ -293,11 +293,14 @@ final class HistoryDraftAndPagingTests {
         #expect(vm.filter.criteria == [.host("git")])
     }
 
-    @Test func test_009_allMatchingKeysAreOffered() throws {
+    @Test func test_009_topSevenMatchingKeysAreOfferedAndTypingNarrowsCatalog() throws {
         let vm = makeViewModel(try makeStore())
         vm.keyChoicesForTesting((0..<12).map { HistoryKeyChoice(fingerprint: "SHA256:\($0)", label: "Key \($0)") })
         vm.updateDraft(text: "Key:", caret: 4)
-        #expect(vm.suggestions.count == 12)              // not truncated to the old 8
+        #expect(vm.suggestions.count == 7)
+        #expect(vm.suggestions.map(\.title) == (0..<7).map { "Key \($0)" })
+        vm.updateDraft(text: "Key:11", caret: 6)
+        #expect(vm.suggestions.map(\.title) == ["Key 11"])
     }
 }
 

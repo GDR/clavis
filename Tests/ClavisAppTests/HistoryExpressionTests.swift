@@ -124,3 +124,23 @@ import Foundation
         #expect(s.map(\.title) == ["Approved", "Rejected", "Recorded"])
     }
 }
+
+extension HistoryExpressionTests {
+    @Test func selectedDraftFragmentIsReplacedWithoutTouchingSurroundingText() throws {
+        let text = "Host:github.com replace Result:Rejected"
+        let selected = (text as NSString).range(of: "replace")
+        let context = try #require(HistoryCompletionEngine.context(text: text, selection: selected))
+        let edit = HistoryCompletionEngine.insertPrefix(.process, text: text, context: context)
+        #expect(edit.text == "Host:github.com Process: Result:Rejected")
+        #expect(edit.caret == ("Host:github.com Process:" as NSString).length)
+    }
+
+    @Test func zeroCaretAndUTF16SelectionArePreserved() throws {
+        let start = try #require(HistoryCompletionEngine.context(text: "draft", selection: NSRange(location: 0, length: 0)))
+        #expect(start.replaceRange.location == 0)
+        let text = "😀 select tail"
+        let context = try #require(HistoryCompletionEngine.context(text: text, selection: (text as NSString).range(of: "select")))
+        let edit = HistoryCompletionEngine.insertPrefix(.host, text: text, context: context)
+        #expect(edit.text == "😀 Host: tail")
+    }
+}

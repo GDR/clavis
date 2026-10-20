@@ -178,6 +178,17 @@ public struct HistoryCompletionEdit: Equatable, Sendable {
 }
 
 public enum HistoryCompletionEngine {
+    /// A selected fragment is replaced as a unit, using AppKit's UTF-16 coordinates.
+    public static func context(text: String, selection: NSRange) -> HistoryCompletionContext? {
+        let count = (text as NSString).length
+        let start = min(max(selection.location, 0), count)
+        if selection.length > 0 {
+            let range = NSRange(location: start, length: min(selection.length, count - start))
+            return HistoryCompletionContext(mode: .prefix(fragment: ""), replaceRange: range, tokenRange: range)
+        }
+        return context(text: text, caret: start)
+    }
+
     /// What the caret is editing. Whitespace / empty text offers all prefixes.
     public static func context(text: String, caret: Int) -> HistoryCompletionContext? {
         let ns = text as NSString
