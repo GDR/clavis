@@ -137,7 +137,9 @@ public struct HistoryView: View {
     }
 
     private func toggle(_ id: UUID) {
-        if expandedIDs.contains(id) { expandedIDs.remove(id) } else { expandedIDs.insert(id) }
+        withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: 0.28)) {
+            if expandedIDs.contains(id) { expandedIDs.remove(id) } else { expandedIDs.insert(id) }
+        }
     }
 
     // MARK: - Sticky day header
