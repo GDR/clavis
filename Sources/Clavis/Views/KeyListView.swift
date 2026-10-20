@@ -105,6 +105,7 @@ struct KeyListView: View {
 
     private func focusSearch() {
         if isHistoryActive {
+            historyViewModel.beginSuggesting()
             historyUI.requestSearchFocus(opensSuggestions: true)
         } else {
             isSearchFieldFocused = true
@@ -488,9 +489,6 @@ struct KeyListView: View {
                 }
             }
 
-            if isHistoryActive {
-                HistorySuggestionOverlay(viewModel: historyViewModel, ui: historyUI)
-            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

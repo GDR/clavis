@@ -7,16 +7,16 @@ public enum HistorySurface: Equatable {
     case none, suggestions, calendar, sort
 }
 
-/// View-layer state for the History header: which surface is open, where the search field
-/// sits (for the shared dropdown) and focus/highlight bookkeeping. Committed filters and the
+/// View-layer state for the History header: transient presentation, native field anchor,
+/// and focus/highlight bookkeeping. Committed filters and the
 /// draft text live in `HistoryViewModel`.
 @MainActor
 public final class HistoryUIState: ObservableObject {
     @Published public var surface: HistorySurface = .none
-    /// Search field frame in window (global) coordinates; the dropdown is aligned to it.
-    @Published public var searchFieldFrame: CGRect = .zero
+    weak var searchField: NSSearchField?
     @Published public var isSearchFocused = false
-    @Published public var highlightedIndex = -1
+    @Published public var highlightedSuggestionID: String?
+    @Published public var searchSelection = NSRange(location: 0, length: 0)
     @Published public private(set) var focusToken = 0
 
     /// Shared spacing between the field and its dropdown (both entry points use it).
@@ -32,13 +32,17 @@ public final class HistoryUIState: ObservableObject {
 
     public func dismiss() {
         surface = .none
-        highlightedIndex = -1
+        highlightedSuggestionID = nil
     }
 
     /// Moves keyboard focus into the search field. `opensSuggestions == false` is for programmatic
     /// refocus (after accepting a value) so the focus callback does not reopen the prefix list.
     public func requestSearchFocus(opensSuggestions: Bool) {
         suppressFocusOpen = !opensSuggestions
+        if opensSuggestions {
+            surface = .suggestions
+            highlightedSuggestionID = nil
+        }
         focusToken &+= 1
     }
 
@@ -49,6 +53,7 @@ public final class HistoryUIState: ObservableObject {
     }
 
     public func searchFocusChanged(_ focused: Bool) {
+        guard focused != isSearchFocused else { return }
         isSearchFocused = focused
         if focused {
             if suppressFocusOpen {
@@ -57,14 +62,12 @@ public final class HistoryUIState: ObservableObject {
                 // Focusing shows the dropdown for wherever the caret is: the prefix list for an
                 // empty field (same content as `+ Filter`), values inside `Prefix:value`.
                 surface = .suggestions
-                highlightedIndex = -1
+                highlightedSuggestionID = nil
             }
-        } else {
-            // Defer so a click on a dropdown row can land before the surface goes away.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                guard let self, !self.isSearchFocused, self.surface == .suggestions else { return }
-                self.dismiss()
-            }
+        } else if surface == .suggestions {
+            // Completion rows live in a nonactivating child panel, so selecting them does not
+            // blur the editor. A real blur is an outside interaction and needs no timer.
+            dismiss()
         }
     }
 }
