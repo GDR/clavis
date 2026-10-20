@@ -11,10 +11,11 @@ on:
           - patch
           - minor
           - major
+          - rc
           - custom
         default: minor
       custom_version:
-        description: 'Explicit version (e.g. 0.3.0, used only when bump=custom)'
+        description: 'Explicit version (e.g. 0.3.0 or 0.3.0-rc.1, used only when bump=custom)'
         required: false
         type: string
   push:
@@ -64,6 +65,7 @@ jobs:
       version: ${{ steps.semver.outputs.version }}
       tag: ${{ steps.semver.outputs.tag }}
       bumped: ${{ steps.semver.outputs.bumped }}
+      prerelease: ${{ steps.semver.outputs.prerelease }}
       signing: ${{ steps.verify.outputs.signing }}
 
     steps:
@@ -147,12 +149,12 @@ jobs:
               custom_ver = custom_ver[1:]
 
           # The version is written into the justfile and used in git tags and file names, so
-          # it must be a plain MAJOR.MINOR.PATCH string from either input source.
-          VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+          # it must be a MAJOR.MINOR.PATCH string with an optional -rc[.N] suffix.
+          VERSION_RE = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:-(rc)(?:\.([0-9]+)|([0-9]+))?)?")
 
           def require_version(value, source):
               if not VERSION_RE.fullmatch(value):
-                  sys.exit(f"Error: {source} must look like 1.2.3, got {value!r}")
+                  sys.exit(f"Error: {source} must look like 1.2.3 or 1.2.3-rc.1, got {value!r}")
               return value
 
           with open("justfile", "r") as f:
@@ -166,17 +168,35 @@ jobs:
               tag = ref.replace("refs/tags/", "")
               new_ver = require_version(tag[1:], "tag name")
           else:
-              parts = [int(x) for x in current_ver.split(".")]
-              while len(parts) < 3:
-                  parts.append(0)
-              major, minor, patch = parts[0], parts[1], parts[2]
+              ver_match = VERSION_RE.fullmatch(current_ver)
+              if ver_match:
+                  major, minor, patch = int(ver_match.group(1)), int(ver_match.group(2)), int(ver_match.group(3))
+                  is_current_rc = ver_match.group(4) is not None
+                  rc_num_str = ver_match.group(5) or ver_match.group(6)
+                  rc_num = int(rc_num_str) if rc_num_str is not None else (0 if is_current_rc else None)
+              else:
+                  major, minor, patch, is_current_rc, rc_num = 0, 1, 1, False, None
 
-              if bump == "patch":
-                  new_ver = f"{major}.{minor}.{patch + 1}"
+              if bump == "rc":
+                  if is_current_rc:
+                      new_ver = f"{major}.{minor}.{patch}-rc.{(rc_num or 0) + 1}"
+                  else:
+                      new_ver = f"{major}.{minor}.{patch + 1}-rc.1"
+              elif bump == "patch":
+                  if is_current_rc:
+                      new_ver = f"{major}.{minor}.{patch}"
+                  else:
+                      new_ver = f"{major}.{minor}.{patch + 1}"
               elif bump == "minor":
-                  new_ver = f"{major}.{minor + 1}.0"
+                  if is_current_rc and patch == 0:
+                      new_ver = f"{major}.{minor}.0"
+                  else:
+                      new_ver = f"{major}.{minor + 1}.0"
               elif bump == "major":
-                  new_ver = f"{major + 1}.0.0"
+                  if is_current_rc and minor == 0 and patch == 0:
+                      new_ver = f"{major}.0.0"
+                  else:
+                      new_ver = f"{major + 1}.0.0"
               elif bump == "custom":
                   if not custom_ver:
                       sys.exit("Error: custom_version input is required when bump=custom")
@@ -203,6 +223,8 @@ jobs:
               subprocess.run(["git", "tag", "-a", tag, "-m", f"Release {tag}"], check=True)
               bumped = "true"
 
+          prerelease = "true" if "-rc" in new_ver else "false"
+
           # Export outputs for subsequent steps
           github_output = os.environ.get("GITHUB_OUTPUT")
           if github_output:
@@ -210,6 +232,7 @@ jobs:
                   f.write(f"version={new_ver}\n")
                   f.write(f"tag={tag}\n")
                   f.write(f"bumped={bumped}\n")
+                  f.write(f"prerelease={prerelease}\n")
           EOF
 
       - name: Install Apple Certificate
@@ -375,6 +398,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
           SIGNING: ${{ needs.build.outputs.signing }}
         run: |
           notes=""
@@ -383,12 +407,17 @@ jobs:
             notes='> [!WARNING]
           > This release is signed with an **Apple Development** certificate, not Developer ID. It is not notarized and Gatekeeper will refuse to open it without manual approval (`xattr -d com.apple.quarantine`).'
           fi
+          prerelease_flag=()
+          if [ "$PRERELEASE" = "true" ]; then
+            prerelease_flag=(--prerelease)
+          fi
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             # --notes is prepended to the generated notes (see `gh release create --help`).
             gh release create "$RELEASE_TAG" \
               --title "$RELEASE_TAG" \
               --notes "$notes" \
-              --generate-notes
+              --generate-notes \
+              "${prerelease_flag[@]}"
           fi
           gh release upload "$RELEASE_TAG" \
             clavis-macos-arm64.dmg \
