@@ -996,7 +996,13 @@ struct KeyDetailInspectorTests {
         #expect(window.toolbar != nil)
         #expect(window.toolbarStyle == .unified)
         #expect(window.toolbar?.allowsUserCustomization == false)
-        #expect(window.frame.size == WindowManager.defaultWindowSize)
+        // AppKit clamps setContentSize height to screen.visibleFrame.height on small CI virtual displays (e.g. 1024x768 -> 674pt visible height).
+        #expect(window.frame.width == WindowManager.defaultWindowSize.width)
+        let expectedMaxHeight = min(
+            WindowManager.defaultWindowSize.height,
+            window.screen?.visibleFrame.height ?? WindowManager.defaultWindowSize.height
+        )
+        #expect(window.frame.height == expectedMaxHeight)
 
         let closeBtn = try #require(window.standardWindowButton(.closeButton))
         let closeRectInWindow = closeBtn.convert(closeBtn.bounds, to: nil)
