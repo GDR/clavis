@@ -991,12 +991,7 @@ private struct ScrollPocketVisibilityBridge: NSViewRepresentable {
             // Isolate each scroll pocket's CABackdropLayer group so side-by-side split panes
             // never share the window-wide TitlebarGroup backdrop capture.
             for pocket in pockets {
-                if String(describing: type(of: pocket)) == "NSScrollPocket" {
-                    let groupName = "ClavisScrollPocket-\(ObjectIdentifier(pocket).hashValue)"
-                    if (pocket.value(forKey: "backdropGroupName") as? String) != groupName {
-                        pocket.setValue(groupName, forKey: "backdropGroupName")
-                    }
-                }
+                Self.isolatePocketBackdropGroup(pocket)
                 pocket.layer?.allowsGroupOpacity = false
                 if let v8 = pocket.layer?.sublayers?.first(where: { $0.name == "v8" }) {
                     v8.allowsGroupOpacity = false
@@ -1038,33 +1033,18 @@ private struct ScrollPocketVisibilityBridge: NSViewRepresentable {
                 }
 
                 let duration: TimeInterval = scrolled ? 0.18 : 0.22
-                let targetSubviews = pockets + backdrops
-                let finishTransition: @Sendable () -> Void = { [weak self] in
-                    MainActor.assumeIsolated {
-                        guard let self, self.animationGeneration == gen else { return }
-                        self.fadeOutTimer?.invalidate()
-                        self.fadeOutTimer = nil
-                        self.isAnimatingFadeOut = false
-                        if self.currentTargetScrolled == false {
-                            for sub in targetSubviews {
-                                sub.isHidden = true
-                            }
-                        }
-                    }
-                }
-
-                NSAnimationContext.runAnimationGroup({ context in
+                NSAnimationContext.runAnimationGroup { context in
                     context.duration = duration
                     context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                     context.allowsImplicitAnimation = true
                     for pocket in pockets {
                         pocket.animator().alphaValue = scrolled ? 1.0 : 0.0
                     }
-                }, completionHandler: finishTransition)
+                }
 
                 if !scrolled {
-                    let timer = Timer(timeInterval: duration, repeats: false) { _ in
-                        finishTransition()
+                    let timer = Timer(timeInterval: duration, repeats: false) { [weak self] _ in
+                        self?.finishFadeOut(generation: gen)
                     }
                     RunLoop.main.add(timer, forMode: .common)
                     fadeOutTimer = timer
@@ -1086,6 +1066,55 @@ private struct ScrollPocketVisibilityBridge: NSViewRepresentable {
                         bd.isHidden = true
                     }
                 }
+            }
+        }
+
+        private func finishFadeOut(generation: UInt64) {
+            guard animationGeneration == generation else { return }
+            fadeOutTimer?.invalidate()
+            fadeOutTimer = nil
+            isAnimatingFadeOut = false
+            guard currentTargetScrolled == false, let scrollView = pairedScrollView else { return }
+            for sub in scrollView.subviews {
+                let typeName = String(describing: type(of: sub))
+                if typeName.contains("Pocket") || typeName.contains("BackdropView") {
+                    sub.isHidden = true
+                }
+            }
+        }
+
+        private static func isolatePocketBackdropGroup(_ pocket: NSView) {
+            guard String(describing: type(of: pocket)) == "NSScrollPocket" else { return }
+            let groupName = "ClavisScrollPocket-\(ObjectIdentifier(pocket).hashValue)"
+            if pocket.identifier?.rawValue != groupName {
+                pocket.identifier = NSUserInterfaceItemIdentifier(groupName)
+            }
+            let getSel = NSSelectorFromString("backdropGroupName")
+            let setSel = NSSelectorFromString("setBackdropGroupName:")
+            if pocket.responds(to: getSel), pocket.responds(to: setSel) {
+                if (pocket.value(forKey: "backdropGroupName") as? String) != groupName {
+                    pocket.setValue(groupName, forKey: "backdropGroupName")
+                }
+            }
+            if let rootLayer = pocket.layer {
+                isolateContentBlurBackdropLayers(in: rootLayer, groupName: groupName)
+            }
+        }
+
+        private static func isolateContentBlurBackdropLayers(in layer: CALayer, groupName: String) {
+            let getGroupSel = NSSelectorFromString("groupName")
+            let setGroupSel = NSSelectorFromString("setGroupName:")
+            if layer.responds(to: getGroupSel), layer.responds(to: setGroupSel) {
+                let currentGroup = layer.value(forKey: "groupName") as? String
+                let layerName = layer.name ?? ""
+                if layerName.contains("ContentBlur") || (currentGroup?.contains("TitlebarGroup") == true) {
+                    if currentGroup != groupName {
+                        layer.setValue(groupName, forKey: "groupName")
+                    }
+                }
+            }
+            for sub in layer.sublayers ?? [] {
+                isolateContentBlurBackdropLayers(in: sub, groupName: groupName)
             }
         }
 
