@@ -697,7 +697,7 @@ public final class HistoryViewModel: ObservableObject {
                 let (page, pruned, total) = try Self.fetchPage(
                     factory: factory, keyring: keyring, context: context, filter: filter,
                     base: base, calendar: calendar, cursor: nil, pageSize: pageSize, wantTotal: true)
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     guard let self, self.generation == gen else { return }
                     self.records = page.matched
                     self.sensitive = page.unsealed
@@ -713,7 +713,7 @@ public final class HistoryViewModel: ObservableObject {
             } catch is CancellationError {
                 // Superseded by a newer query; that load owns the loading state.
             } catch {
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     guard let self, self.generation == gen else { return }
                     self.needsKeyContext = needsKey
                     self.errorMessage = error.localizedDescription
@@ -746,7 +746,7 @@ public final class HistoryViewModel: ObservableObject {
                 let (page, pruned, _) = try Self.fetchPage(
                     factory: factory, keyring: keyring, context: context, filter: filter,
                     base: base, calendar: calendar, cursor: cursor, pageSize: pageSize, wantTotal: false)
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     guard let self, self.generation == gen else { return }
                     // De-duplicate across batches by event identity.
                     var seen = Set(self.records.map(\.event.id))
@@ -763,12 +763,12 @@ public final class HistoryViewModel: ObservableObject {
                     self.rebuildItems()
                 }
             } catch is CancellationError {
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     guard let self, self.generation == gen else { return }
                     self.isLoadingMore = false
                 }
             } catch {
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     guard let self, self.generation == gen else { return }
                     self.errorMessage = error.localizedDescription
                     self.isLoadingMore = false
@@ -817,7 +817,7 @@ public final class HistoryViewModel: ObservableObject {
                 d.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.map(\.key)
             }
             let hosts = ranked(hostCounts), procs = ranked(processCounts)
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.indexedHosts = hosts
                 self.indexedProcessPaths = procs

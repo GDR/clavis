@@ -297,8 +297,8 @@ final class DaemonLifecycleTests {
     }
 
     @MainActor
-    @Test func testAppStateInitializationAndDaemonFlag() throws {
-        try fixture.runSync {
+    @Test func testAppStateInitializationAndDaemonFlag() {
+        fixture.runSync {
             let appState = AppState(
                 keyManager: makeKeyManager(),
                 sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-state.sock").path)
