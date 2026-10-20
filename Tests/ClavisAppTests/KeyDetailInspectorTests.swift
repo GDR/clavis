@@ -939,10 +939,24 @@ struct KeyDetailInspectorTests {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         #expect(pocketSubviews(in: leftSV).allSatisfy { !$0.isHidden })
 
-        // Returning to the top hides the pocket again.
+        // Returning to the top fades out the pocket smoothly (stays unhidden during transition, then hides on completion).
         leftSV.contentView.setBoundsOrigin(NSPoint(x: 0, y: -leftSV.contentInsets.top))
         NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: leftSV.contentView)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let leftPocket = try! #require(leftSV.subviews.first { String(describing: type(of: $0)) == "NSScrollPocket" })
+        let rightPocket = try! #require(rightSV.subviews.first { String(describing: type(of: $0)) == "NSScrollPocket" })
+        #expect(!leftPocket.isHidden)
+        #expect(leftPocket.alphaValue == 0.0)
+        #expect(leftPocket.layer?.allowsGroupOpacity == false)
+
+        // Left and right scroll pockets must use distinct backdropGroupNames so scrolling one pane
+        // never alters the other pane's CABackdropLayer capture in WindowServer.
+        let leftGroup = leftPocket.value(forKey: "backdropGroupName") as? String
+        let rightGroup = rightPocket.value(forKey: "backdropGroupName") as? String
+        #expect(leftGroup != nil)
+        #expect(rightGroup != nil)
+        #expect(leftGroup != rightGroup)
+
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
         #expect(pocketSubviews(in: leftSV).allSatisfy { $0.isHidden })
 
         appState.activeMainPane = .history
@@ -958,5 +972,10 @@ struct KeyDetailInspectorTests {
         historyRightSV.contentView.setBoundsOrigin(NSPoint(x: 0, y: -60))
         NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: historyRightSV.contentView)
         #expect(pocketSubviews(in: historyRightSV).allSatisfy { !$0.isHidden })
+
+        let historyPocket = try! #require(historyRightSV.subviews.first { String(describing: type(of: $0)) == "NSScrollPocket" })
+        let historyGroup = historyPocket.value(forKey: "backdropGroupName") as? String
+        #expect(historyGroup != nil)
+        #expect(historyGroup != leftGroup)
     }
 }

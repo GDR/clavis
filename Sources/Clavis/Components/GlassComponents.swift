@@ -829,22 +829,14 @@ public extension View {
 private struct TopLiquidGlassBarModifier<Bar: View>: ViewModifier {
     let alignment: HorizontalAlignment
     let bar: Bar
-    @State private var isScrolled = false
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
             content
-                .onScrollGeometryChange(for: Bool.self) { geometry in
-                    // contentOffset starts at -contentInsets.top when resting at the top edge.
-                    geometry.contentOffset.y + geometry.contentInsets.top > 1
-                } action: { _, scrolled in
-                    isScrolled = scrolled
-                }
                 .scrollEdgeEffectStyle(.soft, for: .top)
-                .scrollEdgeEffectHidden(!isScrolled, for: .top)
                 .safeAreaBar(edge: .top, alignment: alignment, spacing: 0) {
-                    bar.background(ScrollPocketVisibilityBridge(isScrolled: isScrolled))
+                    bar.background(ScrollPocketVisibilityBridge())
                 }
         } else {
             content
@@ -858,8 +850,6 @@ private struct TopLiquidGlassBarModifier<Bar: View>: ViewModifier {
 /// hides `PocketMask`/`PocketBlur` but leaves `NSScrollPocket`'s `v8` thin-film
 /// backdrop layer visible at rest, which alters header opacity over tinted panes.
 private struct ScrollPocketVisibilityBridge: NSViewRepresentable {
-    var isScrolled: Bool
-
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
@@ -902,8 +892,13 @@ private struct ScrollPocketVisibilityBridge: NSViewRepresentable {
 
     final class Coordinator {
         weak var probeView: NSView?
+        private weak var pairedScrollView: NSScrollView?
         private var boundsObserver: NSObjectProtocol?
         private var frameObserver: NSObjectProtocol?
+        private var currentTargetScrolled: Bool?
+        private var animationGeneration: UInt64 = 0
+        private var isAnimatingFadeOut = false
+        private var fadeOutTimer: Timer?
 
         deinit {
             teardown()
@@ -918,8 +913,12 @@ private struct ScrollPocketVisibilityBridge: NSViewRepresentable {
             ) { [weak self] note in
                 guard let self,
                       let view = note.object as? NSView,
-                      let window = self.probeView?.window,
+                      let probe = self.probeView,
+                      let window = probe.window,
                       view.window === window else { return }
+                if let sv = self.pairedScrollView, sv.window === window {
+                    guard view === sv.contentView || view === sv || view === probe || view.isDescendant(of: sv) else { return }
+                }
                 self.applyVisibility()
             }
             frameObserver = NotificationCenter.default.addObserver(
@@ -929,13 +928,19 @@ private struct ScrollPocketVisibilityBridge: NSViewRepresentable {
             ) { [weak self] note in
                 guard let self,
                       let view = note.object as? NSView,
-                      let window = self.probeView?.window,
+                      let probe = self.probeView,
+                      let window = probe.window,
                       view.window === window else { return }
+                if let sv = self.pairedScrollView, sv.window === window {
+                    guard view === sv.contentView || view === sv || view === probe || view.isDescendant(of: sv) else { return }
+                }
                 self.applyVisibility()
             }
         }
 
         func teardown() {
+            fadeOutTimer?.invalidate()
+            fadeOutTimer = nil
             if let boundsObserver {
                 NotificationCenter.default.removeObserver(boundsObserver)
                 self.boundsObserver = nil
@@ -953,8 +958,18 @@ private struct ScrollPocketVisibilityBridge: NSViewRepresentable {
         }
 
         private func applyVisibility() {
-            guard let probeView,
-                  let scrollView = findPairedScrollView(from: probeView) else { return }
+            guard let probeView else { return }
+            let scrollView: NSScrollView
+            if let cached = pairedScrollView, cached.window === probeView.window, !cached.isHidden {
+                scrollView = cached
+            } else if let found = findPairedScrollView(from: probeView) {
+                pairedScrollView = found
+                currentTargetScrolled = nil
+                scrollView = found
+            } else {
+                return
+            }
+
             if !scrollView.contentView.postsBoundsChangedNotifications {
                 scrollView.contentView.postsBoundsChangedNotifications = true
             }
@@ -962,11 +977,113 @@ private struct ScrollPocketVisibilityBridge: NSViewRepresentable {
             let offsetY = scrollView.contentView.bounds.origin.y
             let scrolled = insetTop > 0 && (offsetY + insetTop > 1)
 
+            var pockets: [NSView] = []
+            var backdrops: [NSView] = []
             for sub in scrollView.subviews {
                 let typeName = String(describing: type(of: sub))
-                if typeName.contains("Pocket") || typeName.contains("BackdropView") {
-                    if sub.isHidden == scrolled {
-                        sub.isHidden = !scrolled
+                if typeName.contains("Pocket") {
+                    pockets.append(sub)
+                } else if typeName.contains("BackdropView") {
+                    backdrops.append(sub)
+                }
+            }
+
+            // Isolate each scroll pocket's CABackdropLayer group so side-by-side split panes
+            // never share the window-wide TitlebarGroup backdrop capture.
+            for pocket in pockets {
+                if String(describing: type(of: pocket)) == "NSScrollPocket" {
+                    let groupName = "ClavisScrollPocket-\(ObjectIdentifier(pocket).hashValue)"
+                    if (pocket.value(forKey: "backdropGroupName") as? String) != groupName {
+                        pocket.setValue(groupName, forKey: "backdropGroupName")
+                    }
+                }
+                pocket.layer?.allowsGroupOpacity = false
+                if let v8 = pocket.layer?.sublayers?.first(where: { $0.name == "v8" }) {
+                    v8.allowsGroupOpacity = false
+                }
+            }
+
+            if currentTargetScrolled == nil {
+                fadeOutTimer?.invalidate()
+                fadeOutTimer = nil
+                currentTargetScrolled = scrolled
+                isAnimatingFadeOut = false
+                for pocket in pockets {
+                    pocket.alphaValue = scrolled ? 1.0 : 0.0
+                    pocket.isHidden = !scrolled
+                }
+                for bd in backdrops {
+                    bd.isHidden = !scrolled
+                }
+            } else if currentTargetScrolled != scrolled {
+                fadeOutTimer?.invalidate()
+                fadeOutTimer = nil
+                currentTargetScrolled = scrolled
+                animationGeneration &+= 1
+                let gen = animationGeneration
+                isAnimatingFadeOut = !scrolled
+
+                for bd in backdrops where bd.isHidden {
+                    bd.isHidden = false
+                }
+                for pocket in pockets {
+                    if pocket.isHidden {
+                        pocket.alphaValue = 0.0
+                        pocket.isHidden = false
+                    }
+                    pocket.layer?.allowsGroupOpacity = false
+                    if let v8 = pocket.layer?.sublayers?.first(where: { $0.name == "v8" }) {
+                        v8.allowsGroupOpacity = false
+                    }
+                }
+
+                let duration: TimeInterval = scrolled ? 0.18 : 0.22
+                let targetSubviews = pockets + backdrops
+                let finishTransition: @Sendable () -> Void = { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self, self.animationGeneration == gen else { return }
+                        self.fadeOutTimer?.invalidate()
+                        self.fadeOutTimer = nil
+                        self.isAnimatingFadeOut = false
+                        if self.currentTargetScrolled == false {
+                            for sub in targetSubviews {
+                                sub.isHidden = true
+                            }
+                        }
+                    }
+                }
+
+                NSAnimationContext.runAnimationGroup({ context in
+                    context.duration = duration
+                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    context.allowsImplicitAnimation = true
+                    for pocket in pockets {
+                        pocket.animator().alphaValue = scrolled ? 1.0 : 0.0
+                    }
+                }, completionHandler: finishTransition)
+
+                if !scrolled {
+                    let timer = Timer(timeInterval: duration, repeats: false) { _ in
+                        finishTransition()
+                    }
+                    RunLoop.main.add(timer, forMode: .common)
+                    fadeOutTimer = timer
+                }
+            } else {
+                if scrolled {
+                    for bd in backdrops where bd.isHidden {
+                        bd.isHidden = false
+                    }
+                    for pocket in pockets where pocket.isHidden {
+                        pocket.isHidden = false
+                    }
+                } else if !isAnimatingFadeOut {
+                    for pocket in pockets {
+                        if pocket.alphaValue != 0.0 { pocket.alphaValue = 0.0 }
+                        if !pocket.isHidden { pocket.isHidden = true }
+                    }
+                    for bd in backdrops where !bd.isHidden {
+                        bd.isHidden = true
                     }
                 }
             }
