@@ -1,10 +1,8 @@
 import SwiftUI
 import AppKit
 
-/// Single-line `NSTextField` for the History draft expression inside the Liquid Glass search capsule.
-///
-/// Why AppKit: SwiftUI's `TextField` exposes neither the caret position (needed to replace the
-/// fragment under the caret), nor ↑/↓/Return/Esc interception, nor marked-text (IME) state.
+/// A native search control. AppKit owns its field editor, selection, undo, IME and focus ring.
+/// Only expression-specific commands and the trailing Filter accessory are adapted here.
 struct HistorySearchTextField: NSViewRepresentable {
     var text: String
     var caret: Int
@@ -13,63 +11,70 @@ struct HistorySearchTextField: NSViewRepresentable {
     var accessibilityLabel: String
     var onEdit: (String, Int) -> Void
     var onFocusChange: (Bool) -> Void
-    /// Return true when the move was consumed (a dropdown is open).
     var onMove: (Int) -> Bool
     var onReturn: () -> Bool
     var onEscape: () -> Bool
-    /// The user moved the caret with a click or Left/Right/Home/End (not typing, not programmatic).
-    /// Prototype: these re-show the dropdown for the new caret position.
     var onCaretGesture: () -> Void = {}
-    /// A programmatic focus request finished (whether or not focus actually changed).
     var onFocusRequestHandled: () -> Void = {}
-    /// Mirrors whether the suggestions dropdown is open (VoiceOver: expanded / collapsed).
     var isExpanded: Bool = false
+    var onAddFilter: () -> Void = {}
+    var onSelectionChange: (NSRange) -> Void = { _ in }
+    var onNativeField: (NSSearchField) -> Void = { _ in }
 
     static let height: CGFloat = 34
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
-    func makeNSView(context: Context) -> FieldView {
+    func makeNSView(context: Context) -> SearchSurface {
         let field = FieldView()
         field.delegate = context.coordinator
-        field.isBordered = false
-        field.drawsBackground = false
-        field.focusRingType = .none   // the Liquid Glass capsule draws focus
-        field.font = .systemFont(ofSize: 13)
-        field.textColor = .labelColor
-        field.lineBreakMode = .byClipping
-        field.usesSingleLineMode = true
-        field.cell?.isScrollable = true
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.searchChanged(_:))
+        field.isEditable = true
+        field.isSelectable = true
+        // Use the native large control metrics for this 34-point header row;
+        // stretching a regular search field leaves a short legacy-looking bezel.
+        field.controlSize = .large
+        field.font = .systemFont(ofSize: NSFont.systemFontSize(for: .large))
+        field.placeholderString = placeholder
+        field.stringValue = text
+        field.sendsWholeSearchString = false
+        field.sendsSearchStringImmediately = true
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        field.onBecomeFirstResponder = { [weak coordinator = context.coordinator, weak field] in
-            guard let coordinator, let field else { return }
-            coordinator.attachSelectionObserver(to: field)
-            coordinator.syncCaret(from: field)   // the model's caret may be stale after a blur
-            coordinator.parent.onFocusChange(true)
+        field.filterButton.target = context.coordinator
+        field.filterButton.action = #selector(Coordinator.addFilter(_:))
+        context.coordinator.field = field
+        field.didFocus = { [weak coordinator = context.coordinator] in
+            coordinator?.observeSelection()
+            coordinator?.parent.onFocusChange(true)
+            coordinator?.publishEditor()
         }
-        field.stringValue = text
-        context.coordinator.lastFocusToken = focusToken
-        return field
+        context.coordinator.installClickObserver()
+        onNativeField(field)
+        return SearchSurface(field: field)
     }
 
-    func updateNSView(_ field: FieldView, context: Context) {
+    func updateNSView(_ surface: SearchSurface, context: Context) {
+        let field = surface.field
         let coordinator = context.coordinator
         coordinator.parent = self
-        field.font = .systemFont(ofSize: 13)
         field.placeholderString = placeholder
         field.setAccessibilityLabel(accessibilityLabel)
         field.setAccessibilityExpanded(isExpanded)
+        field.filterButton.title = HistoryText.addFilter
+        field.filterButton.setAccessibilityLabel(HistoryText.addFilterAccessibility)
+        field.filterButton.toolTip = HistoryText.addFilterAccessibility
 
         if let editor = field.currentEditor() as? NSTextView {
-            // Never clobber IME composition, and only write when the model really differs so the
-            // user's own typing/selection is not reset on every SwiftUI update.
+            // User selection is authoritative. A SwiftUI refresh never collapses it merely
+            // because the model has received another selection notification.
             if !editor.hasMarkedText(), editor.string != text {
-                coordinator.isApplyingModelChange = true
+                coordinator.applyingModel = true
                 editor.string = text
-                let length = (text as NSString).length
-                editor.setSelectedRange(NSRange(location: min(max(caret, 0), length), length: 0))
-                coordinator.isApplyingModelChange = false
+                field.stringValue = text
+                editor.setSelectedRange(NSRange(location: min(max(caret, 0), (text as NSString).length), length: 0))
+                coordinator.applyingModel = false
             }
         } else if field.stringValue != text {
             field.stringValue = text
@@ -77,106 +82,207 @@ struct HistorySearchTextField: NSViewRepresentable {
 
         if coordinator.lastFocusToken != focusToken {
             coordinator.lastFocusToken = focusToken
-            DispatchQueue.main.async { [weak field, weak coordinator] in
-                guard let field, let window = field.window else { return }
-                coordinator?.isProgrammaticSelection = true
-                window.makeFirstResponder(field)
-                // makeFirstResponder selects all; keep the caret at the end instead.
-                if let editor = field.currentEditor() {
-                    editor.selectedRange = NSRange(location: (editor.string as NSString).length, length: 0)
+            let request = focusToken
+            DispatchQueue.main.async { [weak coordinator, weak field] in
+                guard let coordinator, let field, let window = field.window,
+                      coordinator.parent.focusToken == request else { return }
+                coordinator.applyingModel = true
+                if field.currentEditor() == nil { window.makeFirstResponder(field) }
+                if let editor = field.currentEditor() as? NSTextView, !editor.hasMarkedText() {
+                    let position = min(max(coordinator.parent.caret, 0), (editor.string as NSString).length)
+                    editor.setSelectedRange(NSRange(location: position, length: 0))
                 }
-                coordinator?.isProgrammaticSelection = false
-                coordinator?.parent.onFocusRequestHandled()
+                coordinator.applyingModel = false
+                coordinator.observeSelection()
+                coordinator.parent.onFocusRequestHandled()
             }
         }
     }
 
-    static func dismantleNSView(_ field: FieldView, coordinator: Coordinator) {
-        coordinator.detachSelectionObserver()
+    static func dismantleNSView(_ surface: SearchSurface, coordinator: Coordinator) {
+        let field = surface.field
+        coordinator.detach()
         field.delegate = nil
+        field.target = nil
+        field.filterButton.target = nil
     }
 
-    final class FieldView: NSTextField {
-        var onBecomeFirstResponder: (() -> Void)?
+    /// A standalone NSSearchField doesn't acquire the glass surface of an
+    /// NSSearchToolbarItem. Supply that surface using the public AppKit material;
+    /// keep the real native field (and its field editor) in front of it.
+    final class SearchSurface: NSView {
+        let field: FieldView
 
+        init(field: FieldView, usesGlass: Bool = true) {
+            self.field = field
+            super.init(frame: .zero)
+            let surface: NSView
+            if #available(macOS 26.0, *), usesGlass {
+                let glass = NSGlassEffectView()
+                glass.style = .regular
+                glass.cornerRadius = HistorySearchTextField.height / 2
+                let content = NSView()
+                glass.contentView = content
+                addSubview(glass)
+                glass.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    glass.leadingAnchor.constraint(equalTo: leadingAnchor),
+                    glass.trailingAnchor.constraint(equalTo: trailingAnchor),
+                    glass.topAnchor.constraint(equalTo: topAnchor),
+                    glass.bottomAnchor.constraint(equalTo: bottomAnchor)
+                ])
+                // Preserve native bezeled layout metrics but remove its opaque
+                // fill. Borderless NSSearchField cells lose their text padding.
+                // AppKit still draws search/cancel buttons and the focus ring.
+                field.isBezeled = true
+                field.backgroundColor = .clear
+                field.drawsBackground = false
+                surface = content
+            } else {
+                surface = self
+            }
+            surface.addSubview(field)
+            field.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                field.leadingAnchor.constraint(equalTo: surface.leadingAnchor),
+                field.trailingAnchor.constraint(equalTo: surface.trailingAnchor),
+                field.topAnchor.constraint(equalTo: surface.topAnchor),
+                field.bottomAnchor.constraint(equalTo: surface.bottomAnchor)
+            ])
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
         override var intrinsicContentSize: NSSize {
-            NSSize(width: NSView.noIntrinsicMetric, height: super.intrinsicContentSize.height)
-        }
-
-        override func becomeFirstResponder() -> Bool {
-            let ok = super.becomeFirstResponder()
-            if ok { onBecomeFirstResponder?() }
-            return ok
+            NSSize(width: NSView.noIntrinsicMetric, height: HistorySearchTextField.height)
         }
     }
 
-    final class Coordinator: NSObject, NSTextFieldDelegate {
+    final class FieldView: NSSearchField {
+        var didFocus: (() -> Void)?
+        override func becomeFirstResponder() -> Bool {
+            let accepted = super.becomeFirstResponder()
+            if accepted { didFocus?() }
+            return accepted
+        }
+        let filterButton = NSButton(title: "", image: NSImage(systemSymbolName: "plus", accessibilityDescription: nil)!, target: nil, action: nil)
+        private static let accessoryWidth: CGFloat = 66
+        // Keep AppKit's original cell. Its public layout hooks reserve room
+        // for the accessory without replacing native control rendering.
+        override var searchTextBounds: NSRect {
+            var rect = super.searchTextBounds
+            rect.size.width = max(0, rect.width - Self.accessoryWidth)
+            return rect
+        }
+        override var cancelButtonBounds: NSRect {
+            super.cancelButtonBounds.offsetBy(dx: -Self.accessoryWidth, dy: 0)
+        }
+        override var mouseDownCanMoveWindow: Bool { false }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override var intrinsicContentSize: NSSize {
+            NSSize(width: NSView.noIntrinsicMetric, height: HistorySearchTextField.height)
+        }
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            filterButton.bezelStyle = .inline
+            filterButton.isBordered = false
+            filterButton.font = .systemFont(ofSize: 12)
+            filterButton.imagePosition = .imageLeading
+            filterButton.imageScaling = .scaleProportionallyDown
+            filterButton.title = HistoryText.addFilter
+            addSubview(filterButton)
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override func layout() {
+            super.layout()
+            filterButton.frame = NSRect(x: max(0, bounds.width - Self.accessoryWidth - 4),
+                                        y: (bounds.height - 24) / 2, width: Self.accessoryWidth, height: 24)
+        }
+    }
+
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
         var parent: HistorySearchTextField
+        weak var field: FieldView?
         var lastFocusToken: Int
-        var isApplyingModelChange = false
-        /// Set around our own focus/selection changes so they are never mistaken for a user gesture.
-        var isProgrammaticSelection = false
+        var applyingModel = false
         private var selectionObserver: NSObjectProtocol?
+        private var clickMonitor: Any?
 
         init(parent: HistorySearchTextField) {
             self.parent = parent
-            self.lastFocusToken = parent.focusToken
+            lastFocusToken = parent.focusToken
         }
 
-        deinit { detachSelectionObserver() }
-
-        func attachSelectionObserver(to field: NSTextField) {
-            detachSelectionObserver()
-            guard let editor = field.currentEditor() as? NSTextView else { return }
+        func observeSelection() {
+            if let selectionObserver { NotificationCenter.default.removeObserver(selectionObserver) }
+            guard let editor = field?.currentEditor() as? NSTextView else { selectionObserver = nil; return }
             selectionObserver = NotificationCenter.default.addObserver(
                 forName: NSTextView.didChangeSelectionNotification, object: editor, queue: .main
-            ) { [weak self] note in
-                guard let self, let editor = note.object as? NSTextView else { return }
-                self.push(from: editor, isSelectionChange: true)
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.publishEditor()
+                if let event = NSApp.currentEvent, event.type == .keyDown,
+                   [123, 124, 115, 119].contains(event.keyCode), !self.applyingModel, !editor.hasMarkedText() {
+                    self.parent.onCaretGesture()
+                }
             }
         }
 
-        func detachSelectionObserver() {
+        /// Observe, never consume, a click. Native field-editor tracking handles insertion,
+        /// drag selection and double clicks identically in production and tests.
+        func installClickObserver() {
+            clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+                guard let self, let field = self.field, event.window === field.window,
+                      field.bounds.contains(field.convert(event.locationInWindow, from: nil)),
+                      !field.filterButton.frame.contains(field.convert(event.locationInWindow, from: nil)) else { return event }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, let editor = self.field?.currentEditor() as? NSTextView,
+                          !editor.hasMarkedText() else { return }
+                    self.observeSelection()
+                    self.publishEditor()
+                    self.parent.onCaretGesture()
+                }
+                return event
+            }
+        }
+
+        func detach() {
+            if let selectionObserver { NotificationCenter.default.removeObserver(selectionObserver) }
+            if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+            selectionObserver = nil
+            clickMonitor = nil
+        }
+
+        func publishEditor() {
+            guard !applyingModel, let editor = field?.currentEditor() as? NSTextView,
+                  !editor.hasMarkedText() else { return }
+            parent.onSelectionChange(editor.selectedRange())
+            parent.onEdit(editor.string, editor.selectedRange().location)
+        }
+
+        func controlTextDidBeginEditing(_ obj: Notification) {
+            observeSelection()
+            parent.onFocusChange(true)
+            publishEditor()
+        }
+        func controlTextDidChange(_ obj: Notification) { publishEditor() }
+        func controlTextDidEndEditing(_ obj: Notification) {
+            publishEditor()
             if let selectionObserver { NotificationCenter.default.removeObserver(selectionObserver) }
             selectionObserver = nil
-        }
-
-        private func push(from editor: NSTextView, isSelectionChange: Bool = false) {
-            guard !isApplyingModelChange else { return }
-            parent.onEdit(editor.string, editor.selectedRange().location)
-            if isSelectionChange, !isProgrammaticSelection, Self.isCaretGesture(NSApp.currentEvent) {
-                parent.onCaretGesture()
-            }
-        }
-
-        func syncCaret(from field: NSTextField) {
-            guard let editor = field.currentEditor() as? NSTextView else { return }
-            parent.onEdit(editor.string, editor.selectedRange().location)
-        }
-
-        /// Mouse clicks and the caret-only navigation keys (Left, Right, Home, End).
-        private static func isCaretGesture(_ event: NSEvent?) -> Bool {
-            guard let event else { return false }
-            switch event.type {
-            case .leftMouseDown, .leftMouseUp: return true
-            case .keyDown:
-                // 123 ←, 124 →, 115 Home, 119 End
-                return [123, 124, 115, 119].contains(event.keyCode)
-            default: return false
-            }
-        }
-
-        func controlTextDidChange(_ obj: Notification) {
-            guard let editor = obj.userInfo?["NSFieldEditor"] as? NSTextView else { return }
-            push(from: editor)
-        }
-
-        func controlTextDidEndEditing(_ obj: Notification) {
-            detachSelectionObserver()
             parent.onFocusChange(false)
         }
+        @objc func searchChanged(_ sender: NSSearchField) {
+            if field?.currentEditor() != nil { publishEditor() }
+            else {
+                let caret = (sender.stringValue as NSString).length
+                parent.onSelectionChange(NSRange(location: caret, length: 0))
+                parent.onEdit(sender.stringValue, caret)
+            }
+        }
+        @objc func addFilter(_ sender: NSButton) { parent.onAddFilter() }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard !textView.hasMarkedText() else { return false }
             switch selector {
             case #selector(NSResponder.moveUp(_:)): return parent.onMove(-1)
             case #selector(NSResponder.moveDown(_:)): return parent.onMove(1)
