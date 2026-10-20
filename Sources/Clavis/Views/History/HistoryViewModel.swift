@@ -80,6 +80,7 @@ public final class HistoryViewModel: ObservableObject {
     // MARK: Draft (never affects results until committed)
     @Published public private(set) var draftText: String = ""
     @Published public private(set) var draftCaret: Int = 0
+    public private(set) var draftSelection = NSRange(location: 0, length: 0)
     @Published public private(set) var suggestions: [HistorySuggestion] = []
     @Published public private(set) var draftError: HistoryDraftDiagnostic?
 
@@ -277,9 +278,17 @@ public final class HistoryViewModel: ObservableObject {
     // MARK: - Draft
 
     public func updateDraft(text: String, caret: Int) {
-        guard text != draftText || caret != draftCaret else { return }
+        updateDraft(text: text, selection: NSRange(location: caret, length: 0))
+    }
+
+    public func updateDraft(text: String, selection: NSRange) {
+        let length = (text as NSString).length
+        let start = min(max(selection.location, 0), length)
+        let selection = NSRange(location: start, length: min(max(selection.length, 0), length - start))
+        guard text != draftText || selection != draftSelection else { return }
+        draftSelection = selection
         draftText = text
-        draftCaret = caret
+        draftCaret = selection.location
         draftError = nil
         refreshSuggestions()
     }
@@ -287,6 +296,7 @@ public final class HistoryViewModel: ObservableObject {
     private func draftReset() {
         draftText = ""
         draftCaret = 0
+        draftSelection = NSRange(location: 0, length: 0)
         draftError = nil
         suggestions = []
     }
@@ -311,7 +321,7 @@ public final class HistoryViewModel: ObservableObject {
     }
 
     public var completionContext: HistoryCompletionContext? {
-        HistoryCompletionEngine.context(text: draftText, caret: draftCaret)
+        HistoryCompletionEngine.context(text: draftText, selection: draftSelection)
     }
 
     /// `+ Filter`: start a fresh term after whatever is already typed, so the prefix list shows.
@@ -321,17 +331,18 @@ public final class HistoryViewModel: ObservableObject {
         let caret = (text as NSString).length
         draftText = text
         draftCaret = caret
+        draftSelection = NSRange(location: caret, length: 0)
         draftError = nil
         refreshSuggestions()
     }
 
     /// Recomputes the dropdown for the caret position. Never touches committed state.
     public func refreshSuggestions() {
-        guard let context = HistoryCompletionEngine.context(text: draftText, caret: draftCaret) else {
+        guard let context = completionContext else {
             suggestions = []
             return
         }
-        suggestions = HistoryCompletionEngine.suggestions(for: context, catalog: catalog, limit: 50)
+        suggestions = HistoryCompletionEngine.suggestions(for: context, catalog: catalog, limit: 7)
     }
 
     /// Called whenever the dropdown is (re)opened: focus, `+ Filter`, click, caret keys, ↑/↓.
@@ -352,18 +363,20 @@ public final class HistoryViewModel: ObservableObject {
 
     /// Accepting a prefix edits the draft; accepting a value commits one badge and consumes its token.
     public func accept(_ suggestion: HistorySuggestion) {
-        guard let context = HistoryCompletionEngine.context(text: draftText, caret: draftCaret) else { return }
+        guard let context = completionContext else { return }
         switch suggestion.kind {
         case .prefix(let field):
             let edit = HistoryCompletionEngine.insertPrefix(field, text: draftText, context: context)
             draftText = edit.text
             draftCaret = edit.caret
+            draftSelection = NSRange(location: edit.caret, length: 0)
             draftError = nil
             refreshSuggestions()   // now offers the values for this prefix
         case .value(let criterion):
             let edit = HistoryCompletionEngine.removeToken(text: draftText, context: context)
             draftText = edit.text
             draftCaret = edit.caret
+            draftSelection = NSRange(location: edit.caret, length: 0)
             draftError = nil
             add(criterion)
             suggestions = []       // closed after committing; the field keeps focus
