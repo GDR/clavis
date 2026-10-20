@@ -112,6 +112,14 @@ struct HistoryEventRow: View {
                 .help(Self.isoFormatter.string(from: event.time))
             }
             .frame(minHeight: 34)
+            .padding(.vertical, 9)
+            .background {
+                ZStack {
+                    VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow)
+                    DesignTokens.inspectorBackground
+                }
+            }
+            .zIndex(1)
             .contentShape(Rectangle())
             // Whole row discloses details; the host link above is its own control and wins its clicks.
             .onTapGesture(perform: toggle)
@@ -122,9 +130,12 @@ struct HistoryEventRow: View {
             .accessibilityAddTraits(.isButton)
             .accessibilityAction(.default, toggle)
 
-            if isExpanded { details }
+            if isExpanded {
+                details
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
-        .padding(.vertical, 9)
+        .clipped()
         .overlay(alignment: .bottom) {
             Rectangle().fill(DesignTokens.cardBorder).frame(height: 1)
         }
@@ -162,7 +173,8 @@ struct HistoryEventRow: View {
             .lineSpacing(4)
             .textSelection(.enabled)
             .padding(.leading, 24)
-            .padding(.top, 10)
+            .padding(.top, 1)
+            .padding(.bottom, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -262,6 +274,7 @@ private struct HistoryRowKeyboardDisclosure: ViewModifier {
         if #available(macOS 14.0, *) {
             content
                 .focusable()
+                .focusEffectDisabled()
                 .onKeyPress(.space) { toggle(); return .handled }
                 .onKeyPress(.return) { toggle(); return .handled }
         } else {
