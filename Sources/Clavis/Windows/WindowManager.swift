@@ -24,9 +24,9 @@ public class WindowManager: NSObject, NSWindowDelegate {
 
     /// Closes the frontmost active window.
     public func closeActiveWindow() {
-        if let keyWindow = NSApp.keyWindow {
+        if let keyWindow = NSApp?.keyWindow {
             keyWindow.performClose(nil)
-        } else if let mainWindow = NSApp.mainWindow {
+        } else if let mainWindow = NSApp?.mainWindow {
             mainWindow.performClose(nil)
         } else if let window = [keyManagerWindow, settingsWindow, historyWindow].compactMap({ $0 }).first(where: { $0.isVisible }) {
             window.performClose(nil)
@@ -34,7 +34,7 @@ public class WindowManager: NSObject, NSWindowDelegate {
     }
 
     public func dismissMenuBarExtra() {
-        for window in NSApp.windows {
+        for window in NSApp?.windows ?? [] {
             if let button = findStatusBarButton(in: window.contentView), button.state == .on {
                 button.performClick(nil)
                 return
@@ -61,15 +61,15 @@ public class WindowManager: NSObject, NSWindowDelegate {
 
     public func openKeyManager(sheet: KeyManagerSheet? = nil) {
         dismissMenuBarExtra()
-        NSApp.setActivationPolicy(.regular)
+        NSApp?.setActivationPolicy(.regular)
         if let sheet {
             AppState.shared.activeSheet = sheet
         }
 
         if let window = keyManagerWindow {
-            let wasKeyWindow = window.isKeyWindow && NSApp.isActive
+            let wasKeyWindow = window.isKeyWindow && (NSApp?.isActive == true)
             window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            NSApp?.activate(ignoringOtherApps: true)
             if wasKeyWindow {
                 Task {
                     await PanelLockController.shared.unlockIfNeededOnWindowFocus()
@@ -82,6 +82,7 @@ public class WindowManager: NSObject, NSWindowDelegate {
             KeyListView().environmentObject(AppState.shared)
         }
         let hostingController = NSHostingController(rootView: keyListView)
+        hostingController.sizingOptions = []
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.defaultWindowSize),
@@ -93,6 +94,10 @@ public class WindowManager: NSObject, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.titlebarSeparatorStyle = .none
+        let toolbar = NSToolbar(identifier: "ClavisMainWindowToolbar")
+        toolbar.allowsUserCustomization = false
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
@@ -111,7 +116,7 @@ public class WindowManager: NSObject, NSWindowDelegate {
 
         self.keyManagerWindow = window
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp?.activate(ignoringOtherApps: true)
     }
 
     public func openSettings() {
@@ -142,7 +147,7 @@ public class WindowManager: NSObject, NSWindowDelegate {
             }
         }
         if keyManagerWindow == nil && settingsWindow == nil && historyWindow == nil {
-            NSApp.setActivationPolicy(.accessory)
+            NSApp?.setActivationPolicy(.accessory)
             PanelLockController.shared.lock(reason: .windowsClosed)
         }
     }
