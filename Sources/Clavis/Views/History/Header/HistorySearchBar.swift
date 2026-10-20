@@ -8,13 +8,13 @@ struct HistorySearchBar: View {
     @ObservedObject var viewModel: HistoryViewModel
     @ObservedObject var ui: HistoryUIState
 
-    /// Width reserved inside the field for the overlaid `+ Filter` button.
-    private static let filterButtonReserve: CGFloat = 78
-
     var body: some View {
-        ZStack(alignment: .trailing) {
-            // Native NSSearchField supplies bezel, magnifier, cancel button, focus ring and
-            // material; no extra glass is layered on top of it.
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13))
+                .foregroundColor(DesignTokens.textSecondary)
+                .accessibilityHidden(true)
+
             HistorySearchTextField(
                 text: viewModel.draftText,
                 caret: viewModel.draftCaret,
@@ -44,10 +44,18 @@ struct HistorySearchBar: View {
                     viewModel.beginSuggesting()
                 },
                 onFocusRequestHandled: { ui.focusRequestHandled() },
-                trailingReserve: Self.filterButtonReserve,
                 isExpanded: ui.surface == .suggestions && viewModel.showsDropdown
             )
-            .frame(height: 34)
+
+            if !viewModel.draftText.isEmpty {
+                Button(action: clearDraft) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(DesignTokens.textTertiary)
+                        .font(.system(size: 12))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(ClavisUIStrings.Common.cancel)
+            }
 
             Button(action: addFilter) {
                 HStack(spacing: 4) {
@@ -62,10 +70,19 @@ struct HistorySearchBar: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .padding(.trailing, 8)
             .accessibilityLabel(HistoryText.addFilterAccessibility)
             .help(HistoryText.addFilterAccessibility)
         }
+        .padding(.leading, 11)
+        .padding(.trailing, 8)
+        .frame(height: HistorySearchTextField.height)
+        .contentShape(Capsule())
+        .onTapGesture {
+            if !ui.isSearchFocused {
+                ui.requestSearchFocus(opensSuggestions: true)
+            }
+        }
+        .liquidGlassCapsuleControl(isFocused: ui.isSearchFocused)
         .reportGlobalFrame { ui.searchFieldFrame = $0 }
         // Any committed change (badge added/removed, sidebar key picked) closes the dropdown.
         .onChange(of: viewModel.filter) { _ in
@@ -85,6 +102,12 @@ struct HistorySearchBar: View {
 
     private var visibleSuggestions: [HistorySuggestion] {
         ui.surface == .suggestions && viewModel.showsDropdown ? viewModel.suggestions : []
+    }
+
+    private func clearDraft() {
+        viewModel.updateDraft(text: "", caret: 0)
+        ui.highlightedIndex = -1
+        ui.requestSearchFocus(opensSuggestions: false)
     }
 
     /// `+ Filter` opens the same dropdown as focusing an empty field.

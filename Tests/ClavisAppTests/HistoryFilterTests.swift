@@ -1,5 +1,7 @@
 import Testing
 import Foundation
+import SwiftUI
+import AppKit
 @testable import ClavisCore
 @testable import Clavis
 
@@ -229,5 +231,40 @@ import Foundation
         #expect(utc != tokyo)
         #expect(HistoryDateBounds(from: tokyo, to: tokyo).contains(instant, in: calendar("Asia/Tokyo")))
         #expect(!HistoryDateBounds(from: tokyo, to: tokyo).contains(instant, in: calendar("UTC")))
+    }
+
+    @MainActor
+    @Test func test_009_searchTextFieldUsesLiquidGlassCapsuleAtHeaderButtonHeight() throws {
+        let searchField = HistorySearchTextField(
+            text: "Host:github.com",
+            caret: 15,
+            focusToken: 0,
+            placeholder: "Search history",
+            accessibilityLabel: "Search history",
+            onEdit: { _, _ in },
+            onFocusChange: { _ in },
+            onMove: { _ in false },
+            onReturn: { false },
+            onEscape: { false }
+        )
+
+        let hosting = NSHostingView(rootView: searchField.frame(width: 320))
+        hosting.frame = NSRect(x: 0, y: 0, width: 320, height: 60)
+        hosting.layoutSubtreeIfNeeded()
+
+        func findTextField(in view: NSView) -> NSTextField? {
+            if let tf = view as? NSTextField { return tf }
+            for sub in view.subviews {
+                if let found = findTextField(in: sub) { return found }
+            }
+            return nil
+        }
+
+        let field = try #require(findTextField(in: hosting))
+        #expect(HistorySearchTextField.height == 34)
+        #expect(!field.isBordered)
+        #expect(!field.drawsBackground)
+        #expect(field.focusRingType == .none)
+        #expect(field.font == .systemFont(ofSize: 13))
     }
 }
