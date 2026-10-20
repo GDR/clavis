@@ -28,9 +28,9 @@ public struct LockedPlaceholderView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Top traffic-light clearance bar (58px)
+            // Top traffic-light clearance bar (52px)
             Color.clear
-                .frame(height: 58)
+                .frame(height: KeyListView.toolbarHeight)
 
             Spacer(minLength: 16)
 

@@ -981,4 +981,31 @@ struct KeyDetailInspectorTests {
         #expect(historyGroup != nil)
         #expect(historyGroup != leftGroup)
     }
+
+    @Test
+    @MainActor
+    func testSidebarTrafficLightsAlignWithGlassButtonsAndSearchIcon() throws {
+        let wm = WindowManager()
+        wm.openKeyManager()
+        let window = try #require(wm.keyManagerWindow)
+        defer {
+            window.orderOut(nil)
+            wm.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: window))
+        }
+
+        #expect(window.toolbar != nil)
+        #expect(window.toolbarStyle == .unified)
+        #expect(window.toolbar?.allowsUserCustomization == false)
+        #expect(window.frame.size == WindowManager.defaultWindowSize)
+
+        let closeBtn = try #require(window.standardWindowButton(.closeButton))
+        let closeRectInWindow = closeBtn.convert(closeBtn.bounds, to: nil)
+        let closeCenterFromTop = window.frame.height - closeRectInWindow.midY
+
+        // With .unified toolbarStyle on macOS 26+, the traffic light buttons sit at y = 26pt from the top
+        // (vertically centered in the 52pt KeyListView.toolbarHeight bar alongside the 33pt liquid glass buttons)
+        // and the close button is horizontally centered at x = 26pt (matching the search magnifying glass icon).
+        #expect(abs(closeCenterFromTop - KeyListView.toolbarHeight / 2) <= 0.5)
+        #expect(abs(closeRectInWindow.midX - 26.0) <= 0.5)
+    }
 }

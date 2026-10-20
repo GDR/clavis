@@ -17,7 +17,7 @@ struct KeyListView: View {
     @FocusState private var isSearchFieldFocused: Bool
 
     public static let sidebarWidth: CGFloat = 222
-    public static let toolbarHeight: CGFloat = 58
+    public static let toolbarHeight: CGFloat = 52
     public static let searchCapsuleHeight: CGFloat = 36
     public static let emptyStateTitle = "A key that stays on your Mac."
     public static let emptyStateSubtitle = "Create a hardware-backed identity for SSH and Git. Your private key stays in the Secure Enclave."
@@ -302,7 +302,7 @@ struct KeyListView: View {
 
     private var sidebarHeader: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Top 58px sidebar toolbar (traffic lights on left, Lock + New Key on right)
+            // Top 52px sidebar toolbar (traffic lights on left, Lock + New Key on right)
             HStack(spacing: 7) {
                 Spacer(minLength: 72)
 
@@ -333,7 +333,7 @@ struct KeyListView: View {
             .padding(.trailing, 12)
             .frame(height: Self.toolbarHeight)
 
-            // 36px Contacts-inspired search capsule
+            // 36px Contacts-inspired search capsule (9.5pt inner leading + 8pt outer = 17.5pt icon leading, centering the ~17pt icon at x=26pt under the close button)
             HStack(spacing: 7) {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(DesignTokens.textSecondary)
@@ -362,7 +362,7 @@ struct KeyListView: View {
                     .accessibilityLabel(ClavisUIStrings.Common.cancel)
                 }
             }
-            .padding(.horizontal, 11)
+            .padding(.horizontal, 9.5)
             .frame(height: Self.searchCapsuleHeight)
             .liquidGlassCapsuleControl(isFocused: isSearchFieldFocused)
             .padding(.horizontal, 8)
