@@ -132,7 +132,7 @@ public final class PanelLockController: ObservableObject {
     }
 
     /// Verifies the current macOS user's login password against local OpenDirectory without storing it.
-    public nonisolated static func verifyLocalAccountPassword(_ password: String) -> Bool {
+    @Sendable public nonisolated static func verifyLocalAccountPassword(_ password: String) -> Bool {
         guard !password.isEmpty else { return false }
         do {
             let session = ODSession.default()
