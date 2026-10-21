@@ -207,7 +207,7 @@ jobs:
               tag = f"v{new_ver}"
               print(f"Bumping version: {current_ver} -> {new_ver} ({tag})")
 
-              # Update justfile
+              # Update justfile and flake.nix version
               updated_justfile = re.sub(
                   r'(version := env_var_or_default\("CLAVIS_VERSION",\s*")[^"]+("\))',
                   rf'\g<1>{new_ver}\g<2>',
@@ -215,6 +215,17 @@ jobs:
               )
               with open("justfile", "w") as f:
                   f.write(updated_justfile)
+
+              with open("flake.nix", "r") as f:
+                  flake_content = f.read()
+              updated_flake = re.sub(
+                  r'(pname = "clavis";\s+version = ")[^"]+(";)',
+                  rf'\g<1>{new_ver}\g<2>',
+                  flake_content,
+                  count=1,
+              )
+              with open("flake.nix", "w") as f:
+                  f.write(updated_flake)
 
               # Commit & tag locally; pushed only after packaging succeeds in publish job
               subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
@@ -346,6 +357,12 @@ jobs:
           git fetch origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
+      - name: Download release artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-artifacts
+          path: .
+
       - name: Push release commit and tag
         env:
           RELEASE_TAG: ${{ needs.build.outputs.tag }}
@@ -361,17 +378,42 @@ jobs:
           # start at column 0 and the Python body must not be indented, so neither may be
           # nested inside an if/fi block.
           python3 - << 'EOF'
-          import os, re
+          import base64, hashlib, os, re
           version = os.environ["RELEASE_VERSION"]
+
           with open("justfile", "r") as f:
               content = f.read()
           updated = re.sub(
               r'(version := env_var_or_default\("CLAVIS_VERSION",\s*")[^"]+("\))',
               rf'\g<1>{version}\g<2>',
-              content
+              content,
+              count=1,
           )
           with open("justfile", "w") as f:
               f.write(updated)
+
+          with open("clavis-macos-arm64.tar.gz", "rb") as f:
+              digest = hashlib.sha256(f.read()).digest()
+          sri_hash = "sha256-" + base64.b64encode(digest).decode("ascii")
+
+          with open("flake.nix", "r") as f:
+              flake_content = f.read()
+          flake_updated, ver_count = re.subn(
+              r'(pname = "clavis";\s+version = ")[^"]+(";)',
+              rf'\g<1>{version}\g<2>',
+              flake_content,
+              count=1,
+          )
+          flake_updated, hash_count = re.subn(
+              r'(clavis-macos-arm64\.tar\.gz";\s+hash = ")[^"]+(";)',
+              rf'\g<1>{sri_hash}\g<2>',
+              flake_updated,
+              count=1,
+          )
+          if ver_count != 1 or hash_count != 1:
+              raise SystemExit(f"Failed to update flake.nix (version matches={ver_count}, hash matches={hash_count})")
+          with open("flake.nix", "w") as f:
+              f.write(flake_updated)
           EOF
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -379,12 +421,6 @@ jobs:
           git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
           git push origin main
           git push origin "$RELEASE_TAG"
-
-      - name: Download release artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: release-artifacts
-          path: .
 
       - name: Attest build provenance
         if: ${{ vars.CLAVIS_ATTEST != '0' }}
