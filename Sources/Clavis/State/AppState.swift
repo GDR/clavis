@@ -417,6 +417,7 @@ public class AppState: ObservableObject {
 
     public func revokeGitGrace(for keyLabel: String) {
         settingsViewModel.revokeGitGrace(for: keyLabel)
+        self.errorMessage = settingsViewModel.errorMessage
         self.activeGitGraces = settingsViewModel.activeGitGraces
         self.activeGitGrace = settingsViewModel.activeGitGrace
     }

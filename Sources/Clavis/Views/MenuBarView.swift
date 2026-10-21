@@ -2,442 +2,107 @@ import SwiftUI
 import AppKit
 import ClavisCore
 
-public enum MenuBarSection: Hashable, CaseIterable {
-    case unlock
-    case lockNow
-    case revokeAll
-    case sessionCount
-    case gitBanner
-    case identities
-    case newKey
-    case openKeyManager
-    case agentLifecycle
-    case history
-    case settings
-    case quit
-
-    public static let revoke: MenuBarSection = .revokeAll
-    public static let gitSession: MenuBarSection = .gitBanner
-}
-
-public enum MenuBarSections {
-    public static func visible(isLocked: Bool, hasSessions: Bool) -> Set<MenuBarSection> {
-        if isLocked {
-            var sections: Set<MenuBarSection> = [
-                .unlock,
-                .lockNow,
-                .agentLifecycle,
-                .quit
-            ]
-            if hasSessions {
-                sections.insert(.revokeAll)
-                sections.insert(.sessionCount)
-            }
-            return sections
-        } else {
-            var sections: Set<MenuBarSection> = [
-                .gitBanner,
-                .identities,
-                .newKey,
-                .openKeyManager,
-                .agentLifecycle,
-                .history,
-                .settings,
-                .quit
-            ]
-            if hasSessions {
-                sections.insert(.lockNow)
-                sections.insert(.revokeAll)
-                sections.insert(.sessionCount)
-            }
-            return sections
-        }
-    }
-}
-
 @MainActor
 public struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
-    @ObservedObject var lock: PanelLockController = .shared
-    @State private var copiedLabel: String? = nil
+    @ObservedObject var lock: PanelLockController
 
-    public static let maxInlineIdentities = 4
-
-    public static func shouldShowOverflow(keyCount: Int) -> Bool {
-        keyCount > maxInlineIdentities
+    public init(lock: PanelLockController? = nil) {
+        self.lock = lock ?? .shared
     }
 
-    public static func overflowTitle(keyCount: Int) -> String {
-        "Show all \(keyCount) keys…"
-    }
-
-    public init() {}
-
-    private var sessionCount: Int {
-        (appState.activeGitGrace != nil ? 1 : 0) + appState.agentSessions.count
-    }
-
-    private var hasSessions: Bool {
-        sessionCount > 0
-    }
-
-    private var statusSubtitle: String {
-        guard appState.isSocketActive else {
-            return ClavisUIStrings.MenuBar.agentOffline
-        }
-        if let pid = appState.agentPID {
-            return ClavisUIStrings.MenuBar.activeWithPID(pid)
-        }
-        if lock.isEffectivelyLocked {
-            return ClavisUIStrings.PanelLock.title
-        }
-        return ClavisUIStrings.MenuBar.identitiesReady(count: appState.keys.count)
+    /// The panel lock protects key metadata; it does not stop background signing.
+    func sessions(at date: Date) -> [MenuBarSession] {
+        MenuBarSession.active(
+            gitGraces: appState.activeGitGraces.isEmpty
+                ? appState.activeGitGrace.map { [$0] } ?? []
+                : appState.activeGitGraces,
+            agentSessions: appState.agentSessions,
+            keys: appState.keys,
+            at: date
+        )
     }
 
     public var body: some View {
-        let isLocked = lock.isEffectivelyLocked
-        let visibleSections = MenuBarSections.visible(isLocked: isLocked, hasSessions: hasSessions)
+        VStack(alignment: .leading, spacing: 4) {
+            header
+            separator
 
-        VStack(alignment: .leading, spacing: 8) {
-            // Header: Agent Status & Lock All
-            HStack(alignment: .center) {
-                HStack(spacing: 8) {
-                    StatusDot(isActive: appState.isSocketActive)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(ClavisUIStrings.MenuBar.title)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(.primary)
-                        Text(statusSubtitle)
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                Spacer()
-
-                if visibleSections.contains(.lockNow) && (hasSessions || isLocked) {
-                    Button(action: {
-                        ClavisLogger.promptDebug("calvis-ui", "MenuBarView: lock all triggered by user")
-                        appState.lockNow()
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "lock.fill")
-                                .font(.system(size: 10))
-                            Text(ClavisUIStrings.MenuBar.lockAll)
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .foregroundColor(.red)
-                        .liquidGlassCapsuleControl(tint: Color.red.opacity(0.15))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 4)
-            .padding(.top, 2)
-
-            // Error banner if any
-            if let errorMsg = appState.errorMessage {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.red)
-                        .font(.caption)
-                    Text(errorMsg)
-                        .font(.caption2)
-                        .foregroundColor(.red)
-                        .lineLimit(2)
-                    Spacer()
-                    Button(action: { appState.clearError() }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(ClavisUIStrings.Common.cancel)
-                }
-                .padding(6)
-                .background(Color.red.opacity(0.12))
-                .cornerRadius(6)
+            if let message = appState.errorMessage {
+                errorBanner(message)
             }
 
-            // Locked active agent sessions count banner (D2)
-            if isLocked && visibleSections.contains(.sessionCount) {
-                HStack(spacing: 8) {
-                    Image(systemName: "key.fill")
-                        .foregroundColor(.blue)
-                        .font(.system(size: 12))
-                    Text(ClavisUIStrings.PanelLock.agentSessionsCount(sessionCount))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.primary)
-                    Spacer()
-                }
-                .padding(6)
-                .background(Color.blue.opacity(0.12))
-                .cornerRadius(6)
-            }
-
-            // Active Git Grace Session Banner
-            if visibleSections.contains(.gitBanner), let gitGrace = appState.activeGitGrace {
-                HStack(spacing: 8) {
-                    Image(systemName: "arrow.triangle.branch")
-                        .foregroundColor(.blue)
-                        .font(.system(size: 13, weight: .bold))
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(ClavisUIStrings.MenuBar.gitSessionTitle(label: gitGrace.keyLabel))
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(.primary)
-                        Text(ClavisUIStrings.MenuBar.gitSessionDetails(timeRemaining: gitGrace.formattedRemainingTime, opsLeft: gitGrace.remainingOperations))
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    Button(action: {
-                        appState.endGitSigningSession()
-                    }) {
-                        Text(ClavisUIStrings.Common.end)
-                            .font(.system(size: 10, weight: .medium))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .liquidGlassControl(cornerRadius: 4, tint: Color.secondary.opacity(0.15))
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(6)
-                .background(Color.blue.opacity(0.12))
-                .cornerRadius(6)
-            }
-
-            // Active Agent Sessions
-            if !appState.agentSessions.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(ClavisUIStrings.AgentSession.menuSection)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Button(action: {
-                            ClavisLogger.promptDebug("calvis-ui", "MenuBarView: revoke all agent sessions triggered by user")
-                            appState.revokeAllAgentSessions()
-                        }) {
-                            Text(ClavisUIStrings.AgentSession.revokeAll)
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(.red)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, 4)
-
-                    ForEach(appState.agentSessions, id: \.id) { session in
-                        HStack(spacing: 8) {
-                            Image(systemName: "cpu")
-                                .foregroundColor(.purple)
-                                .font(.system(size: 12))
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("\(session.toolName) · \(session.keyLabel)")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(.primary)
-                                let remainingMin = max(0, Int(session.expiresAt.timeIntervalSinceNow / 60))
-                                Text(ClavisUIStrings.AgentSession.remainingFormat(minutes: remainingMin))
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
-                            }
-                            Spacer()
-                            Menu {
-                                Button(ClavisUIStrings.AgentSession.extend30m) {
-                                    Task {
-                                        _ = appState.extendAgentSession(id: session.id, minutes: 30)
-                                    }
-                                }
-                                Button(ClavisUIStrings.AgentSession.extend1h) {
-                                    Task {
-                                        _ = appState.extendAgentSession(id: session.id, minutes: 60)
-                                    }
-                                }
-                                Button(ClavisUIStrings.AgentSession.extend4h) {
-                                    Task {
-                                        _ = appState.extendAgentSession(id: session.id, minutes: 240)
-                                    }
-                                }
-                            } label: {
-                                Text(ClavisUIStrings.AgentSession.extend)
-                                    .font(.system(size: 10, weight: .medium))
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 3)
-                                    .liquidGlassControl(cornerRadius: 4, tint: Color.secondary.opacity(0.15))
-                            }
-                            .menuStyle(.borderlessButton)
-                            .fixedSize()
-
-                            Button(action: {
-                                appState.endAgentSession(id: session.id)
-                            }) {
-                                Text(ClavisUIStrings.AgentSession.end)
-                                    .font(.system(size: 10, weight: .medium))
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 3)
-                                    .liquidGlassControl(cornerRadius: 4, tint: Color.secondary.opacity(0.15))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(6)
-                        .background(Color.purple.opacity(0.1))
-                        .cornerRadius(6)
-                    }
-                }
-            }
-
-            if visibleSections.contains(.identities) {
-                Divider()
-
-                // Identities Section
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(ClavisUIStrings.MenuBar.identitiesHeader)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 4)
-
-                    if appState.keys.isEmpty {
-                        VStack(spacing: 4) {
-                            Text(ClavisUIStrings.MenuBar.noKeysAvailable)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text(ClavisUIStrings.MenuBar.useNewKeyHint)
-                                .font(.caption2)
-                                .foregroundColor(.secondary.opacity(0.8))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let activeSessions = sessions(at: context.date)
+                VStack(alignment: .leading, spacing: 1) {
+                    if lock.isEffectivelyLocked {
+                        emptyState(ClavisUIStrings.MenuBar.unlockToViewSessions)
+                    } else if activeSessions.isEmpty {
+                        emptyState(ClavisUIStrings.MenuBar.noActiveSessions)
                     } else {
-                        VStack(spacing: 2) {
-                            ForEach(appState.keys.prefix(Self.maxInlineIdentities)) { key in
-                                MenuBarIdentityRow(
-                                    key: key,
-                                    isCopied: copiedLabel == key.label,
-                                    onCopy: { copyKey(key) }
-                                )
-                            }
-
-                            if Self.shouldShowOverflow(keyCount: appState.keys.count) {
-                                MenuBarOverflowButton(
-                                    count: appState.keys.count,
-                                    action: {
-                                        WindowManager.shared.openKeyManager()
+                        // Keep long lists bounded while every authorization remains accessible.
+                        ScrollView {
+                            VStack(spacing: 1) {
+                                ForEach(activeSessions) { session in
+                                    MenuBarSessionRow(session: session, date: context.date) {
+                                        endSession(session)
                                     }
-                                )
+                                }
                             }
                         }
+                        .frame(height: min(CGFloat(activeSessions.count) * 49, 294))
                     }
-                }
-            }
 
-            Divider()
-
-            // Menu Items (Control Center action style)
-            VStack(spacing: 1) {
-                if visibleSections.contains(.unlock) {
                     MenuBarActionItem(
-                        title: ClavisUIStrings.PanelLock.unlockMenu,
-                        icon: "lock.open.fill",
-                        shortcut: "⌘U"
+                        title: ClavisUIStrings.MenuBar.lockAllKeys,
+                        icon: "lock"
                     ) {
-                        ClavisLogger.promptDebug("calvis-ui", "MenuBarView: unlock triggered by user — opening locked window")
-                        WindowManager.shared.openKeyManager()
-                    }
-                }
-
-                if isLocked && visibleSections.contains(.lockNow) {
-                    MenuBarActionItem(
-                        title: ClavisUIStrings.MenuBar.lockAll,
-                        icon: "lock.fill",
-                        shortcut: "⌘L"
-                    ) {
-                        ClavisLogger.promptDebug("calvis-ui", "MenuBarView: lock all triggered by user")
                         appState.lockNow()
+                        appState.refreshAgentSessions()
                     }
-                }
-
-                if visibleSections.contains(.newKey) {
-                    MenuBarActionItem(
-                        title: ClavisUIStrings.MenuBar.newKey,
-                        icon: "plus",
-                        shortcut: "⌘N"
-                    ) {
-                        WindowManager.shared.openKeyManager(sheet: .create)
-                    }
-                }
-
-                if visibleSections.contains(.openKeyManager) {
-                    MenuBarActionItem(
-                        title: ClavisUIStrings.MenuBar.openKeyManager,
-                        icon: "slider.horizontal.3",
-                        shortcut: "⌘O"
-                    ) {
-                        WindowManager.shared.openKeyManager()
-                    }
-                }
-
-                if visibleSections.contains(.agentLifecycle) {
-                    if appState.isSocketActive {
-                        MenuBarActionItem(
-                            title: ClavisUIStrings.MenuBar.restartAgent,
-                            icon: "arrow.clockwise",
-                            shortcut: "⇧⌘R"
-                        ) {
-                            appState.restartAgent()
-                        }
-                    } else {
-                        MenuBarActionItem(
-                            title: ClavisUIStrings.MenuBar.startAgent,
-                            icon: "play.fill",
-                            shortcut: "⇧⌘S"
-                        ) {
-                            appState.startAgent()
-                        }
-                    }
-                }
-
-                if visibleSections.contains(.history) {
-                    MenuBarActionItem(
-                        title: ClavisUIStrings.MenuBar.history,
-                        icon: "clock.arrow.circlepath",
-                        shortcut: "⌘Y"
-                    ) {
-                        WindowManager.shared.openHistory()
-                    }
-                }
-
-                if visibleSections.contains(.settings) {
-                    if lock.isEnabled {
-                        MenuBarIdleTimerItem(lock: lock)
-                    }
-
-                    MenuBarActionItem(
-                        title: ClavisUIStrings.MenuBar.settings,
-                        icon: "gearshape",
-                        shortcut: "⌘,"
-                    ) {
-                        WindowManager.shared.openSettings()
-                    }
+                    .disabled(activeSessions.isEmpty)
                 }
             }
 
-            if visibleSections.contains(.quit) {
-                Divider()
+            separator
 
-                // Quit Action
-                MenuBarActionItem(
-                    title: ClavisUIStrings.MenuBar.quit,
-                    icon: "power",
-                    shortcut: "⌘Q",
-                    isDestructive: true
-                ) {
-                    confirmQuit()
+            MenuBarActionItem(
+                title: appState.isSocketActive
+                    ? ClavisUIStrings.MenuBar.restartAgent
+                    : ClavisUIStrings.MenuBar.startAgent,
+                icon: appState.isSocketActive ? "arrow.clockwise" : "play",
+                keyEquivalent: appState.isSocketActive ? "r" : "s",
+                modifiers: [.command, .shift]
+            ) {
+                if appState.isSocketActive {
+                    appState.restartAgent()
+                } else {
+                    appState.startAgent()
                 }
+                appState.updateGitGraceState()
+                appState.refreshAgentSessions()
+            }
+
+            MenuBarActionItem(
+                title: ClavisUIStrings.MenuBar.openClavis,
+                icon: "macwindow",
+                keyEquivalent: "o"
+            ) {
+                WindowManager.shared.openKeyManager()
+            }
+
+            separator
+
+            MenuBarActionItem(
+                title: ClavisUIStrings.MenuBar.quit,
+                icon: "power",
+                keyEquivalent: "q"
+            ) {
+                confirmQuit()
             }
         }
-        .padding(14)
-        .frame(width: 320)
+        .padding(6)
+        .frame(width: 306)
         .modifier(MenuBarBackgroundModifier())
         .background(
             WindowAccessor { window in
@@ -447,8 +112,82 @@ public struct MenuBarView: View {
                 WindowManager.shared.menuBarWindow = window
             }
         )
-        .onAppear {
-            appState.refresh()
+        .onAppear { appState.refresh() }
+        .task {
+            // Snapshots come from the agent; the one-second timeline only updates display.
+            while !Task.isCancelled {
+                appState.updateGitGraceState()
+                appState.refreshAgentSessions()
+                do {
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                } catch {
+                    break
+                }
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .center) {
+            Text(ClavisUIStrings.Common.appName)
+                .font(.system(size: 13, weight: .semibold))
+            Spacer(minLength: 12)
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(appState.isSocketActive ? MenuBarSessionRow.keyColor : Color.secondary)
+                    .frame(width: 6, height: 6)
+                    .accessibilityHidden(true)
+                Text(appState.isSocketActive
+                     ? ClavisUIStrings.MenuBar.agentActive
+                     : ClavisUIStrings.MenuBar.agentOffline)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+    }
+
+    private var separator: some View {
+        Divider().padding(.horizontal, 9)
+    }
+
+    private func emptyState(_ message: String) -> some View {
+        Text(message)
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 34)
+            .padding(.trailing, 9)
+            .padding(.vertical, 12)
+    }
+
+    private func errorBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "exclamationmark.triangle")
+                .frame(width: 16)
+            Text(message)
+                .font(.system(size: 11))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button { appState.clearError() } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(ClavisUIStrings.Common.cancel)
+        }
+        .foregroundStyle(.red)
+        .padding(9)
+    }
+
+    private func endSession(_ session: MenuBarSession) {
+        switch session.target {
+        case .git(let keyLabel):
+            appState.revokeGitGrace(for: keyLabel)
+            appState.refreshAgentSessions()
+        case .agent(let sessionID):
+            appState.endAgentSession(id: sessionID)
         }
     }
 
@@ -456,137 +195,80 @@ public struct MenuBarView: View {
         WindowManager.shared.dismissMenuBarExtra()
         let alert = NSAlert()
         alert.messageText = ClavisUIStrings.MenuBar.quitConfirmationTitle
-        if appState.isSocketActive {
-            alert.informativeText = ClavisUIStrings.MenuBar.quitConfirmationDetailsWithAgent
-        } else {
-            alert.informativeText = ClavisUIStrings.MenuBar.quitConfirmationDetailsSimple
-        }
+        alert.informativeText = appState.isSocketActive
+            ? ClavisUIStrings.MenuBar.quitConfirmationDetailsWithAgent
+            : ClavisUIStrings.MenuBar.quitConfirmationDetailsSimple
         alert.alertStyle = .informational
         alert.addButton(withTitle: ClavisUIStrings.MenuBar.quit)
         alert.addButton(withTitle: ClavisUIStrings.Common.cancel)
-
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
             NSApplication.shared.terminate(nil)
         }
     }
-
-    private func copyKey(_ key: SSHKeyInfo) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(key.displayIdentifier, forType: .string)
-        withAnimation {
-            copiedLabel = key.label
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            withAnimation {
-                if copiedLabel == key.label {
-                    copiedLabel = nil
-                }
-            }
-        }
-    }
 }
 
-struct MenuBarIdentityRow: View {
-    let key: SSHKeyInfo
-    let isCopied: Bool
-    let onCopy: () -> Void
+struct MenuBarSessionRow: View {
+    let session: MenuBarSession
+    let date: Date
+    let onLock: () -> Void
 
-    @State private var isHovered = false
+    static var keyColor: Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.isDarkMode
+                ? NSColor(srgbRed: 0.61, green: 0.85, blue: 0.69, alpha: 1)
+                : NSColor(srgbRed: 0.32, green: 0.57, blue: 0.39, alpha: 1)
+        })
+    }
+
+    private var purpose: String {
+        switch session.purpose {
+        case .general: return ClavisUIStrings.MenuBar.purposeSSHAndGit
+        case .gitSigningOnly: return ClavisUIStrings.MenuBar.purposeGit
+        case .agent: return ClavisUIStrings.KeyPurposeStrings.agentTitle
+        }
+    }
 
     var body: some View {
-        HStack(spacing: 10) {
-            ZStack {
-                Circle()
-                    .fill(Color.green)
-                    .frame(width: 26, height: 26)
-                Image(systemName: "lock.shield.fill")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.white)
-            }
+        HStack(spacing: 9) {
+            Image(systemName: "key")
+                .font(.system(size: 14))
+                .foregroundStyle(Self.keyColor)
+                .frame(width: 16)
+                .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(key.label)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.primary)
-                        .lineLimit(1)
-                    KeyBadge(isHardware: key.isHardware)
-                    PurposeBadge(purpose: key.purpose)
-                }
-                Text(key.displayIdentifier)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(session.keyLabel)
+                    .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
-            }
-
-            Spacer()
-
-            Button(action: onCopy) {
-                HStack(spacing: 3) {
-                    if isCopied {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 9, weight: .bold))
-                    }
-                    Text(isCopied ? ClavisUIStrings.Common.copied : ClavisUIStrings.Common.copy)
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .foregroundColor(isCopied ? .green : .primary)
-                .liquidGlassCapsuleControl(tint: isCopied ? Color.green.opacity(0.20) : Color.primary.opacity(0.08))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(ClavisUIStrings.Accessibility.copyPublicKey)
-            .accessibilityValue(isCopied ? ClavisUIStrings.Common.copied : ClavisUIStrings.Common.copy)
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 5)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .onHover { isHovered = $0 }
-    }
-}
-
-struct MenuBarOverflowButton: View {
-    let count: Int
-    let action: () -> Void
-
-    @State private var isHovered = false
-
-    var title: String {
-        MenuBarView.overflowTitle(keyCount: count)
-    }
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: "ellipsis.circle")
+                Text(purpose)
                     .font(.system(size: 11))
-                    .foregroundColor(.accentColor)
-                Text(title)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.accentColor)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
-            )
-            .contentShape(Rectangle())
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(session.toolName.map { "\(session.keyLabel) · \(purpose) · \($0)" } ?? "\(session.keyLabel) · \(purpose)")
+
+            Text(session.remainingTime(at: date))
+                .font(.system(size: 12).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .fixedSize()
+                .frame(minWidth: 43, alignment: .trailing)
+                .accessibilityLabel(ClavisUIStrings.MenuBar.timeRemaining(session.remainingTime(at: date)))
+
+            Button(action: onLock) {
+                Image(systemName: "lock")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .help(ClavisUIStrings.MenuBar.lockKey(session.keyLabel))
+            .accessibilityLabel(ClavisUIStrings.MenuBar.lockKey(session.keyLabel))
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(title)
-        .onHover { isHovered = $0 }
+        .padding(.horizontal, 9)
+        .frame(height: 49)
     }
 }
 
@@ -654,7 +336,7 @@ struct MenuBarActionItem: View {
     @ViewBuilder
     var body: some View {
         let button = Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: 9) {
                 Image(systemName: icon)
                     .font(.system(size: 12))
                     .foregroundColor(isDestructive ? .red : .secondary)
@@ -669,8 +351,8 @@ struct MenuBarActionItem: View {
                         .foregroundColor(.secondary)
                 }
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 5)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(isHovered ? (isDestructive ? Color.red.opacity(0.12) : Color.primary.opacity(0.08)) : Color.clear)
@@ -689,67 +371,19 @@ struct MenuBarActionItem: View {
     }
 }
 
-struct MenuBarIdleTimerItem: View {
-    @ObservedObject var lock: PanelLockController
-    @State private var isHovered = false
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "timer")
-                .font(.system(size: 12))
-                .foregroundColor(.secondary)
-                .frame(width: 16)
-            Text(ClavisUIStrings.PanelLock.settingsIdle)
-                .font(.system(size: 12, weight: .regular))
-                .foregroundColor(.primary)
-            Spacer()
-            Menu {
-                ForEach(PanelLockController.idleOptions, id: \.self) { minutes in
-                    Button {
-                        lock.idleMinutes = minutes
-                    } label: {
-                        if lock.idleMinutes == minutes {
-                            Label(ClavisUIStrings.PanelLock.minutesFormat(minutes), systemImage: "checkmark")
-                        } else {
-                            Text(ClavisUIStrings.PanelLock.minutesFormat(minutes))
-                        }
-                    }
-                }
-            } label: {
-                Text(ClavisUIStrings.PanelLock.minutesFormat(lock.idleMinutes))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .liquidGlassControl(cornerRadius: 4, tint: Color.secondary.opacity(0.15))
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 5)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .onHover { isHovered = $0 }
-    }
-}
-
 private struct MenuBarBackgroundModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
             content
                 .glassEffect(
                     .regular,
-                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous)
                 )
         } else {
             content
                 .background(
                     VisualEffectView(material: .menu, blendingMode: .behindWindow)
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                         .ignoresSafeArea()
                 )
         }

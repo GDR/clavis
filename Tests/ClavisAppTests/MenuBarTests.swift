@@ -171,144 +171,31 @@ final class MenuBarTests {
         #expect(hosting.subviews.count >= 0)
     }
 
-    // MARK: - #91: MenuBar Overflow Indicator Tests
-
     @Test
-    func testOverflowConditionThreshold() {
-        #expect(MenuBarView.maxInlineIdentities == 4)
-
-        // 0 to 4 keys -> no overflow
-        #expect(!MenuBarView.shouldShowOverflow(keyCount: 0))
-        #expect(!MenuBarView.shouldShowOverflow(keyCount: 1))
-        #expect(!MenuBarView.shouldShowOverflow(keyCount: 2))
-        #expect(!MenuBarView.shouldShowOverflow(keyCount: 3))
-        #expect(!MenuBarView.shouldShowOverflow(keyCount: 4))
-
-        // 5 or more keys -> overflow required
-        #expect(MenuBarView.shouldShowOverflow(keyCount: 5))
-        #expect(MenuBarView.shouldShowOverflow(keyCount: 6))
-        #expect(MenuBarView.shouldShowOverflow(keyCount: 10))
-        #expect(MenuBarView.shouldShowOverflow(keyCount: 100))
+    func sessionRowLockInvokesItsOwnAction() {
+        var locked = false
+        let session = MenuBarSession(target: .agent(sessionID: "session-a"), keyLabel: "Agent key",
+                                     purpose: .agent, expiresAt: Date().addingTimeInterval(60), toolName: "Tool")
+        let row = MenuBarSessionRow(session: session, date: Date()) { locked = true }
+        row.onLock()
+        #expect(locked)
     }
 
-    @Test
-    func testOverflowTitleFormatting() {
-        #expect(MenuBarView.overflowTitle(keyCount: 5) == "Show all 5 keys…")
-        #expect(MenuBarView.overflowTitle(keyCount: 6) == "Show all 6 keys…")
-        #expect(MenuBarView.overflowTitle(keyCount: 12) == "Show all 12 keys…")
-        #expect(MenuBarView.overflowTitle(keyCount: 99) == "Show all 99 keys…")
-
-        // Confirm Unicode ellipsis
-        let title = MenuBarView.overflowTitle(keyCount: 7)
-        #expect(title.hasSuffix("…"))
-        #expect(title == "Show all 7 keys\u{2026}")
-    }
-
-    @Test
-    func testMenuBarOverflowButton() {
-        var actionFired = false
-        let button = MenuBarOverflowButton(count: 8) {
-            actionFired = true
-        }
-
-        #expect(button.count == 8)
-        #expect(button.title == "Show all 8 keys…")
-        #expect(!actionFired)
-
-        button.action()
-        #expect(actionFired)
-
-        let hosting = NSHostingView(rootView: button)
-        hosting.layout()
-        #expect(hosting.subviews.count >= 0)
-    }
-
-    // MARK: - MenuBarView Integration & State Tests
-
-    @Test
-    func testMenuBarViewStateWithKeys() {
-        let appState = AppState.shared
-        let originalKeys = appState.keys
-        defer { appState.keys = originalKeys }
-
-        // Test with 3 keys: no overflow
-        let threeKeys = (1...3).map { makeKeyInfo(label: "key-\($0)") }
-        appState.keys = threeKeys
-        #expect(!MenuBarView.shouldShowOverflow(keyCount: appState.keys.count))
-
-        // Test with 4 keys: exactly at boundary, no overflow
-        let fourKeys = (1...4).map { makeKeyInfo(label: "key-\($0)") }
-        appState.keys = fourKeys
-        #expect(!MenuBarView.shouldShowOverflow(keyCount: appState.keys.count))
-
-        // Test with 6 keys: overflow expected
-        let sixKeys = (1...6).map { makeKeyInfo(label: "key-\($0)") }
-        appState.keys = sixKeys
-        #expect(MenuBarView.shouldShowOverflow(keyCount: appState.keys.count))
-        #expect(MenuBarView.overflowTitle(keyCount: appState.keys.count) == "Show all 6 keys…")
-    }
-
-    @Test
-    func testMenuBarViewHosting() {
-        let appState = AppState.shared
-        let originalKeys = appState.keys
-        defer { appState.keys = originalKeys }
-
-        appState.keys = (1...5).map { makeKeyInfo(label: "hosted-key-\($0)") }
-
-        let menuView = MenuBarView().environmentObject(appState)
-        let hosting = NSHostingView(rootView: menuView)
-        hosting.frame = NSRect(x: 0, y: 0, width: 320, height: 400)
-        hosting.layout()
-        #expect(hosting.frame.width == 320)
-    }
-
-    // MARK: - MenuBarSections Tests
-
-    @Test
-    func testMenuBarSections() {
-        // Unlocked without sessions
-        let unlockedNoSessions = MenuBarSections.visible(isLocked: false, hasSessions: false)
-        #expect(unlockedNoSessions.contains(.identities))
-        #expect(unlockedNoSessions.contains(.newKey))
-        #expect(unlockedNoSessions.contains(.openKeyManager))
-        #expect(unlockedNoSessions.contains(.settings))
-        #expect(unlockedNoSessions.contains(.quit))
-        #expect(!unlockedNoSessions.contains(.unlock))
-        #expect(!unlockedNoSessions.contains(.lockNow))
-
-        // Unlocked with sessions
-        let unlockedWithSessions = MenuBarSections.visible(isLocked: false, hasSessions: true)
-        #expect(unlockedWithSessions.contains(.lockNow))
-        #expect(unlockedWithSessions.contains(.revokeAll))
-        #expect(unlockedWithSessions.contains(.sessionCount))
-
-        // Locked with sessions
-        let lockedWithSessions = MenuBarSections.visible(isLocked: true, hasSessions: true)
-        #expect(lockedWithSessions.contains(.unlock))
-        #expect(lockedWithSessions.contains(.lockNow))
-        #expect(lockedWithSessions.contains(.revokeAll))
-        #expect(lockedWithSessions.contains(.sessionCount))
-        #expect(!lockedWithSessions.contains(.identities))
-        #expect(!lockedWithSessions.contains(.openKeyManager))
-    }
-
-    @Test
-    func testMenuBarIdleTimerItem() {
-        let suite = "com.clavis.tests.menubar.idle.\(UUID().uuidString)"
+    @Test(arguments: [NSAppearance.Name.aqua, .darkAqua])
+    func sessionMenuFitsBothAppearances(_ appearance: NSAppearance.Name) throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        let appState = AppState(keyManager: fixture.makeKeyManager())
+        let suite = "com.clavis.tests.menu.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-
-        let controller = PanelLockController(defaults: defaults)
-        #expect(controller.idleMinutes == 5)
-
-        let item = MenuBarIdleTimerItem(lock: controller)
-        let hosting = NSHostingView(rootView: item)
-        hosting.frame = NSRect(x: 0, y: 0, width: 320, height: 32)
-        hosting.layout()
-
-        controller.idleMinutes = 15
-        #expect(controller.idleMinutes == 15)
-        hosting.layout()
+        let controller = PanelLockController(defaults: defaults, vaultKeyCount: { 0 })
+        appState.activeGitGraces = [ActiveGitGraceInfo(keyLabel: "A long key name for alignment", remainingSeconds: 300, remainingOperations: 10)]
+        let hosting = NSHostingView(rootView: MenuBarView(lock: controller).environmentObject(appState))
+        hosting.appearance = NSAppearance(named: appearance)
+        hosting.frame = NSRect(x: 0, y: 0, width: 306, height: 400)
+        hosting.layoutSubtreeIfNeeded()
+        #expect(hosting.fittingSize.width == 306)
+        #expect(hosting.fittingSize.height < 400)
     }
 }
