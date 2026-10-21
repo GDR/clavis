@@ -1,13 +1,61 @@
 import Foundation
 
+extension Bundle {
+    private final class ClavisCoreBundleToken {}
+
+    /// Resolves `Clavis_ClavisCore.bundle` across packaged `.app` bundles, nested helpers,
+    /// standalone Nix binaries, and local `swift build` / `swift test` layouts without
+    /// crashing when SwiftPM's compile-time build directory is absent on the target machine.
+    ///
+    /// SwiftPM's auto-generated `Bundle.module` accessor only checks `Bundle.main.bundleURL`
+    /// (`Clavis.app/Clavis_ClavisCore.bundle`, which violates Apple code-signing rules for
+    /// bundle roots) and the hardcoded CI `.build` path, omitting `Contents/Resources/`.
+    public static let clavisCore: Bundle = {
+        resolveClavisResourceBundle(
+            resourceURL: Bundle.main.resourceURL,
+            bundleURL: Bundle.main.bundleURL,
+            executableURL: Bundle.main.executableURL,
+            enclosingBundleURL: Bundle(for: ClavisCoreBundleToken.self).bundleURL
+        ) ?? Bundle.module
+    }()
+
+    static func resolveClavisResourceBundle(
+        bundleName: String = "Clavis_ClavisCore.bundle",
+        resourceURL: URL?,
+        bundleURL: URL?,
+        executableURL: URL?,
+        enclosingBundleURL: URL? = nil
+    ) -> Bundle? {
+        let execDir = executableURL?.deletingLastPathComponent()
+        let candidates: [URL?] = [
+            // 1. Standard macOS .app bundle: Contents/Resources/ (Clavis.app & Clavis Agent.app)
+            resourceURL?.appendingPathComponent(bundleName),
+            // 2. Standalone binary directory ($out/bin/) or bundle root
+            bundleURL?.appendingPathComponent(bundleName),
+            execDir?.appendingPathComponent(bundleName),
+            // 3. Nested helper executable inside .app (e.g. Contents/Helpers/clavis-cli -> ../Resources/)
+            execDir?.deletingLastPathComponent().appendingPathComponent("Resources/\(bundleName)"),
+            // 4. Sibling to enclosing test/framework bundle (.build/.../ClavisCoreTests.xctest)
+            enclosingBundleURL?.deletingLastPathComponent().appendingPathComponent(bundleName)
+        ]
+
+        for candidate in candidates.compactMap({ $0 }) {
+            if let bundle = Bundle(url: candidate) {
+                return bundle
+            }
+        }
+        return nil
+    }
+}
+
 public enum ClavisUIStrings {
 
     private static func localized(_ key: StaticString, _ defaultValue: String) -> String {
-        String(localized: key, defaultValue: String.LocalizationValue(defaultValue), bundle: .module)
+        String(localized: key, defaultValue: String.LocalizationValue(defaultValue), bundle: .clavisCore)
     }
 
     private static func localizedFormat(_ key: StaticString, _ defaultValue: String, _ arguments: CVarArg...) -> String {
-        let format = String(localized: key, defaultValue: String.LocalizationValue(defaultValue), bundle: .module)
+        let format = String(localized: key, defaultValue: String.LocalizationValue(defaultValue), bundle: .clavisCore)
         return String(format: format, arguments: arguments)
     }
 

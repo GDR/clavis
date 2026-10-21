@@ -267,6 +267,7 @@ dmg config=config: (sign config)
     staging=".build/{{ config }}/dmg"
     dmg="{{ dmg_name }}"
     app_bundle=".build/{{ config }}/Clavis.app"
+    keychain="{{ keychain }}"
 
     echo "💿 Creating $dmg..."
     rm -rf "$staging" "$dmg" "$dmg.sha256"
@@ -281,6 +282,33 @@ dmg config=config: (sign config)
         "$dmg"
 
     /usr/bin/hdiutil verify "$dmg"
+
+    # Resolve signing identity so the disk image itself is signed when using a real certificate
+    identity="{{ sign_identity }}"
+    if [ -z "$identity" ]; then
+        if [ "{{ notarize }}" = "1" ]; then
+            identity="Developer ID Application"
+        elif /usr/bin/security find-identity -v -p codesigning ${keychain:+$keychain} 2>/dev/null | grep -q "Apple Development"; then
+            identity="Apple Development"
+        elif /usr/bin/security find-identity -v -p codesigning ${keychain:+$keychain} 2>/dev/null | grep -q "Clavis Local Development"; then
+            identity="Clavis Local Development"
+        else
+            identity="-"
+        fi
+    fi
+    if [ "$identity" != "-" ]; then
+        timestamp_flag="--timestamp=none"
+        case "{{ timestamp_mode }}" in
+            secure) timestamp_flag="--timestamp" ;;
+            auto)
+                case "$identity" in
+                    "Developer ID Application"*) timestamp_flag="--timestamp" ;;
+                esac
+                ;;
+        esac
+        /usr/bin/codesign --force ${keychain:+--keychain "$keychain"} --sign "$identity" --identifier "com.clavis.dmg" "$timestamp_flag" "$dmg"
+    fi
+
     if [ "{{ notarize }}" = "1" ]; then
         # Stapling rewrites the image, so notarize before computing the checksum.
         just --justfile "{{ justfile() }}" notarize "$dmg"

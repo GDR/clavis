@@ -436,4 +436,65 @@ import Testing
         #expect(ClavisUIStrings.Accessibility.copyProcessInfo == "Copy process path and PID")
         #expect(ClavisUIStrings.Accessibility.copyItem(label: "Host") == "Copy Host")
     }
+
+    @Test func testResourceBundleResolutionAcrossLayouts() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClavisResourceBundleTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let bundleName = "Clavis_ClavisCore.bundle"
+
+        func makeDummyBundle(at dir: URL) throws -> URL {
+            let bundleDir = dir.appendingPathComponent(bundleName, isDirectory: true)
+            try FileManager.default.createDirectory(at: bundleDir, withIntermediateDirectories: true)
+            let plist: [String: Any] = [
+                "CFBundleIdentifier": "com.clavis.resources.test",
+                "CFBundleInfoDictionaryVersion": "6.0",
+                "CFBundleName": "Clavis_ClavisCore",
+                "CFBundlePackageType": "BNDL"
+            ]
+            let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+            try data.write(to: bundleDir.appendingPathComponent("Info.plist"))
+            return bundleDir
+        }
+
+        // 1. Standard packaged .app layout (Clavis.app/Contents/Resources/Clavis_ClavisCore.bundle)
+        let appRoot = tempRoot.appendingPathComponent("Clavis.app", isDirectory: true)
+        let appContents = appRoot.appendingPathComponent("Contents", isDirectory: true)
+        let appResources = appContents.appendingPathComponent("Resources", isDirectory: true)
+        let appMacOS = appContents.appendingPathComponent("MacOS", isDirectory: true)
+        let appHelpers = appContents.appendingPathComponent("Helpers", isDirectory: true)
+        try FileManager.default.createDirectory(at: appMacOS, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: appHelpers, withIntermediateDirectories: true)
+        let expectedAppBundleURL = try makeDummyBundle(at: appResources)
+
+        let resolvedFromApp = Bundle.resolveClavisResourceBundle(
+            bundleName: bundleName,
+            resourceURL: appResources,
+            bundleURL: appRoot,
+            executableURL: appMacOS.appendingPathComponent("Clavis")
+        )
+        #expect(resolvedFromApp?.bundleURL.standardizedFileURL == expectedAppBundleURL.standardizedFileURL)
+
+        // 2. Nested helper executable layout (Clavis.app/Contents/Helpers/clavis-cli -> ../Resources/)
+        let resolvedFromHelper = Bundle.resolveClavisResourceBundle(
+            bundleName: bundleName,
+            resourceURL: nil,
+            bundleURL: appHelpers,
+            executableURL: appHelpers.appendingPathComponent("clavis-cli")
+        )
+        #expect(resolvedFromHelper?.bundleURL.standardizedFileURL == expectedAppBundleURL.standardizedFileURL)
+
+        // 3. Standalone Nix / build directory layout ($out/bin/{clavis,Clavis_ClavisCore.bundle})
+        let binDir = tempRoot.appendingPathComponent("bin", isDirectory: true)
+        let expectedBinBundleURL = try makeDummyBundle(at: binDir)
+        let resolvedFromBin = Bundle.resolveClavisResourceBundle(
+            bundleName: bundleName,
+            resourceURL: nil,
+            bundleURL: binDir,
+            executableURL: binDir.appendingPathComponent("clavis")
+        )
+        #expect(resolvedFromBin?.bundleURL.standardizedFileURL == expectedBinBundleURL.standardizedFileURL)
+    }
 }

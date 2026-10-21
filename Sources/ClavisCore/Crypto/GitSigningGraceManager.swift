@@ -214,17 +214,17 @@ public struct GitSigningPromptStrings {
 
     public static var localized: GitSigningPromptStrings {
         GitSigningPromptStrings(
-            header: String(localized: "prompt.git_session_header", defaultValue: "Clavis — Git Signing Session", bundle: .module),
+            header: String(localized: "prompt.git_session_header", defaultValue: "Clavis — Git Signing Session", bundle: .clavisCore),
             messageTemplate: { keyLabel, clientDesc in
                 String(
                     localized: "prompt.git_session_message",
                     defaultValue: "Detected a series of Git commits (rebase / cherry-pick) for key '\(keyLabel)' from \(clientDesc).\n\nGrant automatic Git signing for 5 minutes without repeated Touch ID prompts?",
-                    bundle: .module
+                    bundle: .clavisCore
                 )
             },
-            allowFiveMinutesButton: String(localized: "prompt.allow_five_minutes", defaultValue: "Grant 5 Minutes", bundle: .module),
-            cancelButton: String(localized: "prompt.cancel", defaultValue: "Cancel", bundle: .module),
-            singleShotButton: String(localized: "prompt.single_shot", defaultValue: "Sign Once", bundle: .module)
+            allowFiveMinutesButton: String(localized: "prompt.allow_five_minutes", defaultValue: "Grant 5 Minutes", bundle: .clavisCore),
+            cancelButton: String(localized: "prompt.cancel", defaultValue: "Cancel", bundle: .clavisCore),
+            singleShotButton: String(localized: "prompt.single_shot", defaultValue: "Sign Once", bundle: .clavisCore)
         )
     }
 
