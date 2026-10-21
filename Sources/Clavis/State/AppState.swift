@@ -20,6 +20,7 @@ public struct ActiveGitGraceInfo: Equatable, Identifiable, Sendable {
     public let keyLabel: String
     public let remainingSeconds: Int
     public let remainingOperations: Int
+    public let expiresAt: Date
 
     public var formattedRemainingTime: String {
         let mins = remainingSeconds / 60
@@ -27,10 +28,11 @@ public struct ActiveGitGraceInfo: Equatable, Identifiable, Sendable {
         return String(format: "%d:%02d", mins, secs)
     }
 
-    public init(keyLabel: String, remainingSeconds: Int, remainingOperations: Int) {
+    public init(keyLabel: String, remainingSeconds: Int, remainingOperations: Int, observedAt: Date = Date()) {
         self.keyLabel = keyLabel
         self.remainingSeconds = remainingSeconds
         self.remainingOperations = remainingOperations
+        self.expiresAt = observedAt.addingTimeInterval(TimeInterval(max(0, remainingSeconds)))
     }
 }
 
