@@ -29,6 +29,20 @@ public enum ClavisUIStrings {
     }
 
     public enum MenuBar {
+        public static var agentActive: String { localized("menubar.agent_active", "Agent active") }
+        public static var openClavis: String { localized("menubar.open_clavis", "Open Clavis…") }
+        public static var lockAllKeys: String { localized("menubar.lock_all_keys", "Lock all keys…") }
+        public static var noActiveSessions: String { localized("menubar.no_active_sessions", "No active sessions") }
+        public static var unlockToViewSessions: String { localized("menubar.unlock_to_view_sessions", "Open Clavis to view active keys.") }
+        public static var purposeSSHAndGit: String { localized("menubar.purpose_ssh_and_git", "SSH & Git") }
+        public static var purposeGit: String { localized("menubar.purpose_git", "Git") }
+        public static func lockKey(_ label: String) -> String {
+            localizedFormat("menubar.lock_key", "Lock %@", label)
+        }
+        public static func timeRemaining(_ time: String) -> String {
+            localizedFormat("menubar.time_remaining", "%@ remaining", time)
+        }
+
         public static var title: String { localized("menubar.title", "Clavis Agent") }
         public static var agentOffline: String { localized("menubar.agent_offline", "Agent offline") }
         public static func activeWithPID(_ pid: pid_t) -> String {

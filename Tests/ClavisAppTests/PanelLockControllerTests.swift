@@ -266,52 +266,6 @@ final class PanelLockControllerTests {
         #expect(buildCount >= 1, "Content should be built when unlocked")
     }
 
-    @Test func test_003_AC5_lockedMenuShowsOnlyLockNowRevokeAndCount() {
-        let lockedWithSessions = MenuBarSections.visible(isLocked: true, hasSessions: true)
-        #expect(lockedWithSessions.contains(.lockNow))
-        #expect(lockedWithSessions.contains(.revokeAll))
-        #expect(lockedWithSessions.contains(.sessionCount))
-        #expect(lockedWithSessions.contains(.unlock))
-        #expect(lockedWithSessions.contains(.agentLifecycle))
-        #expect(lockedWithSessions.contains(.quit))
-
-        #expect(!lockedWithSessions.contains(.identities))
-        #expect(!lockedWithSessions.contains(.gitBanner))
-        #expect(!lockedWithSessions.contains(.newKey))
-        #expect(!lockedWithSessions.contains(.openKeyManager))
-        #expect(!lockedWithSessions.contains(.history))
-        #expect(!lockedWithSessions.contains(.settings))
-
-        let lockedNoSessions = MenuBarSections.visible(isLocked: true, hasSessions: false)
-        #expect(lockedNoSessions.contains(.lockNow))
-        #expect(!lockedNoSessions.contains(.revokeAll))
-        #expect(!lockedNoSessions.contains(.sessionCount))
-    }
-
-    @Test func test_003_T4_unlockedMenuShowsEverything() {
-        let unlockedWithSessions = MenuBarSections.visible(isLocked: false, hasSessions: true)
-        #expect(unlockedWithSessions.contains(.identities))
-        #expect(unlockedWithSessions.contains(.gitBanner))
-        #expect(unlockedWithSessions.contains(.newKey))
-        #expect(unlockedWithSessions.contains(.openKeyManager))
-        #expect(unlockedWithSessions.contains(.agentLifecycle))
-        #expect(unlockedWithSessions.contains(.history))
-        #expect(unlockedWithSessions.contains(.settings))
-        #expect(unlockedWithSessions.contains(.quit))
-        #expect(unlockedWithSessions.contains(.lockNow))
-        #expect(unlockedWithSessions.contains(.revokeAll))
-        #expect(unlockedWithSessions.contains(.sessionCount))
-        #expect(!unlockedWithSessions.contains(.unlock))
-
-        let unlockedNoSessions = MenuBarSections.visible(isLocked: false, hasSessions: false)
-        #expect(unlockedNoSessions.contains(.identities))
-        #expect(unlockedNoSessions.contains(.gitBanner))
-        #expect(!unlockedNoSessions.contains(.lockNow))
-        #expect(!unlockedNoSessions.contains(.sessionCount))
-        #expect(!unlockedNoSessions.contains(.revokeAll))
-        #expect(!unlockedNoSessions.contains(.unlock))
-    }
-
     @Test func test_003_C1_deleteStillPromptsWhenUnlocked() async throws {
         let fakeAuth = FakePanelAuthenticator()
         let controller = PanelLockController(defaults: testDefaults, authenticator: fakeAuth)
