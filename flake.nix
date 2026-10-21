@@ -20,11 +20,11 @@
         packages = {
           clavis = if pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isAarch64 then pkgs.stdenv.mkDerivation rec {
             pname = "clavis";
-            version = "0.3.1";
+            version = "0.4.2";
 
             src = pkgs.fetchurl {
               url = "https://github.com/GDR/clavis/releases/download/v${version}/clavis-macos-arm64.tar.gz";
-              hash = "sha256-CReuciaXLe9hbG7sWvmVFZaehojNmU09M5a8BInybCI=";
+              hash = "sha256-V7cWyhp1fTCFONQNMETu2Ao8TfG8NTptjlYjDS7i0a8=";
             };
 
             sourceRoot = ".";
