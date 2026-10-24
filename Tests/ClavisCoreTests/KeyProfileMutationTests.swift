@@ -1,0 +1,143 @@
+import Foundation
+import LocalAuthentication
+import Testing
+@testable import ClavisCore
+@testable import ClavisTestSupport
+
+@Suite(.serialized) struct KeyProfileMutationTests {
+    private struct Rejecting: UserAuthenticating {
+        func authenticate(reason: String, policy: LAPolicy) throws -> LAContext { throw LAError(.userCancel) }
+        func authenticate(reason: String, policy: LAPolicy) async throws -> LAContext { throw LAError(.userCancel) }
+    }
+
+    @Test(arguments: KeyType.allCases)
+    func generationPersistsIndependentProfile(type: KeyType) async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let store = InMemoryPrivateKeyStore()
+            let manager = fixture.makeKeyManager(privateKeyStore: store)
+            let profile = KeyAccessProfile(type: type, capabilities: .init(ssh: false, signature: true))
+            let key = try manager.generateKey(label: "new-profile", accessProfile: profile)
+            let raw = try #require(try store.load(label: key.label, context: LAContext(), prompt: ""))
+            let record = try StoredPrivateKeyRecord.decode(from: raw)
+            #expect(record.accessProfile == profile)
+            #expect(key.effectiveAccessProfile == profile)
+            #expect(try manager.fetchKeyInfo(label: key.label)?.effectiveAccessProfile == profile)
+            #expect(throws: KeyAccessError.operationDisabled(.ssh)) {
+                try manager.signSSH(key: key, data: Data("ssh".utf8), prompt: "")
+            }
+        }
+    }
+
+    @Test(arguments: KeyPurpose.allCases)
+    func typeChangePreservesCapabilitiesAndMaterial(purpose: KeyPurpose) async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let store = InMemoryPrivateKeyStore()
+            let auth = CountingAuthenticator()
+            let manager = fixture.makeKeyManager(authenticator: auth, privateKeyStore: store)
+            let key = try manager.generateKey(label: "type-change", keyPurpose: purpose)
+            let raw = try #require(try store.load(label: key.label, context: LAContext(), prompt: ""))
+            let original = try StoredPrivateKeyRecord.decode(from: raw)
+            let target: KeyType = key.effectiveAccessProfile.type == .bot ? .personal : .bot
+            try manager.changeAccessProfile(label: key.label, type: target)
+            let changed = try #require(try manager.fetchKeyInfo(label: key.label))
+            let updated = try StoredPrivateKeyRecord.decode(from: #require(try store.load(label: key.label, context: LAContext(), prompt: "")))
+            #expect(auth.authenticationCount == 1)
+            #expect(changed.effectiveAccessProfile.type == target)
+            #expect(changed.effectiveAccessProfile.capabilities == key.effectiveAccessProfile.capabilities)
+            #expect(updated.accessProfile == changed.effectiveAccessProfile)
+            #expect(updated.keyData == original.keyData)
+            #expect(updated.createdAt == original.createdAt)
+            #expect(changed.fingerprint == key.fingerprint)
+            #expect(changed.publicKeyBlob == key.publicKeyBlob)
+            if purpose == .gitSigningOnly { #expect(changed.purpose == .gitSigningOnly) }
+        }
+    }
+
+    @Test func everyActualChangeAuthenticatesAndNoOpDoesNot() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let auth = CountingAuthenticator()
+            let manager = fixture.makeKeyManager(authenticator: auth)
+            let key = try manager.generateKey(label: "fresh-auth")
+            try manager.changeAccessProfile(label: key.label, type: .personal)
+            #expect(auth.authenticationCount == 0)
+            try manager.changeAccessProfile(label: key.label, type: .bot)
+            try manager.changeAccessProfile(label: key.label, capabilities: .init(ssh: true, signature: false))
+            try manager.changeAccessProfile(label: key.label, type: .personal)
+            #expect(auth.authenticationCount == 3)
+            let fresh = try #require(try manager.fetchKeyInfo(label: key.label))
+            #expect(fresh.effectiveAccessProfile.type == .personal)
+            #expect(!fresh.effectiveAccessProfile.capabilities.signature)
+        }
+    }
+
+    @Test func cancellationPreservesAllStoredPolicy() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let store = InMemoryPrivateKeyStore()
+            let manager = fixture.makeKeyManager(privateKeyStore: store)
+            let key = try manager.generateKey(label: "cancel-policy")
+            let raw = try store.load(label: key.label, context: LAContext(), prompt: "")
+            let failing = fixture.makeKeyManager(authenticator: Rejecting(), privateKeyStore: store)
+            #expect(throws: (any Error).self) {
+                try failing.changeAccessProfile(label: key.label, type: .bot, capabilities: .init(ssh: false, signature: false))
+            }
+            #expect(try manager.fetchKeyInfo(label: key.label) == key)
+            #expect(try store.load(label: key.label, context: LAContext(), prompt: "") == raw)
+        }
+    }
+
+    @Test func disablingBothOperationsIsARealPersistedPolicy() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let manager = fixture.makeKeyManager()
+            let key = try manager.generateKey(label: "disabled")
+            try manager.changeAccessProfile(label: key.label, capabilities: .init(ssh: false, signature: false))
+            let fresh = try #require(try manager.fetchKeyInfo(label: key.label))
+            for operation in KeyOperation.allCases {
+                #expect(throws: KeyAccessError.operationDisabled(operation)) {
+                    try fresh.effectiveAccessProfile.require(operation)
+                }
+            }
+        }
+    }
+
+    @Test func indexFailureRollsBackPrivateRecord() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let store = InMemoryPrivateKeyStore()
+            let manager = fixture.makeKeyManager(privateKeyStore: store)
+            let key = try manager.generateKey(label: "rollback-profile")
+            let raw = try store.load(label: key.label, context: LAContext(), prompt: "")
+            PublicKeyStore.forcedSaveErrorForTesting = NSError(domain: "test", code: 1)
+            defer { PublicKeyStore.forcedSaveErrorForTesting = nil }
+            #expect(throws: (any Error).self) { try manager.changeAccessProfile(label: key.label, type: .bot) }
+            #expect(try store.load(label: key.label, context: LAContext(), prompt: "") == raw)
+            #expect(try manager.fetchKeyInfo(label: key.label) == key)
+        }
+    }
+    @Test func revocationFailureDoesNotCommitNewPolicy() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let store = InMemoryPrivateKeyStore()
+            let initial = fixture.makeKeyManager(privateKeyStore: store)
+            let key = try initial.generateKey(label: "revoke-failure")
+            let raw = try store.load(label: key.label, context: LAContext(), prompt: "")
+            let manager = fixture.makeKeyManager(privateKeyStore: store,
+                agentGrantRevoker: { _ in throw NSError(domain: "revocation", code: 1) })
+            #expect(throws: (any Error).self) { try manager.changeAccessProfile(label: key.label, type: .bot) }
+            #expect(try store.load(label: key.label, context: LAContext(), prompt: "") == raw)
+            #expect(try initial.fetchKeyInfo(label: key.label) == key)
+        }
+    }
+
+}
