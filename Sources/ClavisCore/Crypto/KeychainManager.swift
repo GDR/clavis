@@ -78,12 +78,13 @@ public class KeychainManager {
         algorithm: String = "ECDSA P-256",
         storageType: KeyStorageType = .secureEnclave,
         biometricPolicy: BiometricPolicy? = nil,
-        keyPurpose: KeyPurpose = .general
+        keyPurpose: KeyPurpose = .general,
+        accessProfile: KeyAccessProfile? = nil
     ) throws -> SSHKeyInfo {
         #if DEBUG
         if let context = self.testContext, TestContextScope.current == nil {
             return try TestContextScope.$current.withValue(context) {
-                try self.generateKey(label: label, algorithm: algorithm, storageType: storageType, biometricPolicy: biometricPolicy, keyPurpose: keyPurpose)
+                try self.generateKey(label: label, algorithm: algorithm, storageType: storageType, biometricPolicy: biometricPolicy, keyPurpose: keyPurpose, accessProfile: accessProfile)
             }
         }
         #endif
@@ -113,6 +114,7 @@ public class KeychainManager {
             storageType: storageType,
             biometricPolicy: policy,
             keyPurpose: keyPurpose,
+            accessProfile: accessProfile,
             keyData: keyPair.keyData
         )
         defer { record.wipe() }
@@ -144,7 +146,8 @@ public class KeychainManager {
             algorithmName: algorithm,
             storage: storageType,
             biometricPolicy: policy,
-            keyPurpose: keyPurpose
+            keyPurpose: keyPurpose,
+            accessProfile: record.accessProfile
         )
         do {
             try PublicKeyStore.saveChecked(keyInfo)
@@ -158,7 +161,7 @@ public class KeychainManager {
                 type: .keyCreate,
                 result: .allowed,
                 keyFingerprint: keyInfo.fingerprint,
-                keyKind: .personal,
+                keyKind: record.accessProfile.type == .bot ? .agent : .personal,
                 sensitive: AuditSensitive(keyLabel: keyInfo.label, processChain: [], host: nil)
             )
         )
@@ -825,62 +828,8 @@ public class KeychainManager {
                 throw KeyPurposeError.kindChangeNotAllowed
             }
 
-            var updatedRecord = StoredPrivateKeyRecord(
-                label: record.label,
-                algorithm: record.algorithm,
-                storageType: record.storageType,
-                biometricPolicy: record.biometricPolicy,
-                keyPurpose: newPurpose,
-                accessProfile: record.accessProfile.changingType(to: newPurpose == .agent ? .bot : .personal),
-                keyData: record.keyData,
-                createdAt: record.createdAt
-            )
-            defer { updatedRecord.wipe() }
-
-            let hasVaultRecord = vaultStore.hasRecord(label: label)
-            if hasVaultRecord {
-                try vaultStore.saveRecord(updatedRecord)
-            }
-
-            var recordData = try updatedRecord.encode()
-            defer { Self.wipeData(&recordData) }
-
-            do {
-                try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [])
-            } catch {
-                if hasVaultRecord {
-                    try? vaultStore.saveRecord(record)
-                }
-                throw error
-            }
-
-            let updatedKeyInfo = SSHKeyInfo(
-                label: key.label,
-                publicKeyOpenSSH: key.publicKeyOpenSSH,
-                publicKeyBlob: key.publicKeyBlob,
-                fingerprint: key.fingerprint,
-                createdAt: key.createdAt,
-                algorithmName: key.algorithmName,
-                storage: key.storageType,
-                biometricPolicy: key.biometricPolicy,
-                keyPurpose: newPurpose,
-                accessProfile: updatedRecord.accessProfile
-            )
-
-            do {
-                try PublicKeyStore.saveChecked(updatedKeyInfo)
-            } catch {
-                if var originalRecordData = try? record.encode() {
-                    defer { Self.wipeData(&originalRecordData) }
-                    try? privateKeyStore.save(label: label, data: originalRecordData, accessControlFlags: [])
-                }
-                if hasVaultRecord {
-                    try? vaultStore.saveRecord(record)
-                }
-                throw error
-            }
-
-            try revokeKeyCapabilities(label: label)
+            try persistAccessProfile(record.accessProfile.changingType(to: newPurpose == .agent ? .bot : .personal),
+                                     purpose: newPurpose, key: key, record: record)
 
             auditRecorder.record(
                 AuditEvent(
@@ -892,6 +841,92 @@ public class KeychainManager {
                 )
             )
             ClavisLogger.log("KEY_CHANGE_KIND", "Changed purpose of '\(label)' from '\(currentPurpose.rawValue)' to '\(newPurpose.rawValue)'.")
+        }
+    }
+
+    private func persistAccessProfile(_ profile: KeyAccessProfile, purpose newPurpose: KeyPurpose,
+                                      key: SSHKeyInfo, record: StoredPrivateKeyRecord) throws {
+        let label = key.label
+        try revokeKeyCapabilities(label: label)
+        var updatedRecord = StoredPrivateKeyRecord(
+            label: record.label,
+            algorithm: record.algorithm,
+            storageType: record.storageType,
+            biometricPolicy: record.biometricPolicy,
+            keyPurpose: newPurpose,
+            accessProfile: profile,
+            keyData: record.keyData,
+            createdAt: record.createdAt
+        )
+        defer { updatedRecord.wipe() }
+
+        let hasVaultRecord = vaultStore.hasRecord(label: label)
+        if hasVaultRecord {
+            try vaultStore.saveRecord(updatedRecord)
+        }
+
+        var recordData = try updatedRecord.encode()
+        defer { Self.wipeData(&recordData) }
+
+        do {
+            try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [])
+        } catch {
+            if hasVaultRecord {
+                try? vaultStore.saveRecord(record)
+            }
+            throw error
+        }
+
+        let updatedKeyInfo = SSHKeyInfo(
+            label: key.label,
+            publicKeyOpenSSH: key.publicKeyOpenSSH,
+            publicKeyBlob: key.publicKeyBlob,
+            fingerprint: key.fingerprint,
+            createdAt: key.createdAt,
+            algorithmName: key.algorithmName,
+            storage: key.storageType,
+            biometricPolicy: key.biometricPolicy,
+            keyPurpose: newPurpose,
+            accessProfile: updatedRecord.accessProfile
+        )
+
+        do {
+            try PublicKeyStore.saveChecked(updatedKeyInfo)
+        } catch {
+            if var originalRecordData = try? record.encode() {
+                defer { Self.wipeData(&originalRecordData) }
+                try? privateKeyStore.save(label: label, data: originalRecordData, accessControlFlags: [])
+            }
+            if hasVaultRecord {
+                try? vaultStore.saveRecord(record)
+            }
+            throw error
+        }
+
+    }
+
+    /// A type-only change never changes operation capabilities or legacy Git restrictions.
+    /// Authentication cannot be supplied by the caller or reused from a previous unlock.
+    public func changeAccessProfile(label: String, type: KeyType? = nil,
+                                    capabilities: KeyCapabilities? = nil) throws {
+        guard let key = try fetchKeyInfo(label: label) else {
+            throw KeychainManagerError.keyNotFound(label: label)
+        }
+        let profile = KeyAccessProfile(type: type ?? key.effectiveAccessProfile.type,
+            capabilities: capabilities ?? key.effectiveAccessProfile.capabilities)
+        guard profile != key.effectiveAccessProfile else { return }
+        try withVerifiedPrivateKeyRecord(for: key,
+            prompt: "Change access policy for '\(label)'",
+            auditOnAuthFailure: true, auditKeyKind: profile.type == .bot ? .agent : .personal
+        ) { context, record in
+            defer { context.invalidate() }
+            // Retain Git-only restrictions unless the user explicitly enables SSH.
+            let purpose: KeyPurpose = record.purpose == .gitSigningOnly && !profile.capabilities.ssh
+                ? .gitSigningOnly : .general
+            try persistAccessProfile(profile, purpose: purpose, key: key, record: record)
+            auditRecorder.record(AuditEvent(type: .keyKindChange, result: .allowed,
+                keyFingerprint: key.fingerprint, keyKind: profile.type == .bot ? .agent : .personal,
+                sensitive: .init(keyLabel: label, processChain: [], host: nil)))
         }
     }
 
