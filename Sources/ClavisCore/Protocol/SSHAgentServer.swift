@@ -58,6 +58,8 @@ public class SSHAgentServer {
     internal static let extendAgentSessionRequest: UInt8 = 247
     internal static let setAgentPolicyRequest: UInt8 = 248
     internal static let getAgentPolicyRequest: UInt8 = 249
+    internal static let applicationRegistryRequest: UInt8 = 250
+    internal static let applicationPolicyChangeRequest: UInt8 = 251
     public static let defaultSocketPath = NSString(string: "~/.ssh/clavis.sock").expandingTildeInPath
     public static let defaultAgentSocketPath = NSString(string: "~/.ssh/clavis-agent.sock").expandingTildeInPath
     public static let shared = SSHAgentServer(promptGate: .shared)
@@ -90,7 +92,8 @@ public class SSHAgentServer {
     internal var activeClientCount: Int { socketServer.activeClientCount }
 
     public init(
-        applicationAccess: ApplicationRequestAuthorizing = ApplicationRequestAuthorization(),
+        applicationAccess: ApplicationRequestAuthorizing? = nil,
+        applicationRegistry: ApplicationRegistryStoring = KeychainApplicationRegistry.shared,
         socketPath: String = SSHAgentServer.defaultSocketPath,
         role: AgentSocketRole = .personal,
         maxConcurrentClients: Int = 32,
@@ -131,6 +134,7 @@ public class SSHAgentServer {
 
         let resolvedPeerValidator = peerProcessValidator ?? { SSHAgentServer.peerProcessUnchanged(pid: $0, path: $1, startTime: $2) }
 
+        let applicationAccess = applicationAccess ?? ApplicationRequestAuthorization(store: applicationRegistry)
         self.controlDispatcher = AgentControlDispatcher(
             keyManager: keyManager,
             auditRecorder: auditRecorder,
@@ -139,7 +143,8 @@ public class SSHAgentServer {
             authenticator: authenticator,
             promptGate: promptGate,
             peerProcessValidator: resolvedPeerValidator,
-            gitSigningGraceManager: gitSigningGraceManager
+            gitSigningGraceManager: gitSigningGraceManager,
+            applicationRegistry: applicationRegistry
         )
 
         self.applicationAccess = applicationAccess

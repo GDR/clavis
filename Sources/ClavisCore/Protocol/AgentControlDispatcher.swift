@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 
 internal struct AgentControlDispatcher {
+    let applicationRegistry: ApplicationRegistryStoring
     let keyManager: KeychainManager
     let auditRecorder: AuditRecording
     let agentSessions: AgentSessionRegistry
@@ -19,8 +20,10 @@ internal struct AgentControlDispatcher {
         authenticator: UserAuthenticating,
         promptGate: SigningPromptGate,
         peerProcessValidator: @escaping (pid_t, String, UInt64) -> Bool,
-        gitSigningGraceManager: GitSigningGraceManager = .shared
+        gitSigningGraceManager: GitSigningGraceManager = .shared,
+        applicationRegistry: ApplicationRegistryStoring = KeychainApplicationRegistry.shared
     ) {
+        self.applicationRegistry = applicationRegistry
         self.keyManager = keyManager
         self.auditRecorder = auditRecorder
         self.agentSessions = agentSessions
@@ -32,7 +35,9 @@ internal struct AgentControlDispatcher {
     }
 
     static func isControlOpcode(_ msgType: UInt8) -> Bool {
-        msgType == SSHAgentServer.invalidateKeyRequest
+        msgType == SSHAgentServer.applicationRegistryRequest
+            || msgType == SSHAgentServer.applicationPolicyChangeRequest
+            || msgType == SSHAgentServer.invalidateKeyRequest
             || msgType == SSHAgentServer.queryGitGraceRequest
             || msgType == SSHAgentServer.lockAllRequest
             || msgType == SSHAgentServer.registerAgentSessionRequest
@@ -53,6 +58,10 @@ internal struct AgentControlDispatcher {
         clientSocket: Int32?
     ) -> Data {
         switch msgType {
+        case SSHAgentServer.applicationRegistryRequest:
+            return handleApplicationRegistry(payload: payload)
+        case SSHAgentServer.applicationPolicyChangeRequest:
+            return handleApplicationPolicyChange(payload: Data(payload.dropFirst()), clientPid: clientPid, clientExecutablePath: clientExecutablePath, clientStartTime: clientStartTime, clientSocket: clientSocket)
         case SSHAgentServer.invalidateKeyRequest:
             return handleInvalidateKey(payload: Data(payload.dropFirst()))
         case SSHAgentServer.queryGitGraceRequest:
