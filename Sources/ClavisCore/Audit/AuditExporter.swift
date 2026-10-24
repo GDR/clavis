@@ -38,6 +38,9 @@ public enum AuditExporter {
         let keyLabel: String?
         let processChain: [ExportProcess]
         let host: String?
+        let requestOperation: KeyOperation?
+        let callerName: String?
+        let callerUncertain: Bool?
     }
 
     /// Exports records in JSON Lines format, one object per record, newest first.
@@ -94,7 +97,10 @@ public enum AuditExporter {
                 count: event.count,
                 keyLabel: redactedLabel,
                 processChain: redactedChain,
-                host: resolvedSensitive?.host
+                host: resolvedSensitive?.host,
+                requestOperation: resolvedSensitive?.requestOperation,
+                callerName: resolvedSensitive?.callerName.map { hashString($0, salt: salt) },
+                callerUncertain: resolvedSensitive?.callerUncertain
             )
 
             if let lineData = try? encoder.encode(exportRec),

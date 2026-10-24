@@ -80,15 +80,24 @@ public struct AuditSensitive: Codable, Equatable, Sendable {
     public var keyLabel: String?
     public var processChain: [AuditProcess]   // [0] = direct peer, then parents
     public var host: String?                  // filled by story 006
+    public var requestOperation: KeyOperation?
+    public var callerName: String?
+    public var callerUncertain: Bool?
 
     public init(
         keyLabel: String? = nil,
         processChain: [AuditProcess] = [],
-        host: String? = nil
+        host: String? = nil,
+        requestOperation: KeyOperation? = nil,
+        callerName: String? = nil,
+        callerUncertain: Bool? = nil
     ) {
         self.keyLabel = keyLabel
         self.processChain = processChain
         self.host = host
+        self.requestOperation = requestOperation
+        self.callerName = callerName
+        self.callerUncertain = callerUncertain
     }
 }
 

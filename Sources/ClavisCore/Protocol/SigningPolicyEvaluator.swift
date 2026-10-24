@@ -115,37 +115,38 @@ public final class SigningPolicyEvaluator {
         guard flags == 0, let key = try keyManager.listKeys().first(where: { $0.publicKeyBlob == keyBlob }) else {
             return try evaluateAuthorizedSigningRequest(keyBlob: keyBlob, dataToSign: dataToSign, flags: flags, role: role, clientPid: clientPid, connection: connection, clientExecutablePath: clientExecutablePath, clientStartTime: clientStartTime, clientSocket: clientSocket)
         }
+        let operation: KeyOperation = dataToSign.starts(with: SSHSIGPayload.magic) ? .signature : .ssh
         guard let path = clientExecutablePath ?? ProcessInspector.getProcessPath(pid: clientPid),
               let start = clientStartTime ?? ProcessInspector.processStartTime(pid: clientPid) else {
-            recordApplicationDecision(key: key, result: .denied, reason: .noPeerAttribution, pid: clientPid, path: clientExecutablePath ?? "")
+            recordApplicationDecision(key: key, result: .denied, reason: .noPeerAttribution, pid: clientPid, path: clientExecutablePath ?? "", operation: operation)
             return .denied
         }
-        let operation: KeyOperation = dataToSign.starts(with: SSHSIGPayload.magic) ? .signature : .ssh
         if key.purpose == .gitSigningOnly {
             guard SSHSIGPayload.parse(from: dataToSign) != nil else {
-                recordApplicationDecision(key: key, result: .denied, reason: .gitOnlyKeyNonGitPayload, pid: clientPid, path: path)
+                recordApplicationDecision(key: key, result: .denied, reason: .gitOnlyKeyNonGitPayload, pid: clientPid, path: path, operation: operation)
                 return .denied
             }
             guard ProcessInspector.isTrustedGitExecutable(path: path) || ProcessInspector.isSignerHelper(path: path) else {
-                recordApplicationDecision(key: key, result: .denied, reason: .wrongKeyKind, pid: clientPid, path: path)
+                recordApplicationDecision(key: key, result: .denied, reason: .wrongKeyKind, pid: clientPid, path: path, operation: operation)
                 return .denied
             }
         }
         guard role.permits(key) else {
-            recordApplicationDecision(key: key, result: .denied, reason: .wrongKeyKind, pid: clientPid, path: path)
+            recordApplicationDecision(key: key, result: .denied, reason: .wrongKeyKind, pid: clientPid, path: path, operation: operation)
             return .denied
         }
         let lease: ApplicationRequestLease
         do {
             lease = try applicationAccess.authorize(key: key, operation: operation, role: role, pid: clientPid, path: path, start: start)
         } catch {
-            recordApplicationDecision(key: key, result: .denied, reason: .policyUnavailable, pid: clientPid, path: path)
+            recordApplicationDecision(key: key, result: .denied, reason: .policyUnavailable, pid: clientPid, path: path, operation: operation)
             return .denied
         }
         let decision: SigningDecision
+        var pendingAudit: AuditEvent?
         switch lease.eligibility {
         case .denied:
-            recordApplicationDecision(key: key, result: .denied, reason: .wrongKeyKind, pid: clientPid, path: path)
+            recordApplicationDecision(key: key, result: .denied, reason: .wrongKeyKind, pid: clientPid, path: path, operation: operation, lease: lease)
             return .denied
         case .authenticatedOnceOnly:
             // No cache lookup, history heuristic, or remembered classification.
@@ -163,14 +164,15 @@ public final class SigningPolicyEvaluator {
                 }
                 decision = .approved(signature: signature)
             } catch {
-                recordApplicationDecision(key: key, result: AuditEvent.isUserCancellation(error) ? .cancelled : .denied, reason: .authenticationFailed, pid: clientPid, path: path)
+                recordApplicationDecision(key: key, result: AuditEvent.isUserCancellation(error) ? .cancelled : .denied, reason: .authenticationFailed, pid: clientPid, path: path, operation: operation, lease: lease)
                 return .denied
             }
         case .eligible:
             decision = try evaluateAuthorizedSigningRequest(
                 keyBlob: keyBlob, dataToSign: dataToSign, flags: flags, role: role, clientPid: clientPid,
                 connection: connection, clientExecutablePath: path, clientStartTime: start, clientSocket: clientSocket,
-                approvalIdentity: lease.approvalIdentity, callerName: lease.caller?.application.name
+                approvalIdentity: lease.approvalIdentity, callerName: lease.caller?.application.name,
+                auditSink: { pendingAudit = $0 }
             )
         }
         if case .approved = decision {
@@ -180,20 +182,27 @@ public final class SigningPolicyEvaluator {
                   (try? applicationAccess.validate(lease, pid: clientPid, path: path, start: start)) == true else {
                 gitSigningGraceManager.invalidateAll(broadcast: false)
                 agentSessions.endAll(reason: .keyChanged)
-                recordApplicationDecision(key: key, result: .denied, reason: .peerChanged, pid: clientPid, path: path)
+                recordApplicationDecision(key: key, result: .denied, reason: .peerChanged, pid: clientPid, path: path, operation: operation, lease: lease)
                 return .dropConnection
             }
             if lease.eligibility == .authenticatedOnceOnly {
-                recordApplicationDecision(key: key, result: .allowed, reason: .viaPrompt, pid: clientPid, path: path)
+                recordApplicationDecision(key: key, result: .allowed, reason: .viaPrompt, pid: clientPid, path: path, operation: operation, lease: lease)
             }
+        }
+        if let pendingAudit {
+            auditRecorder.record(pendingAudit.withRequestContext(operation: operation,
+                callerName: lease.caller?.application.name, uncertain: false))
         }
         return decision
     }
 
-    private func recordApplicationDecision(key: SSHKeyInfo, result: AuditResult, reason: AuditReason, pid: pid_t, path: String) {
+    private func recordApplicationDecision(key: SSHKeyInfo, result: AuditResult, reason: AuditReason, pid: pid_t, path: String,
+                                           operation: KeyOperation? = nil, lease: ApplicationRequestLease? = nil) {
         auditRecorder.record(AuditEvent(type: .signature, result: result, reason: reason,
             keyFingerprint: key.fingerprint, keyKind: key.effectiveAccessProfile.type == .bot ? .agent : .personal, count: 1,
-            sensitive: .init(keyLabel: key.label, processChain: AuditProcessChain.build(pid: pid, executablePath: path))))
+            sensitive: .init(keyLabel: key.label, processChain: AuditProcessChain.build(pid: pid, executablePath: path)))
+            .withRequestContext(operation: operation, callerName: lease?.caller?.application.name,
+                                uncertain: lease.map { $0.caller == nil }))
     }
 
     private func evaluateAuthorizedSigningRequest(
@@ -207,10 +216,14 @@ public final class SigningPolicyEvaluator {
         clientStartTime: UInt64? = nil,
         clientSocket: Int32? = nil,
         approvalIdentity: String? = nil,
-        callerName: String? = nil
+        callerName: String? = nil,
+        auditSink: ((AuditEvent) -> Void)? = nil
     ) throws -> SigningDecision {
         var audit = PendingSignAudit()
-        defer { auditRecorder.record(audit.makeEvent()) }
+        defer {
+            if let auditSink { auditSink(audit.makeEvent()) }
+            else { auditRecorder.record(audit.makeEvent()) }
+        }
 
         guard flags == 0 else {
             audit.result = .denied
