@@ -70,3 +70,24 @@ Revocation cannot close an SSH connection that has already authenticated.
 
 These policies do not provide strong isolation from hostile processes running as the same user.
 Application labels, environment variables, and socket paths are not a sandbox boundary.
+
+## Revocation during a request
+
+A request captures both the current application-registry revision and a key-policy generation.
+Clavis checks them again before returning a signature.
+Changing a key's policy invalidates its previous generation on both listeners.
+Changing Personal to Bot and then back to Personal does not revive the original request.
+Disabling an operation and enabling it again also does not revive an old approval.
+The application must submit a fresh request and satisfy the current policy.
+
+A key rename retains the same fingerprint and private material.
+Revocation still invalidates requests that began under the old label.
+The old public-index entry does not need to remain present for that invalidation.
+
+Generations are local to the running daemon.
+They are shared between primary and compatibility sockets.
+A daemon restart ends pending requests and cached grants; old generations cannot be reused.
+Application classifications and kill-switch state remain persistent across restarts.
+
+Only the trusted control path can revoke a key's generation.
+An untrusted signing client cannot manipulate generations through a control opcode.
