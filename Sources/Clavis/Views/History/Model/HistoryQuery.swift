@@ -358,7 +358,7 @@ public struct HistoryFilter: Equatable, Sendable {
             || has(e.result.rawValue)
             || has(e.keyFingerprint) || has(e.sessionID) { return true }
         guard let s = sensitive else { return false }
-        if has(s.keyLabel) || has(s.host) { return true }
+        if has(s.keyLabel) || has(s.host) || has(s.callerName) { return true }
         return s.processChain.contains {
             has($0.executablePath) || has(($0.executablePath as NSString).lastPathComponent) || String($0.pid).contains(q)
         }

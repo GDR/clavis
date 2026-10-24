@@ -252,6 +252,10 @@ public enum GitSigningPrompt {
             return .singleShot
         }
 
+        #if DEBUG
+        // Tests must inject a presenter instead of displaying an interactive alert.
+        guard !ClavisEnvironment.isTesting else { return .cancel }
+        #endif
         var responseFlags: CFOptionFlags = 0
         let strings = GitSigningPromptStrings.current
         let header = strings.header as CFString

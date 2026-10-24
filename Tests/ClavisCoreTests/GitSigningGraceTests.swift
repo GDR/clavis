@@ -743,6 +743,16 @@ final class GitSigningGraceTests {
         #expect(elapsed < 0.5)
     }
 
+    @Test func testDefaultModalPresenterCannotInterruptTestRuns() {
+        let previousProvider = GitSigningPrompt.sessionCheckProvider
+        defer { GitSigningPrompt.sessionCheckProvider = previousProvider }
+        GitSigningPrompt.sessionCheckProvider = { true }
+        let start = Date()
+        let result = GitSigningPrompt.displayModal(keyLabel: "test-only", clientDesc: "Test process")
+        #expect(result == .cancel)
+        #expect(Date().timeIntervalSince(start) < 1)
+    }
+
     @Test func testModalDefaultButtonIsTheLeastPrivilegedChoice() {
         // Return / default button must never start an unattended signing session.
         #expect(

@@ -55,7 +55,9 @@ struct HistoryEventRow: View {
         }
     }
 
-    private var secondaryText: String { "\(operation) · \(result.title)" }
+    private var secondaryText: String {
+        [operation, HistoryViewModel.callerTitle(sens), result.title].compactMap { $0 }.joined(separator: " · ")
+    }
     private var primaryTitle: String { keyName ?? operation }
 
     private var dateText: String {
@@ -160,6 +162,7 @@ struct HistoryEventRow: View {
             "Key: \(keyName ?? "—")",
             "Host: \(host ?? "—")",
             "Result: \(reasonLine)",
+            "Caller: \(HistoryViewModel.callerTitle(sens) ?? "Not recorded")",
             "Process: \(processLine)",
             "Launched by: \(parentsLine)",
             "Timestamp: \(Self.isoFormatter.string(from: event.time))",
@@ -233,6 +236,8 @@ struct HistoryEventRow: View {
         if let fp = event.keyFingerprint { lines.append("Key Fingerprint: \(fp)") }
         if case .plaintext(let s) = unseal {
             if let label = s.keyLabel { lines.append("Key Label: \(label)") }
+            if let operation = s.requestOperation { lines.append("Operation: \(operation.rawValue)") }
+            if let caller = HistoryViewModel.callerTitle(s) { lines.append("Caller: \(caller)") }
             if let host = s.host { lines.append("Host: \(host)") }
             if !s.processChain.isEmpty {
                 lines.append("Processes:")
