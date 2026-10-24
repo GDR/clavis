@@ -131,6 +131,10 @@ public final class SigningPolicyEvaluator {
                 return .denied
             }
         }
+        guard role.permits(key) else {
+            recordApplicationDecision(key: key, result: .denied, reason: .wrongKeyKind, pid: clientPid, path: path)
+            return .denied
+        }
         let lease: ApplicationRequestLease
         do {
             lease = try applicationAccess.authorize(key: key, operation: operation, role: role, pid: clientPid, path: path, start: start)
@@ -188,7 +192,7 @@ public final class SigningPolicyEvaluator {
 
     private func recordApplicationDecision(key: SSHKeyInfo, result: AuditResult, reason: AuditReason, pid: pid_t, path: String) {
         auditRecorder.record(AuditEvent(type: .signature, result: result, reason: reason,
-            keyFingerprint: key.fingerprint, keyKind: key.purpose.auditKind, count: 1,
+            keyFingerprint: key.fingerprint, keyKind: key.effectiveAccessProfile.type == .bot ? .agent : .personal, count: 1,
             sensitive: .init(keyLabel: key.label, processChain: AuditProcessChain.build(pid: pid, executablePath: path))))
     }
 
@@ -225,7 +229,7 @@ public final class SigningPolicyEvaluator {
 
         audit.keyFingerprint = matchingKey.fingerprint
         audit.keyLabel = matchingKey.label
-        audit.keyKind = matchingKey.purpose.auditKind
+        audit.keyKind = matchingKey.effectiveAccessProfile.type == .bot ? .agent : .personal
 
         let pid = clientPid
         guard let processPath = clientExecutablePath ?? ProcessInspector.getProcessPath(pid: pid) else {
@@ -239,7 +243,7 @@ public final class SigningPolicyEvaluator {
 
         let clientDesc = "\(Self.safeProcessPath(processPath)) (PID \(pid))"
 
-        guard role.allowedPurposes.contains(matchingKey.purpose) else {
+        guard role.permits(matchingKey) else {
             audit.result = .denied
             audit.reason = .wrongKeyKind
             ClavisLogger.log("SECURITY_ALERT", "Key '\(matchingKey.label)' with purpose '\(matchingKey.purpose.rawValue)' is not allowed on \(role.rawValue) socket. Refusing request from \(clientDesc).")
@@ -256,7 +260,12 @@ public final class SigningPolicyEvaluator {
             return .denied
         }
 
-        if role == .agent {
+        if role == .agent && (connection?.hasForwarding == true || connection?.hasFailedBind == true) {
+            audit.result = .denied
+            audit.reason = .forwardingRefused
+            return .denied
+        }
+        if role == .agent && matchingKey.purpose == .agent {
             if connection?.hasForwarding == true || connection?.hasFailedBind == true {
                 audit.result = .denied
                 audit.reason = .forwardingRefused
@@ -435,7 +444,7 @@ public final class SigningPolicyEvaluator {
                     let gitAnchor = ProcessInspector.grantAnchor(peerPid: pid, peerPath: processPath)
                     let anchorPath = gitAnchor?.path
                     let anchorPid = gitAnchor?.pid
-                    let promptDesc = Self.requesterDescription(
+                    let promptDesc = callerName ?? Self.requesterDescription(
                         processPath: anchorPath ?? processPath,
                         pid: anchorPid ?? pid
                     )
@@ -457,7 +466,7 @@ public final class SigningPolicyEvaluator {
                             return .denied
                         }
                         ClavisLogger.log("GIT_GRACE", "User approved 5-minute Git signing session for \(promptDesc). Authorizing via Touch ID...")
-                        let authPrompt = Self.gitSigningSessionReason(keyLabel: matchingKey.label)
+                        let authPrompt = Self.gitSigningSessionReason(keyLabel: matchingKey.label) + " Requested by \(requester)."
                         let grant = try promptGate.run(requester: requesterIdentity, clientSocket: clientSocket) {
                             try keyManager.authorizeGitSigningGrant(
                                 key: matchingKey,
