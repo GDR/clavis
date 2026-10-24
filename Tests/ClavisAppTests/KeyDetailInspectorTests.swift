@@ -915,10 +915,13 @@ struct KeyDetailInspectorTests {
 
         let scrollViews = collectScrollViews(in: hostingView)
         #expect(scrollViews.count == 2)
-        let leftSV = try #require(scrollViews.first { abs($0.frame.width - 222) < 1 && abs($0.frame.height - 400) < 1 })
-        let rightSV = try #require(scrollViews.first { abs($0.frame.width - 689) < 1 && abs($0.frame.height - 400) < 1 })
+        let leftSV = try #require(scrollViews.first { abs($0.frame.width - KeyListView.sidebarWidth) < 1 })
+        let rightSV = try #require(scrollViews.first { abs($0.frame.width - (911 - KeyListView.sidebarWidth)) < 1 })
+        // The fixed status footer consumes sidebar space; key content has no toolbar.
+        #expect(leftSV.frame.height <= 400)
+        #expect(rightSV.frame.height == 400)
         #expect(leftSV.contentInsets.top >= KeyListView.toolbarHeight)
-        #expect(rightSV.contentInsets.top >= KeyListView.toolbarHeight)
+        #expect(rightSV.contentInsets.top < KeyListView.toolbarHeight)
 
         func pocketSubviews(in sv: NSScrollView) -> [NSView] {
             sv.subviews.filter {
@@ -966,12 +969,12 @@ struct KeyDetailInspectorTests {
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         hostingView.layoutSubtreeIfNeeded()
         let historyScrollViews = collectScrollViews(in: hostingView)
-        let historyRightSV = try #require(historyScrollViews.first { abs($0.frame.width - 689) < 1 && abs($0.frame.height - 400) < 1 })
+        let historyRightSV = try #require(historyScrollViews.first { abs($0.frame.width - (911 - KeyListView.sidebarWidth)) < 1 && abs($0.frame.height - 400) < 1 })
         #expect(historyRightSV.contentInsets.top >= KeyListView.toolbarHeight)
         #expect(!pocketSubviews(in: historyRightSV).isEmpty)
         #expect(pocketSubviews(in: historyRightSV).allSatisfy { $0.isHidden })
 
-        historyRightSV.documentView?.setFrameSize(NSSize(width: 689, height: 800))
+        historyRightSV.documentView?.setFrameSize(NSSize(width: 911 - KeyListView.sidebarWidth, height: 800))
         historyRightSV.contentView.setBoundsOrigin(NSPoint(x: 0, y: -60))
         NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: historyRightSV.contentView)
         #expect(pocketSubviews(in: historyRightSV).allSatisfy { !$0.isHidden })

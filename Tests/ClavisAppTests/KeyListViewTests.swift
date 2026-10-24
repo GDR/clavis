@@ -303,7 +303,7 @@ struct KeyListViewTests {
 
     @Test
     func testContactsSidebarAndEmptyStateConstants() {
-        #expect(KeyListView.sidebarWidth == 222)
+        #expect(KeyListView.sidebarWidth == 260)
         #expect(KeyListView.toolbarHeight == 52)
         #expect(KeyListView.searchCapsuleHeight == 36)
         #expect(KeyListView.emptyStateTitle == "A key that stays on your Mac.")
