@@ -278,7 +278,7 @@ public final class SigningPolicyEvaluator {
             audit.reason = .forwardingRefused
             return .denied
         }
-        if role == .agent && matchingKey.purpose == .agent {
+        if role == .agent && matchingKey.purpose == .agent && !dataToSign.starts(with: SSHSIGPayload.magic) {
             if connection?.hasForwarding == true || connection?.hasFailedBind == true {
                 audit.result = .denied
                 audit.reason = .forwardingRefused

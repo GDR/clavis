@@ -707,8 +707,9 @@ public class KeychainManager {
         maxOperations: Int = 200,
         approvedProcess: GitApprovedProcess? = nil
     ) throws -> GitSigningGrant {
-        guard key.purpose != .agent else {
-            throw KeyPurposeError.notAllowedOnThisPath(.agent)
+        guard key.effectiveAccessProfile.capabilities.signature else {
+            if key.purpose == .agent { throw KeyPurposeError.notAllowedOnThisPath(.agent) }
+            throw KeyAccessError.operationDisabled(.signature)
         }
 
         return try withVerifiedPrivateKeyRecord(
@@ -716,10 +717,7 @@ public class KeychainManager {
             prompt: prompt,
             auditOnAuthFailure: false
         ) { context, record in
-            guard record.purpose != .agent else {
-                context.invalidate()
-                throw KeyPurposeError.notAllowedOnThisPath(.agent)
-            }
+            try record.accessProfile.require(.signature)
 
             context.interactionNotAllowed = true
 
@@ -818,12 +816,7 @@ public class KeychainManager {
         }
 
         let reason = prompt ?? "Touch ID to change key kind for '\(label)'"
-        try withVerifiedPrivateKeyRecord(
-            for: key,
-            prompt: reason,
-            auditOnAuthFailure: true,
-            auditKeyKind: newPurpose.auditKind
-        ) { _, record in
+        try withPolicyMutationRecord(for: key, prompt: reason, auditKeyKind: newPurpose.auditKind) { record in
             guard (record.purpose == .general && newPurpose == .agent) || (record.purpose == .agent && newPurpose == .general) else {
                 throw KeyPurposeError.kindChangeNotAllowed
             }
@@ -917,11 +910,8 @@ public class KeychainManager {
         let profile = KeyAccessProfile(type: type ?? key.effectiveAccessProfile.type,
             capabilities: capabilities ?? key.effectiveAccessProfile.capabilities)
         guard profile != key.effectiveAccessProfile else { return }
-        try withVerifiedPrivateKeyRecord(for: key,
-            prompt: "Change access policy for '\(label)'",
-            auditOnAuthFailure: true, auditKeyKind: profile.type == .bot ? .agent : .personal
-        ) { context, record in
-            defer { context.invalidate() }
+        try withPolicyMutationRecord(for: key, prompt: "Change access policy for '\(label)'",
+                                     auditKeyKind: profile.type == .bot ? .agent : .personal) { record in
             // Retain Git-only restrictions unless the user explicitly enables SSH.
             let purpose: KeyPurpose = record.purpose == .gitSigningOnly && !profile.capabilities.ssh
                 ? .gitSigningOnly : .general
@@ -931,6 +921,29 @@ public class KeychainManager {
                 sensitive: .init(keyLabel: label, processChain: [], host: nil)))
         }
     }
+
+    private func withPolicyMutationRecord<T>(for key: SSHKeyInfo, prompt: String, auditKeyKind: AuditKeyKind,
+                                             _ body: (StoredPrivateKeyRecord) throws -> T) throws -> T {
+        let context: LAContext
+        do {
+            // Metadata changes use system authentication with password fallback.
+            // This does not relax the Secure Enclave key's signing access control.
+            context = try authenticator.authenticate(reason: prompt, policy: .deviceOwnerAuthentication)
+        } catch {
+            auditRecorder.record(AuditEvent(type: .keyKindChange,
+                result: AuditEvent.isUserCancellation(error) ? .cancelled : .denied,
+                reason: .authenticationFailed, keyFingerprint: key.fingerprint,
+                keyKind: auditKeyKind,
+                sensitive: .init(keyLabel: key.label, processChain: [], host: nil)))
+            throw error
+        }
+        defer { context.invalidate() }
+        var record = try loadAuthenticatedRecord(label: key.label, context: context, prompt: prompt, expectedKeyInfo: key)
+        defer { record.wipe() }
+        try validateAuthenticatedRecord(record, against: key, context: context)
+        return try body(record)
+    }
+
 
     /// Rename an existing key label across the private key store, shadow vault, and public key store.
     @discardableResult
