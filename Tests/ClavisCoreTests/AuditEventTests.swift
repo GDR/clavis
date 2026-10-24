@@ -32,7 +32,10 @@ import LocalAuthentication
         let expectedSensitiveProperties: Set<String> = [
             "keyLabel",
             "processChain",
-            "host"
+            "host",
+            "requestOperation",
+            "callerName",
+            "callerUncertain"
         ]
         #expect(sensitiveProperties == expectedSensitiveProperties)
     }

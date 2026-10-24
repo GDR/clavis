@@ -413,6 +413,12 @@ public final class HistoryViewModel: ObservableObject {
         return record.event.sensitive
     }
 
+    public nonisolated static func callerTitle(_ sensitive: AuditSensitive) -> String? {
+        if sensitive.callerUncertain == true { return "Caller identity uncertain" }
+        guard let name = sensitive.callerName, !name.isEmpty else { return nil }
+        return "Verified caller: \(name)"
+    }
+
     public nonisolated static func operationTitle(
         for record: AuditRecord,
         sensitive: AuditSensitive? = nil
@@ -420,6 +426,9 @@ public final class HistoryViewModel: ObservableObject {
         let sens = sensitive ?? record.event.sensitive
         switch record.event.type {
         case .signature:
+            if let operation = sens.requestOperation {
+                return operation == .ssh ? "SSH authentication" : "Signature"
+            }
             if record.event.keyKind == .agent || record.event.reason == .viaAgentSession {
                 return "Agent signature"
             }
