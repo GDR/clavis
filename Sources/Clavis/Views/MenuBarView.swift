@@ -6,6 +6,7 @@ import ClavisCore
 public struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject var lock: PanelLockController
+    @State private var confirmingRequestPolicy = false
 
     public init(lock: PanelLockController? = nil) {
         self.lock = lock ?? .shared
@@ -67,6 +68,12 @@ public struct MenuBarView: View {
             separator
 
             MenuBarActionItem(
+                title: appState.requestPolicy.isPaused ? "Resume Requests…" : "Activate Kill Switch…",
+                icon: appState.requestPolicy.isPaused ? "play.circle" : "stop.circle"
+            ) { confirmingRequestPolicy = true }
+            .disabled(appState.requestPolicy.isBusy)
+
+            MenuBarActionItem(
                 title: appState.isSocketActive
                     ? ClavisUIStrings.MenuBar.restartAgent
                     : ClavisUIStrings.MenuBar.startAgent,
@@ -113,6 +120,16 @@ public struct MenuBarView: View {
             }
         )
         .onAppear { appState.refresh() }
+        .task { await appState.requestPolicy.refresh() }
+        .confirmationDialog(appState.requestPolicy.isPaused ? "Resume requests?" : "Activate kill switch?", isPresented: $confirmingRequestPolicy) {
+            Button(appState.requestPolicy.isPaused ? "Resume Requests" : "Activate Kill Switch", role: .destructive) {
+                Task { await appState.setRequestsPaused(!appState.requestPolicy.isPaused) }
+            }
+        } message: {
+            Text(appState.requestPolicy.isPaused
+                 ? "Authentication is required. Revoked approvals will not be restored."
+                 : "Revoke approvals and pause new requests. Existing SSH connections may remain open.")
+        }
         .task {
             // Snapshots come from the agent; the one-second timeline only updates display.
             while !Task.isCancelled {
@@ -138,7 +155,7 @@ public struct MenuBarView: View {
                     .frame(width: 6, height: 6)
                     .accessibilityHidden(true)
                 Text(appState.isSocketActive
-                     ? ClavisUIStrings.MenuBar.agentActive
+                     ? appState.requestPolicy.status
                      : ClavisUIStrings.MenuBar.agentOffline)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)

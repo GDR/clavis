@@ -159,6 +159,7 @@ public class AppState: ObservableObject {
     public let keyManagementViewModel: KeyManagementViewModel
     public let agentSessionViewModel: AgentSessionViewModel
     public let settingsViewModel: SettingsViewModel
+    public let requestPolicy: RequestPauseModel
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -203,6 +204,7 @@ public class AppState: ObservableObject {
             terminationAgentStop: terminationAgentStop
         )
         self.settingsViewModel = settingsVM
+        self.requestPolicy = RequestPauseModel(agent: agentLifecycle)
 
         // Initialize stored properties from child viewmodels
         self.keys = keyVM.keys
@@ -220,6 +222,10 @@ public class AppState: ObservableObject {
         if Self.isRealAppBundle {
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         }
+
+        requestPolicy.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }.store(in: &cancellables)
 
         // Combine Upward Synchronization: Child -> AppState
         keyVM.$keys
@@ -406,6 +412,13 @@ public class AppState: ObservableObject {
     @discardableResult
     public nonisolated func extendAgentSession(id: String, minutes: Int) -> Date? {
         agentSessionViewModel.extendAgentSession(id: id, minutes: minutes)
+    }
+
+    public func setRequestsPaused(_ paused: Bool) async {
+        _ = await requestPolicy.setPaused(paused)
+        errorMessage = requestPolicy.errorMessage
+        refreshAgentSessions()
+        updateGitGraceState()
     }
 
     public func endGitSigningSession() {
