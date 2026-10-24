@@ -3,6 +3,7 @@ import Darwin
 
 internal struct AgentControlDispatcher {
     let applicationRegistry: ApplicationRegistryStoring
+    let keyPolicyGenerations: KeyPolicyGenerations
     let keyManager: KeychainManager
     let auditRecorder: AuditRecording
     let agentSessions: AgentSessionRegistry
@@ -21,9 +22,11 @@ internal struct AgentControlDispatcher {
         promptGate: SigningPromptGate,
         peerProcessValidator: @escaping (pid_t, String, UInt64) -> Bool,
         gitSigningGraceManager: GitSigningGraceManager = .shared,
-        applicationRegistry: ApplicationRegistryStoring = KeychainApplicationRegistry.shared
+        applicationRegistry: ApplicationRegistryStoring = KeychainApplicationRegistry.shared,
+        keyPolicyGenerations: KeyPolicyGenerations = .shared
     ) {
         self.applicationRegistry = applicationRegistry
+        self.keyPolicyGenerations = keyPolicyGenerations
         self.keyManager = keyManager
         self.auditRecorder = auditRecorder
         self.agentSessions = agentSessions
@@ -110,6 +113,8 @@ internal struct AgentControlDispatcher {
         guard let label = reader.readWireString(), !label.isEmpty, reader.isEOF else {
             return Data([5])
         }
+        let fingerprint = (try? keyManager.fetchKeyInfo(label: label))?.fingerprint
+        keyPolicyGenerations.invalidate(label: label, fingerprint: fingerprint)
         gitSigningGraceManager.invalidate(keyLabel: label)
         agentSessions.endAll(keyLabel: label, reason: .keyChanged)
         return Data([6]) // SSH_AGENT_SUCCESS

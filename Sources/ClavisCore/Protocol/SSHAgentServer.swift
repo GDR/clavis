@@ -94,6 +94,7 @@ public class SSHAgentServer {
     public init(
         applicationAccess: ApplicationRequestAuthorizing? = nil,
         applicationRegistry: ApplicationRegistryStoring = KeychainApplicationRegistry.shared,
+        keyPolicyGenerations: KeyPolicyGenerations = .shared,
         socketPath: String = SSHAgentServer.defaultSocketPath,
         role: AgentSocketRole = .personal,
         maxConcurrentClients: Int = 32,
@@ -134,7 +135,7 @@ public class SSHAgentServer {
 
         let resolvedPeerValidator = peerProcessValidator ?? { SSHAgentServer.peerProcessUnchanged(pid: $0, path: $1, startTime: $2) }
 
-        let applicationAccess = applicationAccess ?? ApplicationRequestAuthorization(store: applicationRegistry)
+        let applicationAccess = applicationAccess ?? ApplicationRequestAuthorization(store: applicationRegistry, generations: keyPolicyGenerations)
         self.controlDispatcher = AgentControlDispatcher(
             keyManager: keyManager,
             auditRecorder: auditRecorder,
@@ -144,7 +145,8 @@ public class SSHAgentServer {
             promptGate: promptGate,
             peerProcessValidator: resolvedPeerValidator,
             gitSigningGraceManager: gitSigningGraceManager,
-            applicationRegistry: applicationRegistry
+            applicationRegistry: applicationRegistry,
+            keyPolicyGenerations: keyPolicyGenerations
         )
 
         self.applicationAccess = applicationAccess
