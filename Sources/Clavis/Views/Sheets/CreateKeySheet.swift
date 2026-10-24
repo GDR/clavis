@@ -46,7 +46,9 @@ public struct CreateKeySheet: View {
     @State private var keyName: String = ""
     @State private var selectedPreset: KeyTypePreset = .hardware
     @State private var selectedBiometricPolicy: BiometricPolicy = Self.defaultBiometricPolicy
-    @State private var selectedPurpose: KeyPurpose = Self.defaultPurpose
+    @State private var selectedType: KeyType = .personal
+    @State private var sshEnabled = true
+    @State private var signatureEnabled = true
     @State private var isCreating = false
     @State private var errorMessage: String? = nil
 
@@ -159,11 +161,17 @@ public struct CreateKeySheet: View {
                 }
             }
 
-            // Key Purpose & Scope
-            KeyPurposePicker(
-                selection: $selectedPurpose,
-                accent: .accentColor
-            )
+            Form {
+                Picker("Type", selection: $selectedType) {
+                    ForEach(KeyType.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                Toggle("SSH", isOn: $sshEnabled)
+                Toggle("Signature", isOn: $signatureEnabled)
+            }
+            .formStyle(.grouped)
+            .frame(height: 145)
+            Text("Personal apps can use either key type. Bots can use Bot keys only.")
+                .font(.caption).foregroundStyle(.secondary)
 
             // Footer / Actions
             HStack {
@@ -195,7 +203,7 @@ public struct CreateKeySheet: View {
     private func createKey() {
         let label = keyName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !label.isEmpty else { return }
-        ClavisLogger.promptDebug("calvis-ui", "CreateKeySheet: submitting create key for '\(label)' (preset: \(selectedPreset.rawValue), purpose: \(selectedPurpose.rawValue))")
+        ClavisLogger.promptDebug("calvis-ui", "CreateKeySheet: submitting create key for '\(label)' (preset: \(selectedPreset.rawValue), type: \(selectedType.rawValue))")
 
         isCreating = true
         errorMessage = nil
@@ -206,7 +214,8 @@ public struct CreateKeySheet: View {
                 algorithm: selectedPreset.algorithm.rawValue,
                 storageType: selectedPreset.storageType,
                 biometricPolicy: selectedPreset == .hardware ? selectedBiometricPolicy : nil,
-                keyPurpose: selectedPurpose
+                accessProfile: KeyAccessProfile(type: selectedType,
+                    capabilities: KeyCapabilities(ssh: sshEnabled, signature: signatureEnabled))
             )
             dismiss()
         } catch {

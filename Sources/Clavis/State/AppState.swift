@@ -479,7 +479,8 @@ public class AppState: ObservableObject {
         algorithm: String = "ECDSA P-256",
         storageType: KeyStorageType = .secureEnclave,
         biometricPolicy: BiometricPolicy? = nil,
-        keyPurpose: KeyPurpose = .general
+        keyPurpose: KeyPurpose = .general,
+        accessProfile: KeyAccessProfile? = nil
     ) throws -> SSHKeyInfo {
         defer {
             self.keys = keyManagementViewModel.keys
@@ -490,7 +491,8 @@ public class AppState: ObservableObject {
             algorithm: algorithm,
             storageType: storageType,
             biometricPolicy: biometricPolicy,
-            keyPurpose: keyPurpose
+            keyPurpose: keyPurpose,
+            accessProfile: accessProfile
         )
         // Generating a key already authenticates the user; transition the panel out
         // of its initial locked state so leaving empty-vault bypass does not lock the window.
@@ -527,6 +529,16 @@ public class AppState: ObservableObject {
 
     public func changeKind(label: String, to newPurpose: KeyPurpose) throws {
         try changeKeyKind(label: label, to: newPurpose)
+    }
+
+    public func changeAccessProfile(label: String, type: KeyType? = nil, capabilities: KeyCapabilities? = nil) throws {
+        defer {
+            self.keys = keyManagementViewModel.keys
+            self.errorMessage = keyManagementViewModel.errorMessage
+            refreshAgentSessions()
+            updateGitGraceState()
+        }
+        try keyManagementViewModel.changeAccessProfile(label: label, type: type, capabilities: capabilities)
     }
 
     public func lockKey(label: String) throws {
