@@ -525,7 +525,7 @@ struct SigningPromptGateTests {
                 watchRootExit: false
             )
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: keyMgr,
                 controlPeerValidator: { _ in true },

@@ -23,7 +23,7 @@ struct AppStateAgentSessionTests {
             let registry = AgentSessionRegistry(auditRecorder: auditRecorder)
             let sockPath = fixture.testRootURL.appendingPathComponent("appstate-agent.sock").path
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 socketPath: sockPath,
                 role: .personal,
                 keyManager: manager,

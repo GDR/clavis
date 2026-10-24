@@ -7,7 +7,7 @@ public enum AgentSocketRole: String, Sendable {
     public var allowedPurposes: Set<KeyPurpose> {
         switch self {
         case .personal:
-            return [.general, .gitSigningOnly]
+            return [.general, .gitSigningOnly, .agent]
         case .agent:
             return [.agent]
         }
@@ -16,7 +16,7 @@ public enum AgentSocketRole: String, Sendable {
     public var listedPurposes: Set<KeyPurpose> {
         switch self {
         case .personal:
-            return [.general]
+            return [.general, .agent]
         case .agent:
             return [.agent]
         }

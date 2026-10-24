@@ -258,7 +258,7 @@ final class LockAllFailClosedTests {
         let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
         let appState = AppState(
             keyManager: makeKeyManager(),
-            sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-srv-fail.sock").path),
+            sshAgentServer: SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: testRootURL.appendingPathComponent("app-srv-fail.sock").path),
             agentLifecycle: manager
         )
 
@@ -298,7 +298,7 @@ final class LockAllFailClosedTests {
         let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
         let appState = AppState(
             keyManager: makeKeyManager(),
-            sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-srv-ok.sock").path),
+            sshAgentServer: SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: testRootURL.appendingPathComponent("app-srv-ok.sock").path),
             agentLifecycle: manager
         )
 
@@ -318,7 +318,7 @@ final class LockAllFailClosedTests {
         let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
         let appState = AppState(
             keyManager: makeKeyManager(),
-            sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-srv-locknow-fail.sock").path),
+            sshAgentServer: SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: testRootURL.appendingPathComponent("app-srv-locknow-fail.sock").path),
             agentLifecycle: manager
         )
 

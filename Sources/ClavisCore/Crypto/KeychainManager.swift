@@ -656,7 +656,7 @@ public class KeychainManager {
         }
 
         let isGitSigningRequest = SSHSIGPayload.parse(from: data) != nil
-        let operation: KeyOperation = isGitSigningRequest ? .signature : .ssh
+        let operation: KeyOperation = data.starts(with: SSHSIGPayload.magic) ? .signature : .ssh
         if key.purpose == .gitSigningOnly && !isGitSigningRequest {
             throw PrivateKeyRecordError.purposeNotAllowed(
                 purpose: key.purpose.rawValue,

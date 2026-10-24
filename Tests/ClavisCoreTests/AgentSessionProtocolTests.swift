@@ -38,7 +38,7 @@ struct AgentSessionProtocolTests {
     }
 
     private func makeServer(controlPeerValidator: @escaping (Int32) -> Bool = { _ in true }) -> SSHAgentServer {
-        SSHAgentServer(
+        SSHAgentServer(applicationAccess: TestApplicationAccess(),
             keyManager: manager,
             controlPeerValidator: controlPeerValidator,
             peerProcessValidator: { _, _, _ in true },
@@ -248,7 +248,7 @@ struct AgentSessionProtocolTests {
             let snap = SSHAgentServer.processParentSnapshot(pid: currentPid)
             let currentStartTime = snap?.startTime ?? 1000
 
-            let personalServer = SSHAgentServer(
+            let personalServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: countingManager,
                 controlPeerValidator: { _ in true },
@@ -256,7 +256,7 @@ struct AgentSessionProtocolTests {
                 auditRecorder: auditRecorder,
                 agentSessions: registry
             )
-            let agentServer = SSHAgentServer(
+            let agentServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: countingManager,
                 controlPeerValidator: { _ in true },
@@ -313,7 +313,7 @@ struct AgentSessionProtocolTests {
         defer { fixture.cleanup() }
         try await fixture.run {
             let key = try manager.generateKey(label: "agent-ac2-key", biometricPolicy: .userPresence, keyPurpose: .agent)
-            let agentServer = SSHAgentServer(
+            let agentServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: manager,
                 auditRecorder: auditRecorder,
@@ -340,7 +340,7 @@ struct AgentSessionProtocolTests {
         defer { fixture.cleanup() }
         try await fixture.run {
             let key = try manager.generateKey(label: "agent-ac3-key", biometricPolicy: .userPresence, keyPurpose: .agent)
-            let personalServer = SSHAgentServer(
+            let personalServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -348,7 +348,7 @@ struct AgentSessionProtocolTests {
                 auditRecorder: auditRecorder,
                 agentSessions: registry
             )
-            let agentServer = SSHAgentServer(
+            let agentServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -395,7 +395,7 @@ struct AgentSessionProtocolTests {
             let snap = SSHAgentServer.processParentSnapshot(pid: currentPid)
             let currentStartTime = snap?.startTime ?? 1000
 
-            let personalServer = SSHAgentServer(
+            let personalServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: countingManager,
                 controlPeerValidator: { _ in true },
@@ -431,7 +431,7 @@ struct AgentSessionProtocolTests {
             let snap = SSHAgentServer.processParentSnapshot(pid: currentPid)
             let currentStartTime = snap?.startTime ?? 1000
 
-            let personalServer = SSHAgentServer(
+            let personalServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -439,7 +439,7 @@ struct AgentSessionProtocolTests {
                 auditRecorder: auditRecorder,
                 agentSessions: registry
             )
-            let agentServer = SSHAgentServer(
+            let agentServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -471,7 +471,7 @@ struct AgentSessionProtocolTests {
         defer { fixture.cleanup() }
         try await fixture.run {
             let key = try manager.generateKey(label: "agent-lockall-key", biometricPolicy: .userPresence, keyPurpose: .agent)
-            let personalServer = SSHAgentServer(
+            let personalServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -508,7 +508,7 @@ struct AgentSessionProtocolTests {
             let keyA = try manager.generateKey(label: "agent-key-a", biometricPolicy: .userPresence, keyPurpose: .agent)
             let keyB = try manager.generateKey(label: "agent-key-b", biometricPolicy: .userPresence, keyPurpose: .agent)
 
-            let personalServer = SSHAgentServer(
+            let personalServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -552,7 +552,7 @@ struct AgentSessionProtocolTests {
             let keyA = try manager.generateKey(label: "agent-rev-a", biometricPolicy: .userPresence, keyPurpose: .agent)
             let keyB = try manager.generateKey(label: "agent-rev-b", biometricPolicy: .userPresence, keyPurpose: .agent)
 
-            let personalServer = SSHAgentServer(
+            let personalServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -596,7 +596,7 @@ struct AgentSessionProtocolTests {
         try await fixture.run {
             let key = try manager.generateKey(label: "agent-lifecycle-key", biometricPolicy: .userPresence, keyPurpose: .agent)
             let sockPath = fixture.testRootURL.appendingPathComponent("lifecycle.sock").path
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 socketPath: sockPath,
                 role: .personal,
                 keyManager: manager,

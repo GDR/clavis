@@ -50,7 +50,7 @@ struct AgentApprovalModeTests {
                 watchRootExit: false
             )
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -64,7 +64,7 @@ struct AgentApprovalModeTests {
             )
 
             // Register session on control server (or directly register with server)
-            let regServer = SSHAgentServer(
+            let regServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -120,7 +120,7 @@ struct AgentApprovalModeTests {
                 watchRootExit: false
             )
 
-            let regServer = SSHAgentServer(
+            let regServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: customManager,
                 controlPeerValidator: { _ in true },
@@ -141,7 +141,7 @@ struct AgentApprovalModeTests {
 
             let initialAuthCount = countingAuthenticator.authenticationCount
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: customManager,
                 controlPeerValidator: { _ in true },
@@ -210,7 +210,7 @@ struct AgentApprovalModeTests {
             )
             registry.add(session)
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: customManager,
                 controlPeerValidator: { _ in true },
@@ -249,7 +249,7 @@ struct AgentApprovalModeTests {
                 watchRootExit: false
             )
 
-            let regServer = SSHAgentServer(
+            let regServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: customManager,
                 controlPeerValidator: { _ in true },
@@ -269,7 +269,7 @@ struct AgentApprovalModeTests {
             )
             #expect(regResp.first == 6)
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: customManager,
                 controlPeerValidator: { _ in true },

@@ -36,6 +36,7 @@ public final class SigningPolicyEvaluator {
     public let notificationPoster: (String, [String: String]) -> Void
     public let peerProcessValidator: (pid_t, String, UInt64) -> Bool
 
+    private let applicationAccess: ApplicationRequestAuthorizing
     private let stateLock = NSLock()
     private var lastRateLimitAlertTimes: [String: Date] = [:]
 
@@ -68,6 +69,7 @@ public final class SigningPolicyEvaluator {
     }
 
     public init(
+        applicationAccess: ApplicationRequestAuthorizing = ApplicationRequestAuthorization(),
         keyManager: KeychainManager = .shared,
         gitSigningGraceManager: GitSigningGraceManager = .shared,
         promptGate: SigningPromptGate = SigningPromptGate(),
@@ -85,6 +87,7 @@ public final class SigningPolicyEvaluator {
         },
         peerProcessValidator: ((pid_t, String, UInt64) -> Bool)? = nil
     ) {
+        self.applicationAccess = applicationAccess
         self.keyManager = keyManager
         self.gitSigningGraceManager = gitSigningGraceManager
         self.promptGate = promptGate
@@ -106,6 +109,101 @@ public final class SigningPolicyEvaluator {
         clientExecutablePath: String? = nil,
         clientStartTime: UInt64? = nil,
         clientSocket: Int32? = nil
+    ) throws -> SigningDecision {
+        // Eligibility precedes every session/grant path, including direct sign
+        // requests that never enumerated identities.
+        guard flags == 0, let key = try keyManager.listKeys().first(where: { $0.publicKeyBlob == keyBlob }) else {
+            return try evaluateAuthorizedSigningRequest(keyBlob: keyBlob, dataToSign: dataToSign, flags: flags, role: role, clientPid: clientPid, connection: connection, clientExecutablePath: clientExecutablePath, clientStartTime: clientStartTime, clientSocket: clientSocket)
+        }
+        guard let path = clientExecutablePath ?? ProcessInspector.getProcessPath(pid: clientPid),
+              let start = clientStartTime ?? ProcessInspector.processStartTime(pid: clientPid) else {
+            recordApplicationDecision(key: key, result: .denied, reason: .noPeerAttribution, pid: clientPid, path: clientExecutablePath ?? "")
+            return .denied
+        }
+        let operation: KeyOperation = dataToSign.starts(with: SSHSIGPayload.magic) ? .signature : .ssh
+        if key.purpose == .gitSigningOnly {
+            guard SSHSIGPayload.parse(from: dataToSign) != nil else {
+                recordApplicationDecision(key: key, result: .denied, reason: .gitOnlyKeyNonGitPayload, pid: clientPid, path: path)
+                return .denied
+            }
+            guard ProcessInspector.isTrustedGitExecutable(path: path) || ProcessInspector.isSignerHelper(path: path) else {
+                recordApplicationDecision(key: key, result: .denied, reason: .wrongKeyKind, pid: clientPid, path: path)
+                return .denied
+            }
+        }
+        let lease: ApplicationRequestLease
+        do {
+            lease = try applicationAccess.authorize(key: key, operation: operation, role: role, pid: clientPid, path: path, start: start)
+        } catch {
+            recordApplicationDecision(key: key, result: .denied, reason: .policyUnavailable, pid: clientPid, path: path)
+            return .denied
+        }
+        let decision: SigningDecision
+        switch lease.eligibility {
+        case .denied:
+            recordApplicationDecision(key: key, result: .denied, reason: .wrongKeyKind, pid: clientPid, path: path)
+            return .denied
+        case .authenticatedOnceOnly:
+            // No cache lookup, history heuristic, or remembered classification.
+            guard !(role == .agent && (connection?.hasForwarding == true || connection?.hasFailedBind == true)) else { return .denied }
+            do {
+                let signature = try promptGate.run(
+                    requester: .init(executablePath: path, pid: clientPid), clientSocket: clientSocket
+                ) {
+                    let context = try authenticator.authenticate(
+                        reason: "Allow one \(operation == .ssh ? "SSH" : "Signature") request for '\(key.label)'? Caller identity is uncertain (\(Self.safeProcessPath(path))).",
+                        policy: .deviceOwnerAuthentication
+                    )
+                    defer { context.invalidate() }
+                    return try keyManager.signSSH(key: key, data: dataToSign, prompt: "", useCache: false, existingContext: context, allowedPurposes: role.allowedPurposes)
+                }
+                decision = .approved(signature: signature)
+            } catch {
+                recordApplicationDecision(key: key, result: AuditEvent.isUserCancellation(error) ? .cancelled : .denied, reason: .authenticationFailed, pid: clientPid, path: path)
+                return .denied
+            }
+        case .eligible:
+            decision = try evaluateAuthorizedSigningRequest(
+                keyBlob: keyBlob, dataToSign: dataToSign, flags: flags, role: role, clientPid: clientPid,
+                connection: connection, clientExecutablePath: path, clientStartTime: start, clientSocket: clientSocket,
+                approvalIdentity: lease.approvalIdentity, callerName: lease.caller?.application.name
+            )
+        }
+        if case .approved = decision {
+            guard let currentKey = try? keyManager.listKeys().first(where: { $0.fingerprint == key.fingerprint }),
+                  currentKey.effectiveAccessProfile == key.effectiveAccessProfile,
+                  peerProcessValidator(clientPid, path, start),
+                  (try? applicationAccess.validate(lease, pid: clientPid, path: path, start: start)) == true else {
+                gitSigningGraceManager.invalidateAll(broadcast: false)
+                agentSessions.endAll(reason: .keyChanged)
+                recordApplicationDecision(key: key, result: .denied, reason: .peerChanged, pid: clientPid, path: path)
+                return .dropConnection
+            }
+            if lease.eligibility == .authenticatedOnceOnly {
+                recordApplicationDecision(key: key, result: .allowed, reason: .viaPrompt, pid: clientPid, path: path)
+            }
+        }
+        return decision
+    }
+
+    private func recordApplicationDecision(key: SSHKeyInfo, result: AuditResult, reason: AuditReason, pid: pid_t, path: String) {
+        auditRecorder.record(AuditEvent(type: .signature, result: result, reason: reason,
+            keyFingerprint: key.fingerprint, keyKind: key.purpose.auditKind, count: 1,
+            sensitive: .init(keyLabel: key.label, processChain: AuditProcessChain.build(pid: pid, executablePath: path))))
+    }
+
+    private func evaluateAuthorizedSigningRequest(
+        keyBlob: Data,
+        dataToSign: Data,
+        flags: UInt32,
+        role: AgentSocketRole,
+        clientPid: pid_t,
+        connection: ClientConnectionContext? = nil,
+        clientExecutablePath: String? = nil,
+        clientStartTime: UInt64? = nil,
+        clientSocket: Int32? = nil,
+        approvalIdentity: String? = nil,
+        callerName: String? = nil
     ) throws -> SigningDecision {
         var audit = PendingSignAudit()
         defer { auditRecorder.record(audit.makeEvent()) }
@@ -151,7 +249,7 @@ public final class SigningPolicyEvaluator {
         // Domain verification: Parse signed payload as OpenSSH SSHSIG (strict Git format)
         let gitSSHSIG = SSHSIGPayload.parse(from: dataToSign)
 
-        if matchingKey.purpose == .agent && gitSSHSIG != nil {
+        if !matchingKey.effectiveAccessProfile.capabilities.signature && gitSSHSIG != nil {
             audit.result = .denied
             audit.reason = .wrongKeyKind
             ClavisLogger.log("SECURITY_ALERT", "Agent key '\(matchingKey.label)' cannot be used for SSHSIG signing. Refusing request from \(clientDesc).")
@@ -277,9 +375,9 @@ public final class SigningPolicyEvaluator {
             }
         }
 
-        let requester = Self.requesterDescription(processPath: processPath, pid: pid)
+        let requester = callerName ?? Self.requesterDescription(processPath: processPath, pid: pid)
         let requesterIdentity = SigningPromptGate.Requester(executablePath: processPath, pid: pid)
-        let clientIdentity = ProcessInspector.resolveClientIdentity(pid: pid, processPath: processPath)
+        let clientIdentity = approvalIdentity ?? ProcessInspector.resolveClientIdentity(pid: pid, processPath: processPath)
         let attributedStartTime = clientStartTime ?? ProcessInspector.processStartTime(pid: pid)
         let peerProcess = attributedStartTime.map {
             GitApprovedProcess(pid: pid, startTime: $0, path: processPath)

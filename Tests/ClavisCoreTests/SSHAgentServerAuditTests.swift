@@ -40,7 +40,7 @@ final class SSHAgentServerAuditTests {
         peerProcessValidator: ((pid_t, String, UInt64) -> Bool)? = nil,
         auditRecorder: AuditRecording
     ) -> SSHAgentServer {
-        SSHAgentServer(
+        SSHAgentServer(applicationAccess: TestApplicationAccess(),
             keyManager: keyManager,
             promptGate: SigningPromptGate(),
             gitSigningGraceManager: GitSigningGraceManager(observeSystemEvents: false),
