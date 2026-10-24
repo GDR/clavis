@@ -482,10 +482,12 @@ public struct KeyDetailInspectorView: View {
     }
 
     private var activeSessionsSection: some View {
-        let sessions = appState.agentSessions.filter { $0.keyFingerprint == key.fingerprint }
+        let paused = appState.requestPolicy.isPaused
+        let available = appState.isSocketActive && appState.requestPolicy.state != .unknown
+        let sessions = paused ? [] : appState.agentSessions.filter { $0.keyFingerprint == key.fingerprint }
         return Section("Active Sessions") {
             VStack(spacing: 12) {
-                if let grace = activeGitGraceSession {
+                if !paused, let grace = activeGitGraceSession {
                     HStack {
                         Label("Git signing", systemImage: "signature")
                         Spacer()
@@ -504,8 +506,10 @@ public struct KeyDetailInspectorView: View {
                         Button("Revoke") { appState.endAgentSession(id: session.id) }
                     }
                 }
-                if sessions.isEmpty && activeGitGraceSession == nil {
-                    Text("No active approvals. Clavis will ask on the next permitted request.")
+                if paused || (sessions.isEmpty && activeGitGraceSession == nil) {
+                    Text(paused ? "Requests are paused. Approvals have been revoked."
+                         : available ? "No active approvals. Clavis will ask on the next permitted request."
+                         : "Session status is unavailable. Check the agent connection.")
                         .font(.callout).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
