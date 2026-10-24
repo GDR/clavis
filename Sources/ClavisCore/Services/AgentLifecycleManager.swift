@@ -483,6 +483,23 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         return Date(timeIntervalSince1970: TimeInterval(newExpirySeconds))
     }
 
+    public func applicationRegistry() -> ApplicationRegistrySnapshot? {
+        guard let response = try? sendControlRequest(Data([SSHAgentServer.applicationRegistryRequest])),
+              response.first == 6 else { return nil }
+        var reader = DataReader(data: Data(response.dropFirst()))
+        guard let data = reader.readWireData(), reader.isEOF,
+              let snapshot = try? JSONDecoder().decode(ApplicationRegistrySnapshot.self, from: data),
+              (try? snapshot.validate()) != nil else { return nil }
+        return snapshot
+    }
+
+    public func changeApplicationPolicy(_ change: ApplicationPolicyChange) -> Bool {
+        guard let json = try? JSONEncoder().encode(change) else { return false }
+        var payload = Data([SSHAgentServer.applicationPolicyChangeRequest])
+        payload.appendWireData(json)
+        return (try? sendControlRequest(payload, timeout: 75))?.first == 6
+    }
+
     public func setAgentPolicy(target: String, policyJson: String) -> Bool {
         guard FileManager.default.fileExists(atPath: socketPath) else { return false }
         var payload = Data([SSHAgentServer.setAgentPolicyRequest])

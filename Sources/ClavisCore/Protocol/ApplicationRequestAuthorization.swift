@@ -27,6 +27,9 @@ public final class ApplicationRequestAuthorization: ApplicationRequestAuthorizin
 
     public func authorize(key: SSHKeyInfo, operation: KeyOperation, role: AgentSocketRole, pid: pid_t, path: String, start: UInt64) throws -> ApplicationRequestLease {
         let snapshot = try store.load()
+        guard !snapshot.isPaused else {
+            return .init(eligibility: .denied, revision: snapshot.revision, caller: nil)
+        }
         let caller = resolver.resolve(peerPID: pid, peerPath: path, peerStart: start, registry: snapshot)
         let eligibility = ApplicationEligibility.evaluate(
             profile: key.effectiveAccessProfile, operation: operation,
@@ -37,7 +40,7 @@ public final class ApplicationRequestAuthorization: ApplicationRequestAuthorizin
 
     public func validate(_ lease: ApplicationRequestLease, pid: pid_t, path: String, start: UInt64) throws -> Bool {
         let snapshot = try store.load()
-        guard snapshot.revision == lease.revision else { return false }
+        guard !snapshot.isPaused, snapshot.revision == lease.revision else { return false }
         let caller = resolver.resolve(peerPID: pid, peerPath: path, peerStart: start, registry: snapshot)
         return caller == lease.caller
     }

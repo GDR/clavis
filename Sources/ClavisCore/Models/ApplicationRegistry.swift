@@ -74,11 +74,14 @@ public struct ApplicationRegistrySnapshot: Codable, Equatable, Sendable {
     public let version: Int
     public let revision: UUID
     public var applications: [RegisteredApplication]
+    public let requestsPaused: Bool?
+    public var isPaused: Bool { requestsPaused ?? false }
 
-    public init(revision: UUID = UUID(), applications: [RegisteredApplication] = []) {
+    public init(revision: UUID = UUID(), applications: [RegisteredApplication] = [], requestsPaused: Bool = false) {
         version = 1
         self.revision = revision
         self.applications = applications
+        self.requestsPaused = requestsPaused
     }
 
     public func validate() throws {
@@ -156,7 +159,7 @@ public final class AuthenticatedApplicationRegistry {
     private func commit(_ application: RegisteredApplication, replacing old: ApplicationRegistrySnapshot) throws {
         var entries = old.applications.filter { $0.identity != application.identity }
         entries.append(application)
-        let updated = ApplicationRegistrySnapshot(applications: entries)
+        let updated = ApplicationRegistrySnapshot(applications: entries, requestsPaused: old.isPaused)
         try updated.validate()
         let context = try authenticator.authenticate(
             reason: "Change access for \(application.name) to \(application.classification.title)",
@@ -166,6 +169,19 @@ public final class AuthenticatedApplicationRegistry {
         // Revoke first. A persistence failure may revoke approvals but never grants
         // broader access; authentication failure leaves both policy and grants alone.
         try invalidateApprovals()
+        try store.save(updated, replacing: old.revision)
+    }
+
+    /// Pausing stops requests without waiting for authentication. Resuming is
+    /// authenticated and never recreates revoked approvals.
+    public func setPaused(_ paused: Bool) throws {
+        let old = try store.load()
+        if !paused {
+            let context = try authenticator.authenticate(reason: "Resume Clavis requests", policy: .deviceOwnerAuthentication)
+            context.invalidate()
+        }
+        try invalidateApprovals()
+        let updated = ApplicationRegistrySnapshot(applications: old.applications, requestsPaused: paused)
         try store.save(updated, replacing: old.revision)
     }
 
