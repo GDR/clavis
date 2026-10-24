@@ -35,6 +35,23 @@ public final class MockAgentController: AgentControlling, @unchecked Sendable {
     public var recordedExtendCalls: [(id: String, minutes: Int)] = []
     public var recordedSetPolicies: [(target: String, json: String)] = []
 
+    public var stubbedApplicationRegistry: ApplicationRegistrySnapshot?
+    public var applicationPolicyHandler: ((ApplicationPolicyChange) -> Bool)?
+    public private(set) var applicationPolicyChanges: [ApplicationPolicyChange] = []
+
+    public func applicationRegistry() -> ApplicationRegistrySnapshot? {
+        lock.lock(); defer { lock.unlock() }
+        return stubbedApplicationRegistry
+    }
+
+    public func changeApplicationPolicy(_ change: ApplicationPolicyChange) -> Bool {
+        lock.lock()
+        applicationPolicyChanges.append(change)
+        let handler = applicationPolicyHandler
+        lock.unlock()
+        return handler?(change) ?? false
+    }
+
     public init(
         isRunning: Bool = false,
         pid: pid_t? = nil,

@@ -157,8 +157,12 @@ public final class AuthenticatedApplicationRegistry {
     }
 
     private func commit(_ application: RegisteredApplication, replacing old: ApplicationRegistrySnapshot) throws {
-        var entries = old.applications.filter { $0.identity != application.identity }
-        entries.append(application)
+        var entries = old.applications
+        if let index = entries.firstIndex(where: { $0.identity == application.identity }) {
+            entries[index] = application
+        } else {
+            entries.append(application)
+        }
         let updated = ApplicationRegistrySnapshot(applications: entries, requestsPaused: old.isPaused)
         try updated.validate()
         let context = try authenticator.authenticate(
