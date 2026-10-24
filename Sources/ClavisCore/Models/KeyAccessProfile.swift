@@ -47,7 +47,7 @@ public struct KeyAccessProfile: Codable, Equatable, Sendable {
 
     public init(legacyPurpose: KeyPurpose) {
         type = legacyPurpose == .agent ? .bot : .personal
-        capabilities = KeyCapabilities(ssh: legacyPurpose != .gitSigningOnly, signature: true)
+        capabilities = KeyCapabilities(ssh: legacyPurpose != .gitSigningOnly, signature: legacyPurpose != .agent)
     }
 
     public func changingType(to type: KeyType) -> KeyAccessProfile {

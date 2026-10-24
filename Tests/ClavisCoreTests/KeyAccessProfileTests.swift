@@ -30,7 +30,7 @@ import Testing
         #expect(decoded.biometricPolicy == legacy.biometricPolicy)
         #expect(decoded.accessProfile.type == (purpose == .agent ? .bot : .personal))
         #expect(decoded.accessProfile.capabilities.ssh == (purpose != .gitSigningOnly))
-        #expect(decoded.accessProfile.capabilities.signature)
+        #expect(decoded.accessProfile.capabilities.signature == (purpose != .agent))
         #expect(try decoded.encode() == bytes)
     }
 

@@ -17,8 +17,9 @@ struct LibrarySidebarTests {
         let bot = LibraryKeyPresentation(purpose: .agent)
         #expect(personal.typeTitle == "Personal")
         #expect(bot.typeTitle == "Bot")
-        #expect(personal.capabilities == bot.capabilities)
-        #expect(bot.accessibilitySummary == "Bot, SSH, SSHSIG")
+        #expect(personal.capabilities == ["SSH", "SSHSIG"])
+        #expect(bot.capabilities == ["SSH"])
+        #expect(bot.accessibilitySummary == "Bot, SSH")
     }
 
     @Test func nativeSearchUpdatesBindingAndCancelClearsBeforeBlurring() {
