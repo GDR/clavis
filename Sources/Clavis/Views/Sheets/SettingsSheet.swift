@@ -3,26 +3,14 @@ import ClavisCore
 import Security
 import Darwin
 
-public enum PinModeUI {
-    public static func showsWeakPINWarning(_ mode: AuditReadMode) -> Bool {
-        mode == .biometryOrPIN
-    }
-}
-
 public struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var appState: AppState
     @ObservedObject var lock: PanelLockController
     private let modeChanger: PinModeChanger?
     private let applicationAgent: any AgentControlling
-    @State private var globalMaxLease: Int = 1440
-    @State private var lastSavedGlobalMaxLease: Int = 1440
-    @State private var globalPolicyError: String? = nil
-    private let globalMaxLeaseOptions = [60, 240, 480, 1440, 2880, 10080]
-
-    @State private var copiedEnv = false
-    @State private var activeSheet: ActiveSheet?
-    @State private var showingResetAlert = false
+    @State private var unlockMethodError: String?
+    @State private var isChangingUnlockMethod = false
     @State private var isSettingsAuthenticated: Bool
     @State private var isAuthenticating: Bool = false
 
@@ -32,20 +20,6 @@ public struct SettingsView: View {
     @State private var isRepairingVault: Bool = false
     @State private var vaultRepairSuccessMessage: String? = nil
     @State private var vaultRepairErrorMessage: String? = nil
-
-    private enum ActiveSheet: Identifiable {
-        case modeChange(AuditReadMode)
-        case changePIN
-        case resetPIN
-
-        var id: String {
-            switch self {
-            case .modeChange(let m): return "mode-\(m.rawValue)"
-            case .changePIN: return "changePIN"
-            case .resetPIN: return "resetPIN"
-            }
-        }
-    }
 
     public init(
         lock: PanelLockController? = nil,
@@ -134,62 +108,9 @@ public struct SettingsView: View {
             settingsHeader
         }
         .frame(width: 580, height: 680)
-    .onExitCommand {
-        dismiss()
-    }
-    .onChange(of: lock.state) { _ in
-        isSettingsAuthenticated = !lock.isEffectivelyLocked
-    }
-        .alert(ClavisUIStrings.PinUnlock.forgotPIN, isPresented: $showingResetAlert) {
-            Button(ClavisUIStrings.PinUnlock.setPinTitle, role: .destructive) {
-                ClavisLogger.promptDebug("calvis-ui", "SettingsSheet: user confirmed reset PIN dialog")
-                activeSheet = .resetPIN
-            }
-            Button(ClavisUIStrings.Common.cancel, role: .cancel) {
-                ClavisLogger.promptDebug("calvis-ui", "SettingsSheet: user cancelled reset PIN dialog")
-            }
-        } message: {
-            Text(ClavisUIStrings.PinUnlock.resetWarning)
-        }
-        .sheet(item: $activeSheet) { sheet in
-            let title: String = {
-                switch sheet {
-                case .modeChange: return ClavisUIStrings.PinUnlock.setPinTitle
-                case .changePIN: return ClavisUIStrings.PinUnlock.changePIN
-                case .resetPIN: return ClavisUIStrings.PinUnlock.forgotPIN
-                }
-            }()
-            let subtitle: String? = {
-                if case .modeChange(let m) = sheet { return modeTitle(for: m) }
-                return nil
-            }()
-            let warning: String? = {
-                switch sheet {
-                case .modeChange(let m): return PinModeUI.showsWeakPINWarning(m) ? ClavisUIStrings.PinUnlock.warningOrMode : nil
-                case .changePIN: return nil
-                case .resetPIN: return ClavisUIStrings.PinUnlock.resetWarning
-                }
-            }()
-            PinModeChangeSheet(
-                title: title,
-                subtitle: subtitle,
-                warning: warning,
-                onSave: { pin, confirmPin in
-                    switch sheet {
-                    case .modeChange(let targetMode):
-                        _ = try await modeChanger?.changeMode(to: targetMode, newPIN: pin, confirmPIN: confirmPin, oldContext: lock.unlockContext, skipPasswordAuth: true)
-                    case .changePIN:
-                        _ = try await modeChanger?.changeMode(to: lock.currentMode, newPIN: pin, confirmPIN: confirmPin, oldContext: lock.unlockContext, skipPasswordAuth: true)
-                    case .resetPIN:
-                        try await modeChanger?.resetPIN(newPIN: pin, confirmPIN: confirmPin, skipPasswordAuth: true)
-                    }
-                    await MainActor.run { lock.objectWillChange.send() }
-                },
-                onDismiss: { activeSheet = nil }
-            )
-            .dismissOnOutsideClick {
-                activeSheet = nil
-            }
+        .onExitCommand { dismiss() }
+        .onChange(of: lock.state) { _ in
+            isSettingsAuthenticated = !lock.isEffectivelyLocked
         }
     }
 
@@ -247,9 +168,14 @@ public struct SettingsView: View {
                             ? "Your existing unlock method remains active until you change it."
                             : "Use Touch ID with your macOS login password as a fallback.") {
                         if lock.currentMode.requiresPIN {
-                            Button("Use This Method…") { selectMode(.passwordOrBiometry) }
+                            Button("Use This Method…") { useSystemUnlockMethod() }
+                                .disabled(isChangingUnlockMethod)
                         }
                     }
+                }
+
+                if let unlockMethodError {
+                    Text(unlockMethodError).font(.callout).foregroundStyle(.secondary)
                 }
 
                 // System Startup Section
@@ -435,26 +361,23 @@ public struct SettingsView: View {
         }
     }
 
-    private func selectMode(_ mode: AuditReadMode) {
-        if mode == .passwordOrBiometry {
-            Task {
-                do {
-                    _ = try await modeChanger?.changeMode(
-                        to: .passwordOrBiometry,
-                        newPIN: nil,
-                        confirmPIN: nil,
-                        oldContext: lock.unlockContext,
-                        skipPasswordAuth: true
-                    )
-                    await MainActor.run {
-                        lock.objectWillChange.send()
-                    }
-                } catch {
-                    // Password authentication cancelled or failed
-                }
+    private func useSystemUnlockMethod() {
+        guard !isChangingUnlockMethod else { return }
+        guard let modeChanger else {
+            unlockMethodError = "The unlock method could not be changed."
+            return
+        }
+        isChangingUnlockMethod = true
+        unlockMethodError = nil
+        Task { @MainActor in
+            defer { isChangingUnlockMethod = false }
+            do {
+                _ = try await modeChanger.changeMode(to: .passwordOrBiometry, newPIN: nil,
+                    confirmPIN: nil, oldContext: lock.unlockContext, skipPasswordAuth: false)
+                lock.objectWillChange.send()
+            } catch {
+                unlockMethodError = "The unlock method was not changed. \(error.localizedDescription)"
             }
-        } else {
-            activeSheet = .modeChange(mode)
         }
     }
 
@@ -511,116 +434,6 @@ public struct SettingsView: View {
             } catch {
                 self.isRepairingVault = false
                 self.vaultRepairErrorMessage = error.localizedDescription
-            }
-        }
-    }
-}
-
-struct PinModeChangeSheet: View {
-    let title: String
-    let subtitle: String?
-    let warning: String?
-    let onSave: (String, String) async throws -> Void
-    let onDismiss: () -> Void
-
-    @State private var pin: String = ""
-    @State private var confirmPin: String = ""
-    @State private var errorMessage: String?
-    @State private var isProcessing: Bool = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.headline)
-                if let subtitle = subtitle {
-                    Text(subtitle)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            if let warning = warning {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.orange)
-                        .font(.system(size: 14))
-                    Text(warning)
-                        .font(.system(size: 11))
-                        .foregroundColor(.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(8)
-                .background(Color.orange.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            }
-
-            VStack(alignment: .leading, spacing: 10) {
-                SecureField(ClavisUIStrings.PinUnlock.pinPlaceholder, text: $pin)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(isProcessing)
-
-                SecureField(ClavisUIStrings.PinUnlock.confirmPinPlaceholder, text: $confirmPin)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(isProcessing)
-            }
-
-            if pin.count > 0 && pin.count < 6 {
-                Text(ClavisUIStrings.PinUnlock.tooShort)
-                    .font(.system(size: 11))
-                    .foregroundColor(.red)
-            } else if confirmPin.count > 0 && pin != confirmPin {
-                Text(ClavisUIStrings.PinUnlock.pinMismatch)
-                    .font(.system(size: 11))
-                    .foregroundColor(.red)
-            } else if let errorMessage = errorMessage {
-                Text(errorMessage)
-                    .font(.system(size: 11))
-                    .foregroundColor(.red)
-            }
-
-            HStack {
-                Button(ClavisUIStrings.Common.cancel) {
-                    onDismiss()
-                }
-                .liquidGlassButton()
-                .disabled(isProcessing)
-
-                Spacer()
-
-                Button(action: save) {
-                    HStack(spacing: 4) {
-                        if isProcessing {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        Text(ClavisUIStrings.PinUnlock.setPinTitle)
-                    }
-                }
-                .liquidGlassButton(prominent: true)
-                .disabled(pin.count < 6 || pin != confirmPin || isProcessing)
-            }
-        }
-        .padding(20)
-        .frame(width: 380)
-    }
-
-    private func save() {
-        guard pin.count >= 6, pin == confirmPin, !isProcessing else { return }
-        isProcessing = true
-        errorMessage = nil
-        Task {
-            do {
-                try await onSave(pin, confirmPin)
-                await MainActor.run {
-                    isProcessing = false
-                    onDismiss()
-                }
-            } catch {
-                await MainActor.run {
-                    isProcessing = false
-                    errorMessage = error.localizedDescription
-                }
             }
         }
     }

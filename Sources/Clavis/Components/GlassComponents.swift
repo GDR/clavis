@@ -132,6 +132,7 @@ public struct LiquidGlassCapsuleControlModifier: ViewModifier {
     public var isFocused: Bool = false
     public var tint: Color? = nil
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
 
     @ViewBuilder
     public func body(content: Content) -> some View {
@@ -141,21 +142,21 @@ public struct LiquidGlassCapsuleControlModifier: ViewModifier {
                 .overlay(
                     Capsule()
                         .stroke(
-                            isFocused ? DesignTokens.accentBlue.opacity(0.8) : Color.clear,
-                            lineWidth: isFocused ? 1.5 : 1
+                            isFocused ? DesignTokens.accentBlue : contrast == .increased ? Color.primary : Color.clear,
+                            lineWidth: isFocused || contrast == .increased ? 1.5 : 1
                         )
                 )
         } else {
             content
                 .background(
                     Capsule()
-                        .fill(tint ?? Color(nsColor: .controlBackgroundColor).opacity(0.65))
+                        .fill(tint ?? Color(nsColor: .controlBackgroundColor).opacity(reduceTransparency ? 1 : 0.65))
                 )
                 .overlay(
                     Capsule()
                         .stroke(
-                            isFocused ? DesignTokens.accentBlue.opacity(0.75) : DesignTokens.cardBorder,
-                            lineWidth: isFocused ? 1.5 : 1
+                            isFocused ? DesignTokens.accentBlue : contrast == .increased ? Color.primary : DesignTokens.cardBorder,
+                            lineWidth: isFocused || contrast == .increased ? 1.5 : 1
                         )
                 )
         }
@@ -227,25 +228,30 @@ public struct LiquidGlassButtonStyleModifier: ViewModifier {
 }
 
 public struct AdaptiveGlassCapsuleModifier: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
     public init() {}
 
     @ViewBuilder
     public func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
+        if #available(macOS 26.0, *), !reduceTransparency {
             content
                 .glassEffect(.regular.interactive(), in: .capsule)
         } else {
             content
                 .background(
                     ZStack {
-                        VisualEffectView(material: .sidebar, blendingMode: .withinWindow)
-                        Color(nsColor: NSColor.controlBackgroundColor).opacity(0.5)
+                        if !reduceTransparency {
+                            VisualEffectView(material: .sidebar, blendingMode: .withinWindow)
+                        }
+                        Color(nsColor: NSColor.controlBackgroundColor).opacity(reduceTransparency ? 1 : 0.5)
                     }
                     .clipShape(Capsule())
                 )
                 .overlay(
                     Capsule()
-                        .stroke(DesignTokens.cardBorder, lineWidth: 0.8)
+                        .stroke(contrast == .increased ? Color.primary : DesignTokens.cardBorder,
+                                lineWidth: contrast == .increased ? 1.5 : 0.8)
                 )
         }
     }

@@ -6,8 +6,8 @@ import Testing
 @testable import ClavisTestSupport
 
 @Suite @MainActor struct SettingsRenderingTests {
-    @Test(arguments: ["General", "Bots"], [false, true])
-    func modalRendersWithFloatingNavigation(tab: String, dark: Bool) async throws {
+    @Test(arguments: ["General", "Bots"], [false, true], [false, true])
+    func modalRendersWithFloatingNavigation(tab: String, dark: Bool, accessibility: Bool) async throws {
         let fixture = try ClavisTestFixture()
         defer { fixture.cleanup() }
         try await fixture.run {
@@ -30,7 +30,9 @@ import Testing
                 .environment(\.colorScheme, dark ? .dark : .light)
             let view = NSHostingView(rootView: root)
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 580, height: 680), styleMask: [.borderless], backing: .buffered, defer: false)
-            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            window.appearance = NSAppearance(named: accessibility
+                ? (dark ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua)
+                : (dark ? .darkAqua : .aqua))
             window.contentView = view
             window.orderFront(nil)
             defer { window.orderOut(nil) }
@@ -45,7 +47,7 @@ import Testing
             if ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW"] == "1" {
                 let directory = URL(fileURLWithPath: "/private/tmp/clavis-settings-review")
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                try png.write(to: directory.appendingPathComponent("\(tab.lowercased())-\(dark ? "dark" : "light").png"))
+                try png.write(to: directory.appendingPathComponent("\(tab.lowercased())-\(dark ? "dark" : "light")-\(accessibility ? "accessible" : "standard").png"))
             }
         }
     }
