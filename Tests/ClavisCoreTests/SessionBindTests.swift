@@ -251,7 +251,7 @@ final class SessionBindTests {
                 auditRecorder: auditRecorder,
                 watchRootExit: false
             )
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -260,7 +260,7 @@ final class SessionBindTests {
                 agentSessions: registry,
                 agentPolicies: policyStore
             )
-            let controlServer = SSHAgentServer(
+            let controlServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -334,7 +334,7 @@ final class SessionBindTests {
                 auditRecorder: auditRecorder,
                 watchRootExit: false
             )
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -343,7 +343,7 @@ final class SessionBindTests {
                 agentSessions: registry,
                 agentPolicies: policyStore
             )
-            let controlServer = SSHAgentServer(
+            let controlServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -424,7 +424,7 @@ final class SessionBindTests {
                 auditRecorder: auditRecorder,
                 watchRootExit: false
             )
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -433,7 +433,7 @@ final class SessionBindTests {
                 agentSessions: registry,
                 agentPolicies: policyStore
             )
-            let controlServer = SSHAgentServer(
+            let controlServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -492,7 +492,7 @@ final class SessionBindTests {
                 auditRecorder: auditRecorder,
                 watchRootExit: false
             )
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -501,7 +501,7 @@ final class SessionBindTests {
                 agentSessions: registry,
                 agentPolicies: policyStore
             )
-            let controlServer = SSHAgentServer(
+            let controlServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -570,7 +570,7 @@ final class SessionBindTests {
                 auditRecorder: auditRecorder,
                 watchRootExit: false
             )
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -579,7 +579,7 @@ final class SessionBindTests {
                 agentSessions: registry,
                 agentPolicies: policyStore
             )
-            let controlServer = SSHAgentServer(
+            let controlServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -642,7 +642,7 @@ final class SessionBindTests {
                 auditRecorder: auditRecorder,
                 watchRootExit: false
             )
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -651,7 +651,7 @@ final class SessionBindTests {
                 agentSessions: registry,
                 agentPolicies: policyStore
             )
-            let controlServer = SSHAgentServer(
+            let controlServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -697,7 +697,7 @@ final class SessionBindTests {
             let sessionIDA = Data("session-host-pers".utf8)
             let (hostAKeyBlob, hostASig) = try makeHostKeyAndSig(priv: hostA, sessionID: sessionIDA)
 
-            let personalServer = SSHAgentServer(
+            let personalServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -755,7 +755,7 @@ final class SessionBindTests {
                 auditRecorder: auditRecorder,
                 watchRootExit: false
             )
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -764,7 +764,7 @@ final class SessionBindTests {
                 agentSessions: registry,
                 agentPolicies: policyStore
             )
-            let controlServer = SSHAgentServer(
+            let controlServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -842,7 +842,7 @@ final class SessionBindTests {
                 auditRecorder: auditRecorder,
                 watchRootExit: false
             )
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -851,7 +851,7 @@ final class SessionBindTests {
                 agentSessions: registry,
                 agentPolicies: policyStore
             )
-            let controlServer = SSHAgentServer(
+            let controlServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -1056,7 +1056,7 @@ final class SessionBindTests {
                 auditRecorder: auditRecorder,
                 watchRootExit: false
             )
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -1065,7 +1065,7 @@ final class SessionBindTests {
                 agentSessions: registry,
                 agentPolicies: policyStore
             )
-            let controlServer = SSHAgentServer(
+            let controlServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -1170,7 +1170,7 @@ final class SessionBindTests {
                 auditRecorder: auditRecorder,
                 watchRootExit: false
             )
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -1179,7 +1179,7 @@ final class SessionBindTests {
                 agentSessions: registry,
                 agentPolicies: policyStore
             )
-            let controlServer = SSHAgentServer(
+            let controlServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },

@@ -29,7 +29,7 @@ struct AgentPathSeparationTests {
             _ = try keyManager.generateKey(label: "personal-git-only", keyPurpose: .gitSigningOnly)
             _ = try keyManager.generateKey(label: "agent-key", keyPurpose: .agent)
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: keyManager,
                 peerProcessValidator: { _, _, _ in true }
@@ -67,7 +67,7 @@ struct AgentPathSeparationTests {
             let keyManager = fixture.makeKeyManager(authenticator: auth, auditRecorder: recorder)
             let agentKey = try keyManager.generateKey(label: "agent-key-prompt-test", keyPurpose: .agent)
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: keyManager,
                 peerProcessValidator: { _, _, _ in true },
@@ -129,7 +129,7 @@ struct AgentPathSeparationTests {
             }
 
             // 2. SSHAgentServer on personal socket must deny and audit wrongKeyKind
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: keyManager,
                 peerProcessValidator: { _, _, _ in true },
@@ -206,7 +206,7 @@ struct AgentPathSeparationTests {
             _ = try keyManager.generateKey(label: "personal-git-only", keyPurpose: .gitSigningOnly)
             let agentKey = try keyManager.generateKey(label: "agent-specific", keyPurpose: .agent)
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: keyManager,
                 peerProcessValidator: { _, _, _ in true }
@@ -243,7 +243,7 @@ struct AgentPathSeparationTests {
             let keyManager = fixture.makeKeyManager(auditRecorder: recorder)
             let agentKey = try keyManager.generateKey(label: "agent-nosession", keyPurpose: .agent)
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: keyManager,
                 peerProcessValidator: { _, _, _ in true },
@@ -275,7 +275,7 @@ struct AgentPathSeparationTests {
             let keyManager = fixture.makeKeyManager(auditRecorder: recorder)
             let personalKey = try keyManager.generateKey(label: "personal-on-agent", keyPurpose: .general)
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: keyManager,
                 peerProcessValidator: { _, _, _ in true },
@@ -301,7 +301,7 @@ struct AgentPathSeparationTests {
 
     @Test
     func test_005_T3_agentSocketRefusesControlOpcodes() throws {
-        let server = SSHAgentServer(role: .agent)
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(), role: .agent)
 
         for opcode: UInt8 in [240, 241, 242] {
             var payload = Data([opcode])
@@ -322,8 +322,8 @@ struct AgentPathSeparationTests {
         let personalSock = fixture.testRootURL.appendingPathComponent("p.sock").path
         let invalidAgentSock = "/dev/null/impossible/agent.sock"
 
-        let personalServer = SSHAgentServer(socketPath: personalSock, role: .personal)
-        let failingAgentServer = SSHAgentServer(socketPath: invalidAgentSock, role: .agent)
+        let personalServer = SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: personalSock, role: .personal)
+        let failingAgentServer = SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: invalidAgentSock, role: .agent)
 
         defer {
             AgentServers.stopAll(personal: personalServer, agent: failingAgentServer)

@@ -189,7 +189,7 @@ final class GitSigningGraceTests {
         #expect(record.purpose == .gitSigningOnly)
 
         // SSH Agent identities answer must EXCLUDE gitSigningOnly keys
-        let server = SSHAgentServer(keyManager: manager)
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(), keyManager: manager)
         let identitiesData = server.handleRequestIdentities()
         #expect(!identitiesData.isEmpty)
         let blobInIdentities = identitiesData.range(of: keyInfo.publicKeyBlob) != nil
@@ -313,7 +313,7 @@ final class GitSigningGraceTests {
             privateKeyStore: store,
             gitSigningGraceManager: customGraceManager
         )
-        let server = SSHAgentServer(
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
             keyManager: manager,
             gitSigningGraceManager: customGraceManager
         )
@@ -884,7 +884,7 @@ final class GitSigningGraceTests {
             signingProvider: signingProvider,
             gitSigningGraceManager: customGraceManager
         )
-        let server = SSHAgentServer(
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
             keyManager: manager,
             gitSigningGraceManager: customGraceManager
         )
@@ -964,7 +964,7 @@ final class GitSigningGraceTests {
             privateKeyStore: store,
             gitSigningGraceManager: customGraceManager
         )
-        let server = SSHAgentServer(
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
             keyManager: manager,
             gitSigningGraceManager: customGraceManager,
             peerProcessValidator: { _, _, _ in true }
@@ -1027,7 +1027,7 @@ final class GitSigningGraceTests {
             privateKeyStore: store,
             gitSigningGraceManager: customGraceManager
         )
-        let server = SSHAgentServer(
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
             keyManager: manager,
             gitSigningGraceManager: customGraceManager,
             peerProcessValidator: { _, _, _ in true }
@@ -1100,7 +1100,7 @@ final class GitSigningGraceTests {
                 privateKeyStore: store,
                 gitSigningGraceManager: customGraceManager
             )
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 keyManager: manager,
                 gitSigningGraceManager: customGraceManager
             )
@@ -1676,7 +1676,7 @@ final class GitSigningGraceTests {
             privateKeyStore: store,
             gitSigningGraceManager: customGraceManager
         )
-        let server = SSHAgentServer(
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
             keyManager: keyManager,
             gitSigningGraceManager: customGraceManager
         )

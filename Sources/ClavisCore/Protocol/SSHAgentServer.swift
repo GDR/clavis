@@ -74,6 +74,7 @@ public class SSHAgentServer {
     private let signingPolicyEvaluator: SigningPolicyEvaluator
     private let controlDispatcher: AgentControlDispatcher
     private let keyManager: KeychainManager
+    private let applicationAccess: ApplicationRequestAuthorizing
     #if DEBUG
     public var testContext: TestContext?
     #endif
@@ -89,6 +90,7 @@ public class SSHAgentServer {
     internal var activeClientCount: Int { socketServer.activeClientCount }
 
     public init(
+        applicationAccess: ApplicationRequestAuthorizing = ApplicationRequestAuthorization(),
         socketPath: String = SSHAgentServer.defaultSocketPath,
         role: AgentSocketRole = .personal,
         maxConcurrentClients: Int = 32,
@@ -140,7 +142,9 @@ public class SSHAgentServer {
             gitSigningGraceManager: gitSigningGraceManager
         )
 
+        self.applicationAccess = applicationAccess
         self.signingPolicyEvaluator = SigningPolicyEvaluator(
+            applicationAccess: applicationAccess,
             keyManager: keyManager,
             gitSigningGraceManager: gitSigningGraceManager,
             promptGate: promptGate,
@@ -358,7 +362,15 @@ public class SSHAgentServer {
         }
         ClavisLogger.log("SSH_AGENT_IDENTITIES", "Listing active SSH identities for \(clientDesc)...")
         // Filter keys according to socket role (personal lists general; agent lists agent)
-        let keys = ((try? keyManager.listKeys()) ?? []).filter { role.listedPurposes.contains($0.purpose) }
+        let keys = ((try? keyManager.listKeys()) ?? []).filter { key in
+            guard key.effectiveAccessProfile.capabilities.ssh,
+                  let pid = clientPid,
+                  let path = clientExecutablePath ?? ProcessInspector.getProcessPath(pid: pid),
+                  let start = ProcessInspector.processStartTime(pid: pid),
+                  let lease = try? applicationAccess.authorize(key: key, operation: .ssh, role: role, pid: pid, path: path, start: start),
+                  case .eligible = lease.eligibility else { return false }
+            return true
+        }
         var response = Data()
         response.append(12) // SSH2_AGENT_IDENTITIES_ANSWER
 

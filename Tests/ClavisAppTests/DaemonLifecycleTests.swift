@@ -241,7 +241,7 @@ final class DaemonLifecycleTests {
         #expect(!SSHAgentServer.isSocketListening(atPath: testSockPath))
 
         // 2. Start primary server
-        let primaryServer = SSHAgentServer(socketPath: testSockPath)
+        let primaryServer = SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: testSockPath)
         try primaryServer.start()
         defer { primaryServer.stop() }
 
@@ -258,7 +258,7 @@ final class DaemonLifecycleTests {
         #expect(listening, "Server should be actively listening on socket")
 
         // 3. Attempting to start a second server on the same socket must fail with socketAlreadyInUse
-        let secondaryServer = SSHAgentServer(socketPath: testSockPath)
+        let secondaryServer = SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: testSockPath)
         #expect(throws: SSHAgentServerError.socketAlreadyInUse(testSockPath)) {
             try secondaryServer.start()
         }
@@ -277,7 +277,7 @@ final class DaemonLifecycleTests {
 
         #expect(!manager.isAgentRunning)
 
-        let server = SSHAgentServer(socketPath: testSockPath)
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: testSockPath)
         try server.start()
         defer { server.stop() }
 
@@ -301,7 +301,7 @@ final class DaemonLifecycleTests {
         fixture.runSync {
             let appState = AppState(
                 keyManager: makeKeyManager(),
-                sshAgentServer: SSHAgentServer(socketPath: testRootURL.appendingPathComponent("app-state.sock").path)
+                sshAgentServer: SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: testRootURL.appendingPathComponent("app-state.sock").path)
             )
             #expect(appState.errorMessage == nil)
 
@@ -333,7 +333,7 @@ final class DaemonLifecycleTests {
     @MainActor
     @Test func testAppTerminationClearsCachesStopsServerAndStopsAgent() throws {
         let socketPath = testRootURL.appendingPathComponent("termination.sock").path
-        let server = SSHAgentServer(socketPath: socketPath)
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: socketPath)
         try server.start()
 
         var agentStopCount = 0
@@ -474,7 +474,7 @@ final class DaemonLifecycleTests {
     @MainActor
     @Test func testAppStateIgnoresSpoofedGitGraceNotificationUserInfo() throws {
         let socketPath = testRootURL.appendingPathComponent("spoof.sock").path
-        let server = SSHAgentServer(socketPath: socketPath)
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: socketPath)
         let lifecycle = AgentLifecycleManager(socketPath: socketPath)
         let appState = AppState(
             keyManager: makeKeyManager(),

@@ -85,7 +85,7 @@ struct AgentSessionLeaseTests {
                 watchRootExit: false
             )
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
                 peerProcessValidator: { _, _, _ in true },
@@ -185,7 +185,7 @@ struct AgentSessionLeaseTests {
                 watchRootExit: false
             )
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
                 peerProcessValidator: { _, _, _ in true },
@@ -226,7 +226,7 @@ struct AgentSessionLeaseTests {
                 watchRootExit: false
             )
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
                 peerProcessValidator: { _, _, _ in true },
