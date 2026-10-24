@@ -12,6 +12,7 @@ struct SettingsNavigation<General: View>: View {
     let general: General
     @AppStorage("clavis.settings.tab") private var selectedTab = SettingsTab.general.rawValue
     @StateObject private var applications: ApplicationSettingsModel
+    @FocusState private var focusedTab: SettingsTab?
 
     init(general: General, agent: any AgentControlling) {
         self.general = general
@@ -36,6 +37,7 @@ struct SettingsNavigation<General: View>: View {
                 ForEach(SettingsTab.allCases, id: \.rawValue) { tab in
                     Button {
                         selectedTab = tab.rawValue
+                        focusedTab = tab
                     } label: {
                         VStack(spacing: 3) {
                             Image(systemName: tab.symbol).font(.system(size: 14))
@@ -51,8 +53,18 @@ struct SettingsNavigation<General: View>: View {
                         .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
+                    .focused($focusedTab, equals: tab)
+                    .accessibilityIdentifier("settings-tab-\(tab.rawValue.lowercased())")
                     .accessibilityLabel("\(tab.rawValue) settings")
                     .accessibilityAddTraits(selectedTab == tab.rawValue ? [.isSelected] : [])
+                }
+            }
+            .onMoveCommand { direction in
+                guard focusedTab != nil else { return }
+                switch direction {
+                case .left: selectedTab = SettingsTab.general.rawValue; focusedTab = .general
+                case .right: selectedTab = SettingsTab.bots.rawValue; focusedTab = .bots
+                default: break
                 }
             }
             .padding(4)
