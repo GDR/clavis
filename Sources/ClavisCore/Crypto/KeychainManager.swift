@@ -341,6 +341,10 @@ public class KeychainManager {
             )
         }
 
+        guard record.accessProfile == key.effectiveAccessProfile else {
+            throw KeyAccessError.profileMismatch
+        }
+
         // The authentication policy used to prompt the user was chosen from the public index, which is an
         // unauthenticated display cache. Refuse to proceed if the authoritative record disagrees,
         // so a tampered index can only cause a refusal, never a weaker effective policy.
@@ -455,6 +459,11 @@ public class KeychainManager {
                 record.wipe()
                 if let keyPurposeError = validationError as? KeyPurposeError {
                     throw keyPurposeError
+                }
+                // Policy disagreement is not record corruption. A stale backup must
+                // never restore broader capabilities to satisfy the public cache.
+                if let accessError = validationError as? KeyAccessError {
+                    throw accessError
                 }
                 ClavisLogger.log(
                     "SECURITY_ALERT",
@@ -647,6 +656,7 @@ public class KeychainManager {
         }
 
         let isGitSigningRequest = SSHSIGPayload.parse(from: data) != nil
+        let operation: KeyOperation = isGitSigningRequest ? .signature : .ssh
         if key.purpose == .gitSigningOnly && !isGitSigningRequest {
             throw PrivateKeyRecordError.purposeNotAllowed(
                 purpose: key.purpose.rawValue,
@@ -654,6 +664,7 @@ public class KeychainManager {
             )
         }
 
+        try key.effectiveAccessProfile.require(operation)
         if existingContext == nil {
             ClavisLogger.promptDebug("clavis-code", "KeychainManager: prompting for SSH signature '\(key.label)' (storage: \(key.storageType.rawValue), policy: \(key.biometricPolicy?.rawValue ?? "default")): \"\(prompt)\"")
         }
@@ -665,6 +676,7 @@ public class KeychainManager {
             invalidateContextOnMismatch: false,
             auditOnAuthFailure: false
         ) { context, record in
+            try record.accessProfile.require(operation)
             guard allowedPurposes.contains(record.purpose) else {
                 throw KeyPurposeError.notAllowedOnThisPath(record.purpose)
             }
@@ -814,12 +826,12 @@ public class KeychainManager {
             }
 
             var updatedRecord = StoredPrivateKeyRecord(
-                version: record.version,
                 label: record.label,
                 algorithm: record.algorithm,
                 storageType: record.storageType,
                 biometricPolicy: record.biometricPolicy,
                 keyPurpose: newPurpose,
+                accessProfile: record.accessProfile.changingType(to: newPurpose == .agent ? .bot : .personal),
                 keyData: record.keyData,
                 createdAt: record.createdAt
             )
@@ -851,7 +863,8 @@ public class KeychainManager {
                 algorithmName: key.algorithmName,
                 storage: key.storageType,
                 biometricPolicy: key.biometricPolicy,
-                keyPurpose: newPurpose
+                keyPurpose: newPurpose,
+                accessProfile: updatedRecord.accessProfile
             )
 
             do {
@@ -937,6 +950,7 @@ public class KeychainManager {
             storageType: record.storageType,
             biometricPolicy: record.biometricPolicy,
             keyPurpose: record.keyPurpose,
+            accessProfile: record.accessProfile,
             keyData: record.keyData,
             createdAt: record.createdAt
         )
@@ -977,7 +991,8 @@ public class KeychainManager {
             algorithmName: key.algorithmName,
             storage: key.storage,
             biometricPolicy: key.biometricPolicy,
-            keyPurpose: key.keyPurpose
+            keyPurpose: key.keyPurpose,
+            accessProfile: key.accessProfile
         )
 
         do {
@@ -1072,7 +1087,8 @@ public class KeychainManager {
                                 algorithmName: rec.algorithm.rawValue,
                                 storage: rec.storageType,
                                 biometricPolicy: rec.biometricPolicy ?? .userPresence,
-                                keyPurpose: rec.keyPurpose
+                                keyPurpose: rec.keyPurpose,
+                                accessProfile: rec.accessProfile
                             )
                             try PublicKeyStore.saveChecked(restoredInfo)
                             repaired.append(.missingPublicCache(label: privLabel))
