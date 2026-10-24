@@ -6,8 +6,10 @@ import Testing
 @testable import ClavisTestSupport
 
 @Suite @MainActor struct SettingsRenderingTests {
-    @Test(arguments: ["General", "Bots"], [false, true], [false, true])
-    func modalRendersWithFloatingNavigation(tab: String, dark: Bool, accessibility: Bool) async throws {
+    @Test(arguments: ["General", "Bots"], [0, 1, 2, 3])
+    func modalRendersWithFloatingNavigation(tab: String, appearance: Int) async throws {
+        let dark = appearance & 1 != 0
+        let accessibility = appearance & 2 != 0
         let fixture = try ClavisTestFixture()
         defer { fixture.cleanup() }
         try await fixture.run {
