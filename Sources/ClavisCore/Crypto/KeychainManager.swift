@@ -847,6 +847,8 @@ public class KeychainManager {
     private func persistAccessProfile(_ profile: KeyAccessProfile, purpose newPurpose: KeyPurpose,
                                       key: SSHKeyInfo, record: StoredPrivateKeyRecord) throws {
         let label = key.label
+        // Never persist a broader policy while the daemon can still reuse old approvals.
+        // Revocation failure leaves all stored copies untouched.
         try revokeKeyCapabilities(label: label)
         var updatedRecord = StoredPrivateKeyRecord(
             label: record.label,
