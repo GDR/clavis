@@ -21,6 +21,11 @@ public final class LAPanelAuthenticator: PanelAuthenticating {
     public init() {}
 
     public func authenticate(reason: String) async throws -> LAContext {
+        #if DEBUG
+        guard !ClavisEnvironment.isTesting else {
+            throw UserAuthenticationError.testAuthenticationNotInjected
+        }
+        #endif
         ClavisLogger.promptDebug("calvis-ui", "LAPanelAuthenticator: prompting system authentication (reason: \"\(reason)\")")
         let context = LAContext()
         return try await withCheckedThrowingContinuation { continuation in
@@ -215,40 +220,40 @@ public final class PanelLockController: ObservableObject {
             return
         }
 
+        let generation = promptLifecycle.beganManualAttempt()
         isUnlocking = true
         defer { isUnlocking = false }
 
         do {
             ClavisLogger.promptDebug("calvis-ui", "PanelLockController: requesting panel unlock prompt: \"\(ClavisUIStrings.PanelLock.reason)\"")
             let context = try await authenticator.authenticate(reason: ClavisUIStrings.PanelLock.reason)
+            guard promptLifecycle.acceptsCompletion(from: generation) else {
+                context.invalidate()
+                return
+            }
             applyUnlock(context: context)
         } catch {
-            // Cancelled or failed unlock stays locked without error alert
-            lastPromptDismissedAt = now()
+            // Cancellation stays locked. Focus restoration is not a retry.
         }
     }
 
-    private var lastPromptDismissedAt: Date?
+    private var promptLifecycle = PanelUnlockPromptLifecycle()
 
-    /// Prompts for biometric / system authentication when the user opens or focuses the locked window,
-    /// matching Bitwarden's auto-prompt behavior.
-    /// - Parameter isWindowFocusEvent: When true, suppresses immediate re-prompting right after the macOS
-    ///   system authentication sheet closes and returns key-window status to the Clavis window.
-    public func unlockIfNeededOnWindowFocus(isWindowFocusEvent: Bool = false) async {
-        guard isEffectivelyLocked, !isUnlocking else { return }
-        if isWindowFocusEvent,
-           let dismissedAt = lastPromptDismissedAt,
-           now().timeIntervalSince(dismissedAt) < 1.0 {
-            return
-        }
+    /// One automatic attempt per locked period; explicit reopening may retry.
+    public func unlockIfNeededOnWindowFocus(
+        isWindowFocusEvent: Bool = false,
+        isUserInitiatedOpen: Bool = false
+    ) async {
+        let trigger: PanelUnlockPromptLifecycle.Trigger = isUserInitiatedOpen
+            ? .explicitOpen : (isWindowFocusEvent ? .windowFocus : .presentation)
+        guard promptLifecycle.claimAutomaticAttempt(
+            trigger: trigger, isLocked: isEffectivelyLocked, isAuthenticating: isUnlocking
+        ) else { return }
         switch currentMode {
         case .passwordOrBiometry:
             await unlock()
         case .biometryOrPIN:
-            let outcome = await unlockWithPIN(nil)
-            if outcome != .unlocked {
-                lastPromptDismissedAt = now()
-            }
+            _ = await unlockWithPIN(nil)
         case .biometryAndPIN:
             // Requires PIN entry first
             break
@@ -258,7 +263,12 @@ public final class PanelLockController: ObservableObject {
     @discardableResult
     public func authenticateUser(reason: String = ClavisUIStrings.PanelLock.reason) async throws -> LAContext {
         ClavisLogger.promptDebug("calvis-ui", "PanelLockController: authenticating user: \"\(reason)\"")
+        let generation = promptLifecycle.beganManualAttempt()
         let context = try await authenticator.authenticate(reason: reason)
+        guard promptLifecycle.acceptsCompletion(from: generation) else {
+            context.invalidate()
+            throw LAError(.appCancel)
+        }
         applyUnlock(context: context)
         return context
     }
@@ -272,7 +282,12 @@ public final class PanelLockController: ObservableObject {
         isUnlocking = true
         defer { isUnlocking = false }
 
+        let generation = promptLifecycle.beganManualAttempt()
         let (outcome, context) = await service.unlock(pin: pin)
+        guard promptLifecycle.acceptsCompletion(from: generation) else {
+            context?.invalidate()
+            return .cancelled
+        }
         if outcome == .unlocked {
             applyUnlock(context: context)
         }
@@ -288,7 +303,12 @@ public final class PanelLockController: ObservableObject {
         isUnlocking = true
         defer { isUnlocking = false }
 
+        let generation = promptLifecycle.beganManualAttempt()
         let (outcome, context) = await service.unlockWithPassword()
+        guard promptLifecycle.acceptsCompletion(from: generation) else {
+            context?.invalidate()
+            return .cancelled
+        }
         if outcome == .unlocked {
             applyUnlock(context: context)
         }
@@ -310,11 +330,13 @@ public final class PanelLockController: ObservableObject {
         defer { isUnlocking = false }
 
         ClavisLogger.promptDebug("calvis-ui", "PanelLockController: verifying Mac login password via OpenDirectory")
+        let generation = promptLifecycle.beganManualAttempt()
         let verifier = self.loginPasswordVerifier
         let verified = await Task.detached {
             verifier(password)
         }.value
 
+        guard promptLifecycle.acceptsCompletion(from: generation) else { return false }
         if verified {
             applyUnlock(context: nil)
             return true
@@ -347,6 +369,7 @@ public final class PanelLockController: ObservableObject {
     }
 
     public func lock(reason: PanelLockReason) {
+        promptLifecycle.didLock(wasAlreadyLocked: isLocked, suppressAutomaticAttempt: reason == .lockNow || reason == .idle)
         lastLockReason = reason
         unlockContext?.invalidate()
         unlockContext = nil

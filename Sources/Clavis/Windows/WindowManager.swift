@@ -67,13 +67,10 @@ public class WindowManager: NSObject, NSWindowDelegate {
         }
 
         if let window = keyManagerWindow {
-            let wasKeyWindow = window.isKeyWindow && (NSApp?.isActive == true)
             window.makeKeyAndOrderFront(nil)
             NSApp?.activate(ignoringOtherApps: true)
-            if wasKeyWindow {
-                Task {
-                    await PanelLockController.shared.unlockIfNeededOnWindowFocus()
-                }
+            Task {
+                await PanelLockController.shared.unlockIfNeededOnWindowFocus(isUserInitiatedOpen: true)
             }
             return
         }

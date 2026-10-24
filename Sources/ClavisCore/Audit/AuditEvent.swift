@@ -156,6 +156,8 @@ public struct AuditEvent: Equatable, Sendable {
     public static func isUserCancellation(_ error: Error) -> Bool {
         if let authError = error as? UserAuthenticationError {
             switch authError {
+            case .testAuthenticationNotInjected:
+                return false
             case .timedOut:
                 return true
             case .rejected(let underlying):
