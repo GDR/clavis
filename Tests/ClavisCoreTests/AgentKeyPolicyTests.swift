@@ -239,7 +239,7 @@ struct AgentKeyPolicyTests {
             let key = try manager.generateKey(label: "agent-presence-key", biometricPolicy: .userPresence, keyPurpose: .agent)
 
             let policyStore = InMemoryAgentPolicyStore()
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
                 peerProcessValidator: { _, _, _ in true },
@@ -284,7 +284,7 @@ struct AgentKeyPolicyTests {
             let key = try manager.generateKey(label: "agent-invalid-key", biometricPolicy: .userPresence, keyPurpose: .agent)
 
             let policyStore = InMemoryAgentPolicyStore()
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
                 peerProcessValidator: { _, _, _ in true },
@@ -332,7 +332,7 @@ struct AgentKeyPolicyTests {
             let personalKey = try manager.generateKey(label: "personal-key-for-policy", biometricPolicy: .userPresence, keyPurpose: .general)
 
             let policyStore = InMemoryAgentPolicyStore()
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
                 peerProcessValidator: { _, _, _ in true },
@@ -369,7 +369,7 @@ struct AgentKeyPolicyTests {
             let policyStore = InMemoryAgentPolicyStore()
             policyStore.corruptFingerprints.insert(key.fingerprint)
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
                 peerProcessValidator: { _, _, _ in true },
@@ -406,7 +406,7 @@ struct AgentKeyPolicyTests {
             let customPolicy = AgentKeyPolicy(mode: .ask, leaseMinutes: 240, burst: 50, refillPerMinute: 10)
             try policyStore.save(customPolicy, forFingerprint: key.fingerprint)
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
                 peerProcessValidator: { _, _, _ in true },
@@ -441,7 +441,7 @@ struct AgentKeyPolicyTests {
             let manager = fixture.makeKeyManager(authenticator: AllowingAuthenticator(), auditRecorder: auditRecorder)
             let policyStore = InMemoryAgentPolicyStore()
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
                 peerProcessValidator: { _, _, _ in true },
@@ -514,7 +514,7 @@ struct AgentKeyPolicyTests {
             let manager = fixture.makeKeyManager(authenticator: AllowingAuthenticator(), auditRecorder: auditRecorder)
             let policyStore = InMemoryAgentPolicyStore()
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
                 peerProcessValidator: { _, _, _ in true },
@@ -637,7 +637,7 @@ struct AgentKeyPolicyTests {
             )
 
             let policyStore = InMemoryAgentPolicyStore()
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
                 peerProcessValidator: { _, _, _ in true },

@@ -101,7 +101,7 @@ final class SSHAgentServerTests {
 
         var request = Data([SSHAgentServer.invalidateKeyRequest])
         request.appendWireString(label)
-        let response = SSHAgentServer(
+        let response = SSHAgentServer(applicationAccess: TestApplicationAccess(),
             keyManager: makeKeyManager(gitSigningGraceManager: graceManager),
             gitSigningGraceManager: graceManager
         ).processAgentRequest(
@@ -123,7 +123,7 @@ final class SSHAgentServerTests {
             clientIdentity: "/usr/bin/git",
             context: LAContext()
         )
-        let server = SSHAgentServer(
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
             keyManager: makeKeyManager(gitSigningGraceManager: graceManager),
             gitSigningGraceManager: graceManager
         )
@@ -143,7 +143,7 @@ final class SSHAgentServerTests {
     }
 
     @Test func testTrustCallbackIsNotEvaluatedForStandardAgentMessages() {
-        let server = SSHAgentServer(keyManager: makeKeyManager())
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(), keyManager: makeKeyManager())
         var evaluated = false
         _ = server.processAgentRequest(payload: Data([11]), isTrustedControlPeer: { evaluated = true; return true })
         #expect(!evaluated)
@@ -151,7 +151,7 @@ final class SSHAgentServerTests {
 
     @Test func testControlOpcodeOverRealSocketIsRefusedForNonClavisPeer() throws {
         let socketPath = testRootURL.appendingPathComponent("control.sock").path
-        let server = SSHAgentServer(socketPath: socketPath, keyManager: makeKeyManager())
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: socketPath, keyManager: makeKeyManager())
         try server.start()
         defer { server.stop() }
 
@@ -175,7 +175,7 @@ final class SSHAgentServerTests {
 
     @Test func testSSHAgentServerLifecycle() throws {
         let testSockPath = testRootURL.appendingPathComponent("clavis-unittest.sock").path
-        let server = SSHAgentServer(socketPath: testSockPath)
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: testSockPath)
 
         #expect(!server.isSocketActive)
         try server.start()
@@ -193,7 +193,7 @@ final class SSHAgentServerTests {
 
     @Test func testSSHAgentServerBoundsIdleClients() throws {
         let socketPath = testRootURL.appendingPathComponent("clavis-client-limit.sock").path
-        let server = SSHAgentServer(
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
             socketPath: socketPath,
             maxConcurrentClients: 1,
             clientIdleTimeout: 0.6
@@ -225,7 +225,7 @@ final class SSHAgentServerTests {
     @Test func testSSHAgentServerRequestIdentitiesSocket() throws {
         try fixture.runSync {
             let testSockPath = testRootURL.appendingPathComponent("clavis-req-ident.sock").path
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 socketPath: testSockPath,
                 keyManager: makeKeyManager(),
                 testContext: fixture.context
@@ -262,7 +262,7 @@ final class SSHAgentServerTests {
 
     @Test func testSSHAgentServerSignRequestMissingFlags() throws {
         let testSockPath = testRootURL.appendingPathComponent("clavis-sign-req.sock").path
-        let server = SSHAgentServer(socketPath: testSockPath, keyManager: makeKeyManager())
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: testSockPath, keyManager: makeKeyManager())
         try server.start()
         defer { server.stop() }
 
@@ -301,7 +301,7 @@ final class SSHAgentServerTests {
 
     @Test func testSSHAgentServerRequestIdentities() {
         fixture.runSync {
-            let server = SSHAgentServer(keyManager: makeKeyManager(), testContext: fixture.context)
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(), keyManager: makeKeyManager(), testContext: fixture.context)
             let requestPayload = Data([11]) // SSH2_AGENTC_REQUEST_IDENTITIES
             let response = server.processAgentRequest(payload: requestPayload)
 
@@ -317,7 +317,7 @@ final class SSHAgentServerTests {
 
     @Test func testSSHAgentServerSignRequestParsing() {
         fixture.runSync {
-            let server = SSHAgentServer(keyManager: makeKeyManager(), testContext: fixture.context)
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(), keyManager: makeKeyManager(), testContext: fixture.context)
 
             // 1. Invalid payload: empty or unknown msg type
             #expect(server.processAgentRequest(payload: Data()) == Data([5]))
@@ -393,7 +393,7 @@ final class SSHAgentServerTests {
     }
 
     @Test func testSSHAgentServerPerPIDClientLimit() {
-        let server = SSHAgentServer(
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
             maxConcurrentClients: 10,
             maxConcurrentClientsPerPID: 2
         )
@@ -481,12 +481,12 @@ final class SSHAgentServerTests {
 
     @Test func testStopDoesNotUnlinkForeignSocket() throws {
         let testSockPath = testRootURL.appendingPathComponent("clavis-foreign-stop.sock").path
-        let serverA = SSHAgentServer(socketPath: testSockPath)
+        let serverA = SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: testSockPath)
         try serverA.start()
         defer { serverA.stop() }
 
         // Instance B points to the same path but never started (never bound)
-        let serverB = SSHAgentServer(socketPath: testSockPath)
+        let serverB = SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: testSockPath)
         serverB.stop()
 
         // Socket file must still exist because serverB does not own it
@@ -505,7 +505,7 @@ final class SSHAgentServerTests {
 
     @Test func testStopDoesNotUnlinkReplacedSocket() throws {
         let testSockPath = testRootURL.appendingPathComponent("clavis-replaced-stop.sock").path
-        let serverA = SSHAgentServer(socketPath: testSockPath)
+        let serverA = SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: testSockPath)
         try serverA.start()
 
         // Replace socket file with a newly created socket (different inode)
@@ -565,7 +565,7 @@ final class SSHAgentServerTests {
         }
 
         var server: SSHAgentServer!
-        server = SSHAgentServer(
+        server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
             socketPath: socketPath,
             keyManager: makeKeyManager(),
             backoffHandler: { duration in
@@ -608,7 +608,7 @@ final class SSHAgentServerTests {
 
             // 2. Request cap limit (200 requests)
             let capSocketPath = testRootURL.appendingPathComponent("req-cap.sock").path
-            let capServer = SSHAgentServer(
+            let capServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 socketPath: capSocketPath,
                 maxRequestsPerConnection: 200,
                 keyManager: makeKeyManager(),
@@ -650,7 +650,7 @@ final class SSHAgentServerTests {
 
             // 3. Connection lifetime limit
             let lifeSocketPath = testRootURL.appendingPathComponent("lifetime.sock").path
-            let lifeServer = SSHAgentServer(
+            let lifeServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 socketPath: lifeSocketPath,
                 maxConnectionLifetime: 0.05,
                 keyManager: makeKeyManager(),
@@ -698,7 +698,7 @@ final class SSHAgentServerTests {
             defer { try? keyManager.deleteKey(label: label) }
             let keyInfo = try keyManager.generateKey(label: label)
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 socketPath: socketPath,
                 keyManager: keyManager,
                 peerProcessValidator: { pid, path, startTime in
@@ -775,7 +775,7 @@ final class SSHAgentServerTests {
             }
         }
 
-        let server = SSHAgentServer(
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
             socketPath: socketPath,
             keyManager: makeKeyManager(),
             backoffHandler: { _ in
@@ -833,7 +833,7 @@ final class SSHAgentServerTests {
         }
 
         var server: SSHAgentServer!
-        server = SSHAgentServer(
+        server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
             socketPath: socketPath,
             keyManager: makeKeyManager(),
             backoffHandler: { duration in
@@ -1042,7 +1042,7 @@ final class SSHAgentServerTests {
             let gitOnlyKey = try keyMgr.generateKey(label: "git-only-key", biometricPolicy: .userPresence, keyPurpose: .gitSigningOnly)
             let generalKey = try keyMgr.generateKey(label: "general-key", biometricPolicy: .userPresence, keyPurpose: .general)
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: keyMgr,
                 controlPeerValidator: { _ in true },
@@ -1205,7 +1205,7 @@ final class SSHAgentServerTests {
                 watchRootExit: false
             )
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: keyMgr,
                 controlPeerValidator: { _ in true },
@@ -1277,7 +1277,7 @@ final class SSHAgentServerTests {
             #expect(countingAuth.lastReason!.contains("5678"))
 
             // 4. .ask mode on agent socket enforces key's biometricPolicy.laPolicy and contextual prompt
-            let agentServer = SSHAgentServer(
+            let agentServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: keyMgr,
                 controlPeerValidator: { _ in true },

@@ -95,7 +95,7 @@ struct TokenBucketTests {
                 watchRootExit: false
             )
 
-            let regServer = SSHAgentServer(
+            let regServer = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .personal,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },
@@ -114,7 +114,7 @@ struct TokenBucketTests {
             )
             #expect(regResp.first == 6)
 
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 role: .agent,
                 keyManager: manager,
                 controlPeerValidator: { _ in true },

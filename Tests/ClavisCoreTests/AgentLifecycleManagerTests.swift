@@ -201,7 +201,7 @@ struct AgentLifecycleManagerTests {
     func testControlClientRejectsUntrustedServerPeer() throws {
         defer { fixture.cleanup() }
         let sockPath = fixture.testRootURL.appendingPathComponent("untrusted-server.sock").path
-        let server = SSHAgentServer(
+        let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
             socketPath: sockPath,
             role: .personal,
             controlPeerValidator: { _ in true }

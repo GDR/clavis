@@ -18,7 +18,7 @@ final class SettingsViewModelTests {
         self.mockAgent = MockAgentController()
         let sockPath = fixture.testRootURL.appendingPathComponent("settings-test.sock").path
         self.sockPath = sockPath
-        self.server = SSHAgentServer(socketPath: sockPath, keyManager: fixture.makeKeyManager())
+        self.server = SSHAgentServer(applicationAccess: TestApplicationAccess(), socketPath: sockPath, keyManager: fixture.makeKeyManager())
     }
 
     deinit {

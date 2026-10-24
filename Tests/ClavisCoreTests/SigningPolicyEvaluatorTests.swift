@@ -21,7 +21,7 @@ final class SigningPolicyEvaluatorTests {
             authenticator: AllowingAuthenticator(),
             gitSigningGraceManager: graceManager
         )
-        let evaluator = SigningPolicyEvaluator(
+        let evaluator = SigningPolicyEvaluator(applicationAccess: TestApplicationAccess(),
             keyManager: keyManager,
             gitSigningGraceManager: graceManager,
             auditRecorder: recorder,

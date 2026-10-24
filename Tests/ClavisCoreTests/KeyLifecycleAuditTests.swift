@@ -82,7 +82,7 @@ import LocalAuthentication
         defer { fixture.cleanup() }
         await fixture.run {
             let recorder = InMemoryAuditRecorder()
-            let server = SSHAgentServer(
+            let server = SSHAgentServer(applicationAccess: TestApplicationAccess(),
                 keyManager: fixture.makeKeyManager(),
                 auditRecorder: recorder
             )
