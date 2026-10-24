@@ -13,10 +13,10 @@ struct KeyListView: View {
     @State private var kindFilter: KeyKindFilter = .all
     @State private var searchText: String = ""
     @State private var keyPendingDeletion: SSHKeyInfo? = nil
-    @State private var isHoveringVerifiedBadge: Bool = false
+    @State private var confirmingRevokeAll = false
     @FocusState private var isSearchFieldFocused: Bool
 
-    public static let sidebarWidth: CGFloat = 222
+    public static let sidebarWidth: CGFloat = 260
     public static let toolbarHeight: CGFloat = 52
     public static let searchCapsuleHeight: CGFloat = 36
     public static let emptyStateTitle = "A key that stays on your Mac."
@@ -298,82 +298,42 @@ struct KeyListView: View {
         return selectedKey?.id == key.id
     }
 
-    // MARK: - Left Sidebar (222px Contacts-style library)
+    // MARK: - Key library sidebar
 
     private var sidebarHeader: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Top 52px sidebar toolbar (traffic lights on left, Lock + New Key on right)
+        VStack(spacing: 10) {
             HStack(spacing: 7) {
                 Spacer(minLength: 72)
-
-                AdaptiveGlassEffectContainer(spacing: 7) {
-                    CircularGlassIconButton(
-                        icon: "lock",
-                        size: 33,
-                        iconSize: 14,
-                        helpText: "Lock control panel (⌘L)",
-                        accessibilityLabel: "Lock control panel"
-                    ) {
-                        PanelLockController.shared.lock(reason: .lockNow)
-                    }
-
-                    CircularGlassIconButton(
-                        icon: "plus",
-                        size: 33,
-                        iconSize: 15,
-                        isActive: appState.activeSheet == .create,
-                        helpText: "New key (⌘N)",
-                        accessibilityLabel: ClavisUIStrings.Accessibility.addKey
-                    ) {
-                        appState.activeSheet = .create
-                    }
-                }
+                CircularGlassIconButton(
+                    icon: "plus", size: 33, iconSize: 15,
+                    isActive: appState.activeSheet == .create,
+                    helpText: "New key (⌘N)",
+                    accessibilityLabel: ClavisUIStrings.Accessibility.addKey
+                ) { appState.activeSheet = .create }
+                LibraryMoreMenu(
+                    history: { appState.openHistoryPane(forKeyFingerprint: nil) },
+                    settings: { appState.activeSheet = .settings },
+                    lock: { PanelLockController.shared.lock(reason: .lockNow) },
+                    revoke: { confirmingRevokeAll = true }
+                )
             }
-            .padding(.leading, 16)
-            .padding(.trailing, 12)
+            .padding(.horizontal, 12)
             .frame(height: Self.toolbarHeight)
 
-            // 36px Contacts-inspired search capsule (9.5pt inner leading + 8pt outer = 17.5pt icon leading, centering the ~17pt icon at x=26pt under the close button)
-            HStack(spacing: 7) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundColor(DesignTokens.textSecondary)
-                    .font(.system(size: 13))
-
-                TextField("Search", text: $searchText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .focused($isSearchFieldFocused)
-                    .accessibilityLabel("Search keys")
-                    .onExitCommand {
-                        if !searchText.isEmpty {
-                            searchText = ""
-                        } else {
-                            isSearchFieldFocused = false
-                        }
-                    }
-
-                if !searchText.isEmpty {
-                    Button(action: { searchText = "" }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(DesignTokens.textTertiary)
-                            .font(.system(size: 12))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(ClavisUIStrings.Common.cancel)
-                }
-            }
-            .padding(.horizontal, 9.5)
-            .frame(height: Self.searchCapsuleHeight)
-            .liquidGlassCapsuleControl(isFocused: isSearchFieldFocused)
-            .padding(.horizontal, 8)
+            LibrarySearchField(text: $searchText, focused: Binding(
+                get: { isSearchFieldFocused },
+                set: { isSearchFieldFocused = $0 }
+            ))
+            .frame(height: 28)
+            .padding(.horizontal, 12)
             .padding(.bottom, 8)
-
-            // "Keys" section header
-            Text("Keys")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(DesignTokens.textSecondary)
-                .padding(.horizontal, 17)
-                .padding(.bottom, 5)
+        }
+        .confirmationDialog("Revoke all active sessions?", isPresented: $confirmingRevokeAll) {
+            Button("Revoke All Sessions", role: .destructive) {
+                appState.endGitSigningSession()
+            }
+        } message: {
+            Text("New requests will require approval. Existing SSH connections may remain open.")
         }
     }
 
@@ -432,6 +392,12 @@ struct KeyListView: View {
                 sidebarHeader
             }
             .frame(maxHeight: .infinity)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    Divider().padding(.horizontal, 14)
+                    LibraryAgentStatus(active: appState.isSocketActive)
+                }
+            }
         }
         .frame(width: Self.sidebarWidth)
         .frame(maxHeight: .infinity)
@@ -481,7 +447,6 @@ struct KeyListView: View {
             }
             .topLiquidGlassBar {
                 VStack(spacing: 0) {
-                    mainToolbar
                     if isHistoryActive {
                         // One fixed region: search, badges and count never enter the scroll area.
                         HistoryFilterHeader(viewModel: historyViewModel, ui: historyUI)
@@ -491,106 +456,6 @@ struct KeyListView: View {
 
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var mainToolbar: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 13) {
-                if isHistoryActive {
-                    Button(action: leaveHistory) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(DesignTokens.textSecondary)
-                            .frame(width: 24, height: 34)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Back (⌘[)")
-                    .accessibilityLabel("Back")
-                }
-
-                Text(appState.activeMainPane == .history ? "History" : "Clavis")
-                    .font(.system(size: 21, weight: .semibold))
-                    .foregroundColor(.primary)
-
-                if appState.activeMainPane == .history,
-                   historyViewModel.integrityReport?.status == .ok {
-                    HStack(spacing: 5) {
-                        Image(systemName: "checkmark.shield.fill")
-                            .font(.system(size: 12))
-                        Text("Verified")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .foregroundColor(DesignTokens.accentGreen)
-                    .padding(.vertical, 3)
-                    .padding(.horizontal, 6)
-                    .contentShape(Rectangle())
-                    .help(Self.historyVerifiedTooltip)
-                    .onHover { hovering in
-                        isHoveringVerifiedBadge = hovering
-                    }
-                    .popover(isPresented: $isHoveringVerifiedBadge, arrowEdge: .bottom) {
-                        Text(Self.historyVerifiedTooltip)
-                            .font(.system(size: 11))
-                            .foregroundColor(.primary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(width: 240, alignment: .leading)
-                            .padding(10)
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Verified")
-                    .accessibilityHint(Self.historyVerifiedTooltip)
-                }
-            }
-
-            Spacer()
-
-            HStack(spacing: 8) {
-                HStack(spacing: 5) {
-                    StatusDot(isActive: appState.isSocketActive)
-                    Text(appState.isSocketActive ? "Agent active" : "Agent offline")
-                        .font(.system(size: 11))
-                        .foregroundColor(DesignTokens.textSecondary)
-                }
-                .padding(.trailing, 5)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(ClavisUIStrings.Accessibility.agentStatus)
-                .accessibilityValue(
-                    appState.isSocketActive
-                        ? ClavisUIStrings.Accessibility.statusActive
-                        : ClavisUIStrings.Accessibility.statusOffline
-                )
-
-                AdaptiveGlassEffectContainer(spacing: 8) {
-                    CircularGlassIconButton(
-                        icon: "clock.arrow.circlepath",
-                        size: 34,
-                        iconSize: 15,
-                        isActive: appState.activeMainPane == .history,
-                        helpText: "History (⇧⌘H)",
-                        accessibilityLabel: "History"
-                    ) {
-                        toggleHistoryPane()
-                    }
-
-                    CircularGlassIconButton(
-                        icon: "gearshape",
-                        size: 34,
-                        iconSize: 15,
-                        isActive: appState.activeSheet == .settings,
-                        helpText: "Settings (⌘,)",
-                        accessibilityLabel: ClavisUIStrings.Accessibility.settings
-                    ) {
-                        appState.activeSheet = .settings
-                    }
-                }
-            }
-        }
-        // 20pt matches the grouped Form card inset below the header.
-        .padding(.leading, 20)
-        .padding(.trailing, 20)
-        .frame(height: Self.toolbarHeight)
-        .windowDragHandle()
     }
 
     private var emptyVaultFirstLaunchView: some View {
@@ -687,35 +552,30 @@ struct KeySidebarRowView: View {
     }
 
     var body: some View {
-        HStack(spacing: 11) {
-            // Circular lock status indicator (28x30)
-            ZStack {
-                Circle()
-                    .fill(DesignTokens.accentBlue.opacity(0.09))
-                Image(systemName: isUnlocked ? "lock.open" : "lock")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isUnlocked ? DesignTokens.accentGreen : DesignTokens.accentOrange)
-            }
-            .frame(width: 28, height: 30)
-            .help(isUnlocked ? "Unlocked" : "Locked")
-
-            // Key label & purpose + lock status
-            VStack(alignment: .leading, spacing: 3) {
+        let presentation = LibraryKeyPresentation(purpose: key.purpose)
+        HStack(spacing: 10) {
+            Image(systemName: presentation.symbol)
+                .font(.system(size: 17))
+                .foregroundStyle(DesignTokens.accentBlue)
+                .frame(width: 22)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 5) {
                 Text(key.label)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.primary)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
-                Text(subtitleText)
-                    .font(.system(size: 10))
-                    .foregroundColor(DesignTokens.textSecondary)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    LibraryMetadataBadge(title: presentation.typeTitle)
+                    Spacer(minLength: 4)
+                    ForEach(presentation.capabilities, id: \.self) {
+                        LibraryMetadataBadge(title: $0)
+                    }
+                }
             }
-
-            Spacer(minLength: 0)
         }
         .padding(.horizontal, 9)
-        .padding(.vertical, 12)
-        .frame(minHeight: 63)
+        .padding(.vertical, 9)
+        .frame(minHeight: 56)
         .background(FirstMouseView())
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -725,19 +585,10 @@ struct KeySidebarRowView: View {
                         : (isHovered ? Color.primary.opacity(0.05) : Color.clear)
                 )
         )
-        .overlay(alignment: .bottom) {
-            if showDivider {
-                Rectangle()
-                    .fill(DesignTokens.cardBorder)
-                    .frame(height: 1)
-                    .padding(.leading, 49)
-                    .padding(.trailing, 8)
-            }
-        }
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(key.label)
-        .accessibilityValue(subtitleText)
+        .accessibilityValue(LibraryKeyPresentation(purpose: key.purpose).accessibilitySummary)
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : [.isButton])
         .accessibilityAction {
             onSelect()
