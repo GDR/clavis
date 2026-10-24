@@ -23,10 +23,13 @@ public extension UserAuthenticating {
 
 public enum UserAuthenticationError: LocalizedError {
     case timedOut
+    case testAuthenticationNotInjected
     case rejected(Error?)
 
     public var errorDescription: String? {
         switch self {
+        case .testAuthenticationNotInjected:
+            return "Tests must inject an authenticator; system authentication is unavailable in tests."
         case .timedOut:
             return ClavisUIStrings.Auth.errorTimedOut
         case .rejected(let error):
@@ -40,6 +43,11 @@ public final class LocalUserAuthenticator: UserAuthenticating {
 
     @discardableResult
     public func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) throws -> LAContext {
+        #if DEBUG
+        guard !ClavisEnvironment.isTesting else {
+            throw UserAuthenticationError.testAuthenticationNotInjected
+        }
+        #endif
         ClavisLogger.promptDebug("clavis-code", "LocalUserAuthenticator: prompting system authentication (policy: \(policy), reason: \"\(reason)\")")
         let context = LAContext()
         context.localizedReason = reason
@@ -79,6 +87,11 @@ public final class LocalUserAuthenticator: UserAuthenticating {
 
     @discardableResult
     public func authenticate(reason: String, policy: LAPolicy = .deviceOwnerAuthentication) async throws -> LAContext {
+        #if DEBUG
+        guard !ClavisEnvironment.isTesting else {
+            throw UserAuthenticationError.testAuthenticationNotInjected
+        }
+        #endif
         ClavisLogger.promptDebug("clavis-code", "LocalUserAuthenticator (async): prompting system authentication (policy: \(policy), reason: \"\(reason)\")")
         let context = LAContext()
         context.localizedReason = reason

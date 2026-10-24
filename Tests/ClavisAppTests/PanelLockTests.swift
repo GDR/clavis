@@ -290,10 +290,15 @@ final class PanelLockTests {
         await controller.unlockIfNeededOnWindowFocus(isWindowFocusEvent: true)
         #expect(fakeAuth.authCount == 1)
 
-        // Focusing the locked window again after cooldown prompts Touch ID and unlocks when approved
+        // Elapsed time does not turn restored focus into consent to retry.
         currentTime += 2.0
         fakeAuth.shouldFail = false
         await controller.unlockIfNeededOnWindowFocus(isWindowFocusEvent: true)
+        #expect(fakeAuth.authCount == 1)
+        #expect(controller.isEffectivelyLocked)
+
+        // Explicitly opening Clavis again is a deliberate retry.
+        await controller.unlockIfNeededOnWindowFocus(isUserInitiatedOpen: true)
         #expect(fakeAuth.authCount == 2)
         #expect(!controller.isEffectivelyLocked)
     }
