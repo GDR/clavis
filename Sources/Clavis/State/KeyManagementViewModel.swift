@@ -37,14 +37,16 @@ public class KeyManagementViewModel: ObservableObject {
         algorithm: String = "ECDSA P-256",
         storageType: KeyStorageType = .secureEnclave,
         biometricPolicy: BiometricPolicy? = nil,
-        keyPurpose: KeyPurpose = .general
+        keyPurpose: KeyPurpose = .general,
+        accessProfile: KeyAccessProfile? = nil
     ) throws -> SSHKeyInfo {
         let info = try keyManager.generateKey(
             label: label,
             algorithm: algorithm,
             storageType: storageType,
             biometricPolicy: biometricPolicy,
-            keyPurpose: keyPurpose
+            keyPurpose: keyPurpose,
+            accessProfile: accessProfile
         )
         refresh()
         return info
@@ -68,6 +70,11 @@ public class KeyManagementViewModel: ObservableObject {
 
     public func changeKind(label: String, to newPurpose: KeyPurpose) throws {
         try changeKeyKind(label: label, to: newPurpose)
+    }
+
+    public func changeAccessProfile(label: String, type: KeyType? = nil, capabilities: KeyCapabilities? = nil) throws {
+        defer { refresh() }
+        try keyManager.changeAccessProfile(label: label, type: type, capabilities: capabilities)
     }
 
     public func lockKey(label: String) throws {

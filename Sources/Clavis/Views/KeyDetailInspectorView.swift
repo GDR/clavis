@@ -167,8 +167,6 @@ public struct KeyDetailInspectorView: View {
     @State private var isRenaming: Bool = false
     @State private var draftKeyName: String = ""
     @State private var showingDeleteAlert: Bool = false
-    @State private var showingPurposeSheet: Bool = false
-    @State private var showingApprovalSheet: Bool = false
     @State private var changePurposeError: String? = nil
     @State private var showingChangePurposeError: Bool = false
     @State private var lastActivityDate: Date? = nil
@@ -226,24 +224,6 @@ public struct KeyDetailInspectorView: View {
             : "Touch ID, Apple Watch, or your Mac password."
     }
 
-    private var currentAgentPolicy: AgentKeyPolicy? {
-        appState.getAgentPolicy(fingerprint: key.fingerprint)
-    }
-
-    private var currentGracePeriod: KeyGracePeriod {
-        appState.gracePeriod(for: key)
-    }
-
-    private var gracePeriodBinding: Binding<KeyGracePeriod> {
-        Binding(
-            get: { appState.gracePeriod(for: key) },
-            set: { newValue in
-                appState.setGracePeriod(newValue, for: key)
-                onShowToast?("Key grace period updated")
-            }
-        )
-    }
-
     private var activeGitGraceSession: (remainingSeconds: Int, remainingOperations: Int, formattedTime: String)? {
         if let grace = appState.activeGitGraces.first(where: { $0.keyLabel == key.label }) {
             return (grace.remainingSeconds, grace.remainingOperations, grace.formattedRemainingTime)
@@ -258,10 +238,6 @@ public struct KeyDetailInspectorView: View {
             return (grant.remainingSeconds, grant.remainingOperations, timeStr)
         }
         return nil
-    }
-
-    private var activeAgentSessionForKey: AgentSessionSummary? {
-        appState.agentSessions.first(where: { $0.keyFingerprint == key.fingerprint })
     }
 
     private var formattedDate: String {
@@ -302,8 +278,11 @@ public struct KeyDetailInspectorView: View {
             }
 
             publicIdentitySection
-            signingSection
+            activeSessionsSection
+            operationSection(.ssh)
+            operationSection(.signature)
             activitySection
+            deleteSection
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
@@ -314,30 +293,6 @@ public struct KeyDetailInspectorView: View {
         .onChange(of: key.id) { _ in
             isRenaming = false
             lastActivityDate = appState.lastActivityDate(for: key)
-        }
-        .sheet(isPresented: $showingPurposeSheet) {
-            KeyPurposeEditorSheet(
-                key: key,
-                appState: appState,
-                onSaved: { message in
-                    onShowToast?(message)
-                }
-            )
-            .dismissOnOutsideClick {
-                showingPurposeSheet = false
-            }
-        }
-        .sheet(isPresented: $showingApprovalSheet) {
-            KeyApprovalEditorSheet(
-                key: key,
-                appState: appState,
-                onSaved: { message in
-                    onShowToast?(message)
-                }
-            )
-            .dismissOnOutsideClick {
-                showingApprovalSheet = false
-            }
         }
         .alert(Self.deleteConfirmationTitle(label: key.label), isPresented: $showingDeleteAlert) {
             Button(ClavisUIStrings.Common.delete, role: .destructive) {
@@ -362,7 +317,7 @@ public struct KeyDetailInspectorView: View {
     private var detailHeading: some View {
         HStack(alignment: .center, spacing: 12) {
             ZStack {
-                Image(systemName: "key.fill")
+                Image(systemName: key.effectiveAccessProfile.type == .bot ? "desktopcomputer" : "person")
                     .font(.system(size: 20, weight: .medium))
                     .foregroundColor(DesignTokens.accentBlue)
             }
@@ -407,16 +362,7 @@ public struct KeyDetailInspectorView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            CircularGlassIconButton(
-                icon: "trash",
-                size: 34,
-                iconSize: 15,
-                isDanger: true,
-                helpText: "Delete key",
-                accessibilityLabel: "Delete \(key.label)"
-            ) {
-                showingDeleteAlert = true
-            }
+
         }
         .frame(minHeight: 43)
     }
@@ -451,7 +397,14 @@ public struct KeyDetailInspectorView: View {
             ? key.fingerprint
             : "SHA256:\(key.fingerprint)"
 
-        return Section("Public identity") {
+        return Section("Identity") {
+            Picker("Type", selection: Binding(
+                get: { key.effectiveAccessProfile.type },
+                set: { type in changeProfile(type: type) }
+            )) {
+                ForEach(KeyType.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .help("Changing key type requires fresh authentication and revokes approvals.")
             identityCopyRow(
                 label: "Public key",
                 fullValue: key.publicKeyOpenSSH,
@@ -499,107 +452,75 @@ public struct KeyDetailInspectorView: View {
         }
     }
 
-    // MARK: - Section 2: Signing
+    private func changeProfile(type: KeyType? = nil, capabilities: KeyCapabilities? = nil) {
+        do {
+            try appState.changeAccessProfile(label: key.label, type: type, capabilities: capabilities)
+        } catch {
+            changePurposeError = error.localizedDescription
+            showingChangePurposeError = true
+        }
+    }
 
-    private var signingSection: some View {
-        let approvalText = Self.approvalSummaryText(for: key, agentPolicy: currentAgentPolicy)
-        let approvalHelp = Self.approvalDescriptionText(for: key, agentPolicy: currentAgentPolicy)
-
-        return Section("Signing") {
-            LabeledContent("Purpose") {
-                Button(action: { showingPurposeSheet = true }) {
-                    HStack(spacing: 6) {
-                        Text(key.purpose.inspectorLabel)
-                            .font(.system(size: 13))
-                            .foregroundColor(.primary)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(DesignTokens.textSecondary)
-                    }
+    private func operationSection(_ operation: KeyOperation) -> some View {
+        let profile = key.effectiveAccessProfile
+        return Section(operation == .ssh ? "SSH" : "Signature") {
+            Toggle("Enabled", isOn: Binding(
+                get: { profile.capabilities.permits(operation) },
+                set: { enabled in
+                    changeProfile(capabilities: KeyCapabilities(
+                        ssh: operation == .ssh ? enabled : profile.capabilities.ssh,
+                        signature: operation == .signature ? enabled : profile.capabilities.signature))
                 }
-                .buttonStyle(.plain)
-            }
-
-            LabeledContent("Approval") {
-                Button(action: { showingApprovalSheet = true }) {
-                    HStack(spacing: 6) {
-                        Text(approvalText)
-                            .font(.system(size: 13))
-                            .foregroundColor(.primary)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(DesignTokens.textSecondary)
-                    }
-                }
-                .buttonStyle(.plain)
-                .help("Edit signing approval: \(approvalHelp)")
-            }
-
-            Picker("Grace period", selection: gracePeriodBinding) {
-                ForEach(KeyGracePeriod.allCases) { option in
-                    Text(option.title).tag(option)
-                }
-            }
-            .help("How long this key stays available after approval. Per session lasts until Clavis quits; locking the key ends the window immediately.")
-
-            if currentGracePeriod != .always || activeGitGraceSession != nil || activeAgentSessionForKey != nil {
-                activeWindowRow
-            }
-
-            if let gitGrace = activeGitGraceSession, key.purpose != .agent {
-                LabeledContent("Git signing window") {
-                    HStack(spacing: 8) {
-                        Text("\(gitGrace.formattedTime) · \(gitGrace.remainingOperations) left")
-                            .font(.system(size: 12).monospacedDigit())
-                            .foregroundColor(DesignTokens.accentGreen)
-                        Button("Revoke") {
-                            appState.revokeGitGrace(keyLabel: key.label)
-                            onShowToast?("Signing window revoked")
-                        }
-                        .liquidGlassButton()
-                        .controlSize(.small)
-                    }
+            ))
+            .toggleStyle(.switch)
+            if profile.capabilities.permits(operation) {
+                LabeledContent("Approval") {
+                    Text(Self.approvalSummaryText(for: key)).foregroundStyle(.secondary)
                 }
             }
         }
     }
 
-    private var activeWindowRow: some View {
-        let isUnlocked = appState.isKeyUnlocked(key)
-        let statusText: String = {
-            if let gitGrace = activeGitGraceSession {
-                return "\(gitGrace.formattedTime) remaining"
-            }
-            if let session = activeAgentSessionForKey {
-                let remaining = max(0, Int(session.expiresAt.timeIntervalSinceNow))
-                let mins = remaining / 60
-                let secs = remaining % 60
-                return String(format: "%d:%02d remaining", mins, secs)
-            }
-            if currentGracePeriod == .session && isUnlocked {
-                return "This session"
-            }
-            return "Approval required"
-        }()
-
-        return LabeledContent("Active window") {
-            HStack(spacing: 8) {
-                Text(statusText)
-                    .font(.system(size: 12).monospacedDigit())
-                    .foregroundColor(isUnlocked ? DesignTokens.accentGreen : DesignTokens.textSecondary)
-                    .lineLimit(1)
-
-                if isUnlocked {
-                    Button("Revoke") {
-                        appState.revokeGitGrace(keyLabel: key.label)
-                        if let session = activeAgentSessionForKey {
-                            appState.endAgentSession(id: session.id)
-                        }
-                        onShowToast?("Grace window revoked · approval required")
+    private var activeSessionsSection: some View {
+        let sessions = appState.agentSessions.filter { $0.keyFingerprint == key.fingerprint }
+        return Section("Active Sessions") {
+            VStack(spacing: 12) {
+                if let grace = activeGitGraceSession {
+                    HStack {
+                        Label("Git signing", systemImage: "signature")
+                        Spacer()
+                        Text(grace.formattedTime).monospacedDigit().foregroundStyle(.secondary)
+                        Button("Revoke") { appState.revokeGitGrace(keyLabel: key.label) }
                     }
-                    .liquidGlassButton()
-                    .controlSize(.small)
                 }
+                ForEach(sessions, id: \.id) { session in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(session.toolName).lineLimit(1)
+                            Text("SSH · expires \(session.expiresAt.formatted(date: .omitted, time: .shortened))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Revoke") { appState.endAgentSession(id: session.id) }
+                    }
+                }
+                if sessions.isEmpty && activeGitGraceSession == nil {
+                    Text("No active approvals. Clavis will ask on the next permitted request.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .frame(minHeight: 48)
+        }
+    }
+
+    private var deleteSection: some View {
+        Section("Delete Key") {
+            HStack {
+                Text("Delete this key and revoke its approvals.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Spacer()
+                Button("Delete Key…", role: .destructive) { showingDeleteAlert = true }
             }
         }
     }
@@ -647,327 +568,6 @@ public struct KeyDetailInspectorView: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(key.publicKeyOpenSSH, forType: .string)
         onShowToast?("Copied to clipboard")
-    }
-}
-
-// MARK: - Key Purpose Sheet
-
-private struct KeyPurposeEditorSheet: View {
-    let key: SSHKeyInfo
-    @ObservedObject var appState: AppState
-    var onSaved: (String) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var selectedPurpose: KeyPurpose
-    @State private var errorMessage: String?
-
-    init(key: SSHKeyInfo, appState: AppState, onSaved: @escaping (String) -> Void) {
-        self.key = key
-        self.appState = appState
-        self.onSaved = onSaved
-        self._selectedPurpose = State(initialValue: key.purpose)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Key purpose")
-                    .font(.system(size: 17, weight: .semibold))
-                Spacer()
-                CircularGlassIconButton(
-                    icon: "xmark",
-                    size: 26,
-                    iconSize: 11,
-                    helpText: ClavisUIStrings.Common.cancel,
-                    accessibilityLabel: ClavisUIStrings.Common.cancel
-                ) {
-                    dismiss()
-                }
-            }
-            .padding(.horizontal, 23)
-            .padding(.top, 20)
-            .padding(.bottom, 16)
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Choose where you want to use \(key.label).")
-                    .font(.system(size: 12))
-                    .foregroundColor(DesignTokens.textSecondary)
-
-                if key.purpose == .gitSigningOnly {
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: "lock.shield")
-                            .foregroundColor(DesignTokens.accentBlue)
-                        Text("Git-signing-only keys are permanently scoped to local Git commit and tag signing and cannot be converted into SSH or Agent keys.")
-                            .font(.system(size: 12))
-                            .foregroundColor(DesignTokens.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(12)
-                    .glassCard(cornerRadius: 9)
-                } else {
-                    Form {
-                        Section {
-                            Picker("Purpose", selection: $selectedPurpose) {
-                                Text(KeyPurpose.general.inspectorLabel).tag(KeyPurpose.general)
-                                Text(KeyPurpose.agent.inspectorLabel).tag(KeyPurpose.agent)
-                            }
-                        }
-                    }
-                    .groupedEmbeddedForm(zeroMargins: true)
-
-                    HStack(alignment: .center, spacing: 10) {
-                        Image(systemName: "checkmark.shield")
-                            .foregroundColor(DesignTokens.accentBlue)
-                        Text("Changing purpose resets approval to “Always ask”. You can edit the policy afterward.")
-                            .font(.system(size: 12))
-                            .foregroundColor(DesignTokens.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(12)
-                    .glassCard(cornerRadius: 9)
-                }
-
-                if let errorMessage {
-                    Text(errorMessage)
-                        .font(.system(size: 11))
-                        .foregroundColor(.red)
-                }
-            }
-            .padding(.horizontal, 23)
-            .padding(.vertical, 20)
-
-            Divider()
-
-            HStack {
-                Spacer()
-                Button(ClavisUIStrings.Common.cancel) {
-                    dismiss()
-                }
-                .liquidGlassButton(prominent: false)
-                .keyboardShortcut(.cancelAction)
-
-                if key.purpose != .gitSigningOnly {
-                    Button("Save purpose") {
-                        savePurpose()
-                    }
-                    .liquidGlassButton(prominent: true)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(selectedPurpose == key.purpose)
-                }
-            }
-            .padding(.horizontal, 23)
-            .padding(.vertical, 14)
-        }
-        .frame(width: 440)
-    }
-
-    private func savePurpose() {
-        do {
-            try appState.changeKeyKind(label: key.label, to: selectedPurpose)
-            dismiss()
-            onSaved("Key purpose updated")
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-}
-
-// MARK: - Signing Approval Sheet
-
-private struct KeyApprovalEditorSheet: View {
-    let key: SSHKeyInfo
-    @ObservedObject var appState: AppState
-    var onSaved: (String) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var selectedMode: AgentKeyPolicy.Mode
-    @State private var maxRatePerMinute: Int
-    @State private var allowedHostsText: String
-    @State private var errorMessage: String?
-
-    init(key: SSHKeyInfo, appState: AppState, onSaved: @escaping (String) -> Void) {
-        self.key = key
-        self.appState = appState
-        self.onSaved = onSaved
-        let policy = appState.getAgentPolicy(fingerprint: key.fingerprint) ?? AgentKeyPolicy()
-        self._selectedMode = State(initialValue: policy.mode)
-        self._maxRatePerMinute = State(initialValue: policy.refillPerMinute)
-        self._allowedHostsText = State(
-            initialValue: policy.allowedHosts.isEmpty
-                ? "github.com"
-                : policy.allowedHosts.map(\.name).joined(separator: ", ")
-        )
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Signing approval")
-                    .font(.system(size: 17, weight: .semibold))
-                Spacer()
-                CircularGlassIconButton(
-                    icon: "xmark",
-                    size: 26,
-                    iconSize: 11,
-                    helpText: ClavisUIStrings.Common.cancel,
-                    accessibilityLabel: ClavisUIStrings.Common.cancel
-                ) {
-                    dismiss()
-                }
-            }
-            .padding(.horizontal, 23)
-            .padding(.top, 20)
-            .padding(.bottom, 16)
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Choose how \(key.label) authorizes signatures.")
-                    .font(.system(size: 12))
-                    .foregroundColor(DesignTokens.textSecondary)
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Authentication")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text(key.biometricPolicy == .biometryCurrentSet ? "Strict biometrics (Touch ID only)" : "User presence (Touch ID, Apple Watch, or Mac password)")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.primary)
-                    Text("Hardware access control is bound inside the Secure Enclave when the key is created.")
-                        .font(.system(size: 11))
-                        .foregroundColor(DesignTokens.textSecondary)
-                }
-
-                if key.purpose == .agent {
-                    VStack(alignment: .leading, spacing: 8) {
-                        approvalRadioRow(
-                            mode: .ask,
-                            title: "Always ask for approval",
-                            subtitle: "Use the hardware authentication method when approval is required."
-                        )
-                        approvalRadioRow(
-                            mode: .notify,
-                            title: "Notify only",
-                            subtitle: "Show a notification for each signature. No approval required."
-                        )
-                        approvalRadioRow(
-                            mode: .none,
-                            title: "Autonomous",
-                            subtitle: "Sign silently within your host and rate limits."
-                        )
-                    }
-
-                    if selectedMode != .ask {
-                        Text("Signatures can be approved without your presence. Only allow hosts you trust.")
-                            .font(.system(size: 12))
-                            .foregroundColor(DesignTokens.accentOrange)
-                            .padding(10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(DesignTokens.accentOrange.opacity(0.10))
-                            .cornerRadius(7)
-                    }
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Maximum signatures per minute")
-                            .font(.system(size: 12, weight: .semibold))
-                        TextField("20", value: $maxRatePerMinute, format: .number)
-                            .textFieldStyle(.roundedBorder)
-                    }
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Allowed hosts")
-                            .font(.system(size: 12, weight: .semibold))
-                        TextField("github.com, *.internal", text: $allowedHostsText)
-                            .textFieldStyle(.roundedBorder)
-                        Text("Comma-separated host patterns, e.g. github.com, *.internal")
-                            .font(.system(size: 11))
-                            .foregroundColor(DesignTokens.textSecondary)
-                    }
-                } else {
-                    Text("Automated signing options are available for keys with the Agent purpose.")
-                        .font(.system(size: 11))
-                        .foregroundColor(DesignTokens.textSecondary)
-                }
-
-                if let errorMessage {
-                    Text(errorMessage)
-                        .font(.system(size: 11))
-                        .foregroundColor(.red)
-                }
-            }
-            .padding(.horizontal, 23)
-            .padding(.vertical, 18)
-
-            Divider()
-
-            HStack {
-                Spacer()
-                Button(ClavisUIStrings.Common.cancel) {
-                    dismiss()
-                }
-                .liquidGlassButton(prominent: false)
-                .keyboardShortcut(.cancelAction)
-
-                if key.purpose == .agent {
-                    Button("Save changes") {
-                        saveApprovalPolicy()
-                    }
-                    .liquidGlassButton(prominent: true)
-                    .keyboardShortcut(.defaultAction)
-                } else {
-                    Button("Done") {
-                        dismiss()
-                    }
-                    .liquidGlassButton(prominent: true)
-                    .keyboardShortcut(.defaultAction)
-                }
-            }
-            .padding(.horizontal, 23)
-            .padding(.vertical, 14)
-        }
-        .frame(width: 460)
-    }
-
-    private func approvalRadioRow(
-        mode: AgentKeyPolicy.Mode,
-        title: String,
-        subtitle: String
-    ) -> some View {
-        let isSelected = (selectedMode == mode)
-        return Button(action: { selectedMode = mode }) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
-                    .foregroundColor(isSelected ? DesignTokens.accentBlue : DesignTokens.textSecondary)
-                    .font(.system(size: 13))
-                    .padding(.top, 2)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.primary)
-                    Text(subtitle)
-                        .font(.system(size: 11))
-                        .foregroundColor(DesignTokens.textSecondary)
-                }
-                Spacer()
-            }
-            .padding(10)
-            .liquidGlassControl(cornerRadius: 9, isSelected: isSelected)
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func saveApprovalPolicy() {
-        var policy = appState.getAgentPolicy(fingerprint: key.fingerprint) ?? AgentKeyPolicy()
-        policy.mode = selectedMode
-        policy.refillPerMinute = max(1, min(600, maxRatePerMinute))
-        do {
-            try appState.setAgentPolicy(policy, fingerprint: key.fingerprint)
-            dismiss()
-            onSaved("Signing approval updated")
-        } catch {
-            errorMessage = error.localizedDescription
-        }
     }
 }
 
