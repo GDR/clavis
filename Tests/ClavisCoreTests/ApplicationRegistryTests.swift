@@ -50,6 +50,16 @@ import Testing
         #expect(revocations == 3)
     }
 
+    @Test func classificationUpdatesPreserveApplicationOrder() throws {
+        var first = try application()
+        let second = RegisteredApplication(identity: try .init(kind: .designatedRequirement, value: "second"), name: "Second", path: "/Second.app", classification: .bot)
+        let store = MemoryRegistry(.init(applications: [first, second]))
+        let registry = AuthenticatedApplicationRegistry(store: store, authenticator: AllowingAuthenticator(), invalidateApprovals: {})
+        first.classification = .personal
+        try registry.set(first)
+        #expect(try store.load().applications.map(\.id) == [first.id, second.id])
+    }
+
     @Test func cancelledOrFailedAuthPreservesPolicyAndApprovals() throws {
         let original = ApplicationRegistrySnapshot(applications: [try application()])
         let store = MemoryRegistry(original)
