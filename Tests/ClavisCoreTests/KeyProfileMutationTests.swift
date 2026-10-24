@@ -140,4 +140,52 @@ import Testing
         }
     }
 
+    @Test(arguments: [false, true])
+    func strictKeyPolicyChangesUseSystemFallbackWithoutRelaxingSigningPolicy(legacy: Bool) async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let store = InMemoryPrivateKeyStore()
+            let auth = CountingAuthenticator()
+            let manager = fixture.makeKeyManager(authenticator: auth, privateKeyStore: store)
+            let key = try manager.generateKey(label: "strict-policy", biometricPolicy: .biometryCurrentSet)
+            if legacy { try manager.changeKind(label: key.label, to: .agent) }
+            else { try manager.changeAccessProfile(label: key.label, type: .bot) }
+            #expect(auth.lastPolicy == .deviceOwnerAuthentication)
+            #expect(auth.authenticationCount == 1)
+            let changed = try #require(try manager.fetchKeyInfo(label: key.label))
+            #expect(changed.effectiveBiometricPolicy == .biometryCurrentSet)
+            #expect(changed.effectiveAccessProfile.type == .bot)
+            let raw = try #require(try store.load(label: key.label, context: LAContext(), prompt: ""))
+            let record = try StoredPrivateKeyRecord.decode(from: raw)
+            #expect(record.biometricPolicy == .biometryCurrentSet)
+            #expect(record.accessProfile == changed.effectiveAccessProfile)
+        }
+    }
+
+    @Test func explicitSignatureCapabilityOnLegacyBotDoesNotRequireOrReuseSSHSession() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let auth = CountingAuthenticator()
+            let grants = GitSigningGraceManager(observeSystemEvents: false)
+            let manager = fixture.makeKeyManager(authenticator: auth, gitSigningGraceManager: grants)
+            let original = try manager.generateKey(label: "legacy-bot-signature")
+            try manager.changeKind(label: original.label, to: .agent)
+            let key = try #require(try manager.fetchKeyInfo(label: original.label))
+            #expect(key.effectiveAccessProfile.capabilities.signature)
+            let evaluator = SigningPolicyEvaluator(applicationAccess: TestApplicationAccess(), keyManager: manager,
+                gitSigningGraceManager: grants, auditRecorder: InMemoryAuditRecorder(), peerProcessValidator: { _, _, _ in true })
+            let payload = SSHSIGPayload(namespace: "git", hashAlgorithm: "sha256", messageHash: Data(repeating: 1, count: 32)).serialize()
+            let result = try evaluator.evaluateSigningRequest(keyBlob: key.publicKeyBlob, dataToSign: payload, flags: 0,
+                role: .agent, clientPid: getpid(), clientExecutablePath: "/peer", clientStartTime: 7)
+            guard case .approved = result else { Issue.record("Signature must use its own approval instead of a legacy SSH session"); return }
+            #expect(auth.authenticationCount == 2)
+            let grant = try manager.authorizeGitSigningGrant(key: key, prompt: "Approve Signature", clientIdentity: "caller")
+            #expect(try !grant.sign(payload).isEmpty)
+            try manager.changeAccessProfile(label: key.label, capabilities: .init(ssh: true, signature: false))
+            #expect(grants.allActiveGrants().isEmpty)
+        }
+    }
+
 }
