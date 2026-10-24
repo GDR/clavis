@@ -552,7 +552,7 @@ struct KeySidebarRowView: View {
     }
 
     var body: some View {
-        let presentation = LibraryKeyPresentation(purpose: key.purpose)
+        let presentation = LibraryKeyPresentation(profile: key.effectiveAccessProfile)
         HStack(spacing: 10) {
             Image(systemName: presentation.symbol)
                 .font(.system(size: 17))
@@ -588,7 +588,7 @@ struct KeySidebarRowView: View {
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(key.label)
-        .accessibilityValue(LibraryKeyPresentation(purpose: key.purpose).accessibilitySummary)
+        .accessibilityValue(LibraryKeyPresentation(profile: key.effectiveAccessProfile).accessibilitySummary)
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : [.isButton])
         .accessibilityAction {
             onSelect()

@@ -8,7 +8,7 @@ import Security
 /// biometric policy, and private key payload. The public index (`PublicKeyStore`, an in-memory
 /// copy of unauthenticated Keychain metadata items) is treated strictly as a display cache.
 public struct StoredPrivateKeyRecord: Codable, Equatable {
-    public static let currentVersion: Int = 2
+    public static let currentVersion: Int = 3
     private static let binaryMagic = Data("CLVPKR02".utf8)
     private static let maximumLabelBytes = 1_024
     private static let maximumKeyBytes = 65_536
@@ -18,6 +18,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
     public let algorithm: KeyAlgorithm
     public let storageType: KeyStorageType
     public let biometricPolicy: BiometricPolicy?
+    public let accessProfile: KeyAccessProfile
     public let keyPurpose: KeyPurpose
     public var keyData: Data
     public let createdAt: Date
@@ -27,7 +28,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, label, algorithm, storageType, biometricPolicy, keyPurpose, keyData, createdAt
+        case version, label, algorithm, storageType, biometricPolicy, keyPurpose, accessProfile, keyData, createdAt
     }
 
     public init(
@@ -37,6 +38,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         storageType: KeyStorageType,
         biometricPolicy: BiometricPolicy? = nil,
         keyPurpose: KeyPurpose,
+        accessProfile: KeyAccessProfile? = nil,
         keyData: Data,
         createdAt: Date = Date()
     ) {
@@ -46,6 +48,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         self.storageType = storageType
         self.biometricPolicy = biometricPolicy
         self.keyPurpose = keyPurpose
+        self.accessProfile = accessProfile ?? KeyAccessProfile(legacyPurpose: keyPurpose)
         self.keyData = keyData
         self.createdAt = createdAt
     }
@@ -58,6 +61,11 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         self.storageType = try container.decode(KeyStorageType.self, forKey: .storageType)
         self.biometricPolicy = try container.decodeIfPresent(BiometricPolicy.self, forKey: .biometricPolicy)
         self.keyPurpose = try container.decodeIfPresent(KeyPurpose.self, forKey: .keyPurpose) ?? .general
+        if version >= 3 {
+            self.accessProfile = try container.decode(KeyAccessProfile.self, forKey: .accessProfile)
+        } else {
+            self.accessProfile = KeyAccessProfile(legacyPurpose: keyPurpose)
+        }
         self.keyData = try container.decode(Data.self, forKey: .keyData)
         self.createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
     }
@@ -70,6 +78,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         try container.encode(storageType, forKey: .storageType)
         try container.encodeIfPresent(biometricPolicy, forKey: .biometricPolicy)
         try container.encode(keyPurpose, forKey: .keyPurpose)
+        try container.encode(accessProfile, forKey: .accessProfile)
         try container.encode(keyData, forKey: .keyData)
         try container.encode(createdAt, forKey: .createdAt)
     }
@@ -85,8 +94,11 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
     }
 
     public func encode() throws -> Data {
-        guard version == Self.currentVersion else {
+        guard version == 2 || version == Self.currentVersion else {
             throw PrivateKeyRecordError.unsupportedVersion(version)
+        }
+        if version == 2 && accessProfile != KeyAccessProfile(legacyPurpose: purpose) {
+            throw KeyAccessError.legacyEncodingWouldLosePolicy
         }
         guard algorithm == .ecdsaP256 else {
             throw PrivateKeyRecordError.corruptedRecord("Unsupported algorithm: only ECDSA P-256 is supported")
@@ -118,6 +130,10 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         case .userPresence: output.append(1)
         case .biometryCurrentSet: output.append(2)
         }
+        if version >= 3 {
+            output.append(accessProfile.type == .personal ? 1 : 2)
+            output.append((accessProfile.capabilities.ssh ? 1 : 0) | (accessProfile.capabilities.signature ? 2 : 0))
+        }
         var timestamp = createdAt.timeIntervalSince1970.bitPattern.bigEndian
         Swift.withUnsafeBytes(of: &timestamp) { output.append(contentsOf: $0) }
         var labelLength = UInt16(labelData.count).bigEndian
@@ -141,14 +157,29 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         guard let version = reader.readUInt8() else {
             throw PrivateKeyRecordError.corruptedRecord("Malformed binary private-key record")
         }
-        guard Int(version) == currentVersion else {
+        guard version == 2 || Int(version) == currentVersion else {
             throw PrivateKeyRecordError.unsupportedVersion(Int(version))
         }
         guard let algorithmByte = reader.readUInt8(),
               let storageByte = reader.readUInt8(),
               let purposeByte = reader.readUInt8(),
-              let biometricByte = reader.readUInt8(),
-              let timestampBits = reader.readUInt64(),
+              let biometricByte = reader.readUInt8() else {
+            throw PrivateKeyRecordError.corruptedRecord("Malformed binary private-key record")
+        }
+        let profile: KeyAccessProfile?
+        if version >= 3 {
+            guard let typeByte = reader.readUInt8(), (1...2).contains(typeByte),
+                  let bits = reader.readUInt8(), bits & ~3 == 0 else {
+                throw PrivateKeyRecordError.corruptedRecord("Unknown key type or capability identifier")
+            }
+            profile = KeyAccessProfile(
+                type: typeByte == 1 ? .personal : .bot,
+                capabilities: KeyCapabilities(ssh: bits & 1 != 0, signature: bits & 2 != 0)
+            )
+        } else {
+            profile = nil
+        }
+        guard let timestampBits = reader.readUInt64(),
               let labelLength = reader.readUInt16(),
               Int(labelLength) <= maximumLabelBytes,
               let labelData = reader.readData(count: Int(labelLength)),
@@ -193,6 +224,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
             storageType: storage,
             biometricPolicy: biometric,
             keyPurpose: purpose,
+            accessProfile: profile,
             keyData: keyData,
             createdAt: Date(timeIntervalSince1970: TimeInterval(bitPattern: timestampBits))
         )

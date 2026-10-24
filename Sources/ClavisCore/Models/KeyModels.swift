@@ -13,6 +13,11 @@ public struct SSHKeyInfo: Identifiable, Codable, Equatable {
     public let storage: KeyStorageType?
     public let biometricPolicy: BiometricPolicy?
     public let keyPurpose: KeyPurpose?
+    public let accessProfile: KeyAccessProfile?
+
+    public var effectiveAccessProfile: KeyAccessProfile {
+        accessProfile ?? KeyAccessProfile(legacyPurpose: purpose)
+    }
 
     public var purpose: KeyPurpose {
         keyPurpose ?? .general
@@ -59,7 +64,8 @@ public struct SSHKeyInfo: Identifiable, Codable, Equatable {
         algorithmName: String? = nil,
         storage: KeyStorageType? = nil,
         biometricPolicy: BiometricPolicy? = nil,
-        keyPurpose: KeyPurpose? = nil
+        keyPurpose: KeyPurpose? = nil,
+        accessProfile: KeyAccessProfile? = nil
     ) {
         self.label = label
         self.publicKeyOpenSSH = publicKeyOpenSSH
@@ -70,6 +76,7 @@ public struct SSHKeyInfo: Identifiable, Codable, Equatable {
         self.storage = storage
         self.biometricPolicy = biometricPolicy
         self.keyPurpose = keyPurpose
+        self.accessProfile = accessProfile
     }
 }
 
