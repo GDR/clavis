@@ -4,23 +4,14 @@ public enum AgentSocketRole: String, Sendable {
     case personal
     case agent
 
-    public var allowedPurposes: Set<KeyPurpose> {
-        switch self {
-        case .personal:
-            return [.general, .gitSigningOnly, .agent]
-        case .agent:
-            return [.agent]
-        }
+    /// Legacy purpose is retained in records for migration restrictions. Socket
+    /// eligibility is based on the independent profile, never on routing alone.
+    public var allowedPurposes: Set<KeyPurpose> { Set(KeyPurpose.allCases) }
+
+    public func permits(_ key: SSHKeyInfo) -> Bool {
+        self == .personal || key.effectiveAccessProfile.type == .bot
     }
 
-    public var listedPurposes: Set<KeyPurpose> {
-        switch self {
-        case .personal:
-            return [.general, .agent]
-        case .agent:
-            return [.agent]
-        }
-    }
 }
 
 public enum KeyKindFilter: String, CaseIterable, Identifiable, Sendable {
@@ -35,9 +26,9 @@ public enum KeyKindFilter: String, CaseIterable, Identifiable, Sendable {
         case .all:
             return keys
         case .personal:
-            return keys.filter { $0.purpose.isPersonal }
+            return keys.filter { $0.effectiveAccessProfile.type == .personal }
         case .agent:
-            return keys.filter { $0.purpose == .agent }
+            return keys.filter { $0.effectiveAccessProfile.type == .bot }
         }
     }
 }

@@ -366,9 +366,9 @@ public class SSHAgentServer {
             clientDesc = "local process"
         }
         ClavisLogger.log("SSH_AGENT_IDENTITIES", "Listing active SSH identities for \(clientDesc)...")
-        // Filter keys according to socket role (personal lists general; agent lists agent)
+        // Both endpoints apply verified caller policy; compatibility is additionally Bot-only.
         let keys = ((try? keyManager.listKeys()) ?? []).filter { key in
-            guard key.effectiveAccessProfile.capabilities.ssh,
+            guard role.permits(key), key.effectiveAccessProfile.capabilities.ssh,
                   let pid = clientPid,
                   let path = clientExecutablePath ?? ProcessInspector.getProcessPath(pid: pid),
                   let start = ProcessInspector.processStartTime(pid: pid),
