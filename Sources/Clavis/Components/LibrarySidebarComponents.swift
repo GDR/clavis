@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import ClavisCore
 
-/// Presentation derived from the existing purpose until capability metadata migrates.
+/// Presentation mirrors key metadata; private records remain authoritative.
 /// This does not grant access or alter the daemon's authorization decisions.
 struct LibraryKeyPresentation: Equatable {
     let typeTitle: String
@@ -10,9 +10,13 @@ struct LibraryKeyPresentation: Equatable {
     let capabilities: [String]
 
     init(purpose: KeyPurpose) {
-        typeTitle = purpose == .agent ? "Bot" : "Personal"
-        symbol = purpose == .agent ? "desktopcomputer" : "person"
-        capabilities = purpose == .gitSigningOnly ? ["SSHSIG"] : ["SSH", "SSHSIG"]
+        self.init(profile: KeyAccessProfile(legacyPurpose: purpose))
+    }
+
+    init(profile: KeyAccessProfile) {
+        typeTitle = profile.type.title
+        symbol = profile.type == .bot ? "desktopcomputer" : "person"
+        capabilities = profile.capabilities.titles
     }
 
     var accessibilitySummary: String {
