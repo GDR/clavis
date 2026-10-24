@@ -107,14 +107,15 @@ struct LibrarySearchField: NSViewRepresentable {
 
 struct LibraryAgentStatus: View {
     let active: Bool
+    var requestState: RequestPauseModel.State = .accepting
 
     var body: some View {
         HStack(spacing: 7) {
             Circle()
-                .fill(active ? Color.green : Color.secondary)
+                .fill(active && requestState == .accepting ? Color.green : Color.secondary)
                 .frame(width: 6, height: 6)
                 .accessibilityHidden(true)
-            Text(active ? "Agent active" : "Agent unavailable")
+            Text(!active ? "Agent unavailable" : requestState == .paused ? "Requests paused" : requestState == .unknown ? "Agent status unavailable" : "Agent active")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
         }
@@ -131,6 +132,8 @@ struct LibraryMoreMenu: View {
     let settings: () -> Void
     let lock: () -> Void
     let revoke: () -> Void
+    var paused = false
+    var busy = false
 
     var body: some View {
         Menu {
@@ -145,8 +148,9 @@ struct LibraryMoreMenu: View {
                 Label("Lock Clavis", systemImage: "lock")
             }
             Button(role: .destructive, action: revoke) {
-                Label("Revoke All Sessions…", systemImage: "stop.circle")
+                Label(paused ? "Resume Requests…" : "Activate Kill Switch…", systemImage: paused ? "play.circle" : "stop.circle")
             }
+            .disabled(busy)
             Divider()
             Link(destination: URL(string: "https://github.com/GDR/clavis#readme")!) {
                 Label("Help & Documentation", systemImage: "questionmark.circle")

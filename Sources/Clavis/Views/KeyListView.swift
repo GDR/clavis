@@ -314,7 +314,9 @@ struct KeyListView: View {
                     history: { appState.openHistoryPane(forKeyFingerprint: nil) },
                     settings: { appState.activeSheet = .settings },
                     lock: { PanelLockController.shared.lock(reason: .lockNow) },
-                    revoke: { confirmingRevokeAll = true }
+                    revoke: { confirmingRevokeAll = true },
+                    paused: appState.requestPolicy.isPaused,
+                    busy: appState.requestPolicy.isBusy
                 )
             }
             .padding(.horizontal, 12)
@@ -328,12 +330,18 @@ struct KeyListView: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
         }
-        .confirmationDialog("Revoke all active sessions?", isPresented: $confirmingRevokeAll) {
-            Button("Revoke All Sessions", role: .destructive) {
-                appState.endGitSigningSession()
+        .task { await appState.requestPolicy.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await appState.requestPolicy.refresh() }
+        }
+        .confirmationDialog(appState.requestPolicy.isPaused ? "Resume requests?" : "Activate kill switch?", isPresented: $confirmingRevokeAll) {
+            Button(appState.requestPolicy.isPaused ? "Resume Requests" : "Activate Kill Switch", role: .destructive) {
+                Task { await appState.setRequestsPaused(!appState.requestPolicy.isPaused) }
             }
         } message: {
-            Text("New requests will require approval. Existing SSH connections may remain open.")
+            Text(appState.requestPolicy.isPaused
+                ? "Resuming requires authentication. Revoked approvals will not be restored."
+                : "Revoke all approvals and pause new requests. Existing SSH connections may remain open.")
         }
     }
 
@@ -395,7 +403,7 @@ struct KeyListView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
                     Divider().padding(.horizontal, 14)
-                    LibraryAgentStatus(active: appState.isSocketActive)
+                    LibraryAgentStatus(active: appState.isSocketActive, requestState: appState.requestPolicy.state)
                 }
             }
         }
