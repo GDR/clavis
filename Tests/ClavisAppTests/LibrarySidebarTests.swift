@@ -20,6 +20,49 @@ struct LibrarySidebarTests {
         #expect(personal.capabilities == ["SSH", "SSHSIG"])
         #expect(bot.capabilities == ["SSH"])
         #expect(bot.accessibilitySummary == "Bot, SSH")
+        #expect(personal.tileSymbol == "person.fill")
+        #expect(bot.tileSymbol == "cpu")
+        #expect(personal.purposeSummary == "SSH & Git signing")
+        #expect(bot.purposeSummary == "SSH authentication")
+        #expect(!personal.isDisabled)
+        #expect(!bot.isDisabled)
+    }
+
+    @Test func purposeSummaryAndDisabledStateReflectCapabilities() {
+        let gitOnly = LibraryKeyPresentation(
+            profile: KeyAccessProfile(type: .personal, capabilities: KeyCapabilities(ssh: false, signature: true))
+        )
+        #expect(gitOnly.purposeSummary == "Git signing")
+        #expect(!gitOnly.isDisabled)
+
+        let disabled = LibraryKeyPresentation(
+            profile: KeyAccessProfile(type: .bot, capabilities: KeyCapabilities(ssh: false, signature: false))
+        )
+        #expect(disabled.purposeSummary == "Disabled")
+        #expect(disabled.isDisabled)
+    }
+
+    @Test func agentStatusFooterLabelsAndActions() {
+        let activeFooter = LibraryAgentStatus(active: true, requestState: .accepting)
+        #expect(activeFooter.statusLabel == "Clavis active")
+
+        let pausedFooter = LibraryAgentStatus(active: true, requestState: .paused)
+        #expect(pausedFooter.statusLabel == "Clavis paused")
+
+        let offlineFooter = LibraryAgentStatus(active: false, requestState: .accepting)
+        #expect(offlineFooter.statusLabel == "Agent offline")
+
+        var settingsOpened = false
+        let interactiveFooter = LibraryAgentStatus(
+            active: true,
+            requestState: .accepting,
+            onTogglePause: {},
+            onLock: {},
+            onOpenSettings: { settingsOpened = true }
+        )
+        _ = interactiveFooter.body
+        interactiveFooter.onOpenSettings?()
+        #expect(settingsOpened)
     }
 
     @Test func nativeSearchUpdatesBindingAndCancelClearsBeforeBlurring() {
