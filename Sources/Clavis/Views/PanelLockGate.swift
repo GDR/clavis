@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import ClavisCore
 
 @MainActor
@@ -18,6 +19,12 @@ public struct LockedPlaceholderView: View {
     public static let passwordFieldPlaceholder = "Enter password"
     public static let incorrectPasswordText = "Incorrect password. Try again or use Touch ID."
 
+    public static func loadAppIcon() -> NSImage? {
+        Bundle.clavisCore.url(forResource: "AppIcon", withExtension: "png")
+            .flatMap(NSImage.init(contentsOf:))
+            ?? NSApp?.applicationIconImage
+    }
+
     public init() {
         self.init(lock: .shared)
     }
@@ -36,34 +43,25 @@ public struct LockedPlaceholderView: View {
 
             // Centered lock card (320px)
             VStack(spacing: 0) {
-                ZStack {
-                    Image(systemName: "key.fill")
-                        .font(.system(size: 26, weight: .medium))
-                        .foregroundColor(DesignTokens.accentBlue)
-                }
-                .frame(width: 61, height: 64)
-                .glassCard(
-                    cornerRadius: 16,
-                    strokeColor: DesignTokens.accentBlue.opacity(0.16),
-                    tint: DesignTokens.accentBlue.opacity(0.10)
-                )
-                .padding(.bottom, 20)
+                appIconWithLockBadge
+                    .padding(.bottom, 18)
 
                 Text(ClavisUIStrings.PanelLock.title)
-                    .font(.system(size: 23, weight: .semibold))
+                    .font(.system(size: 21, weight: .semibold))
                     .foregroundColor(.primary)
-                    .padding(.bottom, 7)
+                    .padding(.bottom, 6)
 
                 Text(Self.subtitleText)
                     .font(.system(size: 12))
                     .foregroundColor(DesignTokens.textSecondary)
                     .multilineTextAlignment(.center)
-                    .padding(.bottom, 24)
+                    .padding(.bottom, 22)
 
                 if lock.currentMode.requiresPIN {
                     PinEntryView(lock: lock)
                 } else {
                     passwordAndTouchIDUnlockForm
+                        .frame(width: 260)
                 }
             }
             .frame(width: 320)
@@ -71,23 +69,23 @@ public struct LockedPlaceholderView: View {
 
             Spacer(minLength: 16)
 
-            // Bottom agent status bar
-            HStack(spacing: 12) {
-                HStack(spacing: 5) {
-                    StatusDot(isActive: appState.isSocketActive)
-                    Text(appState.isSocketActive ? "Agent active" : "Agent offline")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(DesignTokens.textSecondary)
-                }
+            // Bottom agent status capsule pill
+            HStack(spacing: 8) {
+                StatusDot(isActive: appState.isSocketActive)
+                Text(appState.isSocketActive ? "Clavis active" : "Agent offline")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.primary)
                 Text("·")
-                    .font(.system(size: 10))
+                    .font(.system(size: 11))
                     .foregroundColor(DesignTokens.textTertiary)
-                Text(Self.bottomContinuationNotice)
-                    .font(.system(size: 10))
+                Text("SSH & Git signing continue")
+                    .font(.system(size: 11))
                     .foregroundColor(DesignTokens.textSecondary)
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 19)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .glassCard(cornerRadius: 999)
+            .padding(.bottom, 18)
             .accessibilityElement(children: .combine)
             .accessibilityHint(Self.clarificationNotice)
         }
@@ -119,14 +117,85 @@ public struct LockedPlaceholderView: View {
         }
     }
 
+    private var appIconWithLockBadge: some View {
+        ZStack(alignment: .bottomTrailing) {
+            if let iconImage = Self.loadAppIcon() {
+                Image(nsImage: iconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 64, height: 64)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .shadow(color: Color.black.opacity(0.28), radius: 14, x: 0, y: 6)
+            } else {
+                ZStack {
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 26, weight: .medium))
+                        .foregroundColor(DesignTokens.accentBlue)
+                }
+                .frame(width: 64, height: 64)
+                .glassCard(
+                    cornerRadius: 16,
+                    strokeColor: DesignTokens.accentBlue.opacity(0.16),
+                    tint: DesignTokens.accentBlue.opacity(0.10)
+                )
+                .shadow(color: Color.black.opacity(0.28), radius: 14, x: 0, y: 6)
+            }
+
+            ZStack {
+                Circle()
+                    .fill(.regularMaterial)
+                    .background(Circle().fill(Color(nsColor: .windowBackgroundColor)))
+                Circle()
+                    .stroke(DesignTokens.cardBorder, lineWidth: 1.5)
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(DesignTokens.accentBlue)
+            }
+            .frame(width: 24, height: 24)
+            .shadow(color: Color.black.opacity(0.30), radius: 4, x: 0, y: 2)
+            .offset(x: 4, y: 4)
+        }
+        .accessibilityHidden(true)
+    }
+
     private var passwordAndTouchIDUnlockForm: some View {
         VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 7) {
-                Text(Self.passwordFieldLabel)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.primary)
+            Button(action: {
+                passwordError = nil
+                Task {
+                    await lock.unlock()
+                }
+            }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "touchid")
+                        .font(.system(size: 16))
+                    Text("Unlock with Touch ID")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 36)
+            }
+            .liquidGlassButton(prominent: true)
+            .controlSize(.large)
+            .disabled(lock.isUnlocking)
+            .accessibilityLabel(ClavisUIStrings.PanelLock.unlock)
 
-                HStack(spacing: 6) {
+            HStack(spacing: 10) {
+                Rectangle()
+                    .fill(DesignTokens.cardBorder)
+                    .frame(height: 1)
+                Text("or password")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundColor(DesignTokens.textTertiary)
+                Rectangle()
+                    .fill(DesignTokens.cardBorder)
+                    .frame(height: 1)
+            }
+            .padding(.vertical, 2)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 4) {
                     Group {
                         if isPasswordVisible {
                             TextField(Self.passwordFieldPlaceholder, text: $password)
@@ -150,17 +219,39 @@ public struct LockedPlaceholderView: View {
 
                     Button(action: { isPasswordVisible.toggle() }) {
                         Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: 11, weight: .medium))
                             .foregroundColor(DesignTokens.textSecondary)
-                            .frame(width: 24, height: 24)
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .help(isPasswordVisible ? "Hide password" : "Show password")
                     .accessibilityLabel(isPasswordVisible ? "Hide password" : "Show password")
+
+                    Button(action: submitLoginPassword) {
+                        ZStack {
+                            Circle()
+                                .fill(
+                                    password.isEmpty || lock.isUnlocking
+                                        ? Color.secondary.opacity(0.25)
+                                        : DesignTokens.accentBlue
+                                )
+                            Image(systemName: "arrow.right")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.white)
+                        }
+                        .frame(width: 22, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(password.isEmpty || lock.isUnlocking)
+                    .help("Unlock")
+                    .accessibilityLabel("Unlock")
                 }
-                .padding(.horizontal, 12)
-                .frame(height: 34)
-                .liquidGlassCapsuleControl(isFocused: isPasswordFocused)
+                .padding(.leading, 11)
+                .padding(.trailing, 5)
+                .frame(height: 32)
+                .liquidGlassControl(cornerRadius: 8, isFocused: isPasswordFocused)
 
                 if let passwordError {
                     Text(passwordError)
@@ -169,49 +260,6 @@ public struct LockedPlaceholderView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-
-            Button(action: submitLoginPassword) {
-                Text("Unlock")
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(maxWidth: .infinity, minHeight: 28)
-            }
-            .liquidGlassButton(prominent: true)
-            .controlSize(.large)
-            .keyboardShortcut(.defaultAction)
-            .disabled(password.isEmpty || lock.isUnlocking)
-            .accessibilityLabel("Unlock")
-
-            HStack(spacing: 12) {
-                Rectangle()
-                    .fill(DesignTokens.cardBorder)
-                    .frame(height: 1)
-                Text("or")
-                    .font(.system(size: 11))
-                    .foregroundColor(DesignTokens.textSecondary)
-                Rectangle()
-                    .fill(DesignTokens.cardBorder)
-                    .frame(height: 1)
-            }
-            .padding(.vertical, 4)
-
-            Button(action: {
-                passwordError = nil
-                Task {
-                    await lock.unlock()
-                }
-            }) {
-                HStack(spacing: 8) {
-                    Image(systemName: "touchid")
-                        .font(.system(size: 15))
-                    Text("Unlock with Touch ID")
-                        .font(.system(size: 13, weight: .medium))
-                }
-                .frame(maxWidth: .infinity, minHeight: 28)
-            }
-            .liquidGlassButton(prominent: false)
-            .controlSize(.large)
-            .disabled(lock.isUnlocking)
-            .accessibilityLabel(ClavisUIStrings.PanelLock.unlock)
         }
     }
 

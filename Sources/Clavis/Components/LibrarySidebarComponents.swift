@@ -5,22 +5,75 @@ import ClavisCore
 /// Presentation mirrors key metadata; private records remain authoritative.
 /// This does not grant access or alter the daemon's authorization decisions.
 struct LibraryKeyPresentation: Equatable {
+    let keyType: KeyType
     let typeTitle: String
     let symbol: String
+    let tileSymbol: String
     let capabilities: [String]
+    let purposeSummary: String
+    let isDisabled: Bool
 
     init(purpose: KeyPurpose) {
         self.init(profile: KeyAccessProfile(legacyPurpose: purpose))
     }
 
     init(profile: KeyAccessProfile) {
+        keyType = profile.type
         typeTitle = profile.type.title
         symbol = profile.type == .bot ? "desktopcomputer" : "person"
+        tileSymbol = profile.type == .bot ? "cpu" : "person.fill"
         capabilities = profile.capabilities.titles
+        isDisabled = !profile.capabilities.ssh && !profile.capabilities.signature
+
+        if profile.capabilities.ssh && profile.capabilities.signature {
+            purposeSummary = "SSH & Git signing"
+        } else if profile.capabilities.ssh {
+            purposeSummary = "SSH authentication"
+        } else if profile.capabilities.signature {
+            purposeSummary = "Git signing"
+        } else {
+            purposeSummary = "Disabled"
+        }
     }
 
     var accessibilitySummary: String {
         ([typeTitle] + capabilities).joined(separator: ", ")
+    }
+}
+
+struct SidebarHeaderPillButton: View {
+    let icon: String
+    var isActive: Bool = false
+    let helpText: String
+    var accessibilityLabelText: String? = nil
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(isActive ? DesignTokens.accentBlue : .primary)
+                .frame(width: 30, height: 24)
+                .background(
+                    Capsule()
+                        .fill(
+                            isActive
+                                ? DesignTokens.accentBlue.opacity(0.16)
+                                : (isHovered ? Color.primary.opacity(0.07) : Color.clear)
+                        )
+                )
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(helpText)
+        .accessibilityLabel(accessibilityLabelText ?? helpText)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.10)) {
+                isHovered = hovering
+            }
+        }
     }
 }
 
@@ -108,21 +161,105 @@ struct LibrarySearchField: NSViewRepresentable {
 struct LibraryAgentStatus: View {
     let active: Bool
     var requestState: RequestPauseModel.State = .accepting
+    var isBusy: Bool = false
+    var onTogglePause: (() -> Void)? = nil
+    var onLock: (() -> Void)? = nil
+    var onOpenSettings: (() -> Void)? = nil
+
+    var statusLabel: String {
+        if !active {
+            return "Agent offline"
+        }
+        switch requestState {
+        case .paused:
+            return "Clavis paused"
+        case .unknown:
+            return "Agent status unavailable"
+        case .accepting:
+            return "Clavis active"
+        }
+    }
+
+    var dotColor: Color {
+        guard active else { return Color.secondary }
+        switch requestState {
+        case .accepting:
+            return DesignTokens.accentGreen
+        case .paused:
+            return DesignTokens.accentOrange
+        case .unknown:
+            return Color.secondary
+        }
+    }
 
     var body: some View {
-        HStack(spacing: 7) {
-            Circle()
-                .fill(active && requestState == .accepting ? Color.green : Color.secondary)
-                .frame(width: 6, height: 6)
-                .accessibilityHidden(true)
-            Text(!active ? "Agent unavailable" : requestState == .paused ? "Requests paused" : requestState == .unknown ? "Agent status unavailable" : "Agent active")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+        HStack(spacing: 8) {
+            if onTogglePause != nil || onLock != nil {
+                Menu {
+                    if let onTogglePause {
+                        Button(role: requestState == .paused ? nil : .destructive, action: onTogglePause) {
+                            Label(
+                                requestState == .paused ? "Resume Requests…" : "Pause Requests…",
+                                systemImage: requestState == .paused ? "play.circle" : "pause.circle"
+                            )
+                        }
+                        .disabled(isBusy)
+                    }
+                    if let onLock {
+                        Divider()
+                        Button(action: onLock) {
+                            Label("Lock Clavis", systemImage: "lock")
+                        }
+                    }
+                } label: {
+                    statusPillContent
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .adaptiveGlassCapsule()
+                .help(statusLabel)
+                .accessibilityLabel("Clavis status: \(statusLabel)")
+            } else {
+                statusPillContent
+                    .adaptiveGlassCapsule()
+                    .accessibilityElement(children: .combine)
+            }
+
+            Spacer(minLength: 4)
+
+            if let onOpenSettings {
+                Button(action: onOpenSettings) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .frame(width: 26, height: 26)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .adaptiveGlassCapsule()
+                .help("Settings (⌘,)")
+                .accessibilityLabel("Settings")
+            }
         }
-        .accessibilityElement(children: .combine)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    private var statusPillContent: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(dotColor)
+                .frame(width: 7, height: 7)
+                .accessibilityHidden(true)
+            Text(statusLabel)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 11)
+        .frame(height: 26)
     }
 }
 

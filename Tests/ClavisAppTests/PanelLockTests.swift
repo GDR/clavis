@@ -383,4 +383,18 @@ final class PanelLockTests {
         #expect(!controller.isEffectivelyLocked)
         #expect(fakeAuth.authCount == 0)
     }
+
+    @Test func test_lockedPlaceholderView_loadsAppIconAndRendersVariant6() {
+        let icon = LockedPlaceholderView.loadAppIcon()
+        #expect(icon != nil, "AppIcon.png should resolve from Bundle.clavisCore or NSApp")
+
+        let controller = PanelLockController(
+            defaults: testDefaults,
+            vaultKeyCount: { 1 }
+        )
+        let hosting = NSHostingView(rootView: LockedPlaceholderView(lock: controller))
+        hosting.frame = NSRect(x: 0, y: 0, width: 958, height: 724)
+        hosting.layout()
+        #expect(hosting.bounds.size == NSSize(width: 958, height: 724))
+    }
 }

@@ -304,20 +304,33 @@ struct KeyListView: View {
         VStack(spacing: 10) {
             HStack(spacing: 7) {
                 Spacer(minLength: 72)
-                CircularGlassIconButton(
-                    icon: "plus", size: 33, iconSize: 15,
-                    isActive: appState.activeSheet == .create,
-                    helpText: "New key (⌘N)",
-                    accessibilityLabel: ClavisUIStrings.Accessibility.addKey
-                ) { appState.activeSheet = .create }
-                LibraryMoreMenu(
-                    history: { appState.openHistoryPane(forKeyFingerprint: nil) },
-                    settings: { appState.activeSheet = .settings },
-                    lock: { PanelLockController.shared.lock(reason: .lockNow) },
-                    revoke: { confirmingRevokeAll = true },
-                    paused: appState.requestPolicy.isPaused,
-                    busy: appState.requestPolicy.isBusy
-                )
+                AdaptiveGlassCapsule(spacing: 2) {
+                    SidebarHeaderPillButton(
+                        icon: "plus",
+                        isActive: appState.activeSheet == .create,
+                        helpText: "New key (⌘N)",
+                        accessibilityLabelText: ClavisUIStrings.Accessibility.addKey
+                    ) {
+                        appState.activeSheet = .create
+                    }
+                    SidebarHeaderPillButton(
+                        icon: "clock.arrow.circlepath",
+                        isActive: isHistoryActive,
+                        helpText: "Activity History (⇧⌘H)",
+                        accessibilityLabelText: "Activity History"
+                    ) {
+                        toggleHistoryPane()
+                    }
+                    SidebarHeaderPillButton(
+                        icon: "lock",
+                        isActive: false,
+                        helpText: "Lock Clavis (⌘L)",
+                        accessibilityLabelText: "Lock Clavis"
+                    ) {
+                        PanelLockController.shared.lock(reason: .lockNow)
+                    }
+                }
+                .padding(2)
             }
             .padding(.horizontal, 12)
             .frame(height: Self.toolbarHeight)
@@ -359,7 +372,7 @@ struct KeyListView: View {
                         .padding(.vertical, 18)
                         .padding(.horizontal, 8)
                 } else {
-                    LazyVStack(spacing: 0) {
+                    LazyVStack(spacing: 1) {
                         ForEach(Array(filteredKeys.enumerated()), id: \.element.id) { index, key in
                             let isRowSelected = isSidebarRowSelected(key)
                             let nextIsSelected: Bool = {
@@ -392,7 +405,7 @@ struct KeyListView: View {
                             )
                         }
                     }
-                    .padding(.horizontal, 7)
+                    .padding(.horizontal, 8)
                     .padding(.bottom, 10)
                 }
             }
@@ -402,8 +415,15 @@ struct KeyListView: View {
             .frame(maxHeight: .infinity)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
-                    Divider().padding(.horizontal, 14)
-                    LibraryAgentStatus(active: appState.isSocketActive, requestState: appState.requestPolicy.state)
+                    Divider().padding(.horizontal, 12)
+                    LibraryAgentStatus(
+                        active: appState.isSocketActive,
+                        requestState: appState.requestPolicy.state,
+                        isBusy: appState.requestPolicy.isBusy,
+                        onTogglePause: { confirmingRevokeAll = true },
+                        onLock: { PanelLockController.shared.lock(reason: .lockNow) },
+                        onOpenSettings: { appState.activeSheet = .settings }
+                    )
                 }
             }
         }
@@ -560,43 +580,61 @@ struct KeySidebarRowView: View {
     }
 
     var body: some View {
-        let presentation = LibraryKeyPresentation(profile: key.effectiveAccessProfile)
+        let profile = key.effectiveAccessProfile
+        let presentation = LibraryKeyPresentation(profile: profile)
+        let isBot = profile.type == .bot
+
         HStack(spacing: 10) {
-            Image(systemName: presentation.symbol)
-                .font(.system(size: 17))
-                .foregroundStyle(DesignTokens.accentBlue)
-                .frame(width: 22)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 5) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isBot ? Color.purple.opacity(0.15) : DesignTokens.accentBlue.opacity(0.14))
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(isBot ? Color.purple.opacity(0.28) : DesignTokens.accentBlue.opacity(0.25), lineWidth: 1)
+                Image(systemName: presentation.tileSymbol)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(isBot ? Color.purple : DesignTokens.accentBlue)
+            }
+            .frame(width: 30, height: 30)
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 2) {
                 Text(key.label)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(presentation.isDisabled ? DesignTokens.textSecondary : .primary)
+                    .strikethrough(presentation.isDisabled, color: DesignTokens.textSecondary)
                     .lineLimit(1)
-                HStack(spacing: 4) {
-                    LibraryMetadataBadge(title: presentation.typeTitle)
-                    Spacer(minLength: 4)
-                    ForEach(presentation.capabilities, id: \.self) {
-                        LibraryMetadataBadge(title: $0)
-                    }
-                }
+                Text(presentation.purposeSummary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(DesignTokens.textSecondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 4)
+
+            if presentation.isDisabled {
+                Text("⏸")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .help("Disabled")
+                    .accessibilityHidden(true)
             }
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 9)
-        .frame(minHeight: 56)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .frame(minHeight: 44)
         .background(FirstMouseView())
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(
                     isSelected
-                        ? Color.primary.opacity(0.10)
+                        ? DesignTokens.accentBlue.opacity(0.16)
                         : (isHovered ? Color.primary.opacity(0.05) : Color.clear)
                 )
         )
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(key.label)
-        .accessibilityValue(LibraryKeyPresentation(profile: key.effectiveAccessProfile).accessibilitySummary)
+        .accessibilityValue(presentation.accessibilitySummary)
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : [.isButton])
         .accessibilityAction {
             onSelect()
