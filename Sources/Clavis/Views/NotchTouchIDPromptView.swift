@@ -375,7 +375,7 @@ public struct NotchIslandShape: Shape {
 public struct NotchTouchIDPromptView: View {
     @ObservedObject public var viewModel: NotchPromptViewModel
     @State private var isPulsing: Bool = false
-    @State private var isPasswordFieldFocused: Bool = false
+    @FocusState private var isPasswordFieldFocused: Bool
     @Namespace private var scopeNamespace
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -493,8 +493,10 @@ public struct NotchTouchIDPromptView: View {
                         .accessibilityHidden(viewModel.phase != .signed)
                 }
                 .frame(width: islandWidth, height: islandHeight, alignment: .top)
-                .background(Self.notchBlack)
-                .clipShape(islandShape)
+                .background(
+                    islandShape
+                        .fill(Self.notchBlack)
+                )
                 .overlay(
                     islandShape
                         .strokeBorder(Color.white.opacity(isCollapsed ? 0 : 0.11), lineWidth: 0.8)
@@ -793,118 +795,28 @@ public struct NotchTouchIDPromptView: View {
         )
     }
 
-    // MARK: - Session Scope Segmented Selector (Clock.app Liquid Glass Lens Segmented Control)
+    // MARK: - Session Scope Segmented Selector (Native macOS Liquid Glass Picker)
 
     private var sessionScopeBar: some View {
-        HStack(spacing: 0) {
+        Picker(
+            "Session",
+            selection: Binding(
+                get: { viewModel.selectedScope },
+                set: { viewModel.selectScope($0) }
+            )
+        ) {
             ForEach(NotchSessionScope.allCases) { scope in
-                let isSelected = viewModel.selectedScope == scope
-                Button {
-                    viewModel.selectScope(scope)
-                } label: {
-                    Text(scope.title)
-                        .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
-                        .foregroundColor(isSelected ? .white : Color.white.opacity(0.78))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 30)
-                        .contentShape(Capsule())
-                        .background {
-                            if isSelected {
-                                clockLiquidGlassLens
-                                    .matchedGeometryEffect(id: "notch-session-lens", in: scopeNamespace)
-                            }
-                        }
-                }
-                .buttonStyle(.plain)
-                .disableNotchFocusRing()
-                .accessibilityLabel("Session scope \(scope.title)")
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                Text(scope.title).tag(scope)
             }
         }
-        .padding(.horizontal, 3)
-        .padding(.vertical, 2)
-        .background(
-            Capsule()
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.11),
-                            Color.white.opacity(0.07)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .overlay(
-                    Capsule()
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(0.22),
-                                    Color.white.opacity(0.08),
-                                    Color.white.opacity(0.16)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: 0.8
-                        )
-                )
-        )
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.large)
+        .frame(maxWidth: .infinity)
+        .disableNotchFocusRing()
     }
 
-    /// Refractive Liquid Glass lens matching the macOS 26 Clock.app segmented control indicator.
-    private var clockLiquidGlassLens: some View {
-        ZStack {
-            Capsule()
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.20),
-                            Color.white.opacity(0.07),
-                            Color.white.opacity(0.14)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-
-            // Refractive chromatic dispersion rim along top & bottom edges (Clock.app lens optics)
-            Capsule()
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.55, green: 0.88, blue: 1.0).opacity(0.65),
-                            Color.white.opacity(0.35),
-                            Color(red: 1.0, green: 0.55, blue: 0.65).opacity(0.45),
-                            Color(red: 0.45, green: 0.95, blue: 0.75).opacity(0.55)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1.1
-                )
-
-            // Inner specular top highlight
-            Capsule()
-                .inset(by: 1.0)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.38),
-                            Color.clear,
-                            Color.white.opacity(0.12)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 0.7
-                )
-        }
-        .shadow(color: Color.black.opacity(0.45), radius: 5, x: 0, y: 2)
-    }
-
-    // MARK: - Biometric & Password Footer (Liquid Glass Controls, No Focus Ring Highlight)
+    // MARK: - Biometric & Password Footer (Native macOS Liquid Glass Controls)
 
     private var biometricFooterRow: some View {
         HStack(spacing: 10) {
@@ -966,27 +878,30 @@ public struct NotchTouchIDPromptView: View {
             Spacer(minLength: 4)
 
             HStack(spacing: 8) {
-                notchGlassCapsuleButton(
-                    title: "Deny",
-                    foreground: Color(red: 1.0, green: 0.45, blue: 0.42),
-                    tint: Color(red: 1.0, green: 0.27, blue: 0.23).opacity(0.16)
-                ) {
+                Button(role: .destructive) {
                     isPasswordFieldFocused = false
                     viewModel.deny()
+                } label: {
+                    Text("Deny")
                 }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .controlSize(.large)
+                .disableNotchFocusRing()
 
-                notchGlassCapsuleButton(
-                    title: viewModel.phase == .password ? "Hide Password" : "Use Password…",
-                    foreground: .white,
-                    tint: viewModel.phase == .password ? Color.white.opacity(0.18) : Color.white.opacity(0.10)
-                ) {
+                Button {
                     if viewModel.phase == .password {
                         isPasswordFieldFocused = false
                         viewModel.closePasswordDrawer()
                     } else {
                         viewModel.openPasswordDrawer()
                     }
+                } label: {
+                    Text(viewModel.phase == .password ? "Hide Password" : "Use Password…")
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disableNotchFocusRing()
             }
             .fixedSize(horizontal: true, vertical: false)
         }
@@ -995,71 +910,31 @@ public struct NotchTouchIDPromptView: View {
     private var passwordDrawerRow: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
-                HStack(spacing: 7) {
-                    Image(systemName: "key.horizontal.fill")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(Color.white.opacity(0.60))
-
-                    NotchFocuslessSecureField(
-                        placeholder: "Enter Mac login password…",
-                        text: $viewModel.passwordText,
-                        isFocused: $isPasswordFieldFocused,
-                        onSubmit: {
-                            isPasswordFieldFocused = false
-                            Task {
-                                _ = await viewModel.submitPassword()
-                            }
+                SecureField("Enter Mac login password…", text: $viewModel.passwordText)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.large)
+                    .focused($isPasswordFieldFocused)
+                    .disableNotchFocusRing()
+                    .onSubmit {
+                        isPasswordFieldFocused = false
+                        Task {
+                            _ = await viewModel.submitPassword()
                         }
-                    )
-                    .frame(height: 20)
-                }
-                .padding(.horizontal, 12)
-                .frame(height: 30)
-                .background(
-                    ZStack {
-                        Capsule()
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        Color.white.opacity(0.11),
-                                        Color.white.opacity(0.07)
-                                    ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
-                        Capsule()
-                            .strokeBorder(
-                                LinearGradient(
-                                    colors: viewModel.passwordError != nil
-                                        ? [
-                                            Color(red: 1.0, green: 0.35, blue: 0.32).opacity(0.85),
-                                            Color(red: 1.0, green: 0.35, blue: 0.32).opacity(0.55)
-                                        ]
-                                        : [
-                                            Color.white.opacity(isPasswordFieldFocused ? 0.36 : 0.24),
-                                            Color.white.opacity(0.09),
-                                            Color.white.opacity(isPasswordFieldFocused ? 0.24 : 0.15)
-                                        ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                ),
-                                lineWidth: 0.85
-                            )
                     }
-                )
 
-                notchGlassCapsuleButton(
-                    title: "Verify",
-                    foreground: .white,
-                    tint: Self.personalBlue,
-                    isProminent: true
-                ) {
+                Button {
                     isPasswordFieldFocused = false
                     Task {
                         _ = await viewModel.submitPassword()
                     }
+                } label: {
+                    Text("Verify")
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(Self.personalBlue)
+                .controlSize(.large)
+                .keyboardShortcut(.defaultAction)
+                .disableNotchFocusRing()
             }
 
             if let error = viewModel.passwordError {
@@ -1072,56 +947,11 @@ public struct NotchTouchIDPromptView: View {
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 if viewModel.phase == .password {
+                    NotchPromptWindowController.shared.panel?.makeKey()
                     isPasswordFieldFocused = true
                 }
             }
         }
-    }
-
-    private func notchGlassCapsuleButton(
-        title: String,
-        foreground: Color,
-        tint: Color,
-        isProminent: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 12, weight: isProminent ? .semibold : .medium))
-                .foregroundColor(foreground)
-                .padding(.horizontal, 14)
-                .frame(height: 29)
-                .contentShape(Capsule())
-                .background(
-                    ZStack {
-                        Capsule()
-                            .fill(
-                                LinearGradient(
-                                    colors: isProminent
-                                        ? [Self.personalBlue.opacity(0.95), Color(red: 0.0, green: 0.42, blue: 0.92)]
-                                        : [tint.opacity(1.25), tint.opacity(0.75)],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
-                        Capsule()
-                            .strokeBorder(
-                                LinearGradient(
-                                    colors: [
-                                        Color.white.opacity(isProminent ? 0.42 : 0.26),
-                                        Color.white.opacity(0.08),
-                                        Color.white.opacity(isProminent ? 0.22 : 0.14)
-                                    ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                ),
-                                lineWidth: 0.85
-                            )
-                    }
-                )
-        }
-        .buttonStyle(.plain)
-        .disableNotchFocusRing()
     }
 }
 
@@ -1132,81 +962,6 @@ private extension View {
             self.focusEffectDisabled()
         } else {
             self
-        }
-    }
-}
-
-/// AppKit `NSSecureTextField` with `focusRingType = .none` so macOS never draws an exterior focus ring overlay that lingers during Notch animations.
-private struct NotchFocuslessSecureField: NSViewRepresentable {
-    let placeholder: String
-    @Binding var text: String
-    @Binding var isFocused: Bool
-    let onSubmit: () -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    func makeNSView(context: Context) -> NSSecureTextField {
-        let field = NSSecureTextField()
-        field.focusRingType = .none
-        field.isBordered = false
-        field.drawsBackground = false
-        field.font = .systemFont(ofSize: 12.5, weight: .regular)
-        field.textColor = .white
-        field.placeholderAttributedString = NSAttributedString(
-            string: placeholder,
-            attributes: [
-                .foregroundColor: NSColor.white.withAlphaComponent(0.42),
-                .font: NSFont.systemFont(ofSize: 12.5, weight: .regular)
-            ]
-        )
-        field.delegate = context.coordinator
-        field.cell?.wraps = false
-        field.cell?.isScrollable = true
-        return field
-    }
-
-    func updateNSView(_ nsView: NSSecureTextField, context: Context) {
-        context.coordinator.parent = self
-        if nsView.stringValue != text {
-            nsView.stringValue = text
-        }
-        if isFocused, let window = nsView.window, window.firstResponder !== nsView.currentEditor() {
-            DispatchQueue.main.async {
-                if self.isFocused {
-                    window.makeFirstResponder(nsView)
-                }
-            }
-        }
-    }
-
-    final class Coordinator: NSObject, NSTextFieldDelegate {
-        var parent: NotchFocuslessSecureField
-
-        init(_ parent: NotchFocuslessSecureField) {
-            self.parent = parent
-        }
-
-        func controlTextDidChange(_ obj: Notification) {
-            guard let field = obj.object as? NSTextField else { return }
-            parent.text = field.stringValue
-        }
-
-        func controlTextDidBeginEditing(_ obj: Notification) {
-            parent.isFocused = true
-        }
-
-        func controlTextDidEndEditing(_ obj: Notification) {
-            parent.isFocused = false
-        }
-
-        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-                parent.onSubmit()
-                return true
-            }
-            return false
         }
     }
 }
