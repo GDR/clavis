@@ -112,7 +112,12 @@ public final class NotchPromptWindowController: NSObject {
             self.activeViewModel = viewModel
             let panel = self.configurePanel(for: viewModel)
             panel.contentView?.layoutSubtreeIfNeeded()
-            panel.orderFrontRegardless()
+            if !ClavisEnvironment.isTesting {
+                NSApp.activate(ignoringOtherApps: true)
+                panel.makeKeyAndOrderFront(nil)
+            } else {
+                panel.orderFrontRegardless()
+            }
 
             if let onPresented {
                 viewModel.expand()
@@ -133,6 +138,7 @@ public final class NotchPromptWindowController: NSObject {
     private func dismissActivePromptIfNeeded() {
         hideWorkItem?.cancel()
         hideWorkItem = nil
+        activeViewModel?.cancelEmbeddedBiometricListening()
         panel?.makeFirstResponder(nil)
         if let continuation = activeContinuation {
             activeContinuation = nil
@@ -143,6 +149,7 @@ public final class NotchPromptWindowController: NSObject {
     }
 
     private func completeActivePrompt(with result: NotchPromptResult) {
+        activeViewModel?.cancelEmbeddedBiometricListening()
         panel?.makeFirstResponder(nil)
         if let continuation = activeContinuation {
             activeContinuation = nil
