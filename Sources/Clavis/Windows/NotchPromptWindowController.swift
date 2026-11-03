@@ -133,6 +133,7 @@ public final class NotchPromptWindowController: NSObject {
     private func dismissActivePromptIfNeeded() {
         hideWorkItem?.cancel()
         hideWorkItem = nil
+        panel?.makeFirstResponder(nil)
         if let continuation = activeContinuation {
             activeContinuation = nil
             continuation.resume(returning: .denied)
@@ -142,6 +143,7 @@ public final class NotchPromptWindowController: NSObject {
     }
 
     private func completeActivePrompt(with result: NotchPromptResult) {
+        panel?.makeFirstResponder(nil)
         if let continuation = activeContinuation {
             activeContinuation = nil
             continuation.resume(returning: result)
@@ -150,7 +152,7 @@ public final class NotchPromptWindowController: NSObject {
             panel?.orderOut(nil)
             activeViewModel = nil
         } else {
-            // Allow the 0.38s shrink animation back into the 188×32 notch to finish before ordering out the panel.
+            // Allow the fast 0.24s shrink animation back into the 188×32 notch to finish before ordering out the panel.
             hideWorkItem?.cancel()
             let work = DispatchWorkItem { [weak self] in
                 Task { @MainActor in
@@ -159,7 +161,7 @@ public final class NotchPromptWindowController: NSObject {
                 }
             }
             hideWorkItem = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.38, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24, execute: work)
         }
     }
 
