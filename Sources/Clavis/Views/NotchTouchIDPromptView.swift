@@ -150,9 +150,9 @@ public final class NotchPromptViewModel: ObservableObject {
     private var onComplete: (@MainActor (NotchPromptResult) -> Void)?
     private var hasCompleted: Bool = false
     private var embeddedBiometricTask: Task<Void, Never>?
+    public let canUseEmbeddedBiometrics: Bool
 
-    public var canUseEmbeddedBiometrics: Bool {
-        guard !ClavisEnvironment.isTesting else { return false }
+    private static func detectEmbeddedBiometricsSupport() -> Bool {
         let probe = LAContext()
         var error: NSError?
         if #available(macOS 15.0, *), probe.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometricsOrCompanion, error: &error) {
@@ -167,6 +167,7 @@ public final class NotchPromptViewModel: ObservableObject {
         verifyingDelayNanoseconds: UInt64 = 160_000_000,
         signedDisplayNanoseconds: UInt64 = 650_000_000,
         autoCollapseAfterSigned: Bool = true,
+        enableEmbeddedBiometrics: Bool? = nil,
         biometricAuthenticator: @escaping @MainActor () async -> Bool = { true },
         passwordVerifier: @escaping @MainActor (String) async -> Bool = { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty },
         onComplete: (@MainActor (NotchPromptResult) -> Void)? = nil
@@ -177,6 +178,7 @@ public final class NotchPromptViewModel: ObservableObject {
         self.verifyingDelayNanoseconds = verifyingDelayNanoseconds
         self.signedDisplayNanoseconds = signedDisplayNanoseconds
         self.autoCollapseAfterSigned = autoCollapseAfterSigned
+        self.canUseEmbeddedBiometrics = enableEmbeddedBiometrics ?? (!ClavisEnvironment.isTesting && Self.detectEmbeddedBiometricsSupport())
         self.biometricAuthenticator = biometricAuthenticator
         self.passwordVerifier = passwordVerifier
         self.onComplete = onComplete
@@ -219,7 +221,7 @@ public final class NotchPromptViewModel: ObservableObject {
 
     /// Arms the hardware Touch ID sensor immediately via `LAAuthenticationView` so the user can touch the sensor without clicking first.
     public func startEmbeddedBiometricListening() {
-        guard !ClavisEnvironment.isTesting else { return }
+        guard canUseEmbeddedBiometrics else { return }
         guard phase == .expanded else { return }
         cancelEmbeddedBiometricListening()
 
@@ -239,8 +241,8 @@ public final class NotchPromptViewModel: ObservableObject {
         let reason = "approve \(request.operation) with \(request.keyLabel)"
 
         embeddedBiometricTask = Task { @MainActor [weak self] in
-            // Wait for LAAuthenticationView to mount with the new LAContext and for the expand spring to settle to identity transform so LA's visibility check succeeds.
-            try? await Task.sleep(nanoseconds: 320_000_000)
+            // Wait 450ms for LAAuthenticationView to mount with the new LAContext and for the expand spring to settle so NSOcclusionDetectionView succeeds.
+            try? await Task.sleep(nanoseconds: 450_000_000)
             guard let self, !Task.isCancelled, self.phase == .expanded else { return }
             do {
                 let verified = try await context.evaluatePolicy(policy, localizedReason: reason)
@@ -248,8 +250,14 @@ public final class NotchPromptViewModel: ObservableObject {
                 if verified {
                     await self.completeApproval(method: .biometrics)
                 }
+            } catch let error as LAError where error.code == .systemCancel {
+                // Retry once if NSOcclusionDetectionView was still settling during window presentation.
+                guard !Task.isCancelled, self.phase == .expanded else { return }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                guard !Task.isCancelled, self.phase == .expanded else { return }
+                self.startEmbeddedBiometricListening()
             } catch {
-                // Cancelled, switched to password, or timed out; user can click Touch ID ring to retry or use password.
+                // Cancelled by user, switched to password, or timed out.
             }
         }
     }
@@ -534,18 +542,6 @@ public struct NotchTouchIDPromptView: View {
                     .frame(width: Self.earSize, height: Self.earSize)
 
                 ZStack(alignment: .top) {
-                    // Expanded content stays at fixed `expandedWidth` so subviews never reflow/slide left-to-right during width animation.
-                    expandedPromptContent
-                        .frame(width: Self.expandedWidth, alignment: .top)
-                        .opacity(isExpandedLike ? 1 : 0)
-                        .scaleEffect(
-                            x: isExpandedLike ? 1.0 : 0.42,
-                            y: isExpandedLike ? 1.0 : 0.22,
-                            anchor: .top
-                        )
-                        .allowsHitTesting(isExpandedLike)
-                        .accessibilityHidden(!isExpandedLike)
-
                     signedConfirmationPill
                         .frame(width: 370, alignment: .top)
                         .opacity(viewModel.phase == .signed ? 1 : 0)
@@ -556,17 +552,23 @@ public struct NotchTouchIDPromptView: View {
                         )
                         .allowsHitTesting(viewModel.phase == .signed)
                         .accessibilityHidden(viewModel.phase != .signed)
+
+                    // Expanded content stays at fixed `expandedWidth` with no ancestor `.scaleEffect` or `.opacity` so `LAAuthenticationView`'s `NSOcclusionDetectionView` never fails due to ancestor group-opacity/transform layers.
+                    expandedPromptContent
+                        .frame(width: Self.expandedWidth, alignment: .top)
+                        .allowsHitTesting(isExpandedLike)
+                        .accessibilityHidden(!isExpandedLike)
                 }
                 .frame(width: islandWidth, height: islandHeight, alignment: .top)
                 .background(
-                    islandShape
-                        .fill(Self.notchBlack)
-                )
-                .overlay(
-                    islandShape
-                        .strokeBorder(Color.white.opacity(isCollapsed ? 0 : 0.11), lineWidth: 0.8)
-                        .padding(.top, -Self.earSize)
-                        .clipShape(islandShape)
+                    ZStack {
+                        islandShape
+                            .fill(Self.notchBlack)
+                        islandShape
+                            .strokeBorder(Color.white.opacity(isCollapsed ? 0 : 0.11), lineWidth: 0.8)
+                            .padding(.top, -Self.earSize)
+                            .clipShape(islandShape)
+                    }
                 )
                 .background(
                     // Drop shadow is inset from the top menu bar (`top: 30pt`) and side edges so it never bleeds onto the menu bar or clips at panel edges.
@@ -641,19 +643,23 @@ public struct NotchTouchIDPromptView: View {
     private var expandedPromptContent: some View {
         VStack(spacing: 10) {
             identityGridRow
+                .notchExpandTransition(isExpanded: isExpandedLike)
 
             if let warning = viewModel.request.warningText, !warning.isEmpty {
                 warningBanner(warning)
+                    .notchExpandTransition(isExpanded: isExpandedLike)
             }
 
             if viewModel.request.showsScopeSelector {
                 sessionScopeBar
+                    .notchExpandTransition(isExpanded: isExpandedLike)
             }
 
             biometricFooterRow
 
             if viewModel.phase == .password {
                 passwordDrawerRow
+                    .notchExpandTransition(isExpanded: isExpandedLike)
                     .transition(
                         .asymmetric(
                             insertion: .move(edge: .top).combined(with: .opacity),
@@ -893,6 +899,7 @@ public struct NotchTouchIDPromptView: View {
                     )
                     .frame(width: 44, height: 44)
                     .scaleEffect(isPulsing ? 1.08 : 0.94)
+                    .opacity(isExpandedLike ? 1 : 0)
 
                 Circle()
                     .fill(
@@ -914,10 +921,12 @@ public struct NotchTouchIDPromptView: View {
                                 lineWidth: 1.4
                             )
                     )
+                    .opacity(isExpandedLike ? 1 : 0)
 
                 if viewModel.canUseEmbeddedBiometrics && viewModel.phase == .expanded {
                     NotchEmbeddedTouchIDView(context: viewModel.authenticationContext)
-                        .frame(width: 40, height: 40)
+                        .id(ObjectIdentifier(viewModel.authenticationContext))
+                        .frame(width: 32, height: 32)
                 } else {
                     Button {
                         Task {
@@ -932,11 +941,10 @@ public struct NotchTouchIDPromptView: View {
                     }
                     .buttonStyle(.plain)
                     .disableNotchFocusRing()
+                    .notchExpandTransition(isExpanded: isExpandedLike)
+                    .accessibilityLabel("Touch ID to Confirm")
                 }
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Touch ID to Confirm")
-            .accessibilityAddTraits(.isButton)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(viewModel.phase == .verifying ? "Verifying Touch ID…" : "Touch ID to Confirm")
@@ -948,6 +956,7 @@ public struct NotchTouchIDPromptView: View {
                     .foregroundColor(Color.white.opacity(0.62))
                     .lineLimit(1)
             }
+            .notchExpandTransition(isExpanded: isExpandedLike)
 
             Spacer(minLength: 4)
 
@@ -978,6 +987,7 @@ public struct NotchTouchIDPromptView: View {
                 .disableNotchFocusRing()
             }
             .fixedSize(horizontal: true, vertical: false)
+            .notchExpandTransition(isExpanded: isExpandedLike)
         }
     }
 
@@ -1038,50 +1048,25 @@ private extension View {
             self
         }
     }
+
+    func notchExpandTransition(isExpanded: Bool) -> some View {
+        self
+            .opacity(isExpanded ? 1 : 0)
+            .scaleEffect(
+                x: isExpanded ? 1.0 : 0.42,
+                y: isExpanded ? 1.0 : 0.22,
+                anchor: .top
+            )
+    }
 }
 
-/// Hosts Apple's `LAAuthenticationView` (`LocalAuthenticationEmbeddedUI`) paired with `LAContext` so the physical MacBook Touch ID sensor listens immediately inside the Notch prompt without popping up the system modal alert.
+/// Hosts Apple's `LAAuthenticationView` (`LocalAuthenticationEmbeddedUI`) directly with `controlSize: .small` (`32×32`) so `NSOcclusionDetectionView` passes and the physical MacBook Touch ID sensor listens immediately inside the Notch prompt.
 private struct NotchEmbeddedTouchIDView: NSViewRepresentable {
     let context: LAContext
 
-    final class ContainerView: NSView {
-        var currentContext: LAContext?
-        var authView: LAAuthenticationView?
-
-        override init(frame frameRect: NSRect) {
-            super.init(frame: frameRect)
-            wantsLayer = true
-            layer?.backgroundColor = NSColor(calibratedRed: 0.02, green: 0.02, blue: 0.028, alpha: 1.0).cgColor
-            layer?.cornerRadius = 20
-        }
-
-        required init?(coder: NSCoder) {
-            nil
-        }
-
-        func configure(with context: LAContext) {
-            guard currentContext !== context else { return }
-            currentContext = context
-            authView?.removeFromSuperview()
-
-            let view = LAAuthenticationView(context: context, controlSize: .regular)
-            view.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(view)
-            NSLayoutConstraint.activate([
-                view.centerXAnchor.constraint(equalTo: centerXAnchor),
-                view.centerYAnchor.constraint(equalTo: centerYAnchor)
-            ])
-            authView = view
-        }
+    func makeNSView(context: Context) -> LAAuthenticationView {
+        LAAuthenticationView(context: self.context, controlSize: .small)
     }
 
-    func makeNSView(context: Context) -> ContainerView {
-        let container = ContainerView()
-        container.configure(with: self.context)
-        return container
-    }
-
-    func updateNSView(_ nsView: ContainerView, context: Context) {
-        nsView.configure(with: self.context)
-    }
+    func updateNSView(_ nsView: LAAuthenticationView, context: Context) {}
 }
