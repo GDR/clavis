@@ -161,6 +161,26 @@ struct ClavisApp: App {
                     WindowManager.shared.openKeyManager(sheet: .create)
                 }
                 .keyboardShortcut("n", modifiers: .command)
+
+                Divider()
+
+                Button("Preview Touch ID Notch Prompt") {
+                    let key = appState.keys.first
+                    let request = NotchPromptRequest(
+                        callerName: "Terminal",
+                        callerPath: "/System/Applications/Utilities/Terminal.app",
+                        processChain: "git → ssh-keygen",
+                        keyLabel: key?.label ?? "Personal MacBook",
+                        keyType: key?.effectiveAccessProfile.type ?? .personal,
+                        operation: "commit -S",
+                        initialScope: .fifteenMinutes,
+                        showsScopeSelector: true
+                    )
+                    Task { @MainActor in
+                        _ = await NotchPromptWindowController.shared.present(request: request)
+                    }
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .saveItem) {
                 Button(closeWindowCommandTitle) {
