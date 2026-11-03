@@ -241,14 +241,14 @@ struct NotchTouchIDPromptTests {
 
         let rootView = NotchTouchIDPromptView(viewModel: viewModel)
             .environment(\.colorScheme, .dark)
-            .frame(width: 520, height: 290, alignment: .top)
-            .background(Color(red: 0.10, green: 0.12, blue: 0.16))
+            .frame(width: 640, height: 300, alignment: .top)
+            .background(Color(red: 0.14, green: 0.22, blue: 0.34))
 
         let hostingView = NSHostingView(rootView: rootView)
-        hostingView.frame = NSRect(x: 0, y: 0, width: 520, height: 290)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 640, height: 300)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 290),
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 300),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -258,6 +258,7 @@ struct NotchTouchIDPromptTests {
         window.orderFront(nil)
         defer { window.orderOut(nil) }
 
+        hostingView.layoutSubtreeIfNeeded()
         try await Task.sleep(nanoseconds: 50_000_000)
         hostingView.layoutSubtreeIfNeeded()
 
@@ -265,5 +266,11 @@ struct NotchTouchIDPromptTests {
         hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
         let png = try #require(bitmap.representation(using: .png, properties: [:]))
         #expect(png.count > 2_000)
+
+        if ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW"] == "1" {
+            let directory = URL(fileURLWithPath: "/private/tmp/clavis-notch-review")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try png.write(to: directory.appendingPathComponent("\(keyType.rawValue)-\(phase.rawValue).png"))
+        }
     }
 }
