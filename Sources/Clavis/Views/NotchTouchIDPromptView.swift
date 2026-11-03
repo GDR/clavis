@@ -375,44 +375,79 @@ public struct NotchTouchIDPromptView: View {
     public static let touchIDPink = Color(red: 1.0, green: 0.216, blue: 0.373) // #FF375F
     public static let signedGreen = Color(red: 0.188, green: 0.82, blue: 0.345) // #30D158
     public static let earSize: CGFloat = 14
+    public static let expandedWidth: CGFloat = 480
+    /// Clearance from top screen edge (`y = 0`) so content sits comfortably below the physical MacBook notch (`~34–36pt`).
+    public static let notchTopClearance: CGFloat = 44
 
     public init(viewModel: NotchPromptViewModel) {
         self.viewModel = viewModel
     }
 
-    public var islandWidth: CGFloat {
+    private var isCollapsed: Bool {
+        viewModel.phase == .idle || viewModel.phase == .denied
+    }
+
+    private var isExpandedLike: Bool {
         switch viewModel.phase {
-        case .idle, .denied:
-            return 190
-        case .signed:
-            return 370
         case .expanded, .password, .verifying:
-            return 468
+            return true
+        case .idle, .denied, .signed:
+            return false
         }
     }
 
-    public var islandMinHeight: CGFloat {
+    public var islandWidth: CGFloat {
+        switch viewModel.phase {
+        case .idle, .denied:
+            return 188
+        case .signed:
+            return 370
+        case .expanded, .password, .verifying:
+            return Self.expandedWidth
+        }
+    }
+
+    public var islandHeight: CGFloat {
+        let hasWarning = (viewModel.request.warningText?.isEmpty == false)
+        let warningExtra: CGFloat = hasWarning ? 38 : 0
+        let scopeExtra: CGFloat = viewModel.request.showsScopeSelector ? 40 : 0
+
         switch viewModel.phase {
         case .idle, .denied:
             return 32
         case .signed:
-            return 42
+            return 72
         case .expanded, .verifying:
-            return viewModel.request.showsScopeSelector ? 204 : 164
+            return 158 + scopeExtra + warningExtra
         case .password:
-            return viewModel.request.showsScopeSelector ? 248 : 208
+            let errorExtra: CGFloat = viewModel.passwordError != nil ? 20 : 0
+            return 158 + scopeExtra + warningExtra + errorExtra
         }
+    }
+
+    public var islandMinHeight: CGFloat {
+        islandHeight
     }
 
     public var bottomCornerRadius: CGFloat {
         switch viewModel.phase {
         case .idle, .denied:
-            return 16
+            return 14
         case .signed:
             return 20
         case .expanded, .password, .verifying:
-            return 28
+            return 26
         }
+    }
+
+    private var islandShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: 0,
+            bottomLeadingRadius: bottomCornerRadius,
+            bottomTrailingRadius: bottomCornerRadius,
+            topTrailingRadius: 0,
+            style: .continuous
+        )
     }
 
     public var body: some View {
@@ -423,32 +458,43 @@ public struct NotchTouchIDPromptView: View {
                     .frame(width: Self.earSize, height: Self.earSize)
 
                 ZStack(alignment: .top) {
-                    NotchIslandShape(bottomCornerRadius: bottomCornerRadius)
-                        .fill(Self.notchBlack)
-                        .overlay(
-                            NotchIslandShape(bottomCornerRadius: bottomCornerRadius)
-                                .stroke(Color.white.opacity(0.12), lineWidth: 0.8)
-                        )
-                        .shadow(color: Color.black.opacity(0.65), radius: 22, x: 0, y: 12)
+                    // Expanded content stays at fixed `expandedWidth` so subviews never reflow/slide left-to-right during width animation.
+                    expandedPromptContent
+                        .frame(width: Self.expandedWidth, alignment: .top)
+                        .opacity(isExpandedLike ? 1 : 0)
+                        .scaleEffect(isExpandedLike ? 1.0 : 0.94, anchor: .top)
+                        .allowsHitTesting(isExpandedLike)
+                        .accessibilityHidden(!isExpandedLike)
 
-                    VStack(spacing: 0) {
-                        cameraHousingBar
-
-                        switch viewModel.phase {
-                        case .idle, .denied:
-                            EmptyView()
-                        case .signed:
-                            signedConfirmationPill
-                                .transition(.opacity)
-                        case .expanded, .password, .verifying:
-                            expandedPromptContent
-                                .transition(.opacity.combined(with: .move(edge: .top)))
-                        }
-                    }
-                    .clipShape(NotchIslandShape(bottomCornerRadius: bottomCornerRadius))
+                    signedConfirmationPill
+                        .frame(width: 370, alignment: .top)
+                        .opacity(viewModel.phase == .signed ? 1 : 0)
+                        .scaleEffect(viewModel.phase == .signed ? 1.0 : 0.92, anchor: .top)
+                        .allowsHitTesting(viewModel.phase == .signed)
+                        .accessibilityHidden(viewModel.phase != .signed)
                 }
-                .frame(width: islandWidth)
-                .frame(minHeight: islandMinHeight)
+                .frame(width: islandWidth, height: islandHeight, alignment: .top)
+                .background(Self.notchBlack)
+                .clipShape(islandShape)
+                .overlay(
+                    islandShape
+                        .strokeBorder(Color.white.opacity(isCollapsed ? 0 : 0.11), lineWidth: 0.8)
+                        .padding(.top, -Self.earSize)
+                        .clipShape(islandShape)
+                )
+                .background(
+                    // Drop shadow is inset from the top menu bar (`top: 30pt`) and side edges so it never bleeds onto the menu bar or clips at panel edges.
+                    RoundedRectangle(cornerRadius: bottomCornerRadius, style: .continuous)
+                        .fill(Self.notchBlack)
+                        .padding(.top, 30)
+                        .padding(.horizontal, 8)
+                        .shadow(
+                            color: Color.black.opacity(isCollapsed ? 0 : 0.42),
+                            radius: 14,
+                            x: 0,
+                            y: 8
+                        )
+                )
 
                 NotchBezelEar(side: .right)
                     .fill(Self.notchBlack)
@@ -457,89 +503,14 @@ public struct NotchTouchIDPromptView: View {
 
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(NotchPromptViewModel.transitionAnimation, value: viewModel.phase)
+        .animation(NotchPromptViewModel.transitionAnimation, value: viewModel.passwordError)
         .animation(.easeInOut(duration: 0.2), value: viewModel.selectedScope)
         .onAppear {
             withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) {
                 isPulsing = true
             }
-        }
-    }
-
-    // MARK: - Camera Housing Bar
-
-    private var cameraHousingBar: some View {
-        ZStack {
-            if viewModel.phase == .expanded || viewModel.phase == .password || viewModel.phase == .verifying {
-                HStack {
-                    HStack(spacing: 5) {
-                        Image(systemName: "key.shield.fill")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(Self.personalBlue)
-                        Text("Clavis Signing Broker")
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundColor(Color.white.opacity(0.72))
-                    }
-
-                    Spacer()
-
-                    Text(viewModel.request.operation)
-                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                        .foregroundColor(Color(red: 1.0, green: 0.62, blue: 0.04))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1.5)
-                        .background(
-                            Capsule()
-                                .fill(Color(red: 1.0, green: 0.62, blue: 0.04).opacity(0.14))
-                        )
-                        .overlay(
-                            Capsule()
-                                .stroke(Color(red: 1.0, green: 0.62, blue: 0.04).opacity(0.28), lineWidth: 0.7)
-                        )
-                }
-                .padding(.horizontal, 16)
-            }
-
-            // Center optical camera lens + LED indicator
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [
-                                Color(red: 0.12, green: 0.23, blue: 0.37),
-                                Color(red: 0.035, green: 0.067, blue: 0.12),
-                                Color(red: 0.015, green: 0.02, blue: 0.04)
-                            ],
-                            center: UnitPoint(x: 0.35, y: 0.35),
-                            startRadius: 0.5,
-                            endRadius: 5.5
-                        )
-                    )
-                    .frame(width: 10, height: 10)
-                    .overlay(
-                        Circle()
-                            .stroke(Color.white.opacity(0.16), lineWidth: 0.6)
-                    )
-
-                Circle()
-                    .fill(cameraLEDColor)
-                    .frame(width: 6, height: 6)
-                    .shadow(color: cameraLEDColor.opacity(viewModel.phase == .idle ? 0 : 0.85), radius: 4)
-                    .opacity(viewModel.phase == .idle || viewModel.phase == .denied ? 0.25 : (isPulsing ? 1.0 : 0.65))
-            }
-        }
-        .frame(height: viewModel.phase == .signed ? 12 : 28)
-    }
-
-    private var cameraLEDColor: Color {
-        switch viewModel.phase {
-        case .signed:
-            return Self.signedGreen
-        case .expanded, .password, .verifying:
-            return Color(red: 1.0, green: 0.62, blue: 0.04) // Amber active indicator
-        case .idle, .denied:
-            return Color.white.opacity(0.22)
         }
     }
 
@@ -571,9 +542,10 @@ public struct NotchTouchIDPromptView: View {
                 .font(.system(size: 12.5, weight: .bold))
                 .foregroundColor(Self.signedGreen)
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 6)
-        .frame(width: 370, height: 30)
+        .padding(.horizontal, 18)
+        .padding(.top, 36)
+        .padding(.bottom, 10)
+        .frame(width: 370, height: 72, alignment: .bottom)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Signed \(viewModel.selectedScope.title) with \(viewModel.request.keyLabel)")
     }
@@ -581,7 +553,7 @@ public struct NotchTouchIDPromptView: View {
     // MARK: - Expanded Prompt State (.expanded / .password / .verifying)
 
     private var expandedPromptContent: some View {
-        VStack(spacing: 9) {
+        VStack(spacing: 10) {
             identityGridRow
 
             if let warning = viewModel.request.warningText, !warning.isEmpty {
@@ -599,7 +571,7 @@ public struct NotchTouchIDPromptView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.top, 2)
+        .padding(.top, Self.notchTopClearance)
         .padding(.bottom, 14)
     }
 
@@ -729,16 +701,17 @@ public struct NotchTouchIDPromptView: View {
                     .foregroundColor(.white)
                     .lineLimit(1)
 
-                HStack(spacing: 4) {
-                    Text(isBot ? "🤖 Bot Key" : "👤 Personal Key")
-                        .font(.system(size: 9.5, weight: .semibold))
+                HStack(spacing: 5) {
+                    Text(isBot ? "🤖 Bot" : "👤 Personal")
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(accent)
                         .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
 
                     Text(viewModel.request.operation)
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundColor(Color.white.opacity(0.75))
-                        .padding(.horizontal, 4)
+                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                        .foregroundColor(Color.white.opacity(0.78))
+                        .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .background(
                             RoundedRectangle(cornerRadius: 4, style: .continuous)
@@ -889,12 +862,12 @@ public struct NotchTouchIDPromptView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(viewModel.phase == .verifying ? "Verifying Touch ID…" : "Touch ID to Confirm")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 12.5, weight: .semibold))
                     .foregroundColor(.white)
 
-                Text("Touch sensor to approve for \(viewModel.selectedScope.title) · or use password")
-                    .font(.system(size: 10.5, weight: .regular))
-                    .foregroundColor(Color.white.opacity(0.60))
+                Text("Touch sensor to approve for \(viewModel.selectedScope.title)")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundColor(Color.white.opacity(0.62))
                     .lineLimit(1)
             }
 

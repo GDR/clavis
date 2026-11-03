@@ -12,11 +12,12 @@ public final class NotchOverlayPanel: NSPanel {
 @MainActor
 public final class NotchPromptWindowController: NSObject {
     public static let shared = NotchPromptWindowController()
-    public nonisolated static let defaultPanelSize = NSSize(width: 520, height: 300)
+    public nonisolated static let defaultPanelSize = NSSize(width: 640, height: 340)
 
     public private(set) var panel: NSPanel?
     public private(set) var activeViewModel: NotchPromptViewModel?
     private var activeContinuation: CheckedContinuation<NotchPromptResult, Never>?
+    private var hideWorkItem: DispatchWorkItem?
 
     public override init() {
         super.init()
@@ -109,10 +110,18 @@ public final class NotchPromptWindowController: NSObject {
 
             self.activeViewModel = viewModel
             let panel = self.configurePanel(for: viewModel)
+            panel.contentView?.layoutSubtreeIfNeeded()
             panel.orderFrontRegardless()
 
-            viewModel.expand()
-            onPresented?(viewModel)
+            if let onPresented {
+                viewModel.expand()
+                onPresented(viewModel)
+            } else {
+                // Commit the initial collapsed 188×32 notch frame before animating width and height outward.
+                DispatchQueue.main.async {
+                    viewModel.expand()
+                }
+            }
         }
     }
 
@@ -121,6 +130,8 @@ public final class NotchPromptWindowController: NSObject {
     }
 
     private func dismissActivePromptIfNeeded() {
+        hideWorkItem?.cancel()
+        hideWorkItem = nil
         if let continuation = activeContinuation {
             activeContinuation = nil
             continuation.resume(returning: .denied)
@@ -130,11 +141,24 @@ public final class NotchPromptWindowController: NSObject {
     }
 
     private func completeActivePrompt(with result: NotchPromptResult) {
-        panel?.orderOut(nil)
-        activeViewModel = nil
         if let continuation = activeContinuation {
             activeContinuation = nil
             continuation.resume(returning: result)
+        }
+        if ClavisEnvironment.isTesting {
+            panel?.orderOut(nil)
+            activeViewModel = nil
+        } else {
+            // Allow the 0.38s shrink animation back into the 188×32 notch to finish before ordering out the panel.
+            hideWorkItem?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                Task { @MainActor in
+                    self?.panel?.orderOut(nil)
+                    self?.activeViewModel = nil
+                }
+            }
+            hideWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.38, execute: work)
         }
     }
 
