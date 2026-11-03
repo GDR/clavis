@@ -13,11 +13,25 @@ import Testing
         try await fixture.run {
             let manager = fixture.makeKeyManager()
             let agent = MockAgentController()
+            agent.stubbedApplicationRegistry = ApplicationRegistrySnapshot(applications: [
+                try RegisteredApplication(
+                    identity: .init(kind: .designatedRequirement, value: "com.anthropic.claudecode"),
+                    name: "Claude Code",
+                    path: "/Applications/Claude Code.app",
+                    classification: .bot
+                ),
+                try RegisteredApplication(
+                    identity: .init(kind: .designatedRequirement, value: "com.google.antigravity"),
+                    name: "Antigravity",
+                    path: "/Applications/Antigravity.app",
+                    classification: .block
+                )
+            ])
             let state = AppState(keyManager: manager, sshAgentServer: SSHAgentServer(applicationAccess: TestApplicationAccess(), keyManager: manager), agentLifecycle: agent)
             let profile = KeyAccessProfile(type: type, capabilities: .init(ssh: true, signature: false))
             let key = try state.generateKey(label: "Long project key name that should remain on one line", accessProfile: profile)
             #expect(state.keys.first?.effectiveAccessProfile == profile)
-            let root = KeyDetailInspectorView(key: key, appState: state, onDelete: {})
+            let root = KeyDetailInspectorView(key: key, appState: state, onDelete: {}, applicationAgent: agent)
                 .environment(\.colorScheme, dark ? .dark : .light)
                 .background(Color(nsColor: .windowBackgroundColor))
             let view = NSHostingView(rootView: root)

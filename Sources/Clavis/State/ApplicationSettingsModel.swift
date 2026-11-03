@@ -34,19 +34,31 @@ final class ApplicationSettingsModel: ObservableObject {
         await perform(.remove(app.identity))
     }
 
-    func add(url: URL) async {
+    func remove(ids: Set<UUID>) async {
+        let targets = applications.filter { ids.contains($0.id) }
+        guard !targets.isEmpty else { return }
+        for app in targets {
+            await perform(.remove(app.identity))
+        }
+    }
+
+    func add(url: URL, classification: ApplicationClassification = .bot) async {
         guard !isBusy else { return }
         do {
             let executable = Bundle(url: url)?.executableURL ?? url
             let identity = try ApplicationIdentityVerifier.identity(forExecutable: executable)
-            if let existing = applications.first(where: { $0.identity == identity }) {
+            if var existing = applications.first(where: { $0.identity == identity }) {
                 selection = existing.id
+                if existing.classification != classification {
+                    existing.classification = classification
+                    await perform(.set(existing))
+                }
                 return
             }
             let app = RegisteredApplication(
                 identity: identity,
                 name: url.deletingPathExtension().lastPathComponent,
-                path: url.path, classification: .bot
+                path: url.path, classification: classification
             )
             await perform(.set(app))
             selection = applications.first(where: { $0.identity == identity })?.id
