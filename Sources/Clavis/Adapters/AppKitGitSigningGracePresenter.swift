@@ -9,7 +9,32 @@ public struct AppKitGitSigningGracePresenter: GitSigningGracePresenter {
     }
 
     public func prompt(keyLabel: String, clientDesc: String, timeout: TimeInterval) -> GitSigningPromptChoice {
-        GitSigningPrompt.displayModal(keyLabel: keyLabel, clientDesc: clientDesc, timeout: timeout)
+        if ClavisEnvironment.isTesting || Thread.isMainThread {
+            return GitSigningPrompt.displayModal(keyLabel: keyLabel, clientDesc: clientDesc, timeout: timeout)
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        let box = ResultBox()
+        Task { @MainActor in
+            let keyType = AppState.shared.keys.first(where: { $0.label == keyLabel })?.effectiveAccessProfile.type ?? .personal
+            box.choice = await self.presentNotchPrompt(
+                keyLabel: keyLabel,
+                clientDesc: clientDesc,
+                keyType: keyType
+            )
+            semaphore.signal()
+        }
+        let waitResult = semaphore.wait(timeout: .now() + timeout)
+        if waitResult == .timedOut {
+            Task { @MainActor in
+                NotchPromptWindowController.shared.dismiss()
+            }
+            return .cancel
+        }
+        return box.choice
+    }
+
+    private final class ResultBox: @unchecked Sendable {
+        var choice: GitSigningPromptChoice = .cancel
     }
 
     public func prompt(keyLabel: String, clientDesc: String) -> GitSigningPromptChoice {
