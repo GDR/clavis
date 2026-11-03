@@ -192,6 +192,9 @@ struct LibraryAgentStatus: View {
         }
     }
 
+    @State private var isStatusHovered = false
+    @State private var isSettingsHovered = false
+
     var body: some View {
         HStack(spacing: 8) {
             if onTogglePause != nil || onLock != nil {
@@ -217,12 +220,15 @@ struct LibraryAgentStatus: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .adaptiveGlassCapsule()
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isStatusHovered ? Color.primary.opacity(0.06) : Color.clear)
+                )
+                .onHover { isStatusHovered = $0 }
                 .help(statusLabel)
                 .accessibilityLabel("Clavis status: \(statusLabel)")
             } else {
                 statusPillContent
-                    .adaptiveGlassCapsule()
                     .accessibilityElement(children: .combine)
             }
 
@@ -231,13 +237,17 @@ struct LibraryAgentStatus: View {
             if let onOpenSettings {
                 Button(action: onOpenSettings) {
                     Image(systemName: "gearshape")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .frame(width: 26, height: 26)
-                        .contentShape(Circle())
+                        .font(.system(size: 13.5, weight: .medium))
+                        .foregroundStyle(isSettingsHovered ? .primary : DesignTokens.textSecondary)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(isSettingsHovered ? Color.primary.opacity(0.07) : Color.clear)
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .adaptiveGlassCapsule()
+                .onHover { isSettingsHovered = $0 }
                 .help("Settings (⌘,)")
                 .accessibilityLabel("Settings")
             }
@@ -248,17 +258,17 @@ struct LibraryAgentStatus: View {
     }
 
     private var statusPillContent: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 7) {
             Circle()
                 .fill(dotColor)
                 .frame(width: 7, height: 7)
                 .accessibilityHidden(true)
             Text(statusLabel)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(.primary)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(DesignTokens.textSecondary)
                 .lineLimit(1)
         }
-        .padding(.horizontal, 11)
+        .padding(.horizontal, 8)
         .frame(height: 26)
     }
 }

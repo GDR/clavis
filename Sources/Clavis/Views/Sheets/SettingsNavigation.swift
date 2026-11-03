@@ -99,51 +99,21 @@ private struct ApplicationSettingsPane: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Registered Applications").font(.headline)
-                        Text("Personal apps can use all keys. Bots can use Bot keys. Blocked apps are always refused.")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if !model.applications.isEmpty {
-                        Text("\(model.applications.count) registered")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Capsule().fill(Color.primary.opacity(0.06)))
-                    }
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Registered Applications")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text("Personal apps can use all keys. Bots can use Bot keys. Blocked apps are always refused.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                 }
 
                 VStack(spacing: 0) {
-                    // Column header bar
-                    HStack(spacing: 10) {
-                        Text("Application")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.leading, 26)
-                        Spacer()
-                        Text("Trust Identity")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.trailing, 32)
-                        Text("Classification")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 110, alignment: .trailing)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Color.primary.opacity(0.03))
-
-                    Divider()
-
                     if model.applications.isEmpty {
                         Text(model.snapshot == nil ? "Applications unavailable" : "No applications added")
-                            .font(.callout).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, minHeight: 84)
+                            .font(.system(size: 13)).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 72)
                     } else {
                         VStack(spacing: 0) {
                             ForEach(Array(model.applications.enumerated()), id: \.element.id) { index, app in
@@ -152,7 +122,7 @@ private struct ApplicationSettingsPane: View {
                                 let isRowSelected = model.selection == app.id || isSelectedForRemoval
 
                                 VStack(spacing: 0) {
-                                    HStack(spacing: 10) {
+                                    HStack(spacing: 9) {
                                         // Disclosure chevron / Remove checkbox slot
                                         ZStack {
                                             if isRemoveMode {
@@ -161,50 +131,62 @@ private struct ApplicationSettingsPane: View {
                                                     .foregroundStyle(isSelectedForRemoval ? DesignTokens.accentBlue : Color.secondary)
                                             } else {
                                                 Image(systemName: "chevron.right")
-                                                    .font(.system(size: 10, weight: .bold))
-                                                    .foregroundStyle(isExpanded ? Color.primary : Color.secondary)
+                                                    .font(.system(size: 9.5, weight: .semibold))
+                                                    .foregroundStyle(isExpanded ? Color.primary : DesignTokens.textTertiary)
                                                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
                                             }
                                         }
-                                        .frame(width: 18, height: 18)
+                                        .frame(width: 14, height: 14)
 
                                         Image(nsImage: NSWorkspace.shared.icon(forFile: app.path))
                                             .resizable()
-                                            .frame(width: 28, height: 28)
+                                            .frame(width: 20, height: 20)
                                             .accessibilityHidden(true)
 
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            HStack(spacing: 6) {
-                                                Text(app.name)
-                                                    .font(.system(size: 12.5, weight: .semibold))
-                                                    .lineLimit(1)
-                                                identityKindBadge(for: app.identity)
-                                            }
-                                            Text(app.path)
-                                                .font(.system(size: 11))
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                                .truncationMode(.middle)
-                                        }
-                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        Text(app.name)
+                                            .font(.system(size: 13))
+                                            .lineLimit(1)
 
-                                        Picker("Access for \(app.name)", selection: Binding(
-                                            get: { app.classification },
-                                            set: { value in Task { await model.classify(app, as: value) } }
-                                        )) {
-                                            ForEach(ApplicationClassification.allCases, id: \.self) { classification in
-                                                Text(classification.title).tag(classification)
-                                            }
+                                        Spacer(minLength: 8)
+
+                                        HStack(spacing: 5) {
+                                            Text(app.classification.title)
+                                                .font(.system(size: 13))
+                                                .foregroundStyle(DesignTokens.textSecondary)
+                                            Image(systemName: "chevron.up.chevron.down")
+                                                .font(.system(size: 9, weight: .semibold))
+                                                .foregroundStyle(DesignTokens.textSecondary)
                                         }
-                                        .labelsHidden()
-                                        .frame(width: 110)
+                                        .padding(.vertical, 3)
+                                        .padding(.horizontal, 4)
+                                        .contentShape(Rectangle())
+                                        .overlay {
+                                            Menu {
+                                                ForEach(ApplicationClassification.allCases, id: \.self) { classification in
+                                                    Button {
+                                                        Task { await model.classify(app, as: classification) }
+                                                    } label: {
+                                                        if app.classification == classification {
+                                                            Label(classification.title, systemImage: "checkmark")
+                                                        } else {
+                                                            Text(classification.title)
+                                                        }
+                                                    }
+                                                }
+                                            } label: {
+                                                Color.clear
+                                            }
+                                            .menuStyle(.borderlessButton)
+                                            .menuIndicator(.hidden)
+                                        }
                                         .disabled(isRemoveMode || model.isBusy)
+                                        .accessibilityLabel("Access for \(app.name)")
                                     }
                                     .padding(.horizontal, 12)
-                                    .padding(.vertical, 9)
+                                    .frame(minHeight: 38)
                                     .background(
                                         isRowSelected
-                                            ? Color.accentColor.opacity(0.11)
+                                            ? Color.accentColor.opacity(0.12)
                                             : (isExpanded ? Color.primary.opacity(0.03) : Color.clear)
                                     )
                                     .contentShape(Rectangle())
@@ -233,7 +215,10 @@ private struct ApplicationSettingsPane: View {
                                     }
 
                                     if index < model.applications.count - 1 {
-                                        Divider()
+                                        Rectangle()
+                                            .fill(DesignTokens.settingsRowDivider)
+                                            .frame(height: 1)
+                                            .padding(.horizontal, 12)
                                     }
                                 }
                             }
@@ -241,9 +226,10 @@ private struct ApplicationSettingsPane: View {
                     }
 
                     Divider()
+                        .overlay(DesignTokens.settingsRowDivider)
 
                     // Bottom [+ | −] / [Delete | Cancel] action bar
-                    HStack(spacing: 4) {
+                    HStack(spacing: 2) {
                         if isRemoveMode {
                             Button(role: .destructive) {
                                 let idsToRemove = selectedForRemoval
@@ -256,7 +242,7 @@ private struct ApplicationSettingsPane: View {
                                 }
                             } label: {
                                 Text(selectedForRemoval.isEmpty ? "Delete" : "Delete (\(selectedForRemoval.count))")
-                                    .font(.system(size: 12, weight: .semibold))
+                                    .font(.system(size: 12, weight: .medium))
                                     .foregroundStyle(selectedForRemoval.isEmpty ? Color.secondary : Color.red)
                                     .padding(.horizontal, 8)
                                     .frame(height: 24)
@@ -265,7 +251,7 @@ private struct ApplicationSettingsPane: View {
                             .disabled(selectedForRemoval.isEmpty || model.isBusy)
                             .accessibilityLabel("Confirm removal of selected applications")
 
-                            Divider().frame(height: 16)
+                            Divider().frame(height: 14)
 
                             Button {
                                 withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
@@ -274,29 +260,26 @@ private struct ApplicationSettingsPane: View {
                                 }
                             } label: {
                                 Text("Cancel")
-                                    .font(.system(size: 12, weight: .medium))
+                                    .font(.system(size: 12))
                                     .padding(.horizontal, 8)
                                     .frame(height: 24)
                             }
                             .buttonStyle(.borderless)
 
                             Spacer()
-
-                            Text(selectedForRemoval.isEmpty ? "Select applications to remove" : "\(selectedForRemoval.count) selected")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                                .padding(.trailing, 6)
                         } else {
                             Button(action: chooseApplication) {
                                 Image(systemName: "plus")
-                                    .frame(width: 26, height: 24)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(DesignTokens.textSecondary)
+                                    .frame(width: 24, height: 22)
                             }
                             .buttonStyle(.borderless)
                             .help("Add application or executable")
                             .accessibilityLabel("Add application or executable")
                             .disabled(model.snapshot == nil)
 
-                            Divider().frame(height: 16)
+                            Divider().frame(height: 12)
 
                             Button {
                                 withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
@@ -310,7 +293,9 @@ private struct ApplicationSettingsPane: View {
                                 }
                             } label: {
                                 Image(systemName: "minus")
-                                    .frame(width: 26, height: 24)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(model.applications.isEmpty ? DesignTokens.textTertiary : DesignTokens.textSecondary)
+                                    .frame(width: 24, height: 22)
                             }
                             .buttonStyle(.borderless)
                             .help("Select applications to remove")
@@ -320,18 +305,15 @@ private struct ApplicationSettingsPane: View {
                             Spacer()
 
                             if model.isBusy {
-                                ProgressView().controlSize(.small).padding(.trailing, 8)
+                                ProgressView().controlSize(.small).padding(.trailing, 6)
                             }
                         }
                     }
-                    .padding(.horizontal, 6)
+                    .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(Color.primary.opacity(0.03))
                 }
                 .disabled(model.isBusy)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary))
+                .modifier(SettingsGroupCardModifier())
 
                 Text("Changes require Touch ID or your macOS password. Removing an app blocks it and revokes its approvals.")
                     .font(.caption).foregroundStyle(.secondary)
