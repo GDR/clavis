@@ -60,6 +60,7 @@ public final class NotchPromptWindowController: NSObject {
                 defer: false
             )
             panel.level = .statusBar + 1
+            panel.appearance = NSAppearance(named: .darkAqua)
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = false
