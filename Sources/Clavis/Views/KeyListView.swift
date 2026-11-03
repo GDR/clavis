@@ -414,17 +414,14 @@ struct KeyListView: View {
             }
             .frame(maxHeight: .infinity)
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                VStack(spacing: 0) {
-                    Divider().padding(.horizontal, 12)
-                    LibraryAgentStatus(
-                        active: appState.isSocketActive,
-                        requestState: appState.requestPolicy.state,
-                        isBusy: appState.requestPolicy.isBusy,
-                        onTogglePause: { confirmingRevokeAll = true },
-                        onLock: { PanelLockController.shared.lock(reason: .lockNow) },
-                        onOpenSettings: { appState.activeSheet = .settings }
-                    )
-                }
+                LibraryAgentStatus(
+                    active: appState.isSocketActive,
+                    requestState: appState.requestPolicy.state,
+                    isBusy: appState.requestPolicy.isBusy,
+                    onTogglePause: { confirmingRevokeAll = true },
+                    onLock: { PanelLockController.shared.lock(reason: .lockNow) },
+                    onOpenSettings: { appState.activeSheet = .settings }
+                )
             }
         }
         .frame(width: Self.sidebarWidth)
@@ -583,55 +580,69 @@ struct KeySidebarRowView: View {
         let profile = key.effectiveAccessProfile
         let presentation = LibraryKeyPresentation(profile: profile)
         let isBot = profile.type == .bot
+        let squircleColors: [Color] = isBot
+            ? [Color(red: 0.69, green: 0.35, blue: 0.94), Color(red: 0.54, green: 0.22, blue: 0.82)]
+            : [Color(red: 0.12, green: 0.58, blue: 1.0), Color(red: 0.0, green: 0.45, blue: 0.96)]
 
-        HStack(spacing: 10) {
+        HStack(spacing: 9) {
             ZStack {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isBot ? Color.purple.opacity(0.15) : DesignTokens.accentBlue.opacity(0.14))
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(isBot ? Color.purple.opacity(0.28) : DesignTokens.accentBlue.opacity(0.25), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 5.5, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: squircleColors,
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                RoundedRectangle(cornerRadius: 5.5, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
                 Image(systemName: presentation.tileSymbol)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(isBot ? Color.purple : DesignTokens.accentBlue)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.white)
             }
-            .frame(width: 30, height: 30)
+            .frame(width: 22, height: 22)
+            .shadow(color: Color.black.opacity(0.15), radius: 1, x: 0, y: 0.5)
             .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(key.label)
-                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
-                    .foregroundStyle(presentation.isDisabled ? DesignTokens.textSecondary : .primary)
-                    .strikethrough(presentation.isDisabled, color: DesignTokens.textSecondary)
+                    .font(.system(size: 13, weight: isSelected ? .medium : .regular))
+                    .foregroundStyle(
+                        isSelected
+                            ? Color.white
+                            : (presentation.isDisabled ? DesignTokens.textSecondary : .primary)
+                    )
+                    .strikethrough(presentation.isDisabled, color: isSelected ? Color.white.opacity(0.75) : DesignTokens.textSecondary)
                     .lineLimit(1)
                 Text(presentation.purposeSummary)
                     .font(.system(size: 11))
-                    .foregroundStyle(DesignTokens.textSecondary)
+                    .foregroundStyle(isSelected ? Color.white.opacity(0.78) : DesignTokens.textSecondary)
                     .lineLimit(1)
             }
 
             Spacer(minLength: 4)
 
             if presentation.isDisabled {
-                Text("⏸")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                Image(systemName: "pause.fill")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(isSelected ? Color.white.opacity(0.85) : DesignTokens.textSecondary)
                     .help("Disabled")
                     .accessibilityHidden(true)
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .frame(minHeight: 44)
+        .padding(.vertical, 5)
+        .frame(minHeight: 38)
         .background(FirstMouseView())
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(
                     isSelected
-                        ? DesignTokens.accentBlue.opacity(0.16)
-                        : (isHovered ? Color.primary.opacity(0.05) : Color.clear)
+                        ? Color(nsColor: .controlAccentColor)
+                        : (isHovered ? Color.primary.opacity(0.06) : Color.clear)
                 )
         )
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(key.label)
         .accessibilityValue(presentation.accessibilitySummary)

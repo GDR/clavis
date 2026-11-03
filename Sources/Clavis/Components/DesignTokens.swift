@@ -11,14 +11,32 @@ public enum DesignTokens {
 
     public static let sidebarBackground = Color(nsColor: NSColor(name: nil) { appearance in
         appearance.isDarkMode
-            ? NSColor(calibratedRed: 0.12, green: 0.12, blue: 0.14, alpha: 0.0)
-            : NSColor(calibratedWhite: 0.94, alpha: 0.45)
+            ? NSColor(calibratedRed: 0.11, green: 0.11, blue: 0.13, alpha: 0.35)
+            : NSColor(calibratedWhite: 0.93, alpha: 0.55)
     })
 
     public static let inspectorBackground = Color(nsColor: NSColor(name: nil) { appearance in
         appearance.isDarkMode
-            ? NSColor(calibratedRed: 0.10, green: 0.10, blue: 0.12, alpha: 0.50)
-            : NSColor(calibratedWhite: 0.99, alpha: 0.60)
+            ? NSColor(calibratedRed: 0.12, green: 0.12, blue: 0.13, alpha: 0.96)
+            : NSColor(calibratedWhite: 0.96, alpha: 0.98)
+    })
+
+    public static let settingsGroupFill = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.isDarkMode
+            ? NSColor(calibratedWhite: 1.0, alpha: 0.045)
+            : NSColor(calibratedWhite: 1.0, alpha: 0.85)
+    })
+
+    public static let settingsGroupBorder = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.isDarkMode
+            ? NSColor(calibratedWhite: 1.0, alpha: 0.07)
+            : NSColor(calibratedWhite: 0.0, alpha: 0.08)
+    })
+
+    public static let settingsRowDivider = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.isDarkMode
+            ? NSColor(calibratedWhite: 1.0, alpha: 0.065)
+            : NSColor(calibratedWhite: 0.0, alpha: 0.07)
     })
 
     public static let menuBarBackground = Color(nsColor: NSColor(name: nil) { appearance in
@@ -77,6 +95,22 @@ public enum DesignTokens {
 extension NSAppearance {
     public var isDarkMode: Bool {
         bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+}
+
+public struct SettingsGroupCardModifier: ViewModifier {
+    public var cornerRadius: CGFloat = 10
+
+    public init(cornerRadius: CGFloat = 10) {
+        self.cornerRadius = cornerRadius
+    }
+
+    public func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            .background(shape.fill(DesignTokens.settingsGroupFill))
+            .overlay(shape.strokeBorder(DesignTokens.settingsGroupBorder, lineWidth: 1))
+            .clipShape(shape)
     }
 }
 

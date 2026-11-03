@@ -40,6 +40,7 @@ import Testing
             window.contentView = view
             window.orderFront(nil)
             defer { window.orderOut(nil) }
+            view.layoutSubtreeIfNeeded()
             try await Task.sleep(nanoseconds: 150_000_000)
             view.layoutSubtreeIfNeeded()
             let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
