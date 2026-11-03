@@ -1,5 +1,7 @@
 import SwiftUI
 import AppKit
+import LocalAuthentication
+import LocalAuthenticationEmbeddedUI
 import ClavisCore
 
 // MARK: - Data Model & Session Types
@@ -138,6 +140,7 @@ public final class NotchPromptViewModel: ObservableObject {
     @Published public var selectedScope: NotchSessionScope
     @Published public var passwordText: String = ""
     @Published public var passwordError: String? = nil
+    @Published public private(set) var authenticationContext: LAContext = LAContext()
 
     private let biometricAuthenticator: @MainActor () async -> Bool
     private let passwordVerifier: @MainActor (String) async -> Bool
@@ -146,6 +149,17 @@ public final class NotchPromptViewModel: ObservableObject {
     private let autoCollapseAfterSigned: Bool
     private var onComplete: (@MainActor (NotchPromptResult) -> Void)?
     private var hasCompleted: Bool = false
+    private var embeddedBiometricTask: Task<Void, Never>?
+
+    public var canUseEmbeddedBiometrics: Bool {
+        guard !ClavisEnvironment.isTesting else { return false }
+        let probe = LAContext()
+        var error: NSError?
+        if #available(macOS 15.0, *), probe.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometricsOrCompanion, error: &error) {
+            return true
+        }
+        return probe.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+    }
 
     public init(
         request: NotchPromptRequest,
@@ -177,6 +191,7 @@ public final class NotchPromptViewModel: ObservableObject {
             phase = .expanded
             passwordError = nil
         }
+        startEmbeddedBiometricListening()
     }
 
     public func selectScope(_ scope: NotchSessionScope) {
@@ -186,6 +201,7 @@ public final class NotchPromptViewModel: ObservableObject {
     }
 
     public func openPasswordDrawer() {
+        cancelEmbeddedBiometricListening()
         withAnimation(Self.drawerAnimation) {
             passwordError = nil
             phase = .password
@@ -198,10 +214,55 @@ public final class NotchPromptViewModel: ObservableObject {
             passwordText = ""
             phase = .expanded
         }
+        startEmbeddedBiometricListening()
+    }
+
+    /// Arms the hardware Touch ID sensor immediately via `LAAuthenticationView` so the user can touch the sensor without clicking first.
+    public func startEmbeddedBiometricListening() {
+        guard !ClavisEnvironment.isTesting else { return }
+        guard phase == .expanded else { return }
+        cancelEmbeddedBiometricListening()
+
+        let context = LAContext()
+        context.localizedFallbackTitle = ""
+        var error: NSError?
+        let policy: LAPolicy
+        if #available(macOS 15.0, *), context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometricsOrCompanion, error: &error) {
+            policy = .deviceOwnerAuthenticationWithBiometricsOrCompanion
+        } else if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) {
+            policy = .deviceOwnerAuthenticationWithBiometrics
+        } else {
+            return
+        }
+
+        self.authenticationContext = context
+        let reason = "approve \(request.operation) with \(request.keyLabel)"
+
+        embeddedBiometricTask = Task { @MainActor [weak self] in
+            // Wait for LAAuthenticationView to mount with the new LAContext and for the expand spring to settle to identity transform so LA's visibility check succeeds.
+            try? await Task.sleep(nanoseconds: 320_000_000)
+            guard let self, !Task.isCancelled, self.phase == .expanded else { return }
+            do {
+                let verified = try await context.evaluatePolicy(policy, localizedReason: reason)
+                guard !Task.isCancelled, self.phase == .expanded || self.phase == .verifying else { return }
+                if verified {
+                    await self.completeApproval(method: .biometrics)
+                }
+            } catch {
+                // Cancelled, switched to password, or timed out; user can click Touch ID ring to retry or use password.
+            }
+        }
+    }
+
+    public func cancelEmbeddedBiometricListening() {
+        embeddedBiometricTask?.cancel()
+        embeddedBiometricTask = nil
+        authenticationContext.invalidate()
     }
 
     public func approveWithBiometrics() async {
         guard phase != .signed && phase != .denied else { return }
+        cancelEmbeddedBiometricListening()
         withAnimation(Self.transitionAnimation) {
             passwordError = nil
             phase = .verifying
@@ -216,6 +277,7 @@ public final class NotchPromptViewModel: ObservableObject {
             withAnimation(Self.transitionAnimation) {
                 phase = .expanded
             }
+            startEmbeddedBiometricListening()
             return
         }
 
@@ -232,6 +294,7 @@ public final class NotchPromptViewModel: ObservableObject {
             return false
         }
 
+        cancelEmbeddedBiometricListening()
         let verified = await passwordVerifier(passwordText)
         guard verified else {
             withAnimation(.easeInOut(duration: 0.2)) {
@@ -246,6 +309,7 @@ public final class NotchPromptViewModel: ObservableObject {
     }
 
     public func deny() {
+        cancelEmbeddedBiometricListening()
         withAnimation(Self.collapseAnimation) {
             passwordText = ""
             passwordError = nil
@@ -255,6 +319,7 @@ public final class NotchPromptViewModel: ObservableObject {
     }
 
     private func completeApproval(method: NotchApprovalMethod) async {
+        cancelEmbeddedBiometricListening()
         let approvedScope = selectedScope
         withAnimation(Self.drawerAnimation) {
             passwordText = ""
@@ -820,49 +885,58 @@ public struct NotchTouchIDPromptView: View {
 
     private var biometricFooterRow: some View {
         HStack(spacing: 10) {
-            Button {
-                Task {
-                    await viewModel.approveWithBiometrics()
-                }
-            } label: {
-                ZStack {
-                    Circle()
-                        .stroke(
-                            (viewModel.phase == .verifying ? Self.signedGreen : Self.touchIDPink).opacity(0.28),
-                            lineWidth: 1.2
-                        )
-                        .frame(width: 44, height: 44)
-                        .scaleEffect(isPulsing ? 1.08 : 0.94)
+            ZStack {
+                Circle()
+                    .stroke(
+                        (viewModel.phase == .verifying ? Self.signedGreen : Self.touchIDPink).opacity(0.28),
+                        lineWidth: 1.2
+                    )
+                    .frame(width: 44, height: 44)
+                    .scaleEffect(isPulsing ? 1.08 : 0.94)
 
-                    Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [
-                                    (viewModel.phase == .verifying ? Self.signedGreen : Self.touchIDPink).opacity(0.22),
-                                    Color.clear
-                                ],
-                                center: .center,
-                                startRadius: 2,
-                                endRadius: 19
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                (viewModel.phase == .verifying ? Self.signedGreen : Self.touchIDPink).opacity(0.22),
+                                Color.clear
+                            ],
+                            center: .center,
+                            startRadius: 2,
+                            endRadius: 19
+                        )
+                    )
+                    .frame(width: 38, height: 38)
+                    .overlay(
+                        Circle()
+                            .stroke(
+                                (viewModel.phase == .verifying ? Self.signedGreen : Self.touchIDPink).opacity(0.55),
+                                lineWidth: 1.4
                             )
-                        )
-                        .frame(width: 38, height: 38)
-                        .overlay(
-                            Circle()
-                                .stroke(
-                                    (viewModel.phase == .verifying ? Self.signedGreen : Self.touchIDPink).opacity(0.55),
-                                    lineWidth: 1.4
-                                )
-                        )
+                    )
 
-                    Image(systemName: viewModel.phase == .verifying ? "checkmark" : "touchid")
-                        .font(.system(size: 19, weight: .medium))
-                        .foregroundColor(viewModel.phase == .verifying ? Self.signedGreen : Self.touchIDPink)
+                if viewModel.canUseEmbeddedBiometrics && viewModel.phase == .expanded {
+                    NotchEmbeddedTouchIDView(context: viewModel.authenticationContext)
+                        .frame(width: 40, height: 40)
+                } else {
+                    Button {
+                        Task {
+                            await viewModel.approveWithBiometrics()
+                        }
+                    } label: {
+                        Image(systemName: viewModel.phase == .verifying ? "checkmark" : "touchid")
+                            .font(.system(size: 19, weight: .medium))
+                            .foregroundColor(viewModel.phase == .verifying ? Self.signedGreen : Self.touchIDPink)
+                            .frame(width: 38, height: 38)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disableNotchFocusRing()
                 }
             }
-            .buttonStyle(.plain)
-            .disableNotchFocusRing()
+            .accessibilityElement(children: .combine)
             .accessibilityLabel("Touch ID to Confirm")
+            .accessibilityAddTraits(.isButton)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(viewModel.phase == .verifying ? "Verifying Touch ID…" : "Touch ID to Confirm")
@@ -963,5 +1037,51 @@ private extension View {
         } else {
             self
         }
+    }
+}
+
+/// Hosts Apple's `LAAuthenticationView` (`LocalAuthenticationEmbeddedUI`) paired with `LAContext` so the physical MacBook Touch ID sensor listens immediately inside the Notch prompt without popping up the system modal alert.
+private struct NotchEmbeddedTouchIDView: NSViewRepresentable {
+    let context: LAContext
+
+    final class ContainerView: NSView {
+        var currentContext: LAContext?
+        var authView: LAAuthenticationView?
+
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            wantsLayer = true
+            layer?.backgroundColor = NSColor(calibratedRed: 0.02, green: 0.02, blue: 0.028, alpha: 1.0).cgColor
+            layer?.cornerRadius = 20
+        }
+
+        required init?(coder: NSCoder) {
+            nil
+        }
+
+        func configure(with context: LAContext) {
+            guard currentContext !== context else { return }
+            currentContext = context
+            authView?.removeFromSuperview()
+
+            let view = LAAuthenticationView(context: context, controlSize: .regular)
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+            NSLayoutConstraint.activate([
+                view.centerXAnchor.constraint(equalTo: centerXAnchor),
+                view.centerYAnchor.constraint(equalTo: centerYAnchor)
+            ])
+            authView = view
+        }
+    }
+
+    func makeNSView(context: Context) -> ContainerView {
+        let container = ContainerView()
+        container.configure(with: self.context)
+        return container
+    }
+
+    func updateNSView(_ nsView: ContainerView, context: Context) {
+        nsView.configure(with: self.context)
     }
 }
