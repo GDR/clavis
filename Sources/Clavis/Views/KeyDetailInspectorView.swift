@@ -11,6 +11,15 @@ public extension SSHKeyInfo {
     }
 }
 
+// MARK: - Scroll Offset Tracking
+
+private struct InspectorScrollOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 // MARK: - Native Inline Key Rename Field (Caret at End, Commit on Blur/Enter, Cancel on Escape)
 
 struct InlineKeyRenameField: NSViewRepresentable {
@@ -28,7 +37,7 @@ struct InlineKeyRenameField: NSViewRepresentable {
         textField.isBordered = false
         textField.drawsBackground = false
         textField.focusRingType = .none
-        textField.font = NSFont.systemFont(ofSize: 23, weight: .semibold)
+        textField.font = NSFont.systemFont(ofSize: 22, weight: .bold)
         textField.textColor = NSColor.labelColor
         textField.delegate = context.coordinator
         textField.lineBreakMode = .byTruncatingTail
@@ -164,23 +173,37 @@ public struct KeyDetailInspectorView: View {
     public let onDelete: () -> Void
     public var onShowToast: ((String) -> Void)?
 
+    @StateObject private var applicationsModel: ApplicationSettingsModel
+
     @State private var isRenaming: Bool = false
     @State private var draftKeyName: String = ""
     @State private var showingDeleteAlert: Bool = false
+    @State private var showingRotateInfoAlert: Bool = false
     @State private var changePurposeError: String? = nil
     @State private var showingChangePurposeError: Bool = false
     @State private var lastActivityDate: Date? = nil
+    @State private var isScrolled: Bool = false
+
+    @State private var copiedPublicKey: Bool = false
+    @State private var copiedFingerprint: Bool = false
+    @State private var copiedFilePath: Bool = false
+
+    @State private var expandedAppIds: Set<UUID> = []
+    @State private var isRemoveMode: Bool = false
+    @State private var selectedForRemoval: Set<UUID> = []
 
     public init(
         key: SSHKeyInfo,
         appState: AppState,
         onDelete: @escaping () -> Void,
-        onShowToast: ((String) -> Void)? = nil
+        onShowToast: ((String) -> Void)? = nil,
+        applicationAgent: any AgentControlling = AgentLifecycleManager.shared
     ) {
         self.key = key
         self.appState = appState
         self.onDelete = onDelete
         self.onShowToast = onShowToast
+        self._applicationsModel = StateObject(wrappedValue: ApplicationSettingsModel(agent: applicationAgent))
     }
 
     public static func trimIdentity(_ value: String) -> String {
@@ -222,6 +245,49 @@ public struct KeyDetailInspectorView: View {
         return key.biometricPolicy == .biometryCurrentSet
             ? "Touch ID only. Invalidated if enrolled fingerprints change."
             : "Touch ID, Apple Watch, or your Mac password."
+    }
+
+    private var isBotKey: Bool {
+        key.effectiveAccessProfile.type == .bot
+    }
+
+    private var isKeyEnabled: Bool {
+        let caps = key.effectiveAccessProfile.capabilities
+        return caps.ssh || caps.signature
+    }
+
+    private var capabilitySummary: String {
+        let caps = key.effectiveAccessProfile.capabilities
+        if caps.ssh && caps.signature {
+            return "SSH & Git signing"
+        } else if caps.ssh {
+            return "SSH authentication"
+        } else if caps.signature {
+            return "Git signing"
+        } else {
+            return "Disabled"
+        }
+    }
+
+    private var publicKeyFilePath: String {
+        let sanitized = key.label
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "-")
+        return "~/.ssh/\(sanitized).pub"
+    }
+
+    private var formattedFingerprint: String {
+        key.fingerprint.hasPrefix("SHA256:")
+            ? key.fingerprint
+            : "SHA256:\(key.fingerprint)"
+    }
+
+    private var displayedApplications: [RegisteredApplication] {
+        if isBotKey {
+            return applicationsModel.applications
+        } else {
+            return applicationsModel.applications.filter { $0.classification == .block }
+        }
     }
 
     private var activeGitGraceSession: (remainingSeconds: Int, remainingOperations: Int, formattedTime: String)? {
@@ -267,31 +333,60 @@ public struct KeyDetailInspectorView: View {
     }
 
     public var body: some View {
-        Form {
-            Section {
-            } header: {
-                detailHeading
-                    .textCase(nil)
-                    // Grouped section headers are inset ~10pt from the card edge; cancel it.
-                    .padding(.horizontal, -10)
-                    .padding(.bottom, 4)
-            }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                heroHeader
 
-            publicIdentitySection
-            activeSessionsSection
-            operationSection(.ssh)
-            operationSection(.signature)
-            activitySection
-            deleteSection
+                if !isKeyEnabled {
+                    disabledKeyCallout
+                }
+
+                publicKeySection
+                confirmationSection
+                accessSection
+                recentActivitySection
+                dangerZoneSection
+            }
+            .padding(22)
+            .frame(maxWidth: 680, alignment: .leading)
+            .frame(maxWidth: .infinity)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: InspectorScrollOffsetPreferenceKey.self,
+                        value: -proxy.frame(in: .named("inspectorScroll")).minY
+                    )
+                }
+            )
         }
-        .formStyle(.grouped)
+        .coordinateSpace(name: "inspectorScroll")
+        .onPreferenceChange(InspectorScrollOffsetPreferenceKey.self) { offset in
+            let shouldShow = offset > 8
+            if isScrolled != shouldShow {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isScrolled = shouldShow
+                }
+            }
+        }
+        .overlay(alignment: .top) {
+            if isScrolled {
+                stickyHeaderBar
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
         .scrollContentBackground(.hidden)
         .background(Color.clear)
+        .task {
+            await applicationsModel.load()
+        }
         .onAppear {
             lastActivityDate = appState.lastActivityDate(for: key)
         }
         .onChange(of: key.id) { _ in
             isRenaming = false
+            isRemoveMode = false
+            expandedAppIds.removeAll()
+            selectedForRemoval.removeAll()
             lastActivityDate = appState.lastActivityDate(for: key)
         }
         .alert(Self.deleteConfirmationTitle(label: key.label), isPresented: $showingDeleteAlert) {
@@ -305,6 +400,11 @@ public struct KeyDetailInspectorView: View {
         } message: {
             Text(Self.deleteConfirmationMessage(label: key.label, shortFingerprint: key.shortFingerprint))
         }
+        .alert("Rotate “\(key.label)”", isPresented: $showingRotateInfoAlert) {
+            Button(ClavisUIStrings.Common.ok, role: .cancel) {}
+        } message: {
+            Text("Key rotation will generate a replacement Secure Enclave keypair and keep existing policy grants.")
+        }
         .alert(ClavisUIStrings.Common.error, isPresented: $showingChangePurposeError) {
             Button(ClavisUIStrings.Common.ok, role: .cancel) {}
         } message: {
@@ -312,19 +412,42 @@ public struct KeyDetailInspectorView: View {
         }
     }
 
-    // MARK: - Detail Heading
+    // MARK: - Sticky Header & Hero Header
 
-    private var detailHeading: some View {
-        HStack(alignment: .center, spacing: 12) {
-            ZStack {
-                Image(systemName: key.effectiveAccessProfile.type == .bot ? "desktopcomputer" : "person")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundColor(DesignTokens.accentBlue)
-            }
-            .frame(width: 41, height: 43)
-            .glassCard(cornerRadius: 11, tint: DesignTokens.accentBlue.opacity(0.09))
+    private var stickyHeaderBar: some View {
+        HStack(spacing: 10) {
+            keyTile(size: 26, cornerRadius: 7, iconSize: 13, withAmbientShadow: false)
 
-            VStack(alignment: .leading, spacing: 3) {
+            Text(key.label)
+                .font(.system(size: 13.5, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            statusPill
+
+            Spacer(minLength: 8)
+
+            Text("\(key.effectiveAccessProfile.type.title) key · \(capabilitySummary)")
+                .font(.system(size: 11.5))
+                .foregroundStyle(DesignTokens.textSecondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 22)
+        .frame(height: 44)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(DesignTokens.cardBorder)
+                .frame(height: 1)
+        }
+        .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 3)
+    }
+
+    private var heroHeader: some View {
+        HStack(alignment: .center, spacing: 14) {
+            keyTile(size: 48, cornerRadius: 13, iconSize: 21, withAmbientShadow: true)
+
+            VStack(alignment: .leading, spacing: 6) {
                 if isRenaming {
                     InlineKeyRenameField(
                         text: $draftKeyName,
@@ -340,31 +463,148 @@ public struct KeyDetailInspectorView: View {
                 } else {
                     HStack(spacing: 8) {
                         Text(key.label)
-                            .font(.system(size: 23, weight: .semibold))
-                            .foregroundColor(.primary)
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundStyle(.primary)
                             .lineLimit(1)
+                            .truncationMode(.tail)
 
                         Button(action: beginInlineRename) {
                             Image(systemName: "pencil")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(DesignTokens.textSecondary)
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(DesignTokens.textSecondary)
                         }
                         .buttonStyle(.plain)
                         .help("Rename \(key.label)")
                         .accessibilityLabel("Rename \(key.label)")
+
+                        statusPill
                     }
                     .frame(height: 28, alignment: .leading)
                 }
 
-                Text("\(key.isHardware ? "Secure Enclave" : "Software") · \(key.algorithm)")
-                    .font(.system(size: 11))
-                    .foregroundColor(DesignTokens.textSecondary)
+                // Metadata chips row
+                HStack(spacing: 6) {
+                    metadataChip(
+                        icon: isBotKey ? "cpu" : "person.fill",
+                        text: isBotKey ? "Bot key" : "Personal key"
+                    )
+
+                    if key.effectiveAccessProfile.capabilities.ssh {
+                        metadataChip(icon: "terminal", text: "SSH authentication")
+                    }
+                    if key.effectiveAccessProfile.capabilities.signature {
+                        metadataChip(icon: "signature", text: "Git signing")
+                    }
+
+                    if lastActivityDate != nil {
+                        metadataChip(icon: "clock", text: "Last used: \(formattedLastActivity)")
+                    }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-
-
         }
-        .frame(minHeight: 43)
+        .padding(.bottom, 2)
+    }
+
+    private func keyTile(size: CGFloat, cornerRadius: CGFloat, iconSize: CGFloat, withAmbientShadow: Bool) -> some View {
+        let gradientColors: [Color] = isBotKey
+            ? [Color(red: 0.64, green: 0.54, blue: 0.91), Color(red: 0.43, green: 0.32, blue: 0.78)]
+            : [Color(red: 0.35, green: 0.64, blue: 1.0), DesignTokens.accentBlue]
+        let glowColor: Color = isBotKey ? Color.purple : DesignTokens.accentBlue
+
+        return ZStack {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: gradientColors,
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.28), lineWidth: 0.8)
+            Image(systemName: isBotKey ? "cpu" : "person.fill")
+                .font(.system(size: iconSize, weight: .semibold))
+                .foregroundStyle(.white)
+        }
+        .frame(width: size, height: size)
+        .shadow(
+            color: withAmbientShadow ? glowColor.opacity(0.35) : Color.black.opacity(0.12),
+            radius: withAmbientShadow ? 9 : 2,
+            x: 0,
+            y: withAmbientShadow ? 4 : 1
+        )
+    }
+
+    private var statusPill: some View {
+        let active = isKeyEnabled
+        let pillColor = active ? DesignTokens.accentGreen : DesignTokens.accentOrange
+        return HStack(spacing: 5) {
+            Circle()
+                .fill(pillColor)
+                .frame(width: 6, height: 6)
+            Text(active ? "Active" : "Disabled")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(pillColor)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2.5)
+        .background(
+            Capsule()
+                .fill(pillColor.opacity(0.13))
+        )
+        .overlay(
+            Capsule()
+                .strokeBorder(pillColor.opacity(0.26), lineWidth: 0.8)
+        )
+    }
+
+    private func metadataChip(icon: String, text: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(DesignTokens.textSecondary)
+            Text(text)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(DesignTokens.textSecondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 2.5)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(Color.primary.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .strokeBorder(DesignTokens.cardBorder, lineWidth: 0.7)
+        )
+    }
+
+    private var disabledKeyCallout: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "pause.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(DesignTokens.accentOrange)
+            Text("This key is disabled. All SSH and Git signing requests are refused.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.primary)
+            Spacer()
+            Button("Enable") {
+                changeProfile(capabilities: KeyCapabilities(ssh: true, signature: true))
+            }
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(DesignTokens.accentOrange.opacity(0.11))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(DesignTokens.accentOrange.opacity(0.32), lineWidth: 0.8)
+        )
     }
 
     private func beginInlineRename() {
@@ -390,65 +630,917 @@ public struct KeyDetailInspectorView: View {
         isRenaming = false
     }
 
-    // MARK: - Section 1: Public identity
+    // MARK: - Section 1: PUBLIC KEY
 
-    private var publicIdentitySection: some View {
-        let formattedFingerprint = key.fingerprint.hasPrefix("SHA256:")
-            ? key.fingerprint
-            : "SHA256:\(key.fingerprint)"
-
-        return Section("Identity") {
-            Picker("Type", selection: Binding(
-                get: { key.effectiveAccessProfile.type },
-                set: { type in changeProfile(type: type) }
-            )) {
-                ForEach(KeyType.allCases, id: \.self) { Text($0.title).tag($0) }
+    private var publicKeySection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                sectionHeaderTitle("PUBLIC KEY")
+                Spacer()
+                Button(action: addToGitHub) {
+                    Text("Add to GitHub… ↗")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(DesignTokens.accentBlue)
+                }
+                .buttonStyle(.plain)
+                .help("Copy public key and open GitHub SSH settings")
             }
-            .help("Changing key type requires fresh authentication and revokes approvals.")
-            identityCopyRow(
-                label: "Public key",
-                fullValue: key.publicKeyOpenSSH,
-                help: "Copy full public key",
-                action: copyOpenSSH
-            )
 
-            identityCopyRow(
-                label: "Fingerprint",
-                fullValue: formattedFingerprint,
-                help: "Copy full fingerprint",
-                action: copyFingerprint
+            VStack(spacing: 0) {
+                // Featured OpenSSH Public Key Block
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Text(key.algorithm)
+                            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(DesignTokens.accentBlue)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .fill(DesignTokens.accentBlue.opacity(0.12))
+                            )
+
+                        Text("OpenSSH Public Key")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(DesignTokens.textSecondary)
+
+                        Spacer()
+
+                        Button(action: copyOpenSSHWithFeedback) {
+                            HStack(spacing: 4) {
+                                Image(systemName: copiedPublicKey ? "checkmark" : "doc.on.doc")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                Text(copiedPublicKey ? "Copied" : "Copy Key")
+                                    .font(.system(size: 11.5, weight: .medium))
+                            }
+                            .foregroundStyle(copiedPublicKey ? DesignTokens.accentGreen : .primary)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 3.5)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(Color(nsColor: .controlBackgroundColor))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .strokeBorder(DesignTokens.cardBorder, lineWidth: 0.8)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .help("Copy full OpenSSH public key")
+                    }
+
+                    Text(key.publicKeyOpenSSH)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(11)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(0.04))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(DesignTokens.cardBorder, lineWidth: 0.7)
+                )
+                .padding(11)
+
+                Divider()
+
+                // Fingerprint row
+                HStack(spacing: 11) {
+                    rowIconBox(systemName: "touchid", tint: DesignTokens.accentBlue)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Fingerprint")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(.primary)
+                        Text(formattedFingerprint)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(DesignTokens.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button(action: copyFingerprintWithFeedback) {
+                        Image(systemName: copiedFingerprint ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(copiedFingerprint ? DesignTokens.accentGreen : DesignTokens.textSecondary)
+                            .frame(width: 26, height: 26)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(ClavisUIStrings.Inspector.copyFingerprintHelp)
+                    .accessibilityLabel(ClavisUIStrings.Accessibility.copyFingerprint)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 9)
+
+                Divider()
+
+                // Public key file row
+                HStack(spacing: 11) {
+                    rowIconBox(systemName: "doc.text", tint: DesignTokens.accentBlue)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Public key file")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(.primary)
+                        Text(publicKeyFilePath)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(DesignTokens.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button(action: copyFilePathWithFeedback) {
+                        Image(systemName: copiedFilePath ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(copiedFilePath ? DesignTokens.accentGreen : DesignTokens.textSecondary)
+                            .frame(width: 26, height: 26)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Copy public key file path")
+                    .accessibilityLabel("Copy public key file path")
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 9)
+            }
+            .glassCard(cornerRadius: 11)
+        }
+    }
+
+    // MARK: - Section 2: CONFIRMATION
+
+    private var confirmationSection: some View {
+        let profile = key.effectiveAccessProfile
+        return VStack(alignment: .leading, spacing: 6) {
+            sectionHeaderTitle("CONFIRMATION")
+
+            VStack(spacing: 0) {
+                // Key Type row
+                HStack(spacing: 11) {
+                    rowIconBox(
+                        systemName: "person.badge.key.fill",
+                        tint: isBotKey ? Color.purple : DesignTokens.accentBlue
+                    )
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Key profile")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(.primary)
+                        Text("Personal apps can use all keys; Bots can use Bot keys")
+                            .font(.system(size: 11))
+                            .foregroundStyle(DesignTokens.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Picker("Type", selection: Binding(
+                        get: { profile.type },
+                        set: { type in changeProfile(type: type) }
+                    )) {
+                        ForEach(KeyType.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 115)
+                    .help("Changing key type requires fresh authentication and revokes approvals.")
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 9)
+
+                Divider()
+
+                // Confirmation level row
+                HStack(spacing: 11) {
+                    rowIconBox(systemName: "checkmark.shield", tint: DesignTokens.accentGreen)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Confirmation level")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(.primary)
+                        Text(Self.approvalDescriptionText(for: key))
+                            .font(.system(size: 11))
+                            .foregroundStyle(DesignTokens.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Text(Self.approvalSummaryText(for: key))
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(Color.primary.opacity(0.06))
+                        )
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 9)
+
+                Divider()
+
+                // SSH authentication capability row
+                HStack(spacing: 11) {
+                    rowIconBox(systemName: "terminal", tint: DesignTokens.accentBlue)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("SSH authentication")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(.primary)
+                        Text("Authenticate to remote hosts and Git remotes over SSH")
+                            .font(.system(size: 11))
+                            .foregroundStyle(DesignTokens.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Toggle("", isOn: Binding(
+                        get: { profile.capabilities.ssh },
+                        set: { enabled in
+                            changeProfile(capabilities: KeyCapabilities(
+                                ssh: enabled,
+                                signature: profile.capabilities.signature
+                            ))
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .accessibilityLabel("SSH authentication enabled")
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 9)
+
+                Divider()
+
+                // Git signing capability row
+                HStack(spacing: 11) {
+                    rowIconBox(systemName: "signature", tint: DesignTokens.accentIndigo)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Git signing")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(.primary)
+                        Text("Sign Git commits and tags locally with SSHSIG")
+                            .font(.system(size: 11))
+                            .foregroundStyle(DesignTokens.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Toggle("", isOn: Binding(
+                        get: { profile.capabilities.signature },
+                        set: { enabled in
+                            changeProfile(capabilities: KeyCapabilities(
+                                ssh: profile.capabilities.ssh,
+                                signature: enabled
+                            ))
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .accessibilityLabel("Git signing enabled")
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 9)
+
+                Divider()
+
+                // Integrated Touch ID Policy strip
+                HStack(spacing: 10) {
+                    Image(systemName: "touchid")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(DesignTokens.accentBlue)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Touch ID Policy")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        Text("Hardware-bound in Apple Secure Enclave · \(key.effectiveBiometricPolicy.title)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(DesignTokens.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Text("Touch ID enabled")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(DesignTokens.accentGreen)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2.5)
+                        .background(
+                            Capsule()
+                                .fill(DesignTokens.accentGreen.opacity(0.14))
+                        )
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 9)
+                .background(DesignTokens.accentBlue.opacity(0.05))
+            }
+            .glassCard(cornerRadius: 11)
+        }
+    }
+
+    // MARK: - Section 3: ACCESS / NEVER ALLOW (Expandable NSOutlineView Variant 3)
+
+    private var accessSection: some View {
+        let apps = displayedApplications
+        let candidateAppsForPlus: [RegisteredApplication] = isBotKey
+            ? applicationsModel.applications.filter { $0.classification != .bot }
+            : applicationsModel.applications.filter { $0.classification != .block }
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                sectionHeaderTitle(isBotKey ? "ACCESS" : "NEVER ALLOW")
+                Spacer()
+                Text("\(apps.count) \(apps.count == 1 ? "app" : "apps")")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(DesignTokens.textSecondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.primary.opacity(0.06)))
+            }
+
+            VStack(spacing: 0) {
+                // Column header bar
+                HStack(spacing: 10) {
+                    Text("Application")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                        .padding(.leading, 26)
+                    Spacer()
+                    Text("Trust Identity")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                        .padding(.trailing, 28)
+                    Text(isBotKey ? "Permission" : "Rule")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                        .frame(width: 105, alignment: .trailing)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.primary.opacity(0.03))
+
+                Divider()
+
+                if apps.isEmpty {
+                    Text(
+                        isBotKey
+                            ? "No applications configured. Unknown applications trigger a first-use request."
+                            : "None — any application can ask for your Touch ID confirmation."
+                    )
+                    .font(.system(size: 12))
+                    .foregroundStyle(DesignTokens.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 16)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(Array(apps.enumerated()), id: \.element.id) { index, app in
+                            let isExpanded = !isRemoveMode && expandedAppIds.contains(app.id)
+                            let isSelected = isRemoveMode && selectedForRemoval.contains(app.id)
+
+                            VStack(spacing: 0) {
+                                HStack(spacing: 10) {
+                                    // Disclosure chevron / Remove checkbox slot
+                                    ZStack {
+                                        if isRemoveMode {
+                                            Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                                                .font(.system(size: 13, weight: .medium))
+                                                .foregroundStyle(isSelected ? DesignTokens.accentBlue : DesignTokens.textSecondary)
+                                        } else {
+                                            Image(systemName: "chevron.right")
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundStyle(isExpanded ? Color.primary : DesignTokens.textSecondary)
+                                                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                                        }
+                                    }
+                                    .frame(width: 18, height: 18)
+
+                                    Image(nsImage: NSWorkspace.shared.icon(forFile: app.path))
+                                        .resizable()
+                                        .frame(width: 28, height: 28)
+                                        .accessibilityHidden(true)
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        HStack(spacing: 6) {
+                                            Text(app.name)
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(.primary)
+                                                .lineLimit(1)
+
+                                            identityBadge(for: app.identity)
+                                        }
+                                        Text(app.path)
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(DesignTokens.textSecondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                    if isBotKey {
+                                        Picker("Access for \(app.name)", selection: Binding(
+                                            get: { app.classification },
+                                            set: { newValue in
+                                                Task { await applicationsModel.classify(app, as: newValue) }
+                                            }
+                                        )) {
+                                            ForEach(ApplicationClassification.allCases, id: \.self) { classification in
+                                                Text(classification.title).tag(classification)
+                                            }
+                                        }
+                                        .labelsHidden()
+                                        .frame(width: 105)
+                                        .disabled(isRemoveMode || applicationsModel.isBusy)
+                                    } else {
+                                        Text("Blocked")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(Color.red)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 2.5)
+                                            .background(
+                                                Capsule()
+                                                    .fill(Color.red.opacity(0.12))
+                                            )
+                                    }
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .background(
+                                    isSelected
+                                        ? DesignTokens.accentBlue.opacity(0.12)
+                                        : (isExpanded ? Color.primary.opacity(0.03) : Color.clear)
+                                )
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                        if isRemoveMode {
+                                            if selectedForRemoval.contains(app.id) {
+                                                selectedForRemoval.remove(app.id)
+                                            } else {
+                                                selectedForRemoval.insert(app.id)
+                                            }
+                                        } else {
+                                            if expandedAppIds.contains(app.id) {
+                                                expandedAppIds.remove(app.id)
+                                            } else {
+                                                expandedAppIds.insert(app.id)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if isExpanded {
+                                    expandedAccessDrawer(for: app)
+                                        .transition(.opacity.combined(with: .move(edge: .top)))
+                                }
+
+                                if index < apps.count - 1 {
+                                    Divider()
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Divider()
+
+                // Bottom [+ | −] / [Delete | Cancel] Action Bar
+                HStack(spacing: 4) {
+                    if isRemoveMode {
+                        Button(role: .destructive) {
+                            let ids = selectedForRemoval
+                            withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                                isRemoveMode = false
+                                selectedForRemoval.removeAll()
+                            }
+                            Task {
+                                await applicationsModel.remove(ids: ids)
+                            }
+                        } label: {
+                            Text(selectedForRemoval.isEmpty ? "Delete" : "Delete (\(selectedForRemoval.count))")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(selectedForRemoval.isEmpty ? DesignTokens.textSecondary : Color.red)
+                                .padding(.horizontal, 8)
+                                .frame(height: 24)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(selectedForRemoval.isEmpty || applicationsModel.isBusy)
+
+                        Divider().frame(height: 14)
+
+                        Button {
+                            withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                                isRemoveMode = false
+                                selectedForRemoval.removeAll()
+                            }
+                        } label: {
+                            Text("Cancel")
+                                .font(.system(size: 12, weight: .medium))
+                                .padding(.horizontal, 8)
+                                .frame(height: 24)
+                        }
+                        .buttonStyle(.borderless)
+
+                        Spacer()
+
+                        Text(selectedForRemoval.isEmpty ? "Select applications to remove" : "\(selectedForRemoval.count) selected")
+                            .font(.system(size: 11))
+                            .foregroundStyle(DesignTokens.textSecondary)
+                            .padding(.trailing, 6)
+                    } else {
+                        Menu {
+                            if !candidateAppsForPlus.isEmpty {
+                                Section("Registered Applications") {
+                                    ForEach(candidateAppsForPlus) { app in
+                                        Button {
+                                            Task {
+                                                await applicationsModel.classify(
+                                                    app,
+                                                    as: isBotKey ? .bot : .block
+                                                )
+                                            }
+                                        } label: {
+                                            Text("\(app.name) (\(app.path))")
+                                        }
+                                    }
+                                }
+                                Divider()
+                            }
+                            Button("Choose from File System…") {
+                                chooseApplicationFromFileSystem()
+                            }
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 12, weight: .semibold))
+                                .frame(width: 24, height: 22)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .help("Add application from Registered Applications or File System")
+                        .accessibilityLabel("Add application")
+
+                        Divider().frame(height: 14)
+
+                        Button {
+                            withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                                isRemoveMode = true
+                                expandedAppIds.removeAll()
+                                selectedForRemoval.removeAll()
+                            }
+                        } label: {
+                            Image(systemName: "minus")
+                                .font(.system(size: 12, weight: .semibold))
+                                .frame(width: 24, height: 22)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(apps.isEmpty || applicationsModel.isBusy)
+                        .help("Select applications to remove")
+                        .accessibilityLabel("Remove applications")
+
+                        Spacer()
+
+                        if applicationsModel.isBusy {
+                            ProgressView().controlSize(.small).padding(.trailing, 6)
+                        }
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.primary.opacity(0.03))
+            }
+            .glassCard(cornerRadius: 11)
+
+            Text(
+                isBotKey
+                    ? "Bot applications allowed above can use this key. Unlisted apps ask on first use."
+                    : "Personal apps can use this key with Touch ID. Applications in Never allow are always refused."
+            )
+            .font(.system(size: 11))
+            .foregroundStyle(DesignTokens.textSecondary)
+            .padding(.horizontal, 4)
+        }
+    }
+
+    private func identityBadge(for identity: ApplicationIdentity) -> some View {
+        let title = identity.kind == .designatedRequirement ? "Apple Notarized · DR" : "SHA-256"
+        return Text(title)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(DesignTokens.accentBlue)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1.5)
+            .background(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(DesignTokens.accentBlue.opacity(0.11))
+            )
+    }
+
+    private func expandedAccessDrawer(for app: RegisteredApplication) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 5) {
+                GridRow {
+                    Text("Identity Kind")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                    Text(app.identity.kind == .designatedRequirement ? "Designated Requirement" : "Executable SHA-256")
+                        .font(.system(size: 11.5))
+                }
+                GridRow {
+                    Text("Identity Value")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                    Text(Self.trimIdentity(app.identity.value))
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                GridRow {
+                    Text("Executable Path")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                    HStack(spacing: 6) {
+                        Text(app.path)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(app.path, forType: .string)
+                            onShowToast?("Copied executable path")
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(DesignTokens.textSecondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Copy executable path")
+                    }
+                }
+                GridRow {
+                    Text("Access Policy")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                    Text(app.classification.title)
+                        .font(.system(size: 11.5, weight: .medium))
+                }
+            }
+
+            Divider()
+
+            HStack {
+                Text("Removing \(app.name) with [−] unregisters it and revokes its approvals.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(DesignTokens.textSecondary)
+                Spacer()
+                if app.classification != .block {
+                    Button(role: .destructive) {
+                        Task { await applicationsModel.classify(app, as: .block) }
+                    } label: {
+                        Text("Block \(app.name) on All Keys…")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Color.red)
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+        }
+        .padding(.leading, 36)
+        .padding(.trailing, 14)
+        .padding(.vertical, 10)
+        .background(Color.primary.opacity(0.025))
+    }
+
+    private func chooseApplicationFromFileSystem() {
+        let panel = NSOpenPanel()
+        panel.title = "Add application or executable"
+        panel.prompt = "Add"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.treatsFilePackagesAsDirectories = false
+        let targetClassification: ApplicationClassification = isBotKey ? .bot : .block
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                await applicationsModel.add(url: url, classification: targetClassification)
+            }
+        }
+    }
+
+    // MARK: - Section 4: RECENT ACTIVITY
+
+    private var recentActivitySection: some View {
+        let paused = appState.requestPolicy.isPaused
+        let sessions = paused ? [] : appState.agentSessions.filter { $0.keyFingerprint == key.fingerprint }
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                sectionHeaderTitle("RECENT ACTIVITY")
+                Spacer()
+                Button {
+                    appState.openHistoryPane(forKeyFingerprint: key.fingerprint)
+                } label: {
+                    Text("Show All History →")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(DesignTokens.accentBlue)
+                }
+                .buttonStyle(.plain)
+            }
+
+            VStack(spacing: 0) {
+                HStack(spacing: 11) {
+                    rowIconBox(systemName: "calendar", tint: DesignTokens.accentBlue)
+                    Text("Created")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Text(formattedDate)
+                        .font(.system(size: 12))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 9)
+
+                Divider()
+
+                HStack(spacing: 11) {
+                    rowIconBox(systemName: "clock", tint: DesignTokens.accentBlue)
+                    Text("Last activity")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Text(formattedLastActivity)
+                        .font(.system(size: 12))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 9)
+
+                if !paused, let grace = activeGitGraceSession {
+                    Divider()
+                    HStack(spacing: 11) {
+                        rowIconBox(systemName: "signature", tint: DesignTokens.accentGreen)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Git signing session")
+                                .font(.system(size: 12.5, weight: .medium))
+                            Text("Remaining time: \(grace.formattedTime)")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(DesignTokens.textSecondary)
+                        }
+                        Spacer()
+                        Button("Revoke") {
+                            appState.revokeGitGrace(keyLabel: key.label)
+                        }
+                        .controlSize(.small)
+                    }
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 9)
+                }
+
+                ForEach(sessions, id: \.id) { session in
+                    Divider()
+                    HStack(spacing: 11) {
+                        rowIconBox(systemName: "terminal", tint: DesignTokens.accentGreen)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(session.toolName)
+                                .font(.system(size: 12.5, weight: .medium))
+                                .lineLimit(1)
+                            Text("SSH · expires \(session.expiresAt.formatted(date: .omitted, time: .shortened))")
+                                .font(.system(size: 11))
+                                .foregroundStyle(DesignTokens.textSecondary)
+                        }
+                        Spacer()
+                        Button("Revoke") {
+                            appState.endAgentSession(id: session.id)
+                        }
+                        .controlSize(.small)
+                    }
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 9)
+                }
+            }
+            .glassCard(cornerRadius: 11)
+        }
+    }
+
+    // MARK: - Section 5: DANGER ZONE
+
+    private var dangerZoneSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("DANGER ZONE")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(Color.red)
+                .padding(.horizontal, 2)
+
+            VStack(spacing: 0) {
+                // Disable Key / Enable Key
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(isKeyEnabled ? "Disable Key" : "Enable Key")
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        Text("Temporarily stop all SSH and Git signing requests for this key.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(DesignTokens.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button(isKeyEnabled ? "Disable Key" : "Enable Key") {
+                        if isKeyEnabled {
+                            changeProfile(capabilities: KeyCapabilities(ssh: false, signature: false))
+                        } else {
+                            changeProfile(capabilities: KeyCapabilities(ssh: true, signature: true))
+                        }
+                    }
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 10)
+
+                Divider()
+                    .overlay(Color.red.opacity(0.18))
+
+                // Rotate Key…
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Rotate Key")
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        Text("Generate a new Secure Enclave keypair and replace this key.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(DesignTokens.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button("Rotate Key…") {
+                        if let onShowToast {
+                            onShowToast("Key rotation will be connected in ClavisCore")
+                        } else {
+                            showingRotateInfoAlert = true
+                        }
+                    }
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 10)
+
+                Divider()
+                    .overlay(Color.red.opacity(0.18))
+
+                // Delete Key…
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Delete Key")
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        Text("Permanently destroy this key from the Secure Enclave and revoke its approvals.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(DesignTokens.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button("Delete Key…", role: .destructive) {
+                        showingDeleteAlert = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 10)
+            }
+            .glassCard(
+                cornerRadius: 11,
+                strokeColor: Color.red.opacity(0.32),
+                tint: Color.red.opacity(0.025)
             )
         }
     }
 
-    private func identityCopyRow(
-        label: String,
-        fullValue: String,
-        help: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        HStack(spacing: 12) {
-            Text(label)
-                .font(.system(size: 13))
-                .foregroundColor(.primary)
-                .frame(width: 76, alignment: .leading)
+    // MARK: - Shared UI Helpers & Actions
 
-            Text(Self.trimIdentity(fullValue))
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(DesignTokens.textSecondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(fullValue)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private func sectionHeaderTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(DesignTokens.textSecondary)
+            .padding(.horizontal, 2)
+    }
 
-            Button(action: action) {
-                Image(systemName: "doc.on.doc")
-                    .font(.system(size: 12))
-                    .foregroundColor(DesignTokens.textSecondary)
-            }
-            .buttonStyle(.borderless)
-            .help(help)
-            .accessibilityLabel(help)
+    private func rowIconBox(systemName: String, tint: Color) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(tint.opacity(0.12))
+                .frame(width: 30, height: 30)
+            Image(systemName: systemName)
+                .font(.system(size: 13.5, weight: .semibold))
+                .foregroundStyle(tint)
         }
     }
 
@@ -461,103 +1553,48 @@ public struct KeyDetailInspectorView: View {
         }
     }
 
-    private func operationSection(_ operation: KeyOperation) -> some View {
-        let profile = key.effectiveAccessProfile
-        return Section(operation == .ssh ? "SSH" : "Signature") {
-            Toggle("Enabled", isOn: Binding(
-                get: { profile.capabilities.permits(operation) },
-                set: { enabled in
-                    changeProfile(capabilities: KeyCapabilities(
-                        ssh: operation == .ssh ? enabled : profile.capabilities.ssh,
-                        signature: operation == .signature ? enabled : profile.capabilities.signature))
-                }
-            ))
-            .toggleStyle(.switch)
-            if profile.capabilities.permits(operation) {
-                LabeledContent("Approval") {
-                    Text(Self.approvalSummaryText(for: key)).foregroundStyle(.secondary)
-                }
+    private func addToGitHub() {
+        copyOpenSSH()
+        if !ClavisEnvironment.isTesting, let url = URL(string: "https://github.com/settings/ssh/new") {
+            NSWorkspace.shared.open(url)
+        }
+        onShowToast?("Public key copied — opening GitHub SSH settings")
+    }
+
+    private func copyOpenSSHWithFeedback() {
+        copyOpenSSH()
+        withAnimation(.easeInOut(duration: 0.15)) {
+            copiedPublicKey = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                copiedPublicKey = false
             }
         }
     }
 
-    private var activeSessionsSection: some View {
-        let paused = appState.requestPolicy.isPaused
-        let available = appState.isSocketActive && appState.requestPolicy.state != .unknown
-        let sessions = paused ? [] : appState.agentSessions.filter { $0.keyFingerprint == key.fingerprint }
-        return Section("Active Sessions") {
-            VStack(spacing: 12) {
-                if !paused, let grace = activeGitGraceSession {
-                    HStack {
-                        Label("Git signing", systemImage: "signature")
-                        Spacer()
-                        Text(grace.formattedTime).monospacedDigit().foregroundStyle(.secondary)
-                        Button("Revoke") { appState.revokeGitGrace(keyLabel: key.label) }
-                    }
-                }
-                ForEach(sessions, id: \.id) { session in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(session.toolName).lineLimit(1)
-                            Text("SSH · expires \(session.expiresAt.formatted(date: .omitted, time: .shortened))")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Revoke") { appState.endAgentSession(id: session.id) }
-                    }
-                }
-                if paused || (sessions.isEmpty && activeGitGraceSession == nil) {
-                    Text(paused ? "Requests are paused. Approvals have been revoked."
-                         : available ? "No active approvals. Clavis will ask on the next permitted request."
-                         : "Session status is unavailable. Check the agent connection.")
-                        .font(.callout).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .frame(minHeight: 48)
+    private func copyFingerprintWithFeedback() {
+        copyFingerprint()
+        withAnimation(.easeInOut(duration: 0.15)) {
+            copiedFingerprint = true
         }
-    }
-
-    private var deleteSection: some View {
-        Section("Delete Key") {
-            HStack {
-                Text("Delete this key and revoke its approvals.")
-                    .font(.callout).foregroundStyle(.secondary)
-                Spacer()
-                Button("Delete Key…", role: .destructive) { showingDeleteAlert = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                copiedFingerprint = false
             }
         }
     }
 
-    // MARK: - Section 3: Activity
-
-    private var activitySection: some View {
-        Section {
-            LabeledContent("Created") {
-                Text(formattedDate)
-                    .foregroundColor(.secondary)
-            }
-
-            LabeledContent("Last activity") {
-                Text(formattedLastActivity)
-                    .foregroundColor(.secondary)
-            }
-        } header: {
-            HStack {
-                Text("Activity")
-                Spacer()
-                Button(action: {
-                    appState.openHistoryPane(forKeyFingerprint: key.fingerprint)
-                }) {
-                    HStack(spacing: 4) {
-                        Text("View activity")
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                    }
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(DesignTokens.accentBlue)
-                }
-                .buttonStyle(.plain)
+    private func copyFilePathWithFeedback() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(publicKeyFilePath, forType: .string)
+        onShowToast?("Copied to clipboard")
+        withAnimation(.easeInOut(duration: 0.15)) {
+            copiedFilePath = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                copiedFilePath = false
             }
         }
     }

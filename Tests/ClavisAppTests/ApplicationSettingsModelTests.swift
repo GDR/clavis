@@ -94,4 +94,38 @@ import Testing
         await model.classify(app, as: .bot)
         #expect(agent.applicationPolicyChanges.isEmpty)
     }
+
+    @Test func multiSelectRemovalRemovesAllSelectedIds() async throws {
+        let agent = MockAgentController()
+        let app1 = try RegisteredApplication(
+            identity: .init(kind: .designatedRequirement, value: "app-one"),
+            name: "AppOne",
+            path: "/Applications/AppOne.app",
+            classification: .bot
+        )
+        let app2 = try RegisteredApplication(
+            identity: .init(kind: .designatedRequirement, value: "app-two"),
+            name: "AppTwo",
+            path: "/Applications/AppTwo.app",
+            classification: .personal
+        )
+        agent.stubbedApplicationRegistry = .init(applications: [app1, app2])
+        agent.applicationPolicyHandler = { change in
+            guard case .remove(let identity) = change else { return false }
+            let updated = (agent.stubbedApplicationRegistry?.applications ?? []).map { entry -> RegisteredApplication in
+                guard entry.identity == identity else { return entry }
+                var copy = entry
+                copy.classification = .block
+                copy.removed = true
+                return copy
+            }
+            agent.stubbedApplicationRegistry = .init(applications: updated)
+            return true
+        }
+        let model = ApplicationSettingsModel(agent: agent)
+        await model.load()
+        #expect(model.applications.count == 2)
+        await model.remove(ids: [app1.id, app2.id])
+        #expect(model.applications.isEmpty)
+    }
 }
