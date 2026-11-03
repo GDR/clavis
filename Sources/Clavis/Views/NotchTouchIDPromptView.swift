@@ -367,6 +367,7 @@ public struct NotchIslandShape: Shape {
 public struct NotchTouchIDPromptView: View {
     @ObservedObject public var viewModel: NotchPromptViewModel
     @State private var isPulsing: Bool = false
+    @FocusState private var isPasswordFieldFocused: Bool
 
     // Notch hardware black (#050507)
     public static let notchBlack = Color(red: 0.02, green: 0.02, blue: 0.028)
@@ -375,7 +376,7 @@ public struct NotchTouchIDPromptView: View {
     public static let touchIDPink = Color(red: 1.0, green: 0.216, blue: 0.373) // #FF375F
     public static let signedGreen = Color(red: 0.188, green: 0.82, blue: 0.345) // #30D158
     public static let earSize: CGFloat = 14
-    public static let expandedWidth: CGFloat = 480
+    public static let expandedWidth: CGFloat = 508
     /// Clearance from top screen edge (`y = 0`) so content sits comfortably below the physical MacBook notch (`~34–36pt`).
     public static let notchTopClearance: CGFloat = 44
 
@@ -767,53 +768,28 @@ public struct NotchTouchIDPromptView: View {
         )
     }
 
-    // MARK: - Session Scope Segmented Selector
+    // MARK: - Session Scope Segmented Selector (Native Segmented Control, no "SESSION:" label)
 
     private var sessionScopeBar: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 4) {
-                Image(systemName: "lock.clock")
-                    .font(.system(size: 9.5, weight: .bold))
-                    .foregroundColor(Color.white.opacity(0.58))
-                Text("SESSION:")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(Color.white.opacity(0.58))
-            }
-
-            HStack(spacing: 3) {
-                ForEach(NotchSessionScope.allCases) { scope in
-                    let isSelected = viewModel.selectedScope == scope
-                    Button {
-                        viewModel.selectScope(scope)
-                    } label: {
-                        Text(scope.title)
-                            .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
-                            .foregroundColor(isSelected ? .white : Color.white.opacity(0.65))
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 24)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(isSelected ? Self.personalBlue : Color.clear)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Session scope \(scope.title)")
-                    .accessibilityAddTraits(isSelected ? .isSelected : [])
-                }
-            }
-            .padding(2.5)
-            .background(
-                RoundedRectangle(cornerRadius: 8.5, style: .continuous)
-                    .fill(Color.white.opacity(0.065))
+        Picker(
+            "Session",
+            selection: Binding(
+                get: { viewModel.selectedScope },
+                set: { viewModel.selectScope($0) }
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8.5, style: .continuous)
-                    .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
-            )
+        ) {
+            ForEach(NotchSessionScope.allCases) { scope in
+                Text(scope.title)
+                    .tag(scope)
+            }
         }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.large)
+        .frame(maxWidth: .infinity)
     }
 
-    // MARK: - Biometric & Password Footer
+    // MARK: - Biometric & Password Footer (Default Liquid Glass Controls)
 
     private var biometricFooterRow: some View {
         HStack(spacing: 10) {
@@ -828,7 +804,7 @@ public struct NotchTouchIDPromptView: View {
                             (viewModel.phase == .verifying ? Self.signedGreen : Self.touchIDPink).opacity(0.28),
                             lineWidth: 1.2
                         )
-                        .frame(width: 46, height: 46)
+                        .frame(width: 44, height: 44)
                         .scaleEffect(isPulsing ? 1.08 : 0.94)
 
                     Circle()
@@ -840,10 +816,10 @@ public struct NotchTouchIDPromptView: View {
                                 ],
                                 center: .center,
                                 startRadius: 2,
-                                endRadius: 20
+                                endRadius: 19
                             )
                         )
-                        .frame(width: 40, height: 40)
+                        .frame(width: 38, height: 38)
                         .overlay(
                             Circle()
                                 .stroke(
@@ -853,7 +829,7 @@ public struct NotchTouchIDPromptView: View {
                         )
 
                     Image(systemName: viewModel.phase == .verifying ? "checkmark" : "touchid")
-                        .font(.system(size: 20, weight: .medium))
+                        .font(.system(size: 19, weight: .medium))
                         .foregroundColor(viewModel.phase == .verifying ? Self.signedGreen : Self.touchIDPink)
                 }
             }
@@ -873,120 +849,60 @@ public struct NotchTouchIDPromptView: View {
 
             Spacer(minLength: 4)
 
-            HStack(spacing: 6) {
-                Button {
+            HStack(spacing: 8) {
+                Button("Deny", role: .destructive) {
                     viewModel.deny()
-                } label: {
-                    Text("Deny")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundColor(Color(red: 1.0, green: 0.41, blue: 0.38))
-                        .padding(.horizontal, 10)
-                        .frame(height: 28)
-                        .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(Color(red: 1.0, green: 0.27, blue: 0.23).opacity(0.12))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(Color(red: 1.0, green: 0.27, blue: 0.23).opacity(0.28), lineWidth: 0.8)
-                        )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .controlSize(.large)
 
-                Button {
+                Button("Use Password…") {
                     viewModel.openPasswordDrawer()
-                } label: {
-                    Text("Use Password…")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundColor(Color.white.opacity(0.92))
-                        .padding(.horizontal, 10)
-                        .frame(height: 28)
-                        .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(Color.white.opacity(0.09))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(Color.white.opacity(0.15), lineWidth: 0.8)
-                        )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .controlSize(.large)
             }
+            .fixedSize(horizontal: true, vertical: false)
         }
     }
 
     private var passwordDrawerRow: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 7) {
-                Image(systemName: "key.horizontal.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(Color.white.opacity(0.55))
-
+            HStack(spacing: 8) {
                 SecureField("Enter Mac login password…", text: $viewModel.passwordText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundColor(.white)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.large)
+                    .focused($isPasswordFieldFocused)
                     .onSubmit {
                         Task {
                             _ = await viewModel.submitPassword()
                         }
                     }
 
-                Button {
+                Button("Verify") {
                     Task {
                         _ = await viewModel.submitPassword()
                     }
-                } label: {
-                    Text("Verify")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 11)
-                        .frame(height: 24)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Self.personalBlue)
-                        )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
 
-                Button {
+                Button("Cancel") {
                     viewModel.closePasswordDrawer()
-                } label: {
-                    Text("Cancel")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundColor(Color.white.opacity(0.80))
-                        .padding(.horizontal, 9)
-                        .frame(height: 24)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Color.white.opacity(0.09))
-                        )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .controlSize(.large)
             }
-            .padding(.leading, 10)
-            .padding(.trailing, 5)
-            .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Color.white.opacity(0.07))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(
-                        viewModel.passwordError != nil
-                            ? Color(red: 1.0, green: 0.27, blue: 0.23).opacity(0.65)
-                            : Color.white.opacity(0.18),
-                        lineWidth: 0.9
-                    )
-            )
 
             if let error = viewModel.passwordError {
                 Text(error)
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundColor(Color(red: 1.0, green: 0.41, blue: 0.38))
-                    .padding(.leading, 4)
+                    .padding(.leading, 6)
             }
+        }
+        .onAppear {
+            isPasswordFieldFocused = true
         }
     }
 }
