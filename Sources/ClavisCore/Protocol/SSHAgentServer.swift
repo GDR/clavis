@@ -375,7 +375,7 @@ public class SSHAgentServer {
                   let path = clientExecutablePath ?? ProcessInspector.getProcessPath(pid: pid),
                   let start = ProcessInspector.processStartTime(pid: pid),
                   let lease = try? applicationAccess.authorize(key: key, operation: .ssh, role: role, pid: pid, path: path, start: start),
-                  case .eligible = lease.eligibility else { return false }
+                  lease.eligibility != .denied else { return false }
             return true
         }
         var response = Data()
