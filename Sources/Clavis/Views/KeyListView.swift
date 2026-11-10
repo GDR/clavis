@@ -15,10 +15,20 @@ struct KeyListView: View {
     @State private var keyPendingDeletion: SSHKeyInfo? = nil
     @State private var confirmingRevokeAll = false
     @FocusState private var isSearchFieldFocused: Bool
+    @State private var headerCenterOffset: CGFloat = 0
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     public static let sidebarWidth: CGFloat = 260
+    /// First level shared by both panes: the 36pt controls/tile centered on the native traffic-light line
+    /// with equal 8pt padding above and below (52 = 8 + 36 + 8).
     public static let toolbarHeight: CGFloat = 52
-    public static let searchCapsuleHeight: CGFloat = 36
+    public static let actionControlHeight: CGFloat = 36
+    /// Sidebar only: second level (search) below the shared first level.
+    static let headerLevelGap: CGFloat = 0
+    static let headerBottomPadding: CGFloat = 14
+    /// Stable footer height across agent states; also the scroll inset that clears the last key.
+    public static let sidebarFooterHeight: CGFloat = 48
+    public static let searchCapsuleHeight: CGFloat = 32
     public static let emptyStateTitle = "A key that stays on your Mac."
     public static let emptyStateSubtitle = "Create a hardware-backed identity for SSH and Git. Your private key stays in the Secure Enclave."
     public static let emptyStateCreateButtonTitle = "Create your first key"
@@ -128,13 +138,13 @@ struct KeyListView: View {
 
     private var rootSplitView: some View {
         ZStack(alignment: .bottom) {
-            VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow)
-                .ignoresSafeArea()
+            WindowGlassBackground()
 
             HStack(spacing: 0) {
                 sidebarPane
                 mainContentPane
             }
+            .environment(\.headerCenterOffset, headerCenterOffset)
             .ignoresSafeArea()
 
             toastBanner
@@ -301,47 +311,55 @@ struct KeyListView: View {
     // MARK: - Key library sidebar
 
     private var sidebarHeader: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 7) {
-                Spacer(minLength: 72)
-                AdaptiveGlassCapsule(spacing: 2) {
-                    SidebarHeaderPillButton(
-                        icon: "plus",
-                        isActive: appState.activeSheet == .create,
-                        helpText: "New key (⌘N)",
-                        accessibilityLabelText: ClavisUIStrings.Accessibility.addKey
-                    ) {
-                        appState.activeSheet = .create
-                    }
-                    SidebarHeaderPillButton(
-                        icon: "clock.arrow.circlepath",
-                        isActive: isHistoryActive,
-                        helpText: "Activity History (⇧⌘H)",
-                        accessibilityLabelText: "Activity History"
-                    ) {
-                        toggleHistoryPane()
-                    }
-                    SidebarHeaderPillButton(
-                        icon: "lock",
-                        isActive: false,
-                        helpText: "Lock Clavis (⌘L)",
-                        accessibilityLabelText: "Lock Clavis"
-                    ) {
-                        PanelLockController.shared.lock(reason: .lockNow)
-                    }
+        VStack(spacing: Self.headerLevelGap) {
+            // Lock, then New Key: separate circular glass controls (36pt) at the trailing edge
+            // of the sidebar, on the same center line as the native traffic lights.
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+                CircularGlassIconButton(
+                    icon: "lock",
+                    size: Self.actionControlHeight,
+                    iconSize: 18,
+                    helpText: "Lock Clavis (⌘L)",
+                    accessibilityLabel: "Lock Clavis"
+                ) {
+                    PanelLockController.shared.lock(reason: .lockNow)
                 }
-                .padding(2)
+                CircularGlassIconButton(
+                    icon: "plus",
+                    size: Self.actionControlHeight,
+                    iconSize: 18,
+                    isActive: appState.activeSheet == .create,
+                    helpText: "New key (⌘N)",
+                    accessibilityLabel: ClavisUIStrings.Accessibility.addKey
+                ) {
+                    appState.activeSheet = .create
+                }
             }
             .padding(.horizontal, 12)
             .frame(height: Self.toolbarHeight)
+            .offset(y: headerCenterOffset)
 
-            LibrarySearchField(text: $searchText, focused: Binding(
-                get: { isSearchFieldFocused },
-                set: { isSearchFieldFocused = $0 }
-            ))
-            .frame(height: 28)
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                LibrarySearchField(text: $searchText, focused: Binding(
+                    get: { isSearchFieldFocused },
+                    set: { isSearchFieldFocused = $0 }
+                ))
+            }
             .padding(.horizontal, 12)
-            .padding(.bottom, 8)
+            .frame(height: Self.searchCapsuleHeight)
+            .modifier(CapsuleGlassBackground(isActive: isSearchFieldFocused, isHovered: false, reduceTransparency: reduceTransparency))
+            .padding(.horizontal, 14)
+            .padding(.bottom, Self.headerBottomPadding)
+        }
+        .background(alignment: .top) {
+            TrafficLightCenterReader(bandHeight: Self.toolbarHeight, offset: $headerCenterOffset)
+                .frame(height: Self.toolbarHeight)
+                .allowsHitTesting(false)
         }
         .task { await appState.requestPolicy.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -360,8 +378,7 @@ struct KeyListView: View {
 
     private var sidebarPane: some View {
         ZStack(alignment: .topLeading) {
-            DesignTokens.sidebarBackground
-                .ignoresSafeArea()
+            WindowPaneBackground(isSidebar: true)
 
             ScrollView {
                 if filteredKeys.isEmpty {
@@ -372,7 +389,7 @@ struct KeyListView: View {
                         .padding(.vertical, 18)
                         .padding(.horizontal, 8)
                 } else {
-                    LazyVStack(spacing: 1) {
+                    LazyVStack(spacing: 2) {
                         ForEach(Array(filteredKeys.enumerated()), id: \.element.id) { index, key in
                             let isRowSelected = isSidebarRowSelected(key)
                             let nextIsSelected: Bool = {
@@ -405,7 +422,7 @@ struct KeyListView: View {
                             )
                         }
                     }
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 10)
                     .padding(.bottom, 10)
                 }
             }
@@ -413,7 +430,9 @@ struct KeyListView: View {
                 sidebarHeader
             }
             .frame(maxHeight: .infinity)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
+            // Pinned footer: same system scroll-edge treatment as the bar under the search field.
+            // Rows passing underneath get the native progressive blur; no painted panel.
+            .bottomLiquidGlassBar {
                 LibraryAgentStatus(
                     active: appState.isSocketActive,
                     requestState: appState.requestPolicy.state,
@@ -422,6 +441,7 @@ struct KeyListView: View {
                     onLock: { PanelLockController.shared.lock(reason: .lockNow) },
                     onOpenSettings: { appState.activeSheet = .settings }
                 )
+                .frame(height: Self.sidebarFooterHeight)
             }
         }
         .frame(width: Self.sidebarWidth)
@@ -438,8 +458,7 @@ struct KeyListView: View {
 
     private var mainContentPane: some View {
         ZStack(alignment: .top) {
-            DesignTokens.inspectorBackground
-                .ignoresSafeArea()
+            WindowPaneBackground(isSidebar: false)
 
             Group {
                 if appState.activeMainPane == .history {
@@ -456,7 +475,8 @@ struct KeyListView: View {
                         },
                         onShowToast: { msg in
                             statusMessage = msg
-                        }
+                        },
+                        onToggleHistory: { toggleHistoryPane() }
                     )
                 } else {
                     VStack(spacing: 10) {
@@ -473,6 +493,13 @@ struct KeyListView: View {
             .topLiquidGlassBar {
                 VStack(spacing: 0) {
                     if isHistoryActive {
+                        HStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            ProminentHistoryButton(isActive: true) { toggleHistoryPane() }
+                        }
+                        .padding(.horizontal, 28)
+                        .frame(height: Self.toolbarHeight)
+                        .offset(y: headerCenterOffset)
                         // One fixed region: search, badges and count never enter the scroll area.
                         HistoryFilterHeader(viewModel: historyViewModel, ui: historyUI)
                     }
@@ -584,9 +611,9 @@ struct KeySidebarRowView: View {
             ? [Color(red: 0.69, green: 0.35, blue: 0.94), Color(red: 0.54, green: 0.22, blue: 0.82)]
             : [Color(red: 0.12, green: 0.58, blue: 1.0), Color(red: 0.0, green: 0.45, blue: 0.96)]
 
-        HStack(spacing: 9) {
+        HStack(spacing: 10) {
             ZStack {
-                RoundedRectangle(cornerRadius: 5.5, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(
                         LinearGradient(
                             colors: squircleColors,
@@ -594,19 +621,19 @@ struct KeySidebarRowView: View {
                             endPoint: .bottom
                         )
                     )
-                RoundedRectangle(cornerRadius: 5.5, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
                 Image(systemName: presentation.tileSymbol)
-                    .font(.system(size: 11.5, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.white)
             }
-            .frame(width: 22, height: 22)
+            .frame(width: 28, height: 28)
             .shadow(color: Color.black.opacity(0.15), radius: 1, x: 0, y: 0.5)
             .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(key.label)
-                    .font(.system(size: 13, weight: isSelected ? .medium : .regular))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(
                         isSelected
                             ? Color.white
@@ -630,19 +657,19 @@ struct KeySidebarRowView: View {
                     .accessibilityHidden(true)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .frame(minHeight: 38)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .frame(minHeight: 53)
         .background(FirstMouseView())
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(
                     isSelected
                         ? Color(nsColor: .controlAccentColor)
                         : (isHovered ? Color.primary.opacity(0.06) : Color.clear)
                 )
         )
-        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(key.label)
         .accessibilityValue(presentation.accessibilitySummary)
