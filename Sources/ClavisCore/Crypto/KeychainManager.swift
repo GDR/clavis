@@ -922,6 +922,57 @@ public class KeychainManager {
         }
     }
 
+    /// Single authenticated profile mutation driven by an embedded-authentication presenter.
+    /// One fresh evaluation, one authenticated record validation, one persistence. Cancellation (or a
+    /// state change since staging) after authentication but before persistence mutates nothing.
+    /// - Parameter expectedCurrent: the profile the request was staged against; a mismatch is stale.
+    public func changeAccessProfile(label: String, type: KeyType? = nil,
+                                    capabilities: KeyCapabilities? = nil,
+                                    expectedCurrent: KeyAccessProfile? = nil,
+                                    authenticator asyncAuthenticator: any AsyncUserAuthenticating) async throws {
+        guard let key = try fetchKeyInfo(label: label) else {
+            throw KeychainManagerError.keyNotFound(label: label)
+        }
+        if let expectedCurrent, expectedCurrent != key.effectiveAccessProfile {
+            throw PolicyMutationError.staleRequest
+        }
+        let profile = KeyAccessProfile(type: type ?? key.effectiveAccessProfile.type,
+            capabilities: capabilities ?? key.effectiveAccessProfile.capabilities)
+        guard profile != key.effectiveAccessProfile else { return }
+        let prompt = "Change access policy for '\(label)'"
+        let auditKind: AuditKeyKind = profile.type == .bot ? .agent : .personal
+
+        let context: LAContext
+        do {
+            // Same settings-mutation semantics as the synchronous path: device-owner authentication
+            // including the supported system password fallback. Signing ACLs are not relaxed.
+            context = try await asyncAuthenticator.authenticate(reason: prompt, policy: .deviceOwnerAuthentication)
+        } catch {
+            auditRecorder.record(AuditEvent(type: .keyKindChange,
+                result: AuditEvent.isUserCancellation(error) ? .cancelled : .denied,
+                reason: .authenticationFailed, keyFingerprint: key.fingerprint,
+                keyKind: auditKind,
+                sensitive: .init(keyLabel: key.label, processChain: [], host: nil)))
+            throw error
+        }
+        defer { context.invalidate() }
+        // A late completion must never mutate after cancellation or replacement.
+        try Task.checkCancellation()
+        var record = try loadAuthenticatedRecord(label: key.label, context: context, prompt: prompt, expectedKeyInfo: key)
+        defer { record.wipe() }
+        try validateAuthenticatedRecord(record, against: key, context: context)
+        guard record.accessProfile == key.effectiveAccessProfile else {
+            throw PolicyMutationError.staleRequest
+        }
+        try Task.checkCancellation()
+        let purpose: KeyPurpose = record.purpose == .gitSigningOnly && !profile.capabilities.ssh
+            ? .gitSigningOnly : .general
+        try persistAccessProfile(profile, purpose: purpose, key: key, record: record)
+        auditRecorder.record(AuditEvent(type: .keyKindChange, result: .allowed,
+            keyFingerprint: key.fingerprint, keyKind: auditKind,
+            sensitive: .init(keyLabel: label, processChain: [], host: nil)))
+    }
+
     private func withPolicyMutationRecord<T>(for key: SSHKeyInfo, prompt: String, auditKeyKind: AuditKeyKind,
                                              _ body: (StoredPrivateKeyRecord) throws -> T) throws -> T {
         let context: LAContext
@@ -1165,6 +1216,19 @@ public class KeychainManager {
               label.utf8.count <= 128,
               !hasControlCharacters else {
             throw KeychainManagerError.invalidLabel
+        }
+    }
+}
+
+/// Failures specific to staged, authenticated policy mutations.
+public enum PolicyMutationError: LocalizedError, Equatable {
+    /// The key changed after the request was staged; nothing was written.
+    case staleRequest
+
+    public var errorDescription: String? {
+        switch self {
+        case .staleRequest:
+            return "This key changed while authentication was pending. No changes were made."
         }
     }
 }

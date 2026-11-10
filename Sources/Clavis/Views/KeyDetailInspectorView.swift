@@ -1310,9 +1310,12 @@ public struct KeyDetailInspectorView: View {
     }
 
     private func changeProfile(type: KeyType? = nil, capabilities: KeyCapabilities? = nil) {
-        do {
-            try appState.changeAccessProfile(label: key.label, type: type, capabilities: capabilities)
-        } catch {
+        // Stages one authenticated request and shows the in-window tile. The effective setting stays
+        // unchanged until the mutation layer persists it; reverting a control never restarts a request.
+        appState.policyMutations.submit(
+            key: key, type: type, capabilities: capabilities, appState: appState
+        ) { error in
+            guard let error else { return }
             changePurposeError = error.localizedDescription
             showingChangePurposeError = true
         }

@@ -96,6 +96,8 @@ struct KeyListView: View {
         }
     }
 
+    private var isAuthenticationPending: Bool { appState.policyMutations.isPending }
+
     private var isHistoryActive: Bool { appState.activeMainPane == .history }
 
     private func toggleHistoryPane() {
@@ -145,13 +147,25 @@ struct KeyListView: View {
                 mainContentPane
             }
             .environment(\.headerCenterOffset, headerCenterOffset)
+            // While an authenticated request is pending, nothing underneath (settings, sidebar
+            // selection, toolbar actions) is interactive or exposed to VoiceOver.
+            .disabled(isAuthenticationPending)
+            .allowsHitTesting(!isAuthenticationPending)
+            .accessibilityHidden(isAuthenticationPending)
             .ignoresSafeArea()
 
             toastBanner
+
+            // Variant 07: compact tile in the detail pane, below the sticky identity header.
+            AuthenticationTileHost(coordinator: appState.policyMutations)
+                .padding(.leading, Self.sidebarWidth)
+                .padding(.top, Self.toolbarHeight + 16 + headerCenterOffset)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .ignoresSafeArea()
         .background {
             keyboardShortcutTriggers
+                .disabled(isAuthenticationPending)
         }
     }
 
@@ -243,7 +257,9 @@ struct KeyListView: View {
                 }
                 if isHistoryActive { openHistoryFromRequest() }
             }
+            .onDisappear { appState.policyMutations.cancel() }
             .onChange(of: appState.keys) { newKeys in
+                appState.policyMutations.cancelIfTargetChanged(keys: newKeys)
                 if selectedKeyId == nil || !newKeys.contains(where: { $0.id == selectedKeyId }) {
                     selectedKeyId = newKeys.first?.id
                 }
@@ -748,5 +764,34 @@ struct ToolbarCapsuleButton: View {
         .buttonStyle(.plain)
         .disabled(isDisabled)
         .help(help)
+    }
+}
+
+
+/// Observes the coordinator and presents the authentication tile with host-owned insertion animation
+/// (disabled under Reduce Motion).
+private struct AuthenticationTileHost: View {
+    @ObservedObject var coordinator: PolicyMutationCoordinator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if coordinator.isPending {
+                // The pane's remaining width centers the 256pt tile.
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    AuthenticationRequestView(
+                        phase: coordinator.phase,
+                        authenticationContext: coordinator.embeddedContext,
+                        onPassword: { coordinator.usePassword() },
+                        onRetry: { coordinator.retry() },
+                        onCancel: { coordinator.cancel() }
+                    )
+                    Spacer(minLength: 0)
+                }
+                .transition(reduceMotion ? .identity : .opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: coordinator.isPending)
     }
 }

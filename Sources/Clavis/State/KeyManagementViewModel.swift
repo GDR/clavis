@@ -77,6 +77,22 @@ public class KeyManagementViewModel: ObservableObject {
         try keyManager.changeAccessProfile(label: label, type: type, capabilities: capabilities)
     }
 
+    /// Authenticated profile change driven by the embedded-authentication presenter: one fresh
+    /// evaluation inside the mutation layer, one persistence, then refresh.
+    public func changeAccessProfile(
+        label: String,
+        type: KeyType? = nil,
+        capabilities: KeyCapabilities? = nil,
+        expectedCurrent: KeyAccessProfile?,
+        authenticator: any AsyncUserAuthenticating
+    ) async throws {
+        defer { refresh() }
+        try await keyManager.changeAccessProfile(
+            label: label, type: type, capabilities: capabilities,
+            expectedCurrent: expectedCurrent, authenticator: authenticator
+        )
+    }
+
     public func lockKey(label: String) throws {
         try keyManager.lockKey(label: label)
         refresh()
