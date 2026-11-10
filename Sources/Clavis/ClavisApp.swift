@@ -166,15 +166,18 @@ struct ClavisApp: App {
 
                 Button("Preview Touch ID Notch Prompt") {
                     let key = appState.keys.first
+                    let keyType = key?.effectiveAccessProfile.type ?? .personal
                     let request = NotchPromptRequest(
                         callerName: "Terminal",
                         callerPath: "/System/Applications/Utilities/Terminal.app",
                         processChain: "git → ssh-keygen",
                         keyLabel: key?.label ?? "Personal MacBook",
-                        keyType: key?.effectiveAccessProfile.type ?? .personal,
-                        operation: "commit -S",
-                        initialScope: .fifteenMinutes,
-                        showsScopeSelector: true
+                        keyType: keyType,
+                        keyTypeSubtitle: keyType == .bot ? "Agent key" : "Personal key",
+                        operation: "Sign a Git commit",
+                        initialScope: key?.effectiveAccessProfile.type == .bot ? .fifteenMinutes : .untilLock,
+                        showsScopeSelector: true,
+                        allowsPasswordFallback: key.map { $0.effectiveBiometricPolicy == .userPresence } ?? true
                     )
                     Task { @MainActor in
                         _ = await NotchPromptWindowController.shared.present(request: request)
