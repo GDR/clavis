@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Clavis — Five Interface Studies</title>
+<link rel="stylesheet" href="directions/style.css">
+</head>
+<body class="gallery-body">
+<main class="gallery">
+ <div class="gallery-top"><div><div class="eyebrow">Clavis / macOS 26–27 interaction studies</div><h1>Five ways to work.<br>One clear access model.</h1><p class="description">Explore five native macOS directions for managing keys and application access. Each is interactive, with the same domain model and a different starting point.</p></div><button class="pill" id="gallery-theme" aria-label="Toggle gallery dark appearance">◐ Appearance</button></div>
+ <div class="gallery-grid"><a class="direction-card" href="directions/01-library.html">
+ <div class="preview-frame" aria-hidden="true"><iframe title="Library visual preview" src="directions/01-library.html?thumb" tabindex="-1" loading="lazy" inert></iframe></div>
+ <div class="card-copy"><span class="eyebrow">01 / Key-first · Finder / Passwords</span><h2>Library</h2><p>A familiar three-column workspace. Browse keys, select a key, and inspect its policy and access without losing your place.</p><span class="review-btn">Explore prototype <span aria-hidden="true">↗</span></span></div>
+</a>
+<a class="direction-card" href="directions/02-key-table.html">
+ <div class="preview-frame" aria-hidden="true"><iframe title="Key Table visual preview" src="directions/02-key-table.html?thumb" tabindex="-1" loading="lazy" inert></iframe></div>
+ <div class="card-copy"><span class="eyebrow">02 / Table-first · compact key browser</span><h2>Key Table</h2><p>Browse a compact table of keys, purpose, protection and status. Open settings for the selected key, with app icons and explicit access.</p><span class="review-btn">Explore prototype <span aria-hidden="true">↗</span></span></div>
+</a>
+<a class="direction-card" href="directions/03-key-settings.html">
+ <div class="preview-frame" aria-hidden="true"><iframe title="Key Settings visual preview" src="directions/03-key-settings.html?thumb" tabindex="-1" loading="lazy" inert></iframe></div>
+ <div class="card-copy"><span class="eyebrow">03 / Key-first · settings window</span><h2>Key Settings</h2><p>Select a key in the sidebar to configure authentication and application access. Each key has its own settings, with no global authentication screen.</p><span class="review-btn">Explore prototype <span aria-hidden="true">↗</span></span></div>
+</a>
+<a class="direction-card" href="directions/04-split-view.html">
+ <div class="preview-frame" aria-hidden="true"><iframe title="Split View visual preview" src="directions/04-split-view.html?thumb" tabindex="-1" loading="lazy" inert></iframe></div>
+ <div class="card-copy"><span class="eyebrow">04 / Left source list · key inspector</span><h2>Split View</h2><p>Keep the key list on the left and settings on the right. Compact toolbar navigation opens profiles and token-filtered activity.</p><span class="review-btn">Explore prototype <span aria-hidden="true">↗</span></span></div>
+</a>
+<a class="direction-card" href="directions/05-menu-bar.html">
+ <div class="preview-frame" aria-hidden="true"><iframe title="Menu Bar visual preview" src="directions/05-menu-bar.html?thumb" tabindex="-1" loading="lazy" inert></iframe></div>
+ <div class="card-copy"><span class="eyebrow">05 / Ambient workflow · popover + window</span><h2>Menu Bar</h2><p>Keep Clavis close to your work. A compact status popover provides quick approval and opens the full management window when you need it.</p><span class="review-btn">Explore prototype <span aria-hidden="true">↗</span></span></div>
+</a></div>
+ <p class="gallery-foot">HTML, CSS and JavaScript approximations of macOS materials. Mock data only; no real key generation, process verification, signing or authentication. Changes reset on reload.<br>Every direction includes Keys, Application Profiles, per-key authentication settings, token-filtered Activity and first-use approval. Cmd/Ctrl+K focuses key search; Cmd/Ctrl+N creates a mock key.<br><a href="directions/README.md">Design notes & testing</a></p>
+</main>
+<script>document.getElementById('gallery-theme').onclick=()=>{const theme=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=theme;for(const frame of document.querySelectorAll('iframe')){try{frame.contentDocument.documentElement.dataset.theme=theme;}catch{}}};</script>
+</body></html>
