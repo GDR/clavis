@@ -77,7 +77,11 @@ import Testing
             let unknown = SSHAgentServer(applicationAccess: try setup(nil, start: start).1, keyManager: manager)
             let unknownResponse = unknown.handleRequestIdentities(clientPid: pid, clientExecutablePath: "/caller")
             var unknownReader = DataReader(data: Data(unknownResponse.dropFirst()))
-            #expect(unknownReader.readUInt32() == 0)
+            #expect(unknownReader.readUInt32() == 2)
+            let unknownBotEndpoint = SSHAgentServer(applicationAccess: try setup(nil, start: start).1, role: .agent, keyManager: manager)
+            let unknownBotResponse = unknownBotEndpoint.handleRequestIdentities(clientPid: pid, clientExecutablePath: "/caller")
+            var unknownBotReader = DataReader(data: Data(unknownBotResponse.dropFirst()))
+            #expect(unknownBotReader.readUInt32() == 1)
         }
     }
 
