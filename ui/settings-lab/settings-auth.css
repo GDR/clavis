@@ -1,0 +1,41 @@
+/* Uses the shared Clavis shell, with a dedicated in-window approval sheet. */
+.header-study,.layout-study,.preview-controls{display:none}
+.study-bar{padding-bottom:17px}.auth-study-controls{max-width:1116px;margin:0 auto;padding:0 28px 18px;display:flex;align-items:center;gap:9px;color:#ffffffb0;font-size:11px}
+.auth-study-controls select,.auth-study-controls button{border:1px solid #ffffff24;background:#ffffff0c;color:#ffffffd9;border-radius:7px;padding:6px 9px;font-size:11px}
+.auth-study-controls select{max-width:235px}.auth-study-controls select option{background:#34313b;color:#fff}.auth-study-controls a{font-size:10px;color:#ffffffb0;text-decoration:none;margin-left:8px}.auth-study-spacer{flex:1}
+.app-window{height:min(754px,calc(100vh - 224px));min-height:550px}
+.key-auth-sheet{position:fixed;inset:auto;margin:0;transform:translateX(-50%);width:378px;padding:25px 25px 18px;border-radius:15px;background:rgba(43,41,47,.96);border:1px solid #ffffff25;box-shadow:0 20px 65px #0006,inset 0 .5px 0 #ffffff14;backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px);color:var(--text);max-height:calc(100vh - 80px);overflow:auto;transition:none}
+.key-auth-sheet::backdrop{background:rgba(8,7,12,.23);backdrop-filter:none}
+.auth-key-context{display:flex;align-items:center;gap:10px;margin-bottom:22px}.auth-key-context .key-tile{width:32px;height:32px;border-radius:8px}.auth-key-context strong{display:block;font-size:12px;font-weight:600}.auth-key-context small{display:block;font-size:10px;color:var(--secondary);margin-top:3px}.auth-context-lock{margin-left:auto;color:var(--tertiary)}.auth-context-lock svg{width:16px;height:16px}
+.key-auth-sheet h1{font-size:21px;letter-spacing:-.45px;line-height:1.2;margin:0 0 9px;font-weight:700}.key-auth-sheet #key-auth-reason{font-size:12px;color:var(--secondary);line-height:1.5;margin:0 0 19px;max-width:300px}
+.auth-change-summary{border-radius:9px;background:var(--group);box-shadow:0 0 0 .5px var(--line);padding:12px;display:flex;align-items:center;gap:10px;font-size:11px;min-height:43px}.auth-change-summary>div{display:flex;align-items:center;gap:7px;white-space:nowrap;margin-left:auto}.auth-change-summary #auth-before{color:var(--tertiary)}.auth-change-arrow{color:var(--tertiary);font-size:12px}.auth-change-summary strong{font-weight:500;color:var(--text)}
+.auth-impact{color:var(--tertiary)!important;font-size:10px!important;line-height:1.5!important;margin:9px 1px 0;min-height:30px}
+.auth-feedback{display:flex;align-items:center;flex-direction:column;min-height:142px;padding:17px 0 18px;text-align:center}.auth-fingerprint{color:#f4798a;width:44px;height:48px;display:grid;place-items:center;margin-bottom:12px}.auth-fingerprint svg{width:40px;height:44px;stroke:none}.auth-feedback strong{font-size:12px;font-weight:600;line-height:17px}.auth-feedback>span{color:var(--secondary);font-size:11px;line-height:16px;margin-top:3px;max-width:285px}
+.auth-sheet-actions{border-top:.5px solid var(--line);padding-top:15px;display:flex;justify-content:space-between;align-items:center;gap:12px}.auth-sheet-actions button{margin:0;width:auto;font-size:12px}.auth-sheet-actions #auth-fallback{padding:6px 0;background:none;color:var(--link)}.auth-sheet-actions #auth-fallback:hover{text-decoration:underline}.auth-sheet-actions #auth-cancel{padding:6px 17px;background:var(--control);border-radius:7px;box-shadow:inset 0 .5px 0 #ffffff18,0 1px 2px #0002}
+.key-auth-sheet[data-phase=failed] .auth-fingerprint,.key-auth-sheet[data-phase=unavailable] .auth-fingerprint{color:#e9aa65}.key-auth-sheet[data-phase=success] .auth-fingerprint{color:#62c889}.key-auth-sheet[data-phase=save-error] .auth-fingerprint{color:#e9aa65}.auth-fingerprint .auth-result-icon{width:38px;height:38px;stroke:currentColor;stroke-width:1.7}
+.auth-simulator{max-width:1116px;margin:17px auto 0;padding:0 28px;display:flex;justify-content:center;align-items:center;flex-wrap:wrap;gap:7px;color:#ffffff90;font-size:10px}.auth-simulator>span{margin-right:5px}.auth-simulator button{background:#00000020;border:1px solid #ffffff20;color:#ffffffc0;border-radius:6px;padding:6px 9px;font-size:10px}.auth-simulator button:hover{background:#ffffff16}.auth-simulator button:disabled{opacity:.35}.auth-study-status{text-align:center;font-size:10px;color:#ffffffa0;margin:10px 16px 0;line-height:1.4}.prototype-caption{margin-top:8px}
+body[data-theme=light] .key-auth-sheet{background:rgba(245,244,247,.97);border-color:#ffffffbd;box-shadow:0 20px 65px #0004,inset 0 .5px 0 #fff}.key-auth-sheet[data-phase=password] .auth-fingerprint{color:var(--secondary)}
+@media(max-width:900px){.auth-study-controls{flex-wrap:wrap;padding-bottom:14px}.auth-study-controls a{display:none}}
+@media(max-width:650px){.auth-study-controls{padding-left:16px;padding-right:16px}.auth-study-spacer{display:none}.auth-study-controls>label{display:none}.key-auth-sheet{width:350px;padding:23px 22px 17px}}
+@media(prefers-reduced-transparency:reduce){.key-auth-sheet{background:#2b292f;backdrop-filter:none;-webkit-backdrop-filter:none}body[data-theme=light] .key-auth-sheet{background:#f5f4f7}}
+
+/* The app sheet blocks its window; external study controls remain usable. */
+.key-auth-sheet{z-index:30}
+.app-window.auth-open::after{content:"";position:absolute;inset:0;background:#08070c30;z-index:4;pointer-events:auto}
+
+/* Expandable, local-only password preview, shared by all approval studies. */
+.demo-password-drawer{display:grid;grid-template-rows:0fr;opacity:0;transition:grid-template-rows 180ms ease,opacity 140ms ease}
+.demo-password-drawer.is-open{grid-template-rows:1fr;opacity:1}
+.demo-password-inner{overflow:hidden;min-height:0}
+.demo-password-form{padding:12px 3px 3px;margin:0}
+.demo-password-entry{display:flex;gap:7px;align-items:center}
+.demo-password-entry input{flex:1;min-width:0;width:0;height:29px;padding:0 9px;margin:0;border:1px solid var(--line);border-radius:7px;background:var(--control);color:var(--text);font-size:12px;box-shadow:inset 0 .5px 1px #00000012}
+.demo-password-entry input::placeholder{color:var(--tertiary)}
+.demo-password-entry input:focus-visible{outline:2px solid #579eff;outline-offset:1px}
+.demo-password-entry input[aria-invalid=true]{border-color:#df8e87}
+.demo-password-entry button{height:29px;padding:0 11px;flex:none;width:auto;border:0;border-radius:7px;background:var(--accent);color:white;font-size:11px;font-weight:500;margin:0}
+.demo-password-hint{font-size:9px!important;line-height:13px!important;color:var(--tertiary)!important;margin:6px 1px 0!important}
+.demo-password-hint code{font:inherit;color:var(--secondary)}
+.demo-password-error{font-size:10px!important;line-height:14px!important;color:#ebaaa2!important;margin:6px 1px 0!important}
+body[data-theme=light] .demo-password-error{color:#a33e35!important}
+@media(prefers-reduced-motion:reduce){.demo-password-drawer{transition:none}}

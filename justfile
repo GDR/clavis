@@ -444,6 +444,56 @@ run config="debug":
     fi
     echo "✅ Clavis running (PID $app_pid)"
 
+# --- Auth lab (ui/auth-exp): three prototype apps comparing authentication UX ---
+
+# Build one auth-lab app bundle: system | embedded | password | all (ad-hoc signed, .build/apps/)
+auth-exp-build app="all":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ app }}" in
+        system)   apps=("AuthSystemPrompt") ;;
+        embedded) apps=("AuthEmbedded") ;;
+        password) apps=("AuthApplicationPassword") ;;
+        all)      apps=("AuthSystemPrompt" "AuthEmbedded" "AuthApplicationPassword") ;;
+        *) echo "❌ app must be system, embedded, password or all" >&2; exit 1 ;;
+    esac
+    sdkroot="$(env -u SDKROOT /usr/bin/xcrun --sdk macosx --show-sdk-path)"
+    cd ui/auth-exp
+    SDKROOT="$sdkroot" swift build
+    for name in "${apps[@]}"; do
+        bundle=".build/apps/$name.app"
+        rm -rf "$bundle"
+        mkdir -p "$bundle/Contents/MacOS"
+        cp ".build/debug/$name" "$bundle/Contents/MacOS/$name"
+        cat > "$bundle/Contents/Info.plist" <<PLIST
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0"><dict>
+    <key>CFBundleExecutable</key><string>$name</string>
+    <key>CFBundleIdentifier</key><string>com.clavis.authlab.$name</string>
+    <key>CFBundleName</key><string>$name</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>LSMinimumSystemVersion</key><string>15.0</string>
+    <key>NSHighResolutionCapable</key><true/>
+    </dict></plist>
+    PLIST
+        /usr/bin/codesign --force --sign - "$bundle"
+        echo "✅ ui/auth-exp/$bundle"
+    done
+
+# Launch an auth-lab app: just auth-exp system|embedded|password
+auth-exp app="embedded": (auth-exp-build app)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ app }}" in
+        system)   name="AuthSystemPrompt" ;;
+        embedded) name="AuthEmbedded" ;;
+        password) name="AuthApplicationPassword" ;;
+        *) echo "❌ app must be system, embedded or password" >&2; exit 1 ;;
+    esac
+    killall "$name" 2>/dev/null || true
+    open "ui/auth-exp/.build/apps/$name.app"
+
 # Clean build artifacts
 clean:
     swift package clean
