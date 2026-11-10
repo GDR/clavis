@@ -192,7 +192,7 @@ final class PanelLockTests {
         _ = onboardingView.body
     }
 
-    @Test func test_idleLock_doesNotAutoPromptAuthentication() async {
+    @Test func test_idleLock_waitsForActiveWindowBeforePassiveAuthentication() async {
         let fakeAuth = FakePanelAuthenticator()
         var currentTime = Date(timeIntervalSince1970: 1000)
         let controller = PanelLockController(
@@ -221,8 +221,11 @@ final class PanelLockTests {
         hosting.layout()
         try? await Task.sleep(nanoseconds: 20_000_000)
 
-        #expect(fakeAuth.authCount == 1, "Locking on idle must not automatically re-prompt authentication")
+        #expect(fakeAuth.authCount == 1, "An offscreen idle lock must not activate the sensor")
         #expect(controller.isEffectivelyLocked)
+        await controller.unlockIfNeededOnWindowFocus(isWindowFocusEvent: true)
+        #expect(fakeAuth.authCount == 2)
+        #expect(!controller.isEffectivelyLocked)
     }
 
     @Test func test_windowWillClose_clearsContentViewController() {
@@ -243,8 +246,8 @@ final class PanelLockTests {
     }
 
     @Test func test_lockedPlaceholderAndWindowDimensions() {
-        #expect(LockedPlaceholderView.subtitleText == "Unlock to manage your keys and security settings.")
-        #expect(LockedPlaceholderView.bottomContinuationNotice == "SSH and Git signing continue while the panel is locked.")
+        #expect(LockedPlaceholderView.subtitleText == "Unlock to manage keys and application access.")
+        #expect(LockedPlaceholderView.bottomContinuationNotice == "Allowed unattended Agent keys can sign")
         #expect(WindowManager.defaultWindowSize == NSSize(width: 958, height: 724))
         #expect(WindowManager.minimumWindowSize == NSSize(width: 713, height: 610))
 
@@ -278,12 +281,10 @@ final class PanelLockTests {
         let hosting = NSHostingView(rootView: gate)
         hosting.frame = NSRect(x: 0, y: 0, width: 911, height: 724)
         hosting.layout()
-        for _ in 0..<20 {
-            if fakeAuth.authCount >= 1 && !controller.isUnlocking { break }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-
-        #expect(fakeAuth.authCount == 1, "Opening Clavis window while locked must immediately prompt for Touch ID")
+        #expect(fakeAuth.authCount == 0, "An offscreen view must not activate the sensor")
+        // The containing window observer sends this event once key, visible and active.
+        await controller.unlockIfNeededOnWindowFocus(isWindowFocusEvent: true)
+        #expect(fakeAuth.authCount == 1, "Activating the locked window starts Touch ID")
         #expect(controller.isEffectivelyLocked, "Cancelling the Touch ID prompt keeps the window on the locked screen")
 
         // Immediate window focus event after prompt dismissal must not re-trigger an infinite loop
@@ -364,7 +365,7 @@ final class PanelLockTests {
 
         #expect(controller.isEffectivelyLocked)
         #expect(LockedPlaceholderView.passwordFieldLabel == "Mac login password")
-        #expect(LockedPlaceholderView.passwordFieldPlaceholder == "Enter password")
+        #expect(LockedPlaceholderView.passwordFieldPlaceholder == "Mac login password")
 
         // Wrong password keeps panel locked
         let wrongResult = await controller.unlockWithLoginPassword("wrong-password")
@@ -384,7 +385,7 @@ final class PanelLockTests {
         #expect(fakeAuth.authCount == 0)
     }
 
-    @Test func test_lockedPlaceholderView_loadsAppIconAndRendersVariant6() {
+    @Test func test_lockedPlaceholderView_loadsAppIconAndRendersHalo() {
         let icon = LockedPlaceholderView.loadAppIcon()
         #expect(icon != nil, "AppIcon.png should resolve from Bundle.clavisCore or NSApp")
 

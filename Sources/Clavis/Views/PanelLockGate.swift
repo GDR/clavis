@@ -6,272 +6,298 @@ import ClavisCore
 public struct LockedPlaceholderView: View {
     @ObservedObject var lock: PanelLockController
     @ObservedObject private var appState: AppState = .shared
-
-    @State private var password: String = ""
-    @State private var isPasswordVisible: Bool = false
-    @State private var passwordError: String? = nil
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var password = ""
+    @State private var revealsPassword = false
+    @State private var passwordError: String?
+    @State private var windowIsActive = false
+    @State private var presentationID = UUID()
     @FocusState private var isPasswordFocused: Bool
 
-    public static let clarificationNotice = "Locking the control panel does not disable background SSH signing. Active SSH sessions and Git operations continue in the background."
-    public static let subtitleText = "Unlock to manage your keys and security settings."
-    public static let bottomContinuationNotice = "SSH and Git signing continue while the panel is locked."
+    public static let clarificationNotice = "Locking the control panel does not disable background SSH signing. Only allowed unattended Agent keys can sign; SSH and Git operations remain subject to their key policies."
+    public static let subtitleText = "Unlock to manage keys and application access."
+    public static let bottomContinuationNotice = "Allowed unattended Agent keys can sign"
     public static let passwordFieldLabel = "Mac login password"
-    public static let passwordFieldPlaceholder = "Enter password"
-    public static let incorrectPasswordText = "Incorrect password. Try again or use Touch ID."
+    public static let passwordFieldPlaceholder = "Mac login password"
+    public static let incorrectPasswordText = "Incorrect password. Try again."
 
     public static func loadAppIcon() -> NSImage? {
         Bundle.clavisCore.url(forResource: "AppIcon", withExtension: "png")
-            .flatMap(NSImage.init(contentsOf:))
-            ?? NSApp?.applicationIconImage
+            .flatMap(NSImage.init(contentsOf:)) ?? NSApp?.applicationIconImage
     }
 
-    public init() {
-        self.init(lock: .shared)
-    }
-
-    public init(lock: PanelLockController) {
-        self.lock = lock
-    }
+    public init() { self.init(lock: .shared) }
+    public init(lock: PanelLockController) { self.lock = lock }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            // Top traffic-light clearance bar (52px)
-            Color.clear
-                .frame(height: KeyListView.toolbarHeight)
-
-            Spacer(minLength: 16)
-
-            // Centered lock card (320px)
+        GeometryReader { geometry in
+            let haloSide = min(860, max(620, geometry.size.width * 0.82))
             VStack(spacing: 0) {
-                appIconWithLockBadge
-                    .padding(.bottom, 18)
+                VStack(spacing: 40) {
+                    identity
+                    if lock.currentMode.requiresPIN {
+                        PinEntryView(lock: lock)
+                            .frame(maxWidth: 320)
+                            .padding(20)
+                            .modifier(LockAuthenticationBarMaterial())
+                    } else {
+                        authenticationBar(compact: geometry.size.width < 570)
+                    }
+                }
+                .padding(.horizontal, 25)
+                // Reserve inline error space without changing the group's position.
+                .padding(.bottom, 28)
+                .background {
+                    if !reduceTransparency {
+                        GeometryReader { group in
+                            HaloReflectionView(isAnimating: windowIsActive && !reduceMotion)
+                                .frame(width: haloSide, height: haloSide)
+                                .position(x: group.size.width / 2, y: 76)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
 
-                Text(ClavisUIStrings.PanelLock.title)
-                    .font(.system(size: 21, weight: .semibold))
-                    .foregroundColor(.primary)
-                    .padding(.bottom, 6)
-
-                Text(Self.subtitleText)
-                    .font(.system(size: 12))
-                    .foregroundColor(DesignTokens.textSecondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.bottom, 22)
-
-                if lock.currentMode.requiresPIN {
-                    PinEntryView(lock: lock)
+                statusFooter
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 20)
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+        .background {
+            Group {
+                if reduceTransparency {
+                    Color(nsColor: .windowBackgroundColor)
                 } else {
-                    passwordAndTouchIDUnlockForm
-                        .frame(width: 260)
+                    // Keep the backdrop view fully opaque: applying SwiftUI
+                    // opacity can flatten the effect and lose behind-window blur.
+                    VisualEffectView(material: contrast == .increased ? .underWindowBackground : .sidebar,
+                                     blendingMode: .behindWindow, state: .followsWindowActiveState)
                 }
-            }
-            .frame(width: 320)
-            .padding(.horizontal, 18)
-
-            Spacer(minLength: 16)
-
-            // Bottom agent status capsule pill
-            HStack(spacing: 8) {
-                StatusDot(isActive: appState.isSocketActive)
-                Text(appState.isSocketActive ? "Clavis active" : "Agent offline")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.primary)
-                Text("·")
-                    .font(.system(size: 11))
-                    .foregroundColor(DesignTokens.textTertiary)
-                Text("SSH & Git signing continue")
-                    .font(.system(size: 11))
-                    .foregroundColor(DesignTokens.textSecondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .glassCard(cornerRadius: 999)
-            .padding(.bottom, 18)
-            .accessibilityElement(children: .combine)
-            .accessibilityHint(Self.clarificationNotice)
+            }.ignoresSafeArea()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(
-            ZStack {
-                VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow)
-                DesignTokens.windowBackground
-            }
-            .ignoresSafeArea()
-        )
-        .onAppear {
-            if lock.lastLockReason != .idle && lock.lastLockReason != .lockNow {
-                Task {
-                    await lock.unlockIfNeededOnWindowFocus()
-                }
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
-            guard let window = notification.object as? NSWindow,
-                  window === WindowManager.shared.keyManagerWindow else { return }
-            Task {
-                await lock.unlockIfNeededOnWindowFocus(isWindowFocusEvent: true)
-            }
-        }
-        .onDisappear {
-            password = ""
-            passwordError = nil
-        }
-    }
-
-    private var appIconWithLockBadge: some View {
-        ZStack(alignment: .bottomTrailing) {
-            if let iconImage = Self.loadAppIcon() {
-                Image(nsImage: iconImage)
-                    .resizable()
-                    .interpolation(.high)
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 64, height: 64)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .shadow(color: Color.black.opacity(0.28), radius: 14, x: 0, y: 6)
+        .toolbarBackground(.hidden, for: .windowToolbar)
+        .background(LockWindowActivityObserver { active in
+            guard windowIsActive != active else { return }
+            windowIsActive = active
+            if active {
+                Task { await lock.unlockIfNeededOnWindowFocus(isWindowFocusEvent: true) }
+                Task { await appState.requestPolicy.refresh() }
             } else {
-                ZStack {
-                    Image(systemName: "key.fill")
-                        .font(.system(size: 26, weight: .medium))
-                        .foregroundColor(DesignTokens.accentBlue)
-                }
-                .frame(width: 64, height: 64)
-                .glassCard(
-                    cornerRadius: 16,
-                    strokeColor: DesignTokens.accentBlue.opacity(0.16),
-                    tint: DesignTokens.accentBlue.opacity(0.10)
-                )
-                .shadow(color: Color.black.opacity(0.28), radius: 14, x: 0, y: 6)
+                clearSecrets()
+                lock.lockedWindowDidDeactivate()
             }
-
-            ZStack {
-                Circle()
-                    .fill(.regularMaterial)
-                    .background(Circle().fill(Color(nsColor: .windowBackgroundColor)))
-                Circle()
-                    .stroke(DesignTokens.cardBorder, lineWidth: 1.5)
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(DesignTokens.accentBlue)
-            }
-            .frame(width: 24, height: 24)
-            .shadow(color: Color.black.opacity(0.30), radius: 4, x: 0, y: 2)
-            .offset(x: 4, y: 4)
+        })
+        .onDisappear {
+            windowIsActive = false
+            clearSecrets()
+            lock.cancelEmbeddedUnlock()
         }
-        .accessibilityHidden(true)
     }
 
-    private var passwordAndTouchIDUnlockForm: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button(action: {
-                passwordError = nil
-                Task {
-                    await lock.unlock()
+    private var identity: some View {
+        VStack(spacing: 0) {
+            Group {
+                if let image = Self.loadAppIcon() {
+                    Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                } else {
+                    Image(systemName: "key.fill").font(.system(size: 50))
                 }
-            }) {
-                HStack(spacing: 8) {
-                    Image(systemName: "touchid")
-                        .font(.system(size: 16))
-                    Text("Unlock with Touch ID")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: 36)
             }
-            .liquidGlassButton(prominent: true)
-            .controlSize(.large)
-            .disabled(lock.isUnlocking)
-            .accessibilityLabel(ClavisUIStrings.PanelLock.unlock)
+            .frame(width: 88, height: 88)
+            .accessibilityHidden(true)
+            .padding(.bottom, 16)
+            Text("Clavis is locked")
+                .font(.system(size: 24, weight: .semibold))
+                .padding(.bottom, 7)
+            Text(Self.subtitleText)
+                .font(.system(size: 12))
+                .foregroundStyle(contrast == .increased ? .primary : .secondary)
+                .multilineTextAlignment(.center)
+        }
+    }
 
-            HStack(spacing: 10) {
-                Rectangle()
-                    .fill(DesignTokens.cardBorder)
-                    .frame(height: 1)
-                Text("or password")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundColor(DesignTokens.textTertiary)
-                Rectangle()
-                    .fill(DesignTokens.cardBorder)
-                    .frame(height: 1)
-            }
-            .padding(.vertical, 2)
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 4) {
-                    Group {
-                        if isPasswordVisible {
-                            TextField(Self.passwordFieldPlaceholder, text: $password)
-                        } else {
-                            SecureField(Self.passwordFieldPlaceholder, text: $password)
-                        }
-                    }
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .focused($isPasswordFocused)
-                    .disabled(lock.isUnlocking)
-                    .accessibilityLabel(Self.passwordFieldLabel)
-                    .onChange(of: password) { _ in
-                        if passwordError != nil {
-                            passwordError = nil
-                        }
-                    }
-                    .onSubmit {
-                        submitLoginPassword()
-                    }
-
-                    Button(action: { isPasswordVisible.toggle() }) {
-                        Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(DesignTokens.textSecondary)
-                            .frame(width: 22, height: 22)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(isPasswordVisible ? "Hide password" : "Show password")
-                    .accessibilityLabel(isPasswordVisible ? "Hide password" : "Show password")
-
-                    Button(action: submitLoginPassword) {
-                        ZStack {
-                            Circle()
-                                .fill(
-                                    password.isEmpty || lock.isUnlocking
-                                        ? Color.secondary.opacity(0.25)
-                                        : DesignTokens.accentBlue
-                                )
-                            Image(systemName: "arrow.right")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(.white)
-                        }
-                        .frame(width: 22, height: 22)
-                    }
-                    .buttonStyle(.plain)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(password.isEmpty || lock.isUnlocking)
-                    .help("Unlock")
-                    .accessibilityLabel("Unlock")
-                }
-                .padding(.leading, 11)
-                .padding(.trailing, 5)
-                .frame(height: 32)
-                .liquidGlassControl(cornerRadius: 8, isFocused: isPasswordFocused)
-
-                if let passwordError {
-                    Text(passwordError)
-                        .font(.system(size: 11))
-                        .foregroundColor(.red)
-                        .fixedSize(horizontal: false, vertical: true)
+    private func authenticationBar(compact: Bool) -> some View {
+        Group {
+            if compact {
+                VStack(spacing: 18) { biometricLabel; passwordField }
+            } else {
+                HStack(spacing: 25) {
+                    biometricLabel.frame(maxWidth: .infinity, alignment: .leading)
+                    passwordField
                 }
             }
         }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .frame(maxWidth: compact ? 340 : 590)
+        .modifier(LockAuthenticationBarMaterial())
+        .overlay(alignment: .bottom) {
+            Text(passwordError ?? " ")
+                .font(.system(size: 11))
+                .foregroundStyle(.red)
+                .accessibilityLabel(passwordError ?? "")
+                .offset(y: 25)
+        }
+    }
+
+    private var biometricLabel: some View {
+        HStack(spacing: 12) {
+            Group {
+                if let context = lock.embeddedUnlockContext {
+                    NotchEmbeddedTouchIDView(context: context, iconSize: 38)
+                        .id(ObjectIdentifier(context))
+                        .onAppear { lock.embeddedUnlockViewDidMount(context) }
+                } else {
+                    // No substitute fingerprint: only the system-owned embedded view
+                    // may show Touch ID. Keep its space stable when unavailable.
+                    Color.clear
+                }
+            }
+            .frame(width: 38, height: 38)
+            .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(biometricTitle)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.primary)
+                Text(biometricDetail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(contrast == .increased ? Color.primary : Color.secondary)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var biometricTitle: String {
+        switch lock.biometricStatus {
+        case .ready: return "Unlock with Touch ID"
+        case .locked: return "Touch ID locked"
+        case .unavailable: return "Touch ID unavailable"
+        }
+    }
+
+    private var biometricDetail: String {
+        switch lock.biometricStatus {
+        case .ready: return "Rest your finger on the sensor."
+        case .locked: return "Use your Mac login password."
+        case .unavailable: return "Enter your Mac login password."
+        }
+    }
+
+    private var passwordField: some View {
+        HStack(spacing: 5) {
+            Group {
+                if revealsPassword {
+                    TextField(Self.passwordFieldPlaceholder, text: $password)
+                } else {
+                    SecureField(Self.passwordFieldPlaceholder, text: $password)
+                }
+            }
+            .textFieldStyle(.plain)
+            .font(.system(size: 12))
+            .focused($isPasswordFocused)
+            .accessibilityLabel(Self.passwordFieldLabel)
+            .onSubmit { submitLoginPassword() }
+            Button {
+                revealsPassword.toggle()
+                Task { @MainActor in
+                    await Task.yield()
+                    isPasswordFocused = true
+                }
+            } label: {
+                Image(systemName: revealsPassword ? "eye.slash" : "eye")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.secondary)
+                    .frame(width: 27, height: 27)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(revealsPassword ? "Hide password" : "Show password")
+            Button(action: submitLoginPassword) {
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 27, height: 27)
+                    .background(Color(nsColor: .systemBlue), in: Circle())
+                    .opacity(password.isEmpty || lock.isVerifyingPassword ? 0.4 : 1)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Unlock with password")
+            .disabled(password.isEmpty || lock.isVerifyingPassword)
+        }
+        .disabled(lock.isVerifyingPassword)
+        .padding(.leading, 11)
+        .padding(.trailing, 6)
+        .frame(width: 240, height: 39)
+        .background {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(reduceTransparency ? Color(nsColor: .textBackgroundColor) :
+                        Color.black.opacity(colorScheme == .dark ? 0.14 : 0.055))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(isPasswordFocused ? Color(nsColor: .systemBlue) :
+                                Color.primary.opacity(contrast == .increased ? 0.65 : 0.16),
+                              lineWidth: isPasswordFocused ? 2 : 1)
+        }
+        .onChange(of: password) { _ in passwordError = nil }
+    }
+
+    private var statusFooter: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 7) { statusTitle; Text("·"); Text(statusDetail) }
+            VStack(spacing: 3) { statusTitle; Text(statusDetail) }
+        }
+        .font(.system(size: 10))
+        .foregroundStyle(contrast == .increased ? .primary : .secondary)
+        .accessibilityHint(Self.clarificationNotice)
+    }
+
+    private var statusTitle: some View {
+        HStack(spacing: 6) {
+            Circle().fill(statusIsActive ? Color.green : Color.secondary).frame(width: 5, height: 5)
+                .accessibilityHidden(true)
+            Text(appState.requestPolicy.isPaused ? "Clavis paused" : statusIsActive ? "Clavis active" : "Agent status unavailable")
+                .fontWeight(.medium)
+        }
+    }
+
+    private var statusIsActive: Bool {
+        appState.isSocketActive && appState.requestPolicy.state == .accepting
+    }
+    private var statusDetail: String {
+        if appState.requestPolicy.isPaused { return "All signing is refused" }
+        return statusIsActive ? Self.bottomContinuationNotice : "Signing availability could not be confirmed"
+    }
+
+    private func clearSecrets() {
+        presentationID = UUID()
+        password = ""
+        revealsPassword = false
+        passwordError = nil
+        isPasswordFocused = false
     }
 
     private func submitLoginPassword() {
         let candidate = password
-        guard !candidate.isEmpty, !lock.isUnlocking else { return }
+        guard !candidate.isEmpty, !lock.isVerifyingPassword else { return }
         password = ""
         passwordError = nil
+        let presentation = presentationID
         Task {
             let unlocked = await lock.unlockWithLoginPassword(candidate)
+            guard presentation == presentationID, windowIsActive, lock.isEffectivelyLocked else { return }
             if !unlocked {
                 passwordError = Self.incorrectPasswordText
+                isPasswordFocused = true
+                // Resume passive biometrics only if still available. A latched
+                // lockout/unavailable status prevents a new evaluation.
+                await lock.unlock()
             }
         }
     }

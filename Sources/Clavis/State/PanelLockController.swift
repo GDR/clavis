@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 @preconcurrency import LocalAuthentication
 import OpenDirectory
 import ClavisCore
@@ -54,6 +55,12 @@ public final class PanelLockController: ObservableObject {
     @Published public private(set) var state: State = .locked
     @Published public private(set) var isUnlocking: Bool = false
     public private(set) var unlockContext: LAContext?
+    @Published public private(set) var embeddedUnlockContext: LAContext?
+    @Published public private(set) var embeddedUnlockError: String?
+    private var mountedEmbeddedContext: LAContext?
+    @Published public private(set) var isVerifyingPassword = false
+    public enum BiometricStatus: Equatable { case ready, unavailable, locked }
+    @Published public private(set) var biometricStatus: BiometricStatus = .ready
     public private(set) var lastLockReason: PanelLockReason?
 
     public static let didLockNotification = NSNotification.Name("com.clavis.panelDidLock")
@@ -69,6 +76,7 @@ public final class PanelLockController: ObservableObject {
     private let now: () -> Date
     private var lastActivity: Date
     private var vaultKeyCountProvider: (() -> Int)?
+    private let embeddedContextFactory: (@MainActor () -> LAContext)?
     private let loginPasswordVerifier: @Sendable (String) -> Bool
 
     public var currentMode: AuditReadMode {
@@ -162,7 +170,8 @@ public final class PanelLockController: ObservableObject {
         recorder: AuditRecording = AuditRecorder.shared,
         now: @escaping () -> Date = Date.init,
         vaultKeyCount: (() -> Int)? = PanelLockController.makeDefaultVaultKeyCountProvider(),
-        loginPasswordVerifier: @escaping @Sendable (String) -> Bool = PanelLockController.verifyLocalAccountPassword
+        loginPasswordVerifier: @escaping @Sendable (String) -> Bool = PanelLockController.verifyLocalAccountPassword,
+        embeddedContextFactory: (@MainActor () -> LAContext)? = nil
     ) {
         self.defaults = defaults
         self.authenticator = authenticator
@@ -171,6 +180,7 @@ public final class PanelLockController: ObservableObject {
         self.now = now
         self.vaultKeyCountProvider = vaultKeyCount
         self.loginPasswordVerifier = loginPasswordVerifier
+        self.embeddedContextFactory = embeddedContextFactory
         let currentTime = now()
         self.lastActivity = currentTime
 
@@ -206,13 +216,10 @@ public final class PanelLockController: ObservableObject {
     }
 
     public func unlock() async {
+        guard canStartEmbeddedAuthentication else { return }
+        guard biometricStatus == .ready else { return }
         guard isLocked, !shouldBypassLock else { return }
-        if isUnlocking {
-            while isUnlocking {
-                await Task.yield()
-            }
-            return
-        }
+        guard !isUnlocking else { return }
 
         let mode = (try? keyring?.currentMode()) ?? .passwordOrBiometry
         if mode.requiresPIN {
@@ -222,28 +229,126 @@ public final class PanelLockController: ObservableObject {
 
         let generation = promptLifecycle.beganManualAttempt()
         isUnlocking = true
-        defer { isUnlocking = false }
+        defer {
+            if promptLifecycle.acceptsCompletion(from: generation) { isUnlocking = false }
+        }
 
         do {
             ClavisLogger.promptDebug("calvis-ui", "PanelLockController: requesting panel unlock prompt: \"\(ClavisUIStrings.PanelLock.reason)\"")
-            let context = try await authenticator.authenticate(reason: ClavisUIStrings.PanelLock.reason)
+            let context: LAContext
+            if authenticator is LAPanelAuthenticator {
+                context = try await authenticateEmbeddedUnlock()
+            } else {
+                context = try await authenticator.authenticate(reason: ClavisUIStrings.PanelLock.reason)
+            }
             guard promptLifecycle.acceptsCompletion(from: generation) else {
                 context.invalidate()
                 return
             }
             applyUnlock(context: context)
         } catch {
-            // Cancellation stays locked. Focus restoration is not a retry.
+            guard promptLifecycle.acceptsCompletion(from: generation) else { return }
+            handleEmbeddedAuthenticationError(error)
         }
     }
 
+    // LAAuthenticationView has no public per-scan callback. An authenticationFailed
+    // completion is terminal, not a scan count. Require password after that result;
+    // never manufacture a three-scan counter or reset a system lockout on refocus.
+    func handleEmbeddedAuthenticationError(_ error: Error) {
+        guard let error = error as? LAError else { return }
+        switch error.code {
+        case .biometryLockout, .authenticationFailed:
+            biometricStatus = .locked
+            embeddedUnlockError = "Use your Mac login password."
+        case .biometryNotAvailable, .biometryNotEnrolled, .passcodeNotSet:
+            biometricStatus = .unavailable
+            embeddedUnlockError = "Enter your Mac login password."
+        case .appCancel, .userCancel, .systemCancel:
+            break
+        default:
+            biometricStatus = .unavailable
+            embeddedUnlockError = "Enter your Mac login password."
+        }
+    }
+
+    private func authenticateEmbeddedUnlock() async throws -> LAContext {
+        #if DEBUG
+        guard !ClavisEnvironment.isTesting || embeddedContextFactory != nil else {
+            throw UserAuthenticationError.testAuthenticationNotInjected
+        }
+        #endif
+        let context = embeddedContextFactory?() ?? LAContext()
+        context.localizedFallbackTitle = ""
+        var availabilityError: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &availabilityError) else {
+            throw availabilityError ?? LAError(.biometryNotAvailable)
+        }
+        embeddedUnlockError = nil
+        embeddedUnlockContext = context
+        defer {
+            if embeddedUnlockContext === context {
+                embeddedUnlockContext = nil
+                mountedEmbeddedContext = nil
+            }
+        }
+        // Evaluate only after the screen has mounted the native fingerprint. If the
+        // screen goes away, fail closed instead of allowing a system-owned prompt.
+        for _ in 0..<100 {
+            guard embeddedUnlockContext === context else { throw LAError(.appCancel) }
+            if mountedEmbeddedContext === context { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        guard embeddedUnlockContext === context, mountedEmbeddedContext === context else {
+            context.invalidate()
+            throw LAError(.appCancel)
+        }
+        let success = try await context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics,
+                                                       localizedReason: ClavisUIStrings.PanelLock.reason)
+        guard success, embeddedUnlockContext === context else {
+            context.invalidate()
+            throw LAError(.authenticationFailed)
+        }
+        return context
+    }
+
+    public func embeddedUnlockViewDidMount(_ context: LAContext) {
+        guard embeddedUnlockContext === context else { return }
+        mountedEmbeddedContext = context
+    }
+
+    public func lockedWindowDidDeactivate() {
+        // LocalAuthentication may deliver systemCancel before the window's
+        // deactivation notification. Resume on activation even in that ordering,
+        // while keeping terminal failures and system lockout latched.
+        let shouldResume = currentMode == .passwordOrBiometry
+            ? biometricStatus == .ready : (isUnlocking && !isVerifyingPassword)
+        cancelEmbeddedUnlock()
+        if shouldResume { promptLifecycle.cancelPendingAttempt(rearmAutomaticAttempt: true) }
+    }
+
+    public func cancelEmbeddedUnlock() {
+        promptLifecycle.cancelPendingAttempt()
+        isUnlocking = false
+        isVerifyingPassword = false
+        mountedEmbeddedContext = nil
+        embeddedUnlockContext?.invalidate()
+        embeddedUnlockContext = nil
+    }
+
     private var promptLifecycle = PanelUnlockPromptLifecycle()
+
+    private var canStartEmbeddedAuthentication: Bool {
+        if !(authenticator is LAPanelAuthenticator) || embeddedContextFactory != nil { return true }
+        return NSApp?.isActive == true && WindowManager.shared.keyManagerWindow?.isKeyWindow == true
+    }
 
     /// One automatic attempt per locked period; explicit reopening may retry.
     public func unlockIfNeededOnWindowFocus(
         isWindowFocusEvent: Bool = false,
         isUserInitiatedOpen: Bool = false
     ) async {
+        guard currentMode.requiresPIN || canStartEmbeddedAuthentication else { return }
         let trigger: PanelUnlockPromptLifecycle.Trigger = isUserInitiatedOpen
             ? .explicitOpen : (isWindowFocusEvent ? .windowFocus : .presentation)
         guard promptLifecycle.claimAutomaticAttempt(
@@ -317,20 +422,22 @@ public final class PanelLockController: ObservableObject {
 
     @discardableResult
     public func unlockWithLoginPassword(_ password: String) async -> Bool {
+        guard !currentMode.requiresPIN else { return false }
         guard isLocked, !shouldBypassLock else { return true }
-        guard !password.isEmpty else { return false }
-        if isUnlocking {
-            while isUnlocking {
-                await Task.yield()
+        guard !password.isEmpty, !isVerifyingPassword else { return false }
+        // Password submission takes ownership before cancelling the biometric
+        // context. A delayed success/error from that context cannot win the race.
+        cancelEmbeddedUnlock()
+        let generation = promptLifecycle.beganManualAttempt()
+        isUnlocking = true
+        isVerifyingPassword = true
+        defer {
+            if promptLifecycle.acceptsCompletion(from: generation) {
+                isUnlocking = false
+                isVerifyingPassword = false
             }
-            return !isLocked
         }
 
-        isUnlocking = true
-        defer { isUnlocking = false }
-
-        ClavisLogger.promptDebug("calvis-ui", "PanelLockController: verifying Mac login password via OpenDirectory")
-        let generation = promptLifecycle.beganManualAttempt()
         let verifier = self.loginPasswordVerifier
         let verified = await Task.detached {
             verifier(password)
@@ -345,6 +452,9 @@ public final class PanelLockController: ObservableObject {
     }
 
     public func applyUnlock(context: LAContext?) {
+        cancelEmbeddedUnlock()
+        biometricStatus = .ready
+        embeddedUnlockError = nil
         self.unlockContext = context
         let currentTime = now()
         self.state = .unlocked(since: currentTime)
@@ -369,8 +479,9 @@ public final class PanelLockController: ObservableObject {
     }
 
     public func lock(reason: PanelLockReason) {
-        promptLifecycle.didLock(wasAlreadyLocked: isLocked, suppressAutomaticAttempt: reason == .lockNow || reason == .idle)
+        promptLifecycle.didLock(wasAlreadyLocked: isLocked, suppressAutomaticAttempt: currentMode.requiresPIN && (reason == .lockNow || reason == .idle))
         lastLockReason = reason
+        cancelEmbeddedUnlock()
         unlockContext?.invalidate()
         unlockContext = nil
         state = .locked
