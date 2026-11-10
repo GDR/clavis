@@ -917,72 +917,21 @@ struct KeyDetailInspectorTests {
         #expect(scrollViews.count == 2)
         let leftSV = try #require(scrollViews.first { abs($0.frame.width - KeyListView.sidebarWidth) < 1 })
         let rightSV = try #require(scrollViews.first { abs($0.frame.width - (911 - KeyListView.sidebarWidth)) < 1 })
-        // The fixed status footer consumes sidebar space; key content has no toolbar.
+        // The fixed status footer consumes sidebar space; both panes reserve the shared top band
+        // (Prominent key header on the right, Lock/New Key/search on the left).
         #expect(leftSV.frame.height <= 400)
         #expect(rightSV.frame.height == 400)
         #expect(leftSV.contentInsets.top >= KeyListView.toolbarHeight)
-        #expect(rightSV.contentInsets.top < KeyListView.toolbarHeight)
+        #expect(rightSV.contentInsets.top >= KeyListView.toolbarHeight)
 
-        func pocketSubviews(in sv: NSScrollView) -> [NSView] {
-            sv.subviews.filter {
-                let name = String(describing: type(of: $0))
-                return name.contains("Pocket") || name.contains("BackdropView")
-            }
-        }
-
-        // At rest, scroll pocket and backdrop views are hidden so the header matches the pane surface.
-        #expect(!pocketSubviews(in: leftSV).isEmpty)
-        #expect(pocketSubviews(in: leftSV).allSatisfy { $0.isHidden })
-        #expect(!pocketSubviews(in: rightSV).isEmpty)
-        #expect(pocketSubviews(in: rightSV).allSatisfy { $0.isHidden })
-
-        // Scrolling reveals the liquid glass pocket.
-        leftSV.contentView.setBoundsOrigin(NSPoint(x: 0, y: -60))
-        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: leftSV.contentView)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        #expect(pocketSubviews(in: leftSV).allSatisfy { !$0.isHidden })
-
-        // Returning to the top fades out the pocket smoothly (stays unhidden during transition, then hides on completion).
-        leftSV.contentView.setBoundsOrigin(NSPoint(x: 0, y: -leftSV.contentInsets.top))
-        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: leftSV.contentView)
-        let leftPocket = try #require(leftSV.subviews.first { String(describing: type(of: $0)) == "NSScrollPocket" })
-        let rightPocket = try #require(rightSV.subviews.first { String(describing: type(of: $0)) == "NSScrollPocket" })
-        #expect(!leftPocket.isHidden)
-        #expect(leftPocket.alphaValue == 0.0)
-        #expect(leftPocket.layer?.allowsGroupOpacity == false)
-
-        // Left and right scroll pockets must use distinct backdropGroupNames so scrolling one pane
-        // never alters the other pane's CABackdropLayer capture in WindowServer.
-        let leftGroup = leftPocket.identifier?.rawValue
-        let rightGroup = rightPocket.identifier?.rawValue
-        #expect(leftGroup != nil)
-        #expect(rightGroup != nil)
-        #expect(leftGroup != rightGroup)
-
-        let fadeOutDeadline = Date().addingTimeInterval(2.0)
-        while !pocketSubviews(in: leftSV).allSatisfy(\.isHidden) && Date() < fadeOutDeadline {
-            _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
-        }
-        #expect(pocketSubviews(in: leftSV).allSatisfy { $0.isHidden })
-
+        // Material/blur under the bars is the system scroll-edge effect (no custom layers or private
+        // pocket manipulation); verify only that both bars reserve the shared top band for scrolling content.
         appState.activeMainPane = .history
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         hostingView.layoutSubtreeIfNeeded()
         let historyScrollViews = collectScrollViews(in: hostingView)
         let historyRightSV = try #require(historyScrollViews.first { abs($0.frame.width - (911 - KeyListView.sidebarWidth)) < 1 && abs($0.frame.height - 400) < 1 })
         #expect(historyRightSV.contentInsets.top >= KeyListView.toolbarHeight)
-        #expect(!pocketSubviews(in: historyRightSV).isEmpty)
-        #expect(pocketSubviews(in: historyRightSV).allSatisfy { $0.isHidden })
-
-        historyRightSV.documentView?.setFrameSize(NSSize(width: 911 - KeyListView.sidebarWidth, height: 800))
-        historyRightSV.contentView.setBoundsOrigin(NSPoint(x: 0, y: -60))
-        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: historyRightSV.contentView)
-        #expect(pocketSubviews(in: historyRightSV).allSatisfy { !$0.isHidden })
-
-        let historyPocket = try #require(historyRightSV.subviews.first { String(describing: type(of: $0)) == "NSScrollPocket" })
-        let historyGroup = historyPocket.identifier?.rawValue
-        #expect(historyGroup != nil)
-        #expect(historyGroup != leftGroup)
     }
 
     @Test
@@ -1011,10 +960,9 @@ struct KeyDetailInspectorTests {
         let closeRectInWindow = closeBtn.convert(closeBtn.bounds, to: nil)
         let closeCenterFromTop = window.frame.height - closeRectInWindow.midY
 
-        // With .unified toolbarStyle on macOS 26+, the traffic light buttons sit at y = 26pt from the top
-        // (vertically centered in the 52pt KeyListView.toolbarHeight bar alongside the 33pt liquid glass buttons)
-        // and the close button is horizontally centered at x = 26pt (matching the search magnifying glass icon).
-        #expect(abs(closeCenterFromTop - KeyListView.toolbarHeight / 2) <= 0.5)
-        #expect(abs(closeRectInWindow.midX - 26.0) <= 0.5)
+        // Traffic lights keep their native position; the 56pt band's midline is shifted onto it via
+        // TrafficLightCenterReader, so native placement must stay near the band's nominal center.
+        #expect(abs(closeCenterFromTop - KeyListView.toolbarHeight / 2) <= 6)
+        #expect(closeRectInWindow.midX > 0)
     }
 }

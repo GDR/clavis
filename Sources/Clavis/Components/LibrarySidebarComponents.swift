@@ -103,6 +103,16 @@ struct LibrarySearchField: NSViewRepresentable {
         field.placeholderString = "Search keys"
         field.setAccessibilityLabel("Search keys")
         field.controlSize = .regular
+        // The SwiftUI host supplies the single Liquid Glass capsule; the native field must not
+        // paint its own opaque inset bezel over it. Editing, Clear and the search glyph stay native.
+        field.isBezeled = false
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        // Without a bezel the cell no longer reserves room for its own glyph (it overdrew the text),
+        // so the host draws the magnifier and the cell keeps only text editing and the native Clear button.
+        (field.cell as? NSSearchFieldCell)?.searchButtonCell = nil
+        field.font = .systemFont(ofSize: 13)
         field.sendsSearchStringImmediately = true
         field.sendsWholeSearchString = false
         field.delegate = context.coordinator

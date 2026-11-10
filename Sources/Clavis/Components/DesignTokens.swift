@@ -11,14 +11,14 @@ public enum DesignTokens {
 
     public static let sidebarBackground = Color(nsColor: NSColor(name: nil) { appearance in
         appearance.isDarkMode
-            ? NSColor(calibratedRed: 0.11, green: 0.11, blue: 0.13, alpha: 0.35)
-            : NSColor(calibratedWhite: 0.93, alpha: 0.55)
+            ? NSColor(calibratedRed: 0.11, green: 0.11, blue: 0.13, alpha: 0.70)
+            : NSColor(calibratedWhite: 0.93, alpha: 0.70)
     })
 
     public static let inspectorBackground = Color(nsColor: NSColor(name: nil) { appearance in
         appearance.isDarkMode
-            ? NSColor(calibratedRed: 0.12, green: 0.12, blue: 0.13, alpha: 0.96)
-            : NSColor(calibratedWhite: 0.96, alpha: 0.98)
+            ? NSColor(calibratedRed: 0.11, green: 0.11, blue: 0.13, alpha: 0.74)
+            : NSColor(calibratedWhite: 0.95, alpha: 0.74)
     })
 
     public static let settingsGroupFill = Color(nsColor: NSColor(name: nil) { appearance in

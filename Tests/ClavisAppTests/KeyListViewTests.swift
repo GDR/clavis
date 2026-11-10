@@ -305,7 +305,8 @@ struct KeyListViewTests {
     func testContactsSidebarAndEmptyStateConstants() {
         #expect(KeyListView.sidebarWidth == 260)
         #expect(KeyListView.toolbarHeight == 52)
-        #expect(KeyListView.searchCapsuleHeight == 36)
+        #expect(KeyListView.searchCapsuleHeight == 32)
+        #expect(KeyListView.actionControlHeight == 36)
         #expect(KeyListView.emptyStateTitle == "A key that stays on your Mac.")
         #expect(KeyListView.emptyStateSubtitle.contains("Secure Enclave"))
         #expect(KeyListView.emptyStateCreateButtonTitle == "Create your first key")

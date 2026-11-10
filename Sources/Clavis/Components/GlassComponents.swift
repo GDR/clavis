@@ -592,7 +592,36 @@ public struct CircularGlassIconButton: View {
         return colorScheme == .dark ? 0.08 : -0.04
     }
 
+    @ViewBuilder
     public var body: some View {
+        if #available(macOS 26.0, *), !reduceTransparency {
+            systemGlassButton
+        } else {
+            legacyButton
+        }
+    }
+
+    /// Standard system glass button: Apple draws the true circle, shadow and interaction. A square
+    /// label of `size - 8` yields exactly `size` overall with the regular control size (measured).
+    @available(macOS 26.0, *)
+    private var systemGlassButton: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: iconSize, weight: .semibold))
+                .foregroundColor(foregroundColor)
+                // +2pt width compensates the glass shadow/rim that reads as a slightly tall oval.
+                .frame(width: size - 8, height: size - 8)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.capsule)
+        .tint(isDanger ? Color(nsColor: .systemRed) : (isActive ? Color.accentColor : nil))
+        .focusable(false)
+        .modifier(FocusEffectDisabledModifier())
+        .help(helpText)
+        .accessibilityLabel(accessibilityLabelText ?? helpText)
+    }
+
+    private var legacyButton: some View {
         Button(action: action) {
             iconLabel
         }
@@ -616,10 +645,22 @@ public struct CircularGlassIconButton: View {
             .frame(width: size, height: size)
 
         if #available(macOS 26.0, *), !reduceTransparency {
-            baseIcon
-                .glassEffect(resolvedGlassEffect, in: .circle)
-                .brightness(rolloverBrightness)
-                .contentShape(Circle())
+            // The glass is applied to an explicit fixed-size Circle (not to the symbol view), so its
+            // silhouette is a true circle regardless of the symbol's intrinsic width/height.
+            ZStack {
+                Circle()
+                    .fill(Color.clear)
+                    .frame(width: size, height: size)
+                    .glassEffect(resolvedGlassEffect, in: .circle)
+                    .brightness(rolloverBrightness)
+                Image(systemName: systemImage)
+                    .font(.system(size: iconSize, weight: .semibold))
+                    .foregroundColor(foregroundColor)
+                    .allowsHitTesting(false)
+            }
+            .frame(width: size, height: size)
+            .fixedSize()
+            .contentShape(Circle())
         } else {
             baseIcon
                 .background(
@@ -822,13 +863,39 @@ public extension View {
         }
     }
 
-    /// Top bar that is plain (same surface as the content) at rest and turns into
-    /// native glass only once content scrolls underneath it, like Contacts.
+    /// Top bar registered with the scroll view through `safeAreaBar`; the system scroll-edge effect
+    /// supplies the material/blur while content scrolls underneath. No custom backgrounds.
     func topLiquidGlassBar<Bar: View>(
         alignment: HorizontalAlignment = .center,
         @ViewBuilder content: () -> Bar
     ) -> some View {
         modifier(TopLiquidGlassBarModifier(alignment: alignment, bar: content()))
+    }
+
+    /// Pinned bottom bar mirroring `topLiquidGlassBar`: content scrolls beneath it and the system
+    /// scroll-edge effect progressively blurs the rows passing under it.
+    func bottomLiquidGlassBar<Bar: View>(
+        alignment: HorizontalAlignment = .center,
+        @ViewBuilder content: () -> Bar
+    ) -> some View {
+        modifier(BottomLiquidGlassBarModifier(alignment: alignment, bar: content()))
+    }
+}
+
+private struct BottomLiquidGlassBarModifier<Bar: View>: ViewModifier {
+    let alignment: HorizontalAlignment
+    let bar: Bar
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .scrollEdgeEffectStyle(.soft, for: .bottom)
+                .safeAreaBar(edge: .bottom, alignment: alignment, spacing: 0) { bar }
+        } else {
+            content
+                .safeAreaInset(edge: .bottom, alignment: alignment, spacing: 0) { bar }
+        }
     }
 }
 
@@ -841,317 +908,10 @@ private struct TopLiquidGlassBarModifier<Bar: View>: ViewModifier {
         if #available(macOS 26.0, *) {
             content
                 .scrollEdgeEffectStyle(.soft, for: .top)
-                .safeAreaBar(edge: .top, alignment: alignment, spacing: 0) {
-                    bar.background(ScrollPocketVisibilityBridge())
-                }
+                .safeAreaBar(edge: .top, alignment: alignment, spacing: 0) { bar }
         } else {
             content
                 .safeAreaInset(edge: .top, alignment: alignment, spacing: 0) { bar }
         }
     }
 }
-
-/// Synchronizes the enclosing `NSScrollView`'s `NSScrollPocket` and `BackdropView`
-/// visibility with the scroll state. On macOS 26, `.scrollEdgeEffectHidden(true)`
-/// hides `PocketMask`/`PocketBlur` but leaves `NSScrollPocket`'s `v8` thin-film
-/// backdrop layer visible at rest, which alters header opacity over tinted panes.
-private struct ScrollPocketVisibilityBridge: NSViewRepresentable {
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeNSView(context: Context) -> ProbeView {
-        let view = ProbeView()
-        view.coordinator = context.coordinator
-        context.coordinator.probeView = view
-        return view
-    }
-
-    func updateNSView(_ nsView: ProbeView, context: Context) {
-        context.coordinator.probeView = nsView
-        context.coordinator.sync()
-        DispatchQueue.main.async {
-            context.coordinator.sync()
-        }
-    }
-
-    static func dismantleNSView(_ nsView: ProbeView, coordinator: Coordinator) {
-        coordinator.teardown()
-    }
-
-    final class ProbeView: NSView {
-        weak var coordinator: Coordinator?
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            coordinator?.sync()
-            DispatchQueue.main.async { [weak self] in
-                self?.coordinator?.sync()
-            }
-        }
-
-        override func layout() {
-            super.layout()
-            coordinator?.sync()
-        }
-    }
-
-    final class Coordinator {
-        weak var probeView: NSView?
-        private weak var pairedScrollView: NSScrollView?
-        private var boundsObserver: NSObjectProtocol?
-        private var frameObserver: NSObjectProtocol?
-        private var currentTargetScrolled: Bool?
-        private var animationGeneration: UInt64 = 0
-        private var isAnimatingFadeOut = false
-        private var fadeOutTimer: Timer?
-
-        deinit {
-            teardown()
-        }
-
-        func installObserversIfNeeded() {
-            guard boundsObserver == nil else { return }
-            boundsObserver = NotificationCenter.default.addObserver(
-                forName: NSView.boundsDidChangeNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] note in
-                guard let self,
-                      let view = note.object as? NSView,
-                      let probe = self.probeView,
-                      let window = probe.window,
-                      view.window === window else { return }
-                if let sv = self.pairedScrollView, sv.window === window {
-                    guard view === sv.contentView || view === sv || view === probe || view.isDescendant(of: sv) else { return }
-                }
-                self.applyVisibility()
-            }
-            frameObserver = NotificationCenter.default.addObserver(
-                forName: NSView.frameDidChangeNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] note in
-                guard let self,
-                      let view = note.object as? NSView,
-                      let probe = self.probeView,
-                      let window = probe.window,
-                      view.window === window else { return }
-                if let sv = self.pairedScrollView, sv.window === window {
-                    guard view === sv.contentView || view === sv || view === probe || view.isDescendant(of: sv) else { return }
-                }
-                self.applyVisibility()
-            }
-        }
-
-        func teardown() {
-            fadeOutTimer?.invalidate()
-            fadeOutTimer = nil
-            if let boundsObserver {
-                NotificationCenter.default.removeObserver(boundsObserver)
-                self.boundsObserver = nil
-            }
-            if let frameObserver {
-                NotificationCenter.default.removeObserver(frameObserver)
-                self.frameObserver = nil
-            }
-        }
-
-        func sync() {
-            guard let probeView, probeView.window != nil else { return }
-            installObserversIfNeeded()
-            applyVisibility()
-        }
-
-        private func applyVisibility() {
-            guard let probeView else { return }
-            let scrollView: NSScrollView
-            if let cached = pairedScrollView, cached.window === probeView.window, !cached.isHidden {
-                scrollView = cached
-            } else if let found = findPairedScrollView(from: probeView) {
-                pairedScrollView = found
-                currentTargetScrolled = nil
-                scrollView = found
-            } else {
-                return
-            }
-
-            if !scrollView.contentView.postsBoundsChangedNotifications {
-                scrollView.contentView.postsBoundsChangedNotifications = true
-            }
-            let insetTop = scrollView.contentInsets.top
-            let offsetY = scrollView.contentView.bounds.origin.y
-            let scrolled = insetTop > 0 && (offsetY + insetTop > 1)
-
-            var pockets: [NSView] = []
-            var backdrops: [NSView] = []
-            for sub in scrollView.subviews {
-                let typeName = String(describing: type(of: sub))
-                if typeName.contains("Pocket") {
-                    pockets.append(sub)
-                } else if typeName.contains("BackdropView") {
-                    backdrops.append(sub)
-                }
-            }
-
-            // Isolate each scroll pocket's CABackdropLayer group so side-by-side split panes
-            // never share the window-wide TitlebarGroup backdrop capture.
-            for pocket in pockets {
-                Self.isolatePocketBackdropGroup(pocket)
-                pocket.layer?.allowsGroupOpacity = false
-                if let v8 = pocket.layer?.sublayers?.first(where: { $0.name == "v8" }) {
-                    v8.allowsGroupOpacity = false
-                }
-            }
-
-            if currentTargetScrolled == nil {
-                fadeOutTimer?.invalidate()
-                fadeOutTimer = nil
-                currentTargetScrolled = scrolled
-                isAnimatingFadeOut = false
-                for pocket in pockets {
-                    pocket.alphaValue = scrolled ? 1.0 : 0.0
-                    pocket.isHidden = !scrolled
-                }
-                for bd in backdrops {
-                    bd.isHidden = !scrolled
-                }
-            } else if currentTargetScrolled != scrolled {
-                fadeOutTimer?.invalidate()
-                fadeOutTimer = nil
-                currentTargetScrolled = scrolled
-                animationGeneration &+= 1
-                let gen = animationGeneration
-                isAnimatingFadeOut = !scrolled
-
-                for bd in backdrops where bd.isHidden {
-                    bd.isHidden = false
-                }
-                for pocket in pockets {
-                    if pocket.isHidden {
-                        pocket.alphaValue = 0.0
-                        pocket.isHidden = false
-                    }
-                    pocket.layer?.allowsGroupOpacity = false
-                    if let v8 = pocket.layer?.sublayers?.first(where: { $0.name == "v8" }) {
-                        v8.allowsGroupOpacity = false
-                    }
-                }
-
-                let duration: TimeInterval = scrolled ? 0.18 : 0.22
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = duration
-                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                    context.allowsImplicitAnimation = true
-                    for pocket in pockets {
-                        pocket.animator().alphaValue = scrolled ? 1.0 : 0.0
-                    }
-                }
-
-                if !scrolled {
-                    let timer = Timer(timeInterval: duration, repeats: false) { [weak self] _ in
-                        self?.finishFadeOut(generation: gen)
-                    }
-                    RunLoop.main.add(timer, forMode: .common)
-                    fadeOutTimer = timer
-                }
-            } else {
-                if scrolled {
-                    for bd in backdrops where bd.isHidden {
-                        bd.isHidden = false
-                    }
-                    for pocket in pockets where pocket.isHidden {
-                        pocket.isHidden = false
-                    }
-                } else if !isAnimatingFadeOut {
-                    for pocket in pockets {
-                        if pocket.alphaValue != 0.0 { pocket.alphaValue = 0.0 }
-                        if !pocket.isHidden { pocket.isHidden = true }
-                    }
-                    for bd in backdrops where !bd.isHidden {
-                        bd.isHidden = true
-                    }
-                }
-            }
-        }
-
-        private func finishFadeOut(generation: UInt64) {
-            guard animationGeneration == generation else { return }
-            fadeOutTimer?.invalidate()
-            fadeOutTimer = nil
-            isAnimatingFadeOut = false
-            guard currentTargetScrolled == false, let scrollView = pairedScrollView else { return }
-            for sub in scrollView.subviews {
-                let typeName = String(describing: type(of: sub))
-                if typeName.contains("Pocket") || typeName.contains("BackdropView") {
-                    sub.isHidden = true
-                }
-            }
-        }
-
-        private static func isolatePocketBackdropGroup(_ pocket: NSView) {
-            guard String(describing: type(of: pocket)) == "NSScrollPocket" else { return }
-            let groupName = "ClavisScrollPocket-\(ObjectIdentifier(pocket).hashValue)"
-            if pocket.identifier?.rawValue != groupName {
-                pocket.identifier = NSUserInterfaceItemIdentifier(groupName)
-            }
-            let getSel = NSSelectorFromString("backdropGroupName")
-            let setSel = NSSelectorFromString("setBackdropGroupName:")
-            if pocket.responds(to: getSel), pocket.responds(to: setSel) {
-                if (pocket.value(forKey: "backdropGroupName") as? String) != groupName {
-                    pocket.setValue(groupName, forKey: "backdropGroupName")
-                }
-            }
-            if let rootLayer = pocket.layer {
-                isolateContentBlurBackdropLayers(in: rootLayer, groupName: groupName)
-            }
-        }
-
-        private static func isolateContentBlurBackdropLayers(in layer: CALayer, groupName: String) {
-            let getGroupSel = NSSelectorFromString("groupName")
-            let setGroupSel = NSSelectorFromString("setGroupName:")
-            if layer.responds(to: getGroupSel), layer.responds(to: setGroupSel) {
-                let currentGroup = layer.value(forKey: "groupName") as? String
-                let layerName = layer.name ?? ""
-                if layerName.contains("ContentBlur") || (currentGroup?.contains("TitlebarGroup") == true) {
-                    if currentGroup != groupName {
-                        layer.setValue(groupName, forKey: "groupName")
-                    }
-                }
-            }
-            for sub in layer.sublayers ?? [] {
-                isolateContentBlurBackdropLayers(in: sub, groupName: groupName)
-            }
-        }
-
-        private func findPairedScrollView(from probe: NSView) -> NSScrollView? {
-            guard let root = probe.window?.contentView else { return nil }
-            let probeRectInRoot = probe.convert(probe.bounds, to: root)
-            let probeMidX = probeRectInRoot.midX
-
-            func collect(_ view: NSView) -> [NSScrollView] {
-                var result: [NSScrollView] = []
-                if let sv = view as? NSScrollView, !sv.isHidden, sv.frame.height > 50 {
-                    let hasPocket = sv.subviews.contains {
-                        let name = String(describing: type(of: $0))
-                        return name.contains("Pocket") || name.contains("BackdropView")
-                    }
-                    if hasPocket {
-                        result.append(sv)
-                    }
-                }
-                for sub in view.subviews {
-                    result.append(contentsOf: collect(sub))
-                }
-                return result
-            }
-
-            let candidates = collect(root)
-            return candidates.first { sv in
-                let svRect = sv.convert(sv.bounds, to: root)
-                return probeMidX >= svRect.minX && probeMidX <= svRect.maxX
-            }
-        }
-    }
-}
-

@@ -11,15 +11,6 @@ public extension SSHKeyInfo {
     }
 }
 
-// MARK: - Scroll Offset Tracking
-
-private struct InspectorScrollOffsetPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 // MARK: - Native Inline Key Rename Field (Caret at End, Commit on Blur/Enter, Cancel on Escape)
 
 struct InlineKeyRenameField: NSViewRepresentable {
@@ -37,7 +28,7 @@ struct InlineKeyRenameField: NSViewRepresentable {
         textField.isBordered = false
         textField.drawsBackground = false
         textField.focusRingType = .none
-        textField.font = NSFont.systemFont(ofSize: 22, weight: .bold)
+        textField.font = NSFont.systemFont(ofSize: 20, weight: .bold)
         textField.textColor = NSColor.labelColor
         textField.delegate = context.coordinator
         textField.lineBreakMode = .byTruncatingTail
@@ -70,7 +61,7 @@ struct InlineKeyRenameField: NSViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextField, context: Context) -> CGSize {
-        CGSize(width: proposal.width ?? 220, height: 28)
+        CGSize(width: proposal.width ?? 220, height: 24)
     }
 
     final class Coordinator: NSObject, NSTextFieldDelegate {
@@ -172,7 +163,10 @@ public struct KeyDetailInspectorView: View {
     @ObservedObject var appState: AppState
     public let onDelete: () -> Void
     public var onShowToast: ((String) -> Void)?
+    /// Opens/toggles key-scoped History from the persistent header.
+    public var onToggleHistory: (() -> Void)?
 
+    @Environment(\.headerCenterOffset) private var headerCenterOffset
     @StateObject private var applicationsModel: ApplicationSettingsModel
 
     @State private var isRenaming: Bool = false
@@ -182,7 +176,6 @@ public struct KeyDetailInspectorView: View {
     @State private var changePurposeError: String? = nil
     @State private var showingChangePurposeError: Bool = false
     @State private var lastActivityDate: Date? = nil
-    @State private var isScrolled: Bool = false
 
     @State private var copiedPublicKey: Bool = false
     @State private var copiedFingerprint: Bool = false
@@ -197,12 +190,14 @@ public struct KeyDetailInspectorView: View {
         appState: AppState,
         onDelete: @escaping () -> Void,
         onShowToast: ((String) -> Void)? = nil,
+        onToggleHistory: (() -> Void)? = nil,
         applicationAgent: any AgentControlling = AgentLifecycleManager.shared
     ) {
         self.key = key
         self.appState = appState
         self.onDelete = onDelete
         self.onShowToast = onShowToast
+        self.onToggleHistory = onToggleHistory
         self._applicationsModel = StateObject(wrappedValue: ApplicationSettingsModel(agent: applicationAgent))
     }
 
@@ -333,10 +328,10 @@ public struct KeyDetailInspectorView: View {
     }
 
     public var body: some View {
+        ScrollViewReader { scrollProxy in
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                heroHeader
-
+            // Prototype rhythm: 28pt side inset, 15pt below the header band, 23pt between groups.
+            VStack(alignment: .leading, spacing: 23) {
                 if !isKeyEnabled {
                     disabledKeyCallout
                 }
@@ -347,32 +342,21 @@ public struct KeyDetailInspectorView: View {
                 recentActivitySection
                 dangerZoneSection
             }
-            .padding(22)
-            .frame(maxWidth: 680, alignment: .leading)
+            .id("inspectorTop")
+            .padding(.horizontal, 28)
+            .padding(.top, 15)
+            .padding(.bottom, 36)
+            .frame(maxWidth: 720, alignment: .leading)
             .frame(maxWidth: .infinity)
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: InspectorScrollOffsetPreferenceKey.self,
-                        value: -proxy.frame(in: .named("inspectorScroll")).minY
-                    )
-                }
-            )
         }
-        .coordinateSpace(name: "inspectorScroll")
-        .onPreferenceChange(InspectorScrollOffsetPreferenceKey.self) { offset in
-            let shouldShow = offset > 8
-            if isScrolled != shouldShow {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    isScrolled = shouldShow
-                }
-            }
+        // A newly selected key always opens at its top, not at the previous key's scroll offset.
+        .onChange(of: key.id) { _ in
+            scrollProxy.scrollTo("inspectorTop", anchor: .top)
         }
-        .overlay(alignment: .top) {
-            if isScrolled {
-                stickyHeaderBar
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
+        // One persistent header; form content scrolls underneath it (safe-area bar).
+        .topLiquidGlassBar(alignment: .leading) {
+            prominentHeader
+        }
         }
         .scrollContentBackground(.hidden)
         .background(Color.clear)
@@ -412,61 +396,44 @@ public struct KeyDetailInspectorView: View {
         }
     }
 
-    // MARK: - Sticky Header & Hero Header
+    // MARK: - Prominent Header
 
-    private var stickyHeaderBar: some View {
-        HStack(spacing: 10) {
-            keyTile(size: 22, cornerRadius: 5.5, iconSize: 11.5)
-
-            Text(key.label)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-
-            if !isKeyEnabled {
-                Text("Disabled")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(DesignTokens.accentOrange)
+    /// One row on the traffic-light line: key icon, title, History. The band is exactly the control
+    /// height plus equal top/bottom padding, so the scroll-edge material sits symmetrically around it.
+    private var prominentHeader: some View {
+        HStack(alignment: .center, spacing: 12) {
+            identityRow
+            if let onToggleHistory {
+                ProminentHistoryButton(isActive: false, action: onToggleHistory)
             }
-
-            Spacer(minLength: 8)
-
-            Text("\(key.effectiveAccessProfile.type.title) key · \(capabilitySummary)")
-                .font(.system(size: 11.5))
-                .foregroundStyle(DesignTokens.textSecondary)
-                .lineLimit(1)
         }
-        .padding(.horizontal, 22)
-        .frame(height: 44)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(DesignTokens.settingsGroupBorder)
-                .frame(height: 0.5)
-        }
+        .padding(.horizontal, 28)
+        .frame(height: KeyListView.toolbarHeight)
+        .offset(y: headerCenterOffset)
     }
 
-    private var heroHeader: some View {
+    private var identityRow: some View {
         HStack(alignment: .center, spacing: 12) {
-            keyTile(size: 38, cornerRadius: 9, iconSize: 18)
+            keyTile(size: 36, cornerRadius: 9, iconSize: 22)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 0) {
                 if isRenaming {
                     InlineKeyRenameField(
                         text: $draftKeyName,
                         onCommit: commitInlineRename,
                         onCancel: cancelInlineRename
                     )
-                    .frame(height: 26, alignment: .leading)
+                    .frame(height: 24, alignment: .leading)
                     .overlay(alignment: .bottom) {
                         Rectangle()
                             .fill(DesignTokens.accentBlue)
                             .frame(height: 1)
                     }
+                    .accessibilityLabel("Key name")
                 } else {
                     HStack(spacing: 7) {
                         Text(key.label)
-                            .font(.system(size: 20, weight: .semibold))
+                            .font(.system(size: 20, weight: .bold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                             .truncationMode(.tail)
@@ -480,27 +447,23 @@ public struct KeyDetailInspectorView: View {
                         .help("Rename \(key.label)")
                         .accessibilityLabel("Rename \(key.label)")
                     }
-                    .frame(height: 26, alignment: .leading)
+                    .frame(height: 24, alignment: .leading)
                 }
 
-                Text(heroSubtitleText)
-                    .font(.system(size: 12))
-                    .foregroundStyle(DesignTokens.textSecondary)
-                    .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // The removed visible caption stays available to assistive technology.
+            .accessibilityElement(children: .contain)
+            .accessibilityValue(heroSubtitleText)
         }
-        .padding(.bottom, 2)
     }
 
+    /// Type/storage/disabled summary, exposed only as an accessibility value (no visible caption).
     private var heroSubtitleText: String {
         var parts: [String] = [
-            isBotKey ? "Bot key" : "Personal key",
-            "Secure Enclave (\(key.algorithm))"
+            isBotKey ? "Bot" : "Personal",
+            "Secure Enclave"
         ]
-        if let _ = lastActivityDate {
-            parts.append("Last used \(formattedLastActivity)")
-        }
         if !isKeyEnabled {
             parts.append("Disabled")
         }
@@ -605,9 +568,15 @@ public struct KeyDetailInspectorView: View {
                         .textSelection(.enabled)
                         .help(key.publicKeyOpenSSH)
 
-                    settingsActionButton(copiedPublicKey ? "Copied" : "Copy Key") {
-                        copyOpenSSHWithFeedback()
+                    Button(action: copyOpenSSHWithFeedback) {
+                        Image(systemName: copiedPublicKey ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(copiedPublicKey ? DesignTokens.accentGreen : DesignTokens.textSecondary)
+                            .frame(width: 22, height: 22)
                     }
+                    .buttonStyle(.borderless)
+                    .help(Self.publicKeyCopyButtonTitle(for: key))
+                    .accessibilityLabel(Self.publicKeyCopyButtonTitle(for: key))
                 }
                 .padding(.horizontal, 12)
                 .frame(minHeight: 38)
@@ -644,7 +613,27 @@ public struct KeyDetailInspectorView: View {
 
                 insetDivider
 
-                // Row 3: Public key file
+                // Storage and algorithm (full detail moved out of the compact header)
+                HStack(spacing: 12) {
+                    Text("Algorithm")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.primary)
+
+                    Spacer(minLength: 12)
+
+                    Text("Secure Enclave (\(key.algorithm))")
+                        .font(.system(size: 12))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .textSelection(.enabled)
+                }
+                .padding(.horizontal, 12)
+                .frame(minHeight: 38)
+
+                insetDivider
+
+                // Row 4: Public key file
                 HStack(spacing: 12) {
                     Text("Public key file")
                         .font(.system(size: 13))
