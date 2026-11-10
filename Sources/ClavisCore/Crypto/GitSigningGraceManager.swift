@@ -4,10 +4,22 @@ import CryptoKit
 import CoreFoundation
 import CoreGraphics
 
-public enum GitSigningPromptChoice: Equatable {
+public enum GitSigningPromptChoice: Equatable, Sendable {
     case grantFiveMinutes
+    case grantSession(duration: TimeInterval)
     case singleShot
     case cancel
+
+    public var grantDurationSeconds: TimeInterval? {
+        switch self {
+        case .grantFiveMinutes:
+            return 300.0
+        case .grantSession(let duration):
+            return duration
+        case .singleShot, .cancel:
+            return nil
+        }
+    }
 }
 
 public final class GitSigningGrant: @unchecked Sendable {

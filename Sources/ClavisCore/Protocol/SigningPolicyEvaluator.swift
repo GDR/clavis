@@ -471,21 +471,22 @@ public final class SigningPolicyEvaluator {
                         ClavisLogger.log("GIT_GRACE", "User cancelled Git signing session.")
                         return .denied
 
-                    case .grantFiveMinutes:
+                    case .grantFiveMinutes, .grantSession:
                         guard let anchor = gitAnchor else {
                             audit.result = .denied
                             audit.reason = .gitAnchorUnavailable
                             ClavisLogger.log("SECURITY_ALERT", "Refusing Git signing grant: peer PID \(pid) (\(processPath)) cannot be anchored on a valid Git process.")
                             return .denied
                         }
-                        ClavisLogger.log("GIT_GRACE", "User approved 5-minute Git signing session for \(promptDesc). Authorizing via Touch ID...")
+                        let grantDuration = max(1.0, choice.grantDurationSeconds ?? 300.0)
+                        ClavisLogger.log("GIT_GRACE", "User approved \(Int(grantDuration))s Git signing session for \(promptDesc). Authorizing via Touch ID...")
                         let authPrompt = Self.gitSigningSessionReason(keyLabel: matchingKey.label) + " Requested by \(requester)."
                         let grant = try promptGate.run(requester: requesterIdentity, clientSocket: clientSocket) {
                             try keyManager.authorizeGitSigningGrant(
                                 key: matchingKey,
                                 prompt: authPrompt,
                                 clientIdentity: clientIdentity,
-                                duration: 300.0,
+                                duration: grantDuration,
                                 maxOperations: 200,
                                 approvedProcess: anchor
                             )
