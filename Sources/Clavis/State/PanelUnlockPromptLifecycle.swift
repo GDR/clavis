@@ -30,6 +30,7 @@ struct PanelUnlockPromptLifecycle {
     /// additional automatic attempt when the window becomes key again.
     mutating func beganManualAttempt() -> UUID {
         automaticAttemptConsumed = true
+        generation = UUID()
         return generation
     }
 
@@ -40,6 +41,11 @@ struct PanelUnlockPromptLifecycle {
         } else if !wasAlreadyLocked {
             automaticAttemptConsumed = false
         }
+    }
+
+    mutating func cancelPendingAttempt(rearmAutomaticAttempt: Bool = false) {
+        generation = UUID()
+        if rearmAutomaticAttempt { automaticAttemptConsumed = false }
     }
 
     func acceptsCompletion(from generation: UUID) -> Bool {

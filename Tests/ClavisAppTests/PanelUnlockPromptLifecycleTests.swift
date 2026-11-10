@@ -86,6 +86,15 @@ struct PanelUnlockPromptLifecycleTests {
         #expect(claimed13)
     }
 
+    @Test func passwordFieldPresentationDoesNotSuppressBiometrics() async {
+        let auth = FakePanelAuthenticator()
+        let (lock, defaults, name) = controller(auth: auth)
+        defer { defaults.removePersistentDomain(forName: name) }
+        await lock.unlockIfNeededOnWindowFocus(isUserInitiatedOpen: true)
+        #expect(auth.authCount == 1)
+        #expect(!lock.isLocked)
+    }
+
     @Test func cancelledLoginDoesNotRepromptAfterAnyElapsedTime() async {
         let auth = FakePanelAuthenticator()
         auth.shouldFail = true
@@ -128,15 +137,15 @@ struct PanelUnlockPromptLifecycleTests {
     }
 
     @Test(arguments: [PanelLockReason.idle, .lockNow])
-    func explicitLockDoesNotImmediatelyUnlockItself(_ reason: PanelLockReason) async {
+    func haloStartsPassiveAuthenticationAfterExplicitLock(_ reason: PanelLockReason) async {
         let auth = FakePanelAuthenticator()
         let (lock, defaults, name) = controller(auth: auth)
         defer { defaults.removePersistentDomain(forName: name) }
         lock.applyUnlock(context: nil)
         lock.lock(reason: reason)
         await lock.unlockIfNeededOnWindowFocus(isWindowFocusEvent: true)
-        #expect(auth.authCount == 0)
-        #expect(lock.isLocked)
+        #expect(auth.authCount == 1)
+        #expect(!lock.isLocked)
         await lock.unlockIfNeededOnWindowFocus(isUserInitiatedOpen: true)
         #expect(auth.authCount == 1)
     }
