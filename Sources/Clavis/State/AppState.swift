@@ -162,6 +162,8 @@ public class AppState: ObservableObject {
     public let requestPolicy: RequestPauseModel
 
     private var cancellables = Set<AnyCancellable>()
+    /// The single in-window authenticated settings request (variant 07 tile).
+    public let policyMutations = PolicyMutationCoordinator()
 
     // MARK: - Notifications and Callbacks
 
@@ -224,6 +226,10 @@ public class AppState: ObservableObject {
         }
 
         requestPolicy.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }.store(in: &cancellables)
+
+        policyMutations.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &cancellables)
 
@@ -552,6 +558,25 @@ public class AppState: ObservableObject {
             updateGitGraceState()
         }
         try keyManagementViewModel.changeAccessProfile(label: label, type: type, capabilities: capabilities)
+    }
+
+    public func changeAccessProfile(
+        label: String,
+        type: KeyType? = nil,
+        capabilities: KeyCapabilities? = nil,
+        expectedCurrent: KeyAccessProfile?,
+        authenticator: any AsyncUserAuthenticating
+    ) async throws {
+        defer {
+            self.keys = keyManagementViewModel.keys
+            self.errorMessage = keyManagementViewModel.errorMessage
+            refreshAgentSessions()
+            updateGitGraceState()
+        }
+        try await keyManagementViewModel.changeAccessProfile(
+            label: label, type: type, capabilities: capabilities,
+            expectedCurrent: expectedCurrent, authenticator: authenticator
+        )
     }
 
     public func lockKey(label: String) throws {

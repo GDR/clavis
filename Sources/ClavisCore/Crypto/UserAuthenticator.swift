@@ -21,6 +21,14 @@ public extension UserAuthenticating {
     }
 }
 
+/// Asynchronous authenticator for operations whose UI must observe the exact context before it is
+/// evaluated. Implementations create a FRESH context per call, evaluate it once, and return it;
+/// the caller (the mutation layer) owns the returned context's lifetime and invalidates it.
+public protocol AsyncUserAuthenticating: AnyObject {
+    @MainActor
+    func authenticate(reason: String, policy: LAPolicy) async throws -> LAContext
+}
+
 public enum UserAuthenticationError: LocalizedError {
     case timedOut
     case testAuthenticationNotInjected
