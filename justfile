@@ -11,6 +11,7 @@ expected_team_id := env_var_or_default("CLAVIS_EXPECTED_TEAM_ID", "")
 app_profile := env_var_or_default("CLAVIS_APP_PROVISION_PROFILE", "")
 agent_profile := env_var_or_default("CLAVIS_AGENT_PROVISION_PROFILE", "")
 require_provisioning := env_var_or_default("CLAVIS_REQUIRE_PROVISIONING", "0")
+auto_provision := env_var_or_default("CLAVIS_AUTO_PROVISION", "1")
 # auto: secure (Apple-timestamped) signatures for Developer ID builds, none for local builds.
 timestamp_mode := env_var_or_default("CLAVIS_TIMESTAMP", "auto")
 # Set to 1 to notarize and staple release artifacts (requires a Developer ID Application identity).
@@ -143,6 +144,22 @@ sign config=config: (bundle config)
         --require-provisioning "{{ require_provisioning }}")"
     eval "$resolved"
 
+    if [ "$PROVISION_MODE" != "data-protection" ] && [ "$SIGN_ARG" != "-" ] && [ -n "$SIGN_TEAM_ID" ] && [[ "$SIGN_CN" == "Apple Development"* ]] && [ "{{ auto_provision }}" = "1" ] && [ -z "{{ app_profile }}" ] && [ -z "{{ agent_profile }}" ]; then
+        /usr/bin/python3 packaging/macos/bootstrap-provisioning.py --team-id "$SIGN_TEAM_ID" --quiet-if-unavailable || true
+        resolved="$(/usr/bin/python3 packaging/macos/resolve-signing-identity.py \
+            --keychain "$keychain" \
+            --requested "{{ sign_identity }}" \
+            --preferred-team-id "{{ team_id }}" \
+            --expected-team-id "{{ expected_team_id }}" \
+            --notarize "{{ notarize }}" \
+            --allow-adhoc "{{ allow_adhoc }}" \
+            --timestamp-mode "{{ timestamp_mode }}" \
+            --app-profile "{{ app_profile }}" \
+            --agent-profile "{{ agent_profile }}" \
+            --require-provisioning "{{ require_provisioning }}")"
+        eval "$resolved"
+    fi
+
     echo "🔐 Signing binaries with identity: $SIGN_LABEL ($TIMESTAMP_FLAG)..."
 
     rm -f "$app_bundle/Contents/embedded.provisionprofile" \
@@ -187,8 +204,8 @@ sign config=config: (bundle config)
             echo "❌ Incomplete Data Protection provisioning resolution." >&2
             exit 1
         fi
-        tmp_app_ent="$(mktemp -t clavis-app-entitlements)"
-        tmp_agent_ent="$(mktemp -t clavis-agent-entitlements)"
+        tmp_app_ent="$(mktemp "${TMPDIR:-/tmp}/clavis-app-entitlements.XXXXXX")"
+        tmp_agent_ent="$(mktemp "${TMPDIR:-/tmp}/clavis-agent-entitlements.XXXXXX")"
         app_ent="$tmp_app_ent"
         agent_ent="$tmp_agent_ent"
         expect_provisioned="1"
@@ -483,6 +500,11 @@ signing-status:
         --app-profile "{{ app_profile }}" \
         --agent-profile "{{ agent_profile }}" \
         --require-provisioning "{{ require_provisioning }}"
+
+# Bootstrap local macOS Data Protection provisioning profile(s) via Xcode
+provision:
+    /usr/bin/python3 packaging/macos/bootstrap-provisioning.py --team-id "{{ team_id }}"
+    just --justfile "{{ justfile() }}" signing-status
 
 # Inspect or upload GitHub Release signing & notarization configuration (Team {{ team_id }})
 ci-signing-setup p12_path="" notary_p8_path="" notary_key_id="" notary_issuer_id="" repo="GDR/clavis" app_profile_path="" agent_profile_path="":
