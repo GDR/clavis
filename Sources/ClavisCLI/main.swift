@@ -18,27 +18,7 @@ func printErr(_ message: String) {
     }
 }
 
-func installTerminationSignalSources(cleanup: @escaping () -> Void) -> [DispatchSourceSignal] {
-    signal(SIGINT, SIG_IGN)
-    signal(SIGTERM, SIG_IGN)
-    signal(SIGHUP, SIG_IGN)
-    signal(SIGPIPE, SIG_IGN)
-
-    var isTerminating = false
-    return [SIGINT, SIGTERM].map { signalNumber in
-        let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
-        source.setEventHandler {
-            guard !isTerminating else { return }
-            isTerminating = true
-            cleanup()
-            exit(0)
-        }
-        source.resume()
-        return source
-    }
-}
-
-if let cliResult = CLIService.handle(args: CommandLine.arguments) {
+if let cliResult = CLIService.handleSocketOnly(args: CommandLine.arguments) {
     if !cliResult.output.isEmpty {
         printOut(cliResult.output)
     }
@@ -75,33 +55,18 @@ if let cliResult = CLIService.handle(args: CommandLine.arguments) {
                 exit(1)
             }
         } else {
-            guard SingleInstanceLock.agent.acquire() else {
-                let existingPid = SingleInstanceLock.agent.lockOwnerPID ?? 0
-                printErr(CLIMessages.Agent.alreadyRunning(pid: existingPid))
-                exit(1)
-            }
-            let resealer = AuditResealer()
-            let terminationSignalSources = installTerminationSignalSources {
-                resealer.stop()
-                AgentServers.stopAll()
-                AuditRecorder.shared.flush()
-                SingleInstanceLock.agent.release()
+            if AgentLifecycleManager.shared.isAgentRunning {
+                let existingPid = AgentLifecycleManager.shared.agentPID ?? 0
+                printOut(CLIMessages.Agent.alreadyRunning(pid: existingPid))
+                exit(0)
             }
             do {
-                try AgentServers.startAll()
-                resealer.start()
-                printOut(CLIMessages.Agent.daemonStarted(socketPath: SSHAgentServer.defaultSocketPath, pid: getpid()))
-                _ = SystemEventMonitor.shared
-                SystemEventMonitor.shared.addHandler(id: "audit.lock") {
-                    AuditRecorder.shared.record(AuditEvent(type: .lock, result: .info, reason: .screenLocked))
-                }
-                AgentSessionRegistry.shared.installSystemEventHandler()
-                withExtendedLifetime(terminationSignalSources) {
-                    dispatchMain()
-                }
+                try AgentLifecycleManager.shared.startAgent()
+                let startedPid = AgentLifecycleManager.shared.agentPID ?? 0
+                printOut(CLIMessages.Agent.daemonStarted(socketPath: SSHAgentServer.defaultSocketPath, pid: startedPid))
+                exit(0)
             } catch {
                 printErr("Failed to start SSH agent server: \(error.localizedDescription)")
-                SingleInstanceLock.agent.release()
                 exit(1)
             }
         }

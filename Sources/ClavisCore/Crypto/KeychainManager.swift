@@ -44,6 +44,7 @@ public class KeychainManager {
     }
 
     private let vaultStore: EncryptedVaultStore
+    internal var configuredVaultStore: EncryptedVaultStore { vaultStore }
 
     public init(
         authenticator: UserAuthenticating = LocalUserAuthenticator(),
@@ -79,12 +80,21 @@ public class KeychainManager {
         storageType: KeyStorageType = .secureEnclave,
         biometricPolicy: BiometricPolicy? = nil,
         keyPurpose: KeyPurpose = .general,
-        accessProfile: KeyAccessProfile? = nil
+        accessProfile: KeyAccessProfile? = nil,
+        beforeCommit: (() throws -> Void)? = nil
     ) throws -> SSHKeyInfo {
         #if DEBUG
         if let context = self.testContext, TestContextScope.current == nil {
             return try TestContextScope.$current.withValue(context) {
-                try self.generateKey(label: label, algorithm: algorithm, storageType: storageType, biometricPolicy: biometricPolicy, keyPurpose: keyPurpose, accessProfile: accessProfile)
+                try self.generateKey(
+                    label: label,
+                    algorithm: algorithm,
+                    storageType: storageType,
+                    biometricPolicy: biometricPolicy,
+                    keyPurpose: keyPurpose,
+                    accessProfile: accessProfile,
+                    beforeCommit: beforeCommit
+                )
             }
         }
         #endif
@@ -124,6 +134,7 @@ public class KeychainManager {
         // The hardware key enforces its own biometric policy in SEP; store the
         // metadata record as device-bound Login Keychain data so unprovisioned
         // local builds do not hit errSecMissingEntitlement (-34018).
+        try beforeCommit?()
         try privateKeyStore.save(label: label, data: recordData, accessControlFlags: [])
         do {
             try vaultStore.saveRecord(record)
@@ -203,11 +214,15 @@ public class KeychainManager {
     }
 
     // Delete key (both private seed and public metadata)
-    public func deleteKey(label: String) throws {
+    public func deleteKey(
+        label: String,
+        customRevoker: ((String) throws -> Void)? = nil,
+        beforeCommit: (() throws -> Void)? = nil
+    ) throws {
         #if DEBUG
         if let context = self.testContext, TestContextScope.current == nil {
             return try TestContextScope.$current.withValue(context) {
-                try self.deleteKey(label: label)
+                try self.deleteKey(label: label, customRevoker: customRevoker, beforeCommit: beforeCommit)
             }
         }
         #endif
@@ -232,9 +247,16 @@ public class KeychainManager {
             throw error
         }
 
+        do {
+            try beforeCommit?()
+        } catch {
+            context.invalidate()
+            throw error
+        }
+
         var revocationError: Error?
         do {
-            try revokeKeyCapabilities(label: label)
+            try revokeKeyCapabilities(label: label, customRevoker: customRevoker)
         } catch {
             revocationError = error
             ClavisLogger.log("KEY_DELETE", "Revocation notice: \(error.localizedDescription). Proceeding with local key removal.")
@@ -244,6 +266,12 @@ public class KeychainManager {
         // different key. Only drop the vault copy when that item is absent or is the same key
         // the user just authenticated to delete. Always try to remove the Keychain item itself.
         let removeVault = shouldRemoveVaultRecord(label: label, context: context, prompt: prompt)
+        do {
+            try beforeCommit?()
+        } catch {
+            context.invalidate()
+            throw error
+        }
         do {
             try privateKeyStore.remove(label: label, context: context, prompt: prompt)
         } catch {
@@ -799,13 +827,36 @@ public class KeychainManager {
         ClavisLogger.log("KEY_LOCK", "Key '\(label)' locked.")
     }
 
-    private func revokeKeyCapabilities(label: String) throws {
+    private func revokeKeyCapabilities(label: String, customRevoker: ((String) throws -> Void)? = nil) throws {
         gitSigningGraceManager.invalidate(keyLabel: label)
-        try agentGrantRevoker(label)
+        if let customRevoker {
+            try customRevoker(label)
+        } else {
+            try agentGrantRevoker(label)
+        }
     }
 
     /// Change key purpose between general and agent. Requires user presence authentication.
-    public func changeKind(label: String, to newPurpose: KeyPurpose, prompt: String? = nil) throws {
+    public func changeKind(
+        label: String,
+        to newPurpose: KeyPurpose,
+        prompt: String? = nil,
+        customRevoker: ((String) throws -> Void)? = nil,
+        beforeCommit: (() throws -> Void)? = nil
+    ) throws {
+        #if DEBUG
+        if let context = self.testContext, TestContextScope.current == nil {
+            return try TestContextScope.$current.withValue(context) {
+                try self.changeKind(
+                    label: label,
+                    to: newPurpose,
+                    prompt: prompt,
+                    customRevoker: customRevoker,
+                    beforeCommit: beforeCommit
+                )
+            }
+        }
+        #endif
         guard let key = try fetchKeyInfo(label: label) else {
             throw KeychainManagerError.keyNotFound(label: label)
         }
@@ -816,13 +867,24 @@ public class KeychainManager {
         }
 
         let reason = prompt ?? "Touch ID to change key kind for '\(label)'"
-        try withPolicyMutationRecord(for: key, prompt: reason, auditKeyKind: newPurpose.auditKind) { record in
+        try withPolicyMutationRecord(
+            for: key,
+            prompt: reason,
+            auditKeyKind: newPurpose.auditKind,
+            beforeLoad: beforeCommit
+        ) { record in
             guard (record.purpose == .general && newPurpose == .agent) || (record.purpose == .agent && newPurpose == .general) else {
                 throw KeyPurposeError.kindChangeNotAllowed
             }
+            try beforeCommit?()
 
-            try persistAccessProfile(record.accessProfile.changingType(to: newPurpose == .agent ? .bot : .personal),
-                                     purpose: newPurpose, key: key, record: record)
+            try persistAccessProfile(
+                record.accessProfile.changingType(to: newPurpose == .agent ? .bot : .personal),
+                purpose: newPurpose,
+                key: key,
+                record: record,
+                customRevoker: customRevoker
+            )
 
             auditRecorder.record(
                 AuditEvent(
@@ -837,12 +899,17 @@ public class KeychainManager {
         }
     }
 
-    private func persistAccessProfile(_ profile: KeyAccessProfile, purpose newPurpose: KeyPurpose,
-                                      key: SSHKeyInfo, record: StoredPrivateKeyRecord) throws {
+    private func persistAccessProfile(
+        _ profile: KeyAccessProfile,
+        purpose newPurpose: KeyPurpose,
+        key: SSHKeyInfo,
+        record: StoredPrivateKeyRecord,
+        customRevoker: ((String) throws -> Void)? = nil
+    ) throws {
         let label = key.label
         // Never persist a broader policy while the daemon can still reuse old approvals.
         // Revocation failure leaves all stored copies untouched.
-        try revokeKeyCapabilities(label: label)
+        try revokeKeyCapabilities(label: label, customRevoker: customRevoker)
         var updatedRecord = StoredPrivateKeyRecord(
             label: record.label,
             algorithm: record.algorithm,
@@ -974,6 +1041,7 @@ public class KeychainManager {
     }
 
     private func withPolicyMutationRecord<T>(for key: SSHKeyInfo, prompt: String, auditKeyKind: AuditKeyKind,
+                                             beforeLoad: (() throws -> Void)? = nil,
                                              _ body: (StoredPrivateKeyRecord) throws -> T) throws -> T {
         let context: LAContext
         do {
@@ -989,6 +1057,7 @@ public class KeychainManager {
             throw error
         }
         defer { context.invalidate() }
+        try beforeLoad?()
         var record = try loadAuthenticatedRecord(label: key.label, context: context, prompt: prompt, expectedKeyInfo: key)
         defer { record.wipe() }
         try validateAuthenticatedRecord(record, against: key, context: context)
