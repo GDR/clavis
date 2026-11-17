@@ -78,6 +78,8 @@ class ProvisioningProfile:
     platforms: tuple[str, ...]
     expires_ts: float
     expires_str: str
+    provisions_all_devices: bool = False
+    provisioned_devices: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -279,8 +281,14 @@ def parse_provisioning_plist(data: dict[str, Any], path: str = "") -> Provisioni
     if not isinstance(entitlements, dict):
         entitlements = {}
 
-    app_id = str(entitlements.get("com.apple.application-identifier") or "")
+    app_id = str(
+        entitlements.get("com.apple.application-identifier")
+        or entitlements.get("application-identifier")
+        or ""
+    )
     keychain_access_groups = _normalize_str_tuple(entitlements.get("keychain-access-groups"))
+    provisions_all_devices = bool(data.get("ProvisionsAllDevices"))
+    provisioned_devices = frozenset(_normalize_str_tuple(data.get("ProvisionedDevices")))
 
     # If UIDeviceFamily is present without a macOS/OSX platform, platforms stays non-macOS and fails matching.
     return ProvisioningProfile(
@@ -294,6 +302,8 @@ def parse_provisioning_plist(data: dict[str, Any], path: str = "") -> Provisioni
         platforms=platforms,
         expires_ts=expires_ts,
         expires_str=expires_str,
+        provisions_all_devices=provisions_all_devices,
+        provisioned_devices=provisioned_devices,
     )
 
 
@@ -331,6 +341,32 @@ def _keychain_group_matches(groups: tuple[str, ...], *, team_id: str, shared_gro
     return False
 
 
+def _app_id_matches(profile_app_id: str, *, team_id: str, bundle_id: str) -> bool:
+    if not team_id:
+        return False
+    return profile_app_id == f"{team_id}.{bundle_id}" or profile_app_id == f"{team_id}.*"
+
+
+def detect_local_provisioning_udid() -> str:
+    """Return this Mac's Provisioning UDID via `system_profiler SPHardwareDataType`, or empty string."""
+    proc = subprocess.run(
+        ["/usr/sbin/system_profiler", "SPHardwareDataType"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        return ""
+    match = re.search(r"Provisioning UDID:\s*(\S+)", proc.stdout)
+    return match.group(1).strip() if match else ""
+
+
+def _device_udid_matches(profile: ProvisioningProfile, local_udid: str) -> bool:
+    if not local_udid or profile.provisions_all_devices or not profile.provisioned_devices:
+        return True
+    return local_udid in profile.provisioned_devices
+
+
 def profile_mismatch_reasons(
     profile: ProvisioningProfile,
     *,
@@ -339,6 +375,7 @@ def profile_mismatch_reasons(
     cert_sha1: str,
     shared_group: str,
     now_ts: float,
+    local_udid: str = "",
 ) -> list[str]:
     """Return human-readable reasons why `profile` does not match, or empty list if valid."""
     reasons: list[str] = []
@@ -350,7 +387,7 @@ def profile_mismatch_reasons(
     if not cert_sha1 or cert_sha1.upper() not in profile.cert_sha1s:
         reasons.append(f"signing cert SHA-1 '{cert_sha1.upper()}' is not in DeveloperCertificates")
     expected_app_id = f"{team_id}.{bundle_id}" if team_id else bundle_id
-    if profile.app_id != expected_app_id:
+    if not _app_id_matches(profile.app_id, team_id=team_id, bundle_id=bundle_id):
         reasons.append(f"com.apple.application-identifier '{profile.app_id or '(missing)'}' != '{expected_app_id}'")
     if not _keychain_group_matches(profile.keychain_access_groups, team_id=team_id, shared_group=shared_group):
         reasons.append(
@@ -358,6 +395,8 @@ def profile_mismatch_reasons(
         )
     if profile.expires_ts <= now_ts:
         reasons.append(f"expired at {profile.expires_str}")
+    if not _device_udid_matches(profile, local_udid):
+        reasons.append(f"host UDID '{local_udid}' is not in ProvisionedDevices")
     return reasons
 
 
@@ -369,18 +408,20 @@ def profile_matches(
     cert_sha1: str,
     shared_group: str,
     now_ts: float | None = None,
+    local_udid: str = "",
 ) -> bool:
-    """Return True if `profile` satisfies macOS platform, team, cert, app ID, shared keychain, and expiry checks."""
+    """Return True if `profile` satisfies macOS platform, team, cert, app ID, shared keychain, UDID, and expiry checks."""
     check_ts = time.time() if now_ts is None else now_ts
     return (
         bool(team_id)
         and team_id in profile.team_ids
         and bool(cert_sha1)
         and cert_sha1.upper() in profile.cert_sha1s
-        and profile.app_id == f"{team_id}.{bundle_id}"
+        and _app_id_matches(profile.app_id, team_id=team_id, bundle_id=bundle_id)
         and _keychain_group_matches(profile.keychain_access_groups, team_id=team_id, shared_group=shared_group)
         and profile.expires_ts > check_ts
         and is_macos_platform(profile.platforms)
+        and _device_udid_matches(profile, local_udid)
     )
 
 
@@ -427,6 +468,7 @@ def resolve_provisioning(
     discovered_profiles: list[ProvisioningProfile] | None = None,
     profile_loader: Callable[[str], ProvisioningProfile] | None = None,
     now_ts: float | None = None,
+    local_udid: str | None = None,
 ) -> ResolvedProvisioning:
     """Resolve atomic (Clavis.app + Clavis Agent.app) Data Protection provisioning profiles."""
     check_ts = time.time() if now_ts is None else now_ts
@@ -461,6 +503,7 @@ def resolve_provisioning(
     loader = profile_loader or (lambda path: load_provisioning_profile(path, explicit=True))
 
     if has_explicit_pair:
+        effective_udid = "" if local_udid is None else local_udid
         loaded_app = loader(app_arg)
         loaded_agent = loader(agent_arg)
         app_reasons = profile_mismatch_reasons(
@@ -470,6 +513,7 @@ def resolve_provisioning(
             cert_sha1=cert_sha1,
             shared_group=shared_group,
             now_ts=check_ts,
+            local_udid=effective_udid,
         )
         if app_reasons:
             raise ResolutionError(
@@ -482,6 +526,7 @@ def resolve_provisioning(
             cert_sha1=cert_sha1,
             shared_group=shared_group,
             now_ts=check_ts,
+            local_udid=effective_udid,
         )
         if agent_reasons:
             raise ResolutionError(
@@ -494,6 +539,13 @@ def resolve_provisioning(
             keychain_access_group=shared_group,
         )
 
+    if local_udid is not None:
+        effective_udid = local_udid
+    elif discovered_profiles is None:
+        effective_udid = detect_local_provisioning_udid()
+    else:
+        effective_udid = ""
+
     profiles = discover_provisioning_profiles() if discovered_profiles is None else discovered_profiles
     app_matches = [
         p
@@ -505,6 +557,7 @@ def resolve_provisioning(
             cert_sha1=cert_sha1,
             shared_group=shared_group,
             now_ts=check_ts,
+            local_udid=effective_udid,
         )
     ]
     agent_matches = [
@@ -517,12 +570,21 @@ def resolve_provisioning(
             cert_sha1=cert_sha1,
             shared_group=shared_group,
             now_ts=check_ts,
+            local_udid=effective_udid,
         )
     ]
 
     if app_matches and agent_matches:
-        best_app = sorted(app_matches, key=lambda p: p.expires_ts, reverse=True)[0]
-        best_agent = sorted(agent_matches, key=lambda p: p.expires_ts, reverse=True)[0]
+        best_app = sorted(
+            app_matches,
+            key=lambda p: (p.app_id == f"{team_id}.{APP_BUNDLE_ID}", p.expires_ts),
+            reverse=True,
+        )[0]
+        best_agent = sorted(
+            agent_matches,
+            key=lambda p: (p.app_id == f"{team_id}.{AGENT_BUNDLE_ID}", p.expires_ts),
+            reverse=True,
+        )[0]
         return ResolvedProvisioning(
             mode="data-protection",
             app_profile=best_app.path,
@@ -1092,7 +1154,102 @@ def run_self_test() -> None:
     except ResolutionError:
         pass
 
-    print("✅ resolve-signing-identity self-tests passed (14/14).")
+    # 15. Wildcard macOS Team Provisioning Profile satisfies both bundles; explicit App ID still wins when present.
+    mac_wildcard = parse_provisioning_plist(
+        {
+            "UUID": "uuid-mac-wildcard",
+            "Name": "Mac Team Provisioning Profile: *",
+            "TeamIdentifier": ["4G6X3KNZUS"],
+            "Platform": ["OSX"],
+            "ExpirationDate": future_dt,
+            "DeveloperCertificates": [fake_cert_der],
+            "ProvisionedDevices": ["HOST-UDID-1"],
+            "Entitlements": {
+                "com.apple.application-identifier": "4G6X3KNZUS.*",
+                "keychain-access-groups": ["4G6X3KNZUS.*", "com.apple.token"],
+            },
+        },
+        path="/tmp/MacWildcard.provisionprofile",
+    )
+    assert mac_wildcard.provisioned_devices == frozenset({"HOST-UDID-1"})
+    assert not mac_wildcard.provisions_all_devices
+
+    r_fake_dev = ResolvedSigning(
+        sign_arg=fake_cert_sha1,
+        sign_cn="Apple Development: test@example.com",
+        sign_team_id="4G6X3KNZUS",
+        sign_label="test",
+        timestamp_flag="--timestamp=none",
+    )
+    prov_wild = resolve_provisioning(
+        r_fake_dev,
+        discovered_profiles=[mac_wildcard],
+        now_ts=now_ts,
+        local_udid="HOST-UDID-1",
+    )
+    assert prov_wild.mode == "data-protection"
+    assert prov_wild.app_profile == mac_wildcard.path
+    assert prov_wild.agent_profile == mac_wildcard.path
+    assert prov_wild.keychain_access_group == "4G6X3KNZUS.com.clavis.shared"
+
+    # Explicit App ID profile wins over newer/older wildcard when both match.
+    explicit_app_newer_or_older = ProvisioningProfile(
+        path="/tmp/ExplicitApp.provisionprofile",
+        uuid="u-exp-app",
+        name="Explicit App",
+        app_id="4G6X3KNZUS.com.clavis.app",
+        team_ids=("4G6X3KNZUS",),
+        cert_sha1s=frozenset({fake_cert_sha1}),
+        keychain_access_groups=("4G6X3KNZUS.com.clavis.shared",),
+        platforms=("OSX",),
+        expires_ts=now_ts + 100.0,
+        expires_str="2027-01-15 08:01:40Z",
+        provisioned_devices=frozenset({"HOST-UDID-1"}),
+    )
+    prov_pref = resolve_provisioning(
+        r_fake_dev,
+        discovered_profiles=[mac_wildcard, explicit_app_newer_or_older],
+        now_ts=now_ts,
+        local_udid="HOST-UDID-1",
+    )
+    assert prov_pref.mode == "data-protection"
+    assert prov_pref.app_profile == explicit_app_newer_or_older.path
+    assert prov_pref.agent_profile == mac_wildcard.path
+
+    # 16. Development profile rejects mismatched host UDID; ProvisionsAllDevices passes regardless of UDID.
+    prov_wrong_udid = resolve_provisioning(
+        r_fake_dev,
+        discovered_profiles=[mac_wildcard],
+        now_ts=now_ts,
+        local_udid="OTHER-UDID",
+    )
+    assert prov_wrong_udid.mode == "unprovisioned"
+
+    dev_id_wildcard = ProvisioningProfile(
+        path="/tmp/DevIDAllDevices.provisionprofile",
+        uuid="u-devid-all",
+        name="DevID All",
+        app_id="4G6X3KNZUS.com.clavis.app",
+        team_ids=("4G6X3KNZUS",),
+        cert_sha1s=frozenset({fake_cert_sha1}),
+        keychain_access_groups=("4G6X3KNZUS.com.clavis.shared",),
+        platforms=("OSX",),
+        expires_ts=now_ts + 100.0,
+        expires_str="2027-01-15 08:01:40Z",
+        provisions_all_devices=True,
+        provisioned_devices=frozenset({"HOST-UDID-1"}),
+    )
+    assert profile_matches(
+        dev_id_wildcard,
+        bundle_id=APP_BUNDLE_ID,
+        team_id="4G6X3KNZUS",
+        cert_sha1=fake_cert_sha1,
+        shared_group="4G6X3KNZUS.com.clavis.shared",
+        now_ts=now_ts,
+        local_udid="ANY-MAC-UDID",
+    )
+
+    print("✅ resolve-signing-identity self-tests passed (16/16).")
 
 
 def build_parser() -> argparse.ArgumentParser:
