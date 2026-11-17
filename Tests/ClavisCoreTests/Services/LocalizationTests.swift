@@ -5,6 +5,18 @@ import Testing
 
 @Suite struct LocalizationTests {
 
+    private func repositoryRootURL(filePath: StaticString = #filePath) throws -> URL {
+        var directory = URL(fileURLWithPath: "\(filePath)").deletingLastPathComponent()
+        while directory.path != "/" {
+            if FileManager.default.fileExists(atPath: directory.appendingPathComponent("Package.swift").path) {
+                return directory
+            }
+            directory.deleteLastPathComponent()
+        }
+        struct RepositoryRootNotFoundError: Error {}
+        throw RepositoryRootNotFoundError()
+    }
+
     @Test func testInspectorLocalizedStrings() {
         #expect(!ClavisUIStrings.Inspector.usedBySection.isEmpty)
         #expect(ClavisUIStrings.Inspector.statusReady == "Ready")
@@ -191,8 +203,7 @@ import Testing
 
     @Test func testXCStringsTranslationsIntegrity() throws {
         // Find Localizable.xcstrings in the repository
-        let thisFile = URL(fileURLWithPath: #filePath)
-        let repoRoot = thisFile.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let repoRoot = try repositoryRootURL()
         let xcstringsURL = repoRoot.appendingPathComponent("Sources/ClavisCore/Resources/Localizable.xcstrings")
 
         let data = try Data(contentsOf: xcstringsURL)
@@ -237,8 +248,7 @@ import Testing
     }
 
     @Test func testEveryKeyHasEnglishDefaultInXCStrings() throws {
-        let thisFile = URL(fileURLWithPath: #filePath)
-        let repoRoot = thisFile.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let repoRoot = try repositoryRootURL()
         let xcstringsURL = repoRoot.appendingPathComponent("Sources/ClavisCore/Resources/Localizable.xcstrings")
 
         let data = try Data(contentsOf: xcstringsURL)
