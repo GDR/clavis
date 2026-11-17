@@ -44,3 +44,8 @@ jobs:
 
       - name: Run Tests
         run: just test
+
+      - name: Verify app bundle assembly and signing script
+        run: |
+          /usr/bin/python3 packaging/macos/resolve-signing-identity.py --self-test
+          CLAVIS_ALLOW_ADHOC_SIGNING=1 just sign debug

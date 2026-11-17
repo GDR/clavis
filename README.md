@@ -32,20 +32,21 @@ just
 # or ./build.sh (or make)
 ```
 
-The `justfile` (invoked via `just`, `./build.sh`, or `make`) assembles a complete `Clavis.app`, including the
-SwiftPM localization bundle and command-line helpers, then signs the standalone
-executables, nested helpers, and final application bundle with the hardened
-runtime. It fails closed when no development certificate is available. A
-specific certificate can be selected with `CLAVIS_SIGN_IDENTITY`.
+The `justfile` (invoked via `just`) assembles a complete `Clavis.app`, including the
+SwiftPM localization bundle (`Clavis_ClavisCore.bundle`), nested `Clavis Agent.app`, and
+command-line helpers, then re-signs every bundle and standalone executable inside-out with
+the hardened runtime. It fails closed when no development certificate is available and
+resolves an unambiguous SHA-1 identity, preferring `CLAVIS_TEAM_ID` (default `4G6X3KNZUS`)
+when multiple matching certificates exist. A specific certificate (CN prefix or SHA-1) can
+be selected with `CLAVIS_SIGN_IDENTITY`; run `just signing-status` to inspect installed
+certificates and the active selection.
 
 For local development and relaunching:
 ```bash
 just run debug
-# or ./build.sh run debug
 ```
 
-P-256 private keys are generated inside and never leave the Secure Enclave. The opaque Secure Enclave key reference (`dataRepresentation`) is stored in a Keychain record protected by `.userPresence` `SecAccessControl` (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`) and backed up in the encrypted recovery vault (`~/.config/clavis/vault`), whose master key is itself a Secure Enclave key. Secure Enclave key blobs are hardware-bound to the Mac and protected by their hardware `SecAccessControl` policy (`.userPresence` or `.biometryCurrentSet`), while key purpose separation (`general`, `gitSigningOnly`, `agent`), rate limits, and prompt attribution are enforced by Clavis. Key deletion strictly requires user authentication before modifying stores.
-Release builds signed with Developer ID or Apple Development certificates include the Data Protection Keychain access group entitlement (`keychain-access-groups` matching `$(AppIdentifierPrefix)com.clavis.app`) for unified access across the app, agent daemon, and CLI helpers. Unprovisioned local development builds (`CLAVIS_ALLOW_ADHOC_SIGNING=1`) sign without restricted entitlements so `just build` and `swift test` continue functioning without requiring an Apple Developer provisioning profile.
+P-256 private keys are generated inside and never leave the Secure Enclave. The opaque Secure Enclave key reference (`dataRepresentation`) is stored in the device-bound Login Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`) and backed up in the encrypted recovery vault (`~/.config/clavis/vault`), whose master key is itself a Secure Enclave key. Hardware access control (`.userPresence` or `.biometryCurrentSet`) is enforced by the Secure Enclave itself without requiring provisioning-restricted Data Protection Keychain entitlements (`keychain-access-groups`), so both local builds and distributed binaries run cleanly without provisioning profiles. Key purpose separation (`general`, `gitSigningOnly`, `agent`), rate limits, and prompt attribution are enforced by Clavis, and key deletion strictly requires user authentication before modifying stores.
 The build script gives every certificate-signed Clavis executable the original
 GUI Code Signing Identifier (`Clavis`), so existing GUI-created records and all
 shipped clients have the same designated requirement. Independently signed or plain
@@ -62,7 +63,7 @@ debug build (`just run debug`) or start `clavis-agent --daemon` yourself. The Ni
 downloads the pinned GitHub release archive and preserves its existing code
 signatures; it does not rebuild or re-sign the binaries.
 
-`just package` (or `make package`) also creates `clavis-macos-arm64.dmg` for graphical installation.
+`just package` also creates `clavis-macos-arm64.dmg` for graphical installation.
 Open the disk image and drag `Clavis.app` to the Applications shortcut. The DMG
 and Nix archive are published together with SHA-256 checksum files.
 
@@ -71,20 +72,22 @@ and Nix archive are published together with SHA-256 checksum files.
 Releases are built by `.github/workflows/release.yml`. While local builds default to an
 `Apple Development` certificate (which is not distributable: Gatekeeper cannot verify it and
 the signature has no secure timestamp), release CI builds strictly require a `Developer ID Application`
-certificate and fail if one is not configured. For release builds:
+certificate, an explicit Team ID, and Apple notarization:
 
-- Set the repository variable `CLAVIS_SIGN_IDENTITY` to `Developer ID Application` (and
-  `CLAVIS_EXPECTED_TEAM_ID` to your 10-character team ID; the release workflow requires both and fails
-  if the identity does not start with `Developer ID Application` or if the team ID is missing).
-  Developer ID builds automatically use secure timestamps (`CLAVIS_TIMESTAMP=auto`).
-- Until a Developer ID certificate is available, set the variable `CLAVIS_ALLOW_NON_DEVID_RELEASE=1`
-  to explicitly publish a release signed with `Apple Development` (`CLAVIS_SIGN_IDENTITY` empty or
-  starting with `Apple Development`; `CLAVIS_EXPECTED_TEAM_ID` is still required). Such releases are
-  not notarized, have no secure timestamp, are rejected by Gatekeeper, and are marked with a warning
-  in the workflow log and release notes. Notarization cannot be combined with this flag.
-- Set `CLAVIS_NOTARIZE=1` (repository variable) with the secrets `NOTARY_KEY_BASE64`,
-  `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID` to submit the DMG to Apple, staple the ticket and
-  validate it with `spctl` before the checksum is computed. Locally, use
+- Configure the `release` GitHub environment with `CLAVIS_SIGN_IDENTITY=Developer ID Application`,
+  `CLAVIS_EXPECTED_TEAM_ID=4G6X3KNZUS` (your 10-character Apple Developer Team ID), and
+  `CLAVIS_NOTARIZE=1`, along with the secrets `MACOS_CERTIFICATE_BASE64`, `MACOS_CERTIFICATE_PWD`,
+  `NOTARY_KEY_BASE64` (App Store Connect API key `.p8`, base64), `NOTARY_KEY_ID`, and
+  `NOTARY_ISSUER_ID`. You can inspect or populate all of these in one step with
+  `MACOS_CERTIFICATE_PWD='<p12-password>' just ci-signing-setup <DeveloperID.p12> <AuthKey.p8> <KEY_ID> <ISSUER_ID>`.
+- CI imports Apple's WWDR G3/G6 and `DeveloperIDG2CA` intermediate certificates into an ephemeral
+  keychain, verifies the `Developer ID Application` identity matches `CLAVIS_EXPECTED_TEAM_ID`,
+  and signs every binary, resource bundle, helper app, `Clavis.app`, and `.dmg` with secure
+  Apple timestamps (`CLAVIS_TIMESTAMP=secure`).
+- `just package` with `CLAVIS_NOTARIZE=1` notarizes and staples both `clavis-macos-arm64.dmg` and
+  `Clavis.app`, validates them with `stapler` and `spctl`, and also submits the standalone
+  `Clavis`, `clavis-agent`, and `clavis-cli` binaries for notarization before packing
+  `clavis-macos-arm64.tar.gz`. Locally, use
   `CLAVIS_NOTARIZE=1 CLAVIS_NOTARY_PROFILE=<notarytool keychain profile> just package`.
 - Each release publishes a GitHub build-provenance attestation for the DMG and archive
   (`gh attestation verify clavis-macos-arm64.dmg --repo <owner>/clavis`). Set the repository

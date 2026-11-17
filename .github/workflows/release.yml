@@ -66,7 +66,6 @@ jobs:
       tag: ${{ steps.semver.outputs.tag }}
       bumped: ${{ steps.semver.outputs.bumped }}
       prerelease: ${{ steps.semver.outputs.prerelease }}
-      signing: ${{ steps.verify.outputs.signing }}
 
     steps:
       - name: Checkout repository
@@ -74,56 +73,52 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Releases require a Developer ID Application identity. Until one is available, the
-      # repository/environment variable CLAVIS_ALLOW_NON_DEVID_RELEASE=1 explicitly opts in to
-      # publishing with an Apple Development identity: such builds are not Gatekeeper-verifiable,
-      # carry no secure timestamp and cannot be notarized, so the release is flagged accordingly.
+      # Releases strictly require a Developer ID Application identity, an explicit 10-character
+      # Team ID, and Apple notarization credentials on the release environment.
       - name: Verify release configuration
         id: verify
         env:
           CLAVIS_SIGN_IDENTITY: ${{ vars.CLAVIS_SIGN_IDENTITY }}
           CLAVIS_EXPECTED_TEAM_ID: ${{ vars.CLAVIS_EXPECTED_TEAM_ID }}
-          CLAVIS_ALLOW_NON_DEVID_RELEASE: ${{ vars.CLAVIS_ALLOW_NON_DEVID_RELEASE }}
           CLAVIS_NOTARIZE: ${{ vars.CLAVIS_NOTARIZE }}
+          HAS_CERT_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 != '' }}
+          HAS_CERT_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD != '' }}
+          HAS_NOTARY_KEY: ${{ secrets.NOTARY_KEY_BASE64 != '' }}
+          HAS_NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID != '' }}
+          HAS_NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER_ID != '' }}
         run: |
-          identity="${CLAVIS_SIGN_IDENTITY:-}"
+          identity="${CLAVIS_SIGN_IDENTITY:-Developer ID Application}"
           case "$identity" in
-            "Developer ID Application"*)
-              signing=developer-id
-              ;;
+            "Developer ID Application"*) ;;
             *)
-              if [ "${CLAVIS_ALLOW_NON_DEVID_RELEASE:-}" != "1" ]; then
-                if [ -z "$identity" ]; then
-                  echo "❌ CLAVIS_SIGN_IDENTITY must be set and start with 'Developer ID Application' before a release can be published." >&2
-                else
-                  echo "❌ CLAVIS_SIGN_IDENTITY must start with 'Developer ID Application'. Refusing to publish a release signed with another identity." >&2
-                fi
-                echo "   Set CLAVIS_ALLOW_NON_DEVID_RELEASE=1 to explicitly publish an Apple Development-signed release." >&2
-                exit 1
-              fi
-              # Only the Apple Development fallback is allowed; never ad-hoc or arbitrary identities.
-              case "$identity" in
-                "") identity="Apple Development" ;;
-                "Apple Development"*) ;;
-                *)
-                  echo "❌ With CLAVIS_ALLOW_NON_DEVID_RELEASE=1, CLAVIS_SIGN_IDENTITY must be empty or start with 'Apple Development', got '$identity'." >&2
-                  exit 1
-                  ;;
-              esac
-              if [ "${CLAVIS_NOTARIZE:-0}" = "1" ]; then
-                echo "❌ CLAVIS_NOTARIZE=1 requires a Developer ID Application identity." >&2
-                exit 1
-              fi
-              signing=development
-              echo "::warning title=Non-Developer ID release::Signing with '$identity'. The release will not be notarized, has no secure timestamp and will be rejected by Gatekeeper."
+              echo "❌ CLAVIS_SIGN_IDENTITY must start with 'Developer ID Application', got '$identity'." >&2
+              exit 1
               ;;
           esac
-          echo "identity=$identity" >> "$GITHUB_OUTPUT"
-          echo "signing=$signing" >> "$GITHUB_OUTPUT"
-          if [ -z "${CLAVIS_EXPECTED_TEAM_ID:-}" ]; then
-            echo "❌ CLAVIS_EXPECTED_TEAM_ID must be set before packaging a release." >&2
+
+          if ! [[ "${CLAVIS_EXPECTED_TEAM_ID:-}" =~ ^[A-Z0-9]{10}$ ]]; then
+            echo "❌ CLAVIS_EXPECTED_TEAM_ID must be a 10-character uppercase alphanumeric Team ID, got '${CLAVIS_EXPECTED_TEAM_ID:-}'." >&2
             exit 1
           fi
+
+          if [ "${CLAVIS_NOTARIZE:-1}" != "1" ]; then
+            echo "❌ Release builds require notarization (CLAVIS_NOTARIZE must be '1', got '${CLAVIS_NOTARIZE}')." >&2
+            exit 1
+          fi
+
+          missing=()
+          [ "$HAS_CERT_BASE64" = "true" ] || missing+=("MACOS_CERTIFICATE_BASE64")
+          [ "$HAS_CERT_PWD" = "true" ] || missing+=("MACOS_CERTIFICATE_PWD")
+          [ "$HAS_NOTARY_KEY" = "true" ] || missing+=("NOTARY_KEY_BASE64")
+          [ "$HAS_NOTARY_KEY_ID" = "true" ] || missing+=("NOTARY_KEY_ID")
+          [ "$HAS_NOTARY_ISSUER" = "true" ] || missing+=("NOTARY_ISSUER_ID")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "❌ Missing required release environment secret(s): ${missing[*]}" >&2
+            echo "   Configure them with: MACOS_CERTIFICATE_PWD='<pwd>' just ci-signing-setup <DeveloperID.p12> <AuthKey.p8> <KEY_ID> <ISSUER_ID>" >&2
+            exit 1
+          fi
+
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
 
       - name: Assert commit provenance
         run: |
@@ -250,6 +245,8 @@ jobs:
         env:
           CERT_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
           CERT_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          CLAVIS_EXPECTED_TEAM_ID: ${{ vars.CLAVIS_EXPECTED_TEAM_ID }}
+          CLAVIS_SIGN_IDENTITY: ${{ steps.verify.outputs.identity }}
         run: |
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
           KEYCHAIN_PWD_FILE="$RUNNER_TEMP/keychain-pwd.txt"
@@ -274,6 +271,10 @@ jobs:
           echo "bdd4ed6e74691f0c2bfd01be0296197af1379e0418e2d300efa9c3bef642ca30  $RUNNER_TEMP/AppleWWDRCAG6.cer" | shasum -a 256 -c
           security import "$RUNNER_TEMP/AppleWWDRCAG6.cer" -k "$KEYCHAIN_PATH" -T /usr/bin/codesign
 
+          curl -fSsL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          echo "f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a  $RUNNER_TEMP/DeveloperIDG2CA.cer" | shasum -a 256 -c
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$KEYCHAIN_PATH" -T /usr/bin/codesign
+
           (umask 077 && echo "$CERT_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12")
           security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" -P "$CERT_PWD" -T /usr/bin/codesign
           rm -f "$RUNNER_TEMP/cert.p12"
@@ -282,12 +283,15 @@ jobs:
 
           echo "🔍 Installed Identities in Keychain:"
           security find-identity -p codesigning "$KEYCHAIN_PATH"
+          /usr/bin/python3 packaging/macos/resolve-signing-identity.py \
+            --status \
+            --keychain "$KEYCHAIN_PATH" \
+            --requested "$CLAVIS_SIGN_IDENTITY" \
+            --preferred-team-id "$CLAVIS_EXPECTED_TEAM_ID" \
+            --expected-team-id "$CLAVIS_EXPECTED_TEAM_ID" \
+            --notarize 1
 
-      # Notarization is opt-in until a Developer ID certificate is installed: set the repository
-      # variable CLAVIS_NOTARIZE=1 and the secrets NOTARY_KEY_BASE64 (App Store Connect API key
-      # .p8, base64), NOTARY_KEY_ID and NOTARY_ISSUER_ID.
       - name: Prepare notarization credentials
-        if: ${{ vars.CLAVIS_NOTARIZE == '1' }}
         env:
           NOTARY_KEY_BASE64: ${{ secrets.NOTARY_KEY_BASE64 }}
         run: |
@@ -299,10 +303,10 @@ jobs:
         env:
           CLAVIS_VERSION: ${{ steps.semver.outputs.version }}
           CLAVIS_BUILD_VERSION: ${{ github.run_number }}
-          # Validated identity: Developer ID Application, or Apple Development when explicitly allowed.
           CLAVIS_SIGN_IDENTITY: ${{ steps.verify.outputs.identity }}
           CLAVIS_EXPECTED_TEAM_ID: ${{ vars.CLAVIS_EXPECTED_TEAM_ID }}
-          CLAVIS_NOTARIZE: ${{ vars.CLAVIS_NOTARIZE || '0' }}
+          CLAVIS_TIMESTAMP: "secure"
+          CLAVIS_NOTARIZE: "1"
           CLAVIS_NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           CLAVIS_NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER_ID }}
         run: |
@@ -332,7 +336,7 @@ jobs:
           if [ -n "${KEYCHAIN_PWD_FILE:-}" ]; then
             rm -f "$KEYCHAIN_PWD_FILE"
           fi
-          rm -f "$RUNNER_TEMP/keychain-pwd.txt" "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/AppleWWDRCAG3.cer" "$RUNNER_TEMP/AppleWWDRCAG6.cer"
+          rm -f "$RUNNER_TEMP/keychain-pwd.txt" "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/AppleWWDRCAG3.cer" "$RUNNER_TEMP/AppleWWDRCAG6.cer" "$RUNNER_TEMP/DeveloperIDG2CA.cer"
 
   publish:
     name: Publish Release
@@ -435,23 +439,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.build.outputs.tag }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
-          SIGNING: ${{ needs.build.outputs.signing }}
         run: |
-          notes=""
-          if [ "$SIGNING" != "developer-id" ]; then
-            echo "::warning title=Non-Developer ID release::$RELEASE_TAG is signed with an Apple Development identity."
-            notes='> [!WARNING]
-          > This release is signed with an **Apple Development** certificate, not Developer ID. It is not notarized and Gatekeeper will refuse to open it without manual approval (`xattr -d com.apple.quarantine`).'
-          fi
           prerelease_flag=()
           if [ "$PRERELEASE" = "true" ]; then
             prerelease_flag=(--prerelease)
           fi
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            # --notes is prepended to the generated notes (see `gh release create --help`).
             gh release create "$RELEASE_TAG" \
               --title "$RELEASE_TAG" \
-              --notes "$notes" \
               --generate-notes \
               "${prerelease_flag[@]}"
           fi
