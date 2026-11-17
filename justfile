@@ -5,11 +5,12 @@ version := env_var_or_default("CLAVIS_VERSION", "0.4.5")
 build_version := env_var_or_default("CLAVIS_BUILD_VERSION", "1")
 keychain := env_var_or_default("CLAVIS_KEYCHAIN", "")
 sign_identity := env_var_or_default("CLAVIS_SIGN_IDENTITY", "")
+team_id := env_var_or_default("CLAVIS_TEAM_ID", "4G6X3KNZUS")
 allow_adhoc := env_var_or_default("CLAVIS_ALLOW_ADHOC_SIGNING", "0")
 expected_team_id := env_var_or_default("CLAVIS_EXPECTED_TEAM_ID", "")
 # auto: secure (Apple-timestamped) signatures for Developer ID builds, none for local builds.
 timestamp_mode := env_var_or_default("CLAVIS_TIMESTAMP", "auto")
-# Set to 1 to notarize and staple the DMG (requires a Developer ID Application identity).
+# Set to 1 to notarize and staple release artifacts (requires a Developer ID Application identity).
 notarize := env_var_or_default("CLAVIS_NOTARIZE", "0")
 
 build_dir := ".build/" + config
@@ -126,62 +127,67 @@ sign config=config: (bundle config)
     keychain="{{ keychain }}"
     entitlements="Entitlements.plist"
 
-    # Resolve signing identity if not explicitly specified
-    identity="{{ sign_identity }}"
-    if [ -z "$identity" ]; then
-        target_kc="${keychain:+-k $keychain}"
-        if [ "{{ notarize }}" = "1" ]; then
-            if /usr/bin/security find-identity -v -p codesigning ${keychain:+$keychain} 2>/dev/null | grep -q "Developer ID Application"; then
-                identity="Developer ID Application"
-            else
-                echo "❌ CLAVIS_NOTARIZE=1 requires a 'Developer ID Application' certificate." >&2
-                exit 1
-            fi
-        elif /usr/bin/security find-identity -v -p codesigning ${keychain:+$keychain} 2>/dev/null | grep -q "Apple Development"; then
-            identity="Apple Development"
-        elif /usr/bin/security find-identity -v -p codesigning ${keychain:+$keychain} 2>/dev/null | grep -q "Clavis Local Development"; then
-            identity="Clavis Local Development"
-        elif [ "{{ allow_adhoc }}" = "1" ]; then
-            identity="-"
-        else
-            echo "❌ No code-signing certificate found; refusing to create an unsigned/ad-hoc build." >&2
-            echo "   Install a signing certificate, set CLAVIS_SIGN_IDENTITY, or pass CLAVIS_ALLOW_ADHOC_SIGNING=1." >&2
+    resolved="$(/usr/bin/python3 packaging/macos/resolve-signing-identity.py \
+        --keychain "$keychain" \
+        --requested "{{ sign_identity }}" \
+        --preferred-team-id "{{ team_id }}" \
+        --expected-team-id "{{ expected_team_id }}" \
+        --notarize "{{ notarize }}" \
+        --allow-adhoc "{{ allow_adhoc }}" \
+        --timestamp-mode "{{ timestamp_mode }}")"
+    eval "$resolved"
+
+    echo "🔐 Signing binaries with identity: $SIGN_LABEL ($TIMESTAMP_FLAG)..."
+
+    verify_signature_metadata() {
+        local target="$1"
+        local require_identifier="${2:-1}"
+        local sign_details
+
+        sign_details="$(/usr/bin/codesign --display --verbose=4 "$target" 2>&1)"
+        if [ "$require_identifier" = "1" ] && ! echo "$sign_details" | grep -Fq "Identifier=Clavis"; then
+            echo "❌ Shared Code Signing Identifier is missing from $target." >&2
             exit 1
         fi
-    fi
 
-    if [ "{{ notarize }}" = "1" ]; then
-        case "$identity" in
-            "Developer ID Application"*) ;;
-            *)
-                echo "❌ Notarization requires a 'Developer ID Application' identity, got '$identity'." >&2
-                exit 1
-                ;;
-        esac
-    fi
-
-    # Secure timestamps keep a release signature valid after the signing certificate expires and
-    # are required for notarization. They need network access, so local builds skip them.
-    case "{{ timestamp_mode }}" in
-        secure) timestamp_flag="--timestamp" ;;
-        none)   timestamp_flag="--timestamp=none" ;;
-        auto)
-            case "$identity" in
-                "Developer ID Application"*) timestamp_flag="--timestamp" ;;
-                *)                           timestamp_flag="--timestamp=none" ;;
-            esac
-            ;;
-        *)
-            echo "❌ CLAVIS_TIMESTAMP must be auto, secure or none." >&2
+        if [ "$TIMESTAMP_FLAG" = "--timestamp" ] && ! echo "$sign_details" | grep -q "^Timestamp="; then
+            echo "❌ Expected a secure timestamp on $target but none was recorded." >&2
             exit 1
-            ;;
-    esac
-    if [ "{{ notarize }}" = "1" ] && [ "$timestamp_flag" != "--timestamp" ]; then
-        echo "❌ Notarization requires secure timestamps (CLAVIS_TIMESTAMP must be auto or secure)." >&2
-        exit 1
-    fi
+        fi
 
-    echo "🔐 Signing binaries with identity: '$identity' ($timestamp_flag)..."
+        if [ "$SIGN_ARG" != "-" ]; then
+            if echo "$sign_details" | grep -q "Signature=adhoc"; then
+                echo "❌ Expected certificate signing, but $target has an ad-hoc signature." >&2
+                exit 1
+            fi
+            if [ -n "$SIGN_TEAM_ID" ] && ! echo "$sign_details" | grep -Fq "TeamIdentifier=$SIGN_TEAM_ID"; then
+                echo "❌ $target is not signed by resolved TeamIdentifier '$SIGN_TEAM_ID'." >&2
+                exit 1
+            fi
+            if [ -n "{{ expected_team_id }}" ] && ! echo "$sign_details" | grep -Fq "TeamIdentifier={{ expected_team_id }}"; then
+                echo "❌ $target is not signed by expected TeamIdentifier '{{ expected_team_id }}'." >&2
+                exit 1
+            fi
+        fi
+    }
+
+    sign_resource_bundle() {
+        local target="$1"
+        if [ ! -e "$target" ]; then
+            echo "❌ Resource bundle not found: $target" >&2
+            exit 1
+        fi
+        echo "  Signing resource bundle $target..."
+        /usr/bin/xattr -cr "$target" 2>/dev/null || true
+        /usr/bin/codesign \
+            --force \
+            ${keychain:+--keychain "$keychain"} \
+            --sign "$SIGN_ARG" \
+            "$TIMESTAMP_FLAG" \
+            "$target"
+        /usr/bin/codesign --verify --strict --verbose=2 "$target"
+        verify_signature_metadata "$target" 0
+    }
 
     sign_and_verify() {
         local target="$1"
@@ -197,10 +203,10 @@ sign config=config: (bundle config)
         /usr/bin/codesign \
             --force \
             ${keychain:+--keychain "$keychain"} \
-            --sign "$identity" \
+            --sign "$SIGN_ARG" \
             --identifier "Clavis" \
             --options runtime \
-            "$timestamp_flag" \
+            "$TIMESTAMP_FLAG" \
             --entitlements "$entitlements" \
             "$target"
 
@@ -210,7 +216,7 @@ sign config=config: (bundle config)
             /usr/bin/codesign --verify --strict --verbose=2 "$target"
         fi
 
-        local signed_ent sign_details
+        local signed_ent
         signed_ent="$(/usr/bin/codesign -d --entitlements - "$target" 2>&1 || true)"
         if echo "$signed_ent" | grep -Fq '$(AppIdentifierPrefix)'; then
             echo "❌ Unexpanded \$(AppIdentifierPrefix) found in signed entitlements of $target." >&2
@@ -221,28 +227,15 @@ sign config=config: (bundle config)
             exit 1
         fi
 
-        sign_details="$(/usr/bin/codesign --display --verbose=4 "$target" 2>&1)"
-        if ! echo "$sign_details" | grep -Fq "Identifier=Clavis"; then
-            echo "❌ Shared Code Signing Identifier is missing from $target." >&2
-            exit 1
-        fi
-
-        if [ "$timestamp_flag" = "--timestamp" ] && ! echo "$sign_details" | grep -q "^Timestamp="; then
-            echo "❌ Expected a secure timestamp on $target but none was recorded." >&2
-            exit 1
-        fi
-
-        if [ "$identity" != "-" ]; then
-            if echo "$sign_details" | grep -q "Signature=adhoc"; then
-                echo "❌ Expected certificate signing, but $target has an ad-hoc signature." >&2
-                exit 1
-            fi
-            if [ -n "{{ expected_team_id }}" ] && ! echo "$sign_details" | grep -Fq "TeamIdentifier={{ expected_team_id }}"; then
-                echo "❌ $target is not signed by expected TeamIdentifier '{{ expected_team_id }}'." >&2
-                exit 1
-            fi
-        fi
+        verify_signature_metadata "$target" 1
     }
+
+    # Re-sign SwiftPM data bundles inside-out so no ad-hoc signature breaks notarization
+    for resource_bundle in "$build_dir/Clavis_ClavisCore.bundle" \
+                           "$agent_bundle/Contents/Resources/Clavis_ClavisCore.bundle" \
+                           "$app_bundle/Contents/Resources/Clavis_ClavisCore.bundle"; do
+        sign_resource_bundle "$resource_bundle"
+    done
 
     # Sign standalone CLIs and nested bundle helpers
     for binary in "$build_dir/Clavis" \
@@ -284,41 +277,38 @@ dmg config=config: (sign config)
     /usr/bin/hdiutil verify "$dmg"
 
     # Resolve signing identity so the disk image itself is signed when using a real certificate
-    identity="{{ sign_identity }}"
-    if [ -z "$identity" ]; then
-        if [ "{{ notarize }}" = "1" ]; then
-            identity="Developer ID Application"
-        elif /usr/bin/security find-identity -v -p codesigning ${keychain:+$keychain} 2>/dev/null | grep -q "Apple Development"; then
-            identity="Apple Development"
-        elif /usr/bin/security find-identity -v -p codesigning ${keychain:+$keychain} 2>/dev/null | grep -q "Clavis Local Development"; then
-            identity="Clavis Local Development"
-        else
-            identity="-"
-        fi
-    fi
-    if [ "$identity" != "-" ]; then
-        timestamp_flag="--timestamp=none"
-        case "{{ timestamp_mode }}" in
-            secure) timestamp_flag="--timestamp" ;;
-            auto)
-                case "$identity" in
-                    "Developer ID Application"*) timestamp_flag="--timestamp" ;;
-                esac
-                ;;
-        esac
-        /usr/bin/codesign --force ${keychain:+--keychain "$keychain"} --sign "$identity" --identifier "com.clavis.dmg" "$timestamp_flag" "$dmg"
+    resolved="$(/usr/bin/python3 packaging/macos/resolve-signing-identity.py \
+        --keychain "$keychain" \
+        --requested "{{ sign_identity }}" \
+        --preferred-team-id "{{ team_id }}" \
+        --expected-team-id "{{ expected_team_id }}" \
+        --notarize "{{ notarize }}" \
+        --allow-adhoc "1" \
+        --timestamp-mode "{{ timestamp_mode }}")"
+    eval "$resolved"
+
+    if [ "$SIGN_ARG" != "-" ]; then
+        echo "🔐 Signing $dmg with identity: $SIGN_LABEL ($TIMESTAMP_FLAG)..."
+        /usr/bin/codesign --force ${keychain:+--keychain "$keychain"} --sign "$SIGN_ARG" --identifier "com.clavis.dmg" "$TIMESTAMP_FLAG" "$dmg"
+        /usr/bin/codesign --verify --strict --verbose=2 "$dmg"
     fi
 
     if [ "{{ notarize }}" = "1" ]; then
         # Stapling rewrites the image, so notarize before computing the checksum.
         just --justfile "{{ justfile() }}" notarize "$dmg"
+        # Also staple Clavis.app so the tar.gz / Nix release archive carries an offline-verifiable ticket.
+        echo "🔖 Stapling $app_bundle..."
+        /usr/bin/xcrun stapler staple "$app_bundle"
+        /usr/bin/xcrun stapler validate "$app_bundle"
+        /usr/sbin/spctl --assess --type execute -vv "$app_bundle"
     fi
     shasum -a 256 "$dmg" > "$dmg.sha256"
     echo "✅ Created $dmg and checksum."
 
-# Notarize and staple a signed disk image. Credentials come from either
-# CLAVIS_NOTARY_PROFILE (a `notarytool store-credentials` keychain profile) or an App Store
-# Connect API key: CLAVIS_NOTARY_KEY_PATH, CLAVIS_NOTARY_KEY_ID, CLAVIS_NOTARY_ISSUER.
+# Notarize (and staple when supported) a signed disk image, app bundle, pkg, or zip archive.
+# Credentials come from either CLAVIS_NOTARY_PROFILE (a `notarytool store-credentials`
+# keychain profile) or an App Store Connect API key: CLAVIS_NOTARY_KEY_PATH,
+# CLAVIS_NOTARY_KEY_ID, CLAVIS_NOTARY_ISSUER.
 notarize file:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -349,10 +339,32 @@ notarize file:
         exit 1
     fi
 
-    /usr/bin/xcrun stapler staple "$file"
-    /usr/bin/xcrun stapler validate "$file"
-    /usr/sbin/spctl --assess --type open --context context:primary-signature -vv "$file"
-    echo "✅ Notarized and stapled $file."
+    case "$file" in
+        *.dmg)
+            /usr/bin/xcrun stapler staple "$file"
+            /usr/bin/xcrun stapler validate "$file"
+            /usr/sbin/spctl --assess --type open --context context:primary-signature -vv "$file"
+            echo "✅ Notarized and stapled $file."
+            ;;
+        *.app)
+            /usr/bin/xcrun stapler staple "$file"
+            /usr/bin/xcrun stapler validate "$file"
+            /usr/sbin/spctl --assess --type execute -vv "$file"
+            echo "✅ Notarized and stapled $file."
+            ;;
+        *.pkg)
+            /usr/bin/xcrun stapler staple "$file"
+            /usr/bin/xcrun stapler validate "$file"
+            echo "✅ Notarized and stapled $file."
+            ;;
+        *.zip)
+            echo "✅ Notarized $file (CDHashes registered with Apple Notary Service; .zip containers cannot be stapled)."
+            ;;
+        *)
+            echo "❌ Unsupported file type for notarization post-processing: $file" >&2
+            exit 1
+            ;;
+    esac
 
 # Package DMG, Nix archive, and checksums for release
 package config=config: (dmg config)
@@ -360,6 +372,15 @@ package config=config: (dmg config)
     set -euo pipefail
     build_dir=".build/{{ config }}"
     archive="{{ archive_name }}"
+
+    if [ "{{ notarize }}" = "1" ]; then
+        standalone_stage="$(mktemp -d -t clavis-standalone)"
+        standalone_zip="$(mktemp -u -t clavis-standalone).zip"
+        trap 'rm -rf "$standalone_stage" "$standalone_zip"' EXIT
+        cp "$build_dir/Clavis" "$build_dir/clavis-agent" "$build_dir/clavis-cli" "$standalone_stage/"
+        /usr/bin/ditto -c -k --keepParent "$standalone_stage" "$standalone_zip"
+        just --justfile "{{ justfile() }}" notarize "$standalone_zip"
+    fi
 
     echo "📦 Packaging artifacts..."
     tar -czf "$archive" -C "$build_dir" \
@@ -370,6 +391,140 @@ package config=config: (dmg config)
         Clavis.app
     shasum -a 256 "$archive" > "$archive.sha256"
     echo "✅ Created $archive and checksum."
+
+# Inspect local code-signing certificates and active identity selection
+signing-status:
+    @/usr/bin/python3 packaging/macos/resolve-signing-identity.py \
+        --status \
+        --keychain "{{ keychain }}" \
+        --requested "{{ sign_identity }}" \
+        --preferred-team-id "{{ team_id }}" \
+        --expected-team-id "{{ expected_team_id }}" \
+        --notarize "{{ notarize }}" \
+        --allow-adhoc "{{ allow_adhoc }}" \
+        --timestamp-mode "{{ timestamp_mode }}"
+
+# Inspect or upload GitHub Release signing & notarization configuration (Team {{ team_id }})
+ci-signing-setup p12_path="" notary_p8_path="" notary_key_id="" notary_issuer_id="" repo="GDR/clavis":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo="{{ repo }}"
+    team="{{ team_id }}"
+    p12_path="{{ p12_path }}"
+    notary_p8_path="{{ notary_p8_path }}"
+    notary_key_id="{{ notary_key_id }}"
+    notary_issuer_id="{{ notary_issuer_id }}"
+
+    if command -v gh >/dev/null 2>&1; then
+        echo "🔎 GitHub configuration for $repo (environment: release):"
+        gh variable list -R "$repo" --env release || true
+        echo ""
+        echo "🔎 GitHub secrets for $repo (environment: release):"
+        gh secret list -R "$repo" --env release || true
+        echo ""
+        echo "🔎 GitHub repository secrets for $repo:"
+        gh secret list -R "$repo" || true
+        echo ""
+    fi
+
+    if [ -z "$p12_path" ]; then
+        cat <<EOF
+    Next steps to configure Developer ID signing & notarization for team $team:
+      1. In Xcode -> Settings -> Accounts -> Damir Garifullin ($team) -> Manage Certificates -> '+' -> Developer ID Application.
+         Export that certificate + private key from Keychain Access as DeveloperID.p12.
+      2. Create an App Store Connect API Key (https://appstoreconnect.apple.com/access/integrations/api, role Developer or App Manager),
+         download AuthKey_<KEY_ID>.p8, and copy <KEY_ID> and <ISSUER_ID>.
+      3. Run:
+         MACOS_CERTIFICATE_PWD='<p12-password>' just ci-signing-setup path/to/DeveloperID.p12 path/to/AuthKey_XXXX.p8 <KEY_ID> <ISSUER_ID>
+    EOF
+        exit 0
+    fi
+
+    if [ -z "$notary_p8_path" ] || [ -z "$notary_key_id" ] || [ -z "$notary_issuer_id" ]; then
+        echo "❌ Usage: MACOS_CERTIFICATE_PWD='<pwd>' just ci-signing-setup <p12_path> <notary_p8_path> <notary_key_id> <notary_issuer_id> [repo]" >&2
+        exit 1
+    fi
+    if [ ! -f "$p12_path" ]; then
+        echo "❌ Certificate archive not found: $p12_path" >&2
+        exit 1
+    fi
+    if [ ! -f "$notary_p8_path" ]; then
+        echo "❌ Notary API key (.p8) not found: $notary_p8_path" >&2
+        exit 1
+    fi
+    if ! head -n 1 "$notary_p8_path" | grep -q -- "-----BEGIN PRIVATE KEY-----"; then
+        echo "❌ $notary_p8_path does not look like a PKCS#8 .p8 private key." >&2
+        exit 1
+    fi
+    if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
+        echo "❌ GitHub CLI ('gh') must be installed and authenticated." >&2
+        exit 1
+    fi
+
+    p12_pwd="${MACOS_CERTIFICATE_PWD:-}"
+    if [ -z "$p12_pwd" ]; then
+        if [ -t 0 ]; then
+            read -rsp "Enter .p12 export password: " p12_pwd
+            echo ""
+        else
+            echo "❌ Set MACOS_CERTIFICATE_PWD in the environment when running non-interactively." >&2
+            exit 1
+        fi
+    fi
+    if [ -z "$p12_pwd" ]; then
+        echo "❌ Certificate password must not be empty." >&2
+        exit 1
+    fi
+
+    export CLAVIS_P12_PWD="$p12_pwd"
+    certs_pem="$(/usr/bin/openssl pkcs12 -in "$p12_path" -clcerts -nokeys -passin env:CLAVIS_P12_PWD 2>/dev/null || true)"
+    has_privkey=0
+    if /usr/bin/openssl pkcs12 -in "$p12_path" -nocerts -nodes -passin env:CLAVIS_P12_PWD 2>/dev/null | grep -q -- "PRIVATE KEY"; then
+        has_privkey=1
+    fi
+    unset CLAVIS_P12_PWD
+    if [ -z "$certs_pem" ] || [ "$has_privkey" != "1" ]; then
+        echo "❌ Failed to read certificate + private key from '$p12_path'. Check MACOS_CERTIFICATE_PWD and ensure the private key was included when exporting the .p12." >&2
+        exit 1
+    fi
+
+    CLAVIS_CERTS_PEM="$certs_pem" /usr/bin/python3 - "$team" << 'PY'
+    import os, re, subprocess, sys
+    team = sys.argv[1]
+    pem_all = os.environ["CLAVIS_CERTS_PEM"]
+    blocks = re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", pem_all, re.S)
+    matched = []
+    subjects = []
+    for pem in blocks:
+        out = subprocess.check_output(
+            ["/usr/bin/openssl", "x509", "-noout", "-subject", "-nameopt", "RFC2253"],
+            input=pem,
+            text=True,
+        ).strip()
+        subjects.append(out)
+        if re.search(r"CN=Developer ID Application:", out) and re.search(rf"(?:^|[,/])\s*OU={re.escape(team)}(?:\s*(?:[,/]|$))", out):
+            matched.append(out)
+    if not matched:
+        print(f"❌ No 'Developer ID Application' certificate with OU={team} found in .p12.", file=sys.stderr)
+        for s in subjects:
+            print(f"   Found: {s}", file=sys.stderr)
+        sys.exit(1)
+    print(f"✅ Verified certificate in .p12: {matched[0]}")
+    PY
+
+    echo "☁️ Updating GitHub environment 'release' on $repo..."
+    gh variable set CLAVIS_EXPECTED_TEAM_ID --env release -R "$repo" --body "$team"
+    gh variable set CLAVIS_SIGN_IDENTITY --env release -R "$repo" --body "Developer ID Application"
+    gh variable set CLAVIS_NOTARIZE --env release -R "$repo" --body "1"
+    gh variable delete CLAVIS_ALLOW_NON_DEVID_RELEASE --env release -R "$repo" 2>/dev/null || true
+
+    base64 < "$p12_path" | tr -d '\n' | gh secret set MACOS_CERTIFICATE_BASE64 --env release -R "$repo"
+    printf '%s' "$p12_pwd" | gh secret set MACOS_CERTIFICATE_PWD --env release -R "$repo"
+    base64 < "$notary_p8_path" | tr -d '\n' | gh secret set NOTARY_KEY_BASE64 --env release -R "$repo"
+    printf '%s' "$notary_key_id" | gh secret set NOTARY_KEY_ID --env release -R "$repo"
+    printf '%s' "$notary_issuer_id" | gh secret set NOTARY_ISSUER_ID --env release -R "$repo"
+
+    echo "✅ GitHub release environment secrets & variables configured for $repo (team $team)."
 
 # Run test suite with parallel Swift Testing (supports extra flags via args)
 test *args:
