@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 #if os(macOS)
@@ -79,6 +80,7 @@ public struct PublicKeyStore {
     private static var cachedKeys: [SSHKeyInfo]?
     private static var cachedAt = Date.distantPast
     private static var generation: UInt64 = 0
+    private static var didAttemptLegacyMigration = false
     /// Backing store when `disableKeychainMirrorForTesting` is set.
     private static var memoryOnlyKeys: [String: SSHKeyInfo] = [:]
     private static var _scopeOverrideForTesting: KeychainScope?
@@ -113,6 +115,16 @@ public struct PublicKeyStore {
     static var generationForTesting: UInt64 {
         stateLock.lock(); defer { stateLock.unlock() }
         return generation
+    }
+    static var didAttemptLegacyMigrationForTesting: Bool {
+        get {
+            stateLock.lock(); defer { stateLock.unlock() }
+            return didAttemptLegacyMigration
+        }
+        set {
+            stateLock.lock(); defer { stateLock.unlock() }
+            didAttemptLegacyMigration = newValue
+        }
     }
     #endif
 
@@ -216,6 +228,7 @@ public struct PublicKeyStore {
         generation &+= 1
         cachedKeys = nil
         cachedAt = .distantPast
+        didAttemptLegacyMigration = false
         memoryOnlyKeys = [:]
         _scopeOverrideForTesting = nil
         disableKeychainMirrorForTesting = isRunningUnderXCTest
@@ -339,7 +352,20 @@ public struct PublicKeyStore {
             return scopedKeys
         }
 
-        let legacyKeys = loadAllFromKeychain(scope: .legacyLogin)
+        let shouldProbeLegacy: Bool = {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            if didAttemptLegacyMigration {
+                return false
+            }
+            didAttemptLegacyMigration = true
+            return true
+        }()
+        guard shouldProbeLegacy else {
+            return []
+        }
+
+        let legacyKeys = loadAllFromKeychain(scope: .legacyLogin, suppressUI: true)
         guard !legacyKeys.isEmpty else {
             return []
         }
@@ -356,10 +382,21 @@ public struct PublicKeyStore {
         return legacyKeys
     }
 
-    private static func loadAllFromKeychain(scope: KeychainScope) -> [SSHKeyInfo] {
+    private static func loadAllFromKeychain(scope: KeychainScope, suppressUI: Bool = false) -> [SSHKeyInfo] {
         var query = makeLookupQuery(account: nil, scope: scope)
         query[kSecReturnAttributes as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitAll
+        let nonInteractiveContext: LAContext? = suppressUI ? {
+            let ctx = LAContext()
+            ctx.interactionNotAllowed = true
+            return ctx
+        }() : nil
+        if let nonInteractiveContext {
+            query[kSecUseAuthenticationContext as String] = nonInteractiveContext
+            // Suppress legacy SecurityAgent Keychain ACL prompts (`kSecUseAuthenticationUISkip`)
+            // when probing foreign/older-signed login keychain items.
+            query["u_AuthUI"] = "u_AuthUIS"
+        }
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess else { return [] }
@@ -371,6 +408,10 @@ public struct PublicKeyStore {
             var itemQuery = makeLookupQuery(account: account, scope: scope)
             itemQuery[kSecReturnData as String] = true
             itemQuery[kSecMatchLimit as String] = kSecMatchLimitOne
+            if let nonInteractiveContext {
+                itemQuery[kSecUseAuthenticationContext as String] = nonInteractiveContext
+                itemQuery["u_AuthUI"] = "u_AuthUIS"
+            }
             var itemResult: AnyObject?
             if SecItemCopyMatching(itemQuery as CFDictionary, &itemResult) == errSecSuccess,
                let data = itemResult as? Data,
