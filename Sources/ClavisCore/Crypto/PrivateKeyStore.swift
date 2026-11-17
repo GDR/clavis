@@ -58,14 +58,19 @@ enum PrivateKeyAccessControl {
 
 public final class KeychainPrivateKeyStore: PrivateKeyStoring {
     private let serviceName: String
+    private let scope: KeychainScope
     private let addItem: (CFDictionary) -> OSStatus
     private let deleteItem: (CFDictionary) -> OSStatus
     private let updateItem: (CFDictionary, CFDictionary) -> OSStatus
     private let copyItem: (CFDictionary) -> (OSStatus, AnyObject?)
 
-    public convenience init(serviceName: String = KeychainManager.privateServiceName) {
+    public convenience init(
+        serviceName: String = KeychainManager.privateServiceName,
+        scope: KeychainScope = .processDefault
+    ) {
         self.init(
             serviceName: serviceName,
+            scope: scope,
             addItem: { SecItemAdd($0, nil) },
             deleteItem: { SecItemDelete($0) },
             updateItem: { SecItemUpdate($0, $1) },
@@ -79,6 +84,7 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
 
     init(
         serviceName: String,
+        scope: KeychainScope = .processDefault,
         addItem: @escaping (CFDictionary) -> OSStatus,
         deleteItem: @escaping (CFDictionary) -> OSStatus,
         updateItem: @escaping (CFDictionary, CFDictionary) -> OSStatus = { SecItemUpdate($0, $1) },
@@ -89,6 +95,7 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
         }
     ) {
         self.serviceName = serviceName
+        self.scope = scope
         self.addItem = addItem
         self.deleteItem = deleteItem
         self.updateItem = updateItem
@@ -96,9 +103,19 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
     }
 
     public func contains(label: String) -> Bool {
+        if containsItem(baseLookup: lookup(label: label, serviceName: serviceName)) {
+            return true
+        }
+        if case .dataProtection = scope {
+            return containsItem(baseLookup: legacyLookup(label: label, serviceName: serviceName))
+        }
+        return false
+    }
+
+    private func containsItem(baseLookup: [String: Any]) -> Bool {
         let context = LAContext()
         context.interactionNotAllowed = true
-        var query = lookup(label: label, serviceName: serviceName)
+        var query = baseLookup
         query.merge([
             kSecReturnAttributes as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
@@ -111,13 +128,34 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
     public func allLabels() throws -> [String] {
         let context = LAContext()
         context.interactionNotAllowed = true
-        let query: [String: Any] = [
+        let scopedLabels = try fetchLabels(query: allLabelsQuery(context: context))
+        guard case .dataProtection = scope else {
+            return scopedLabels
+        }
+        let legacyLabels = try fetchLabels(query: legacyAllLabelsQuery(context: context))
+        var seen = Set<String>()
+        var combined: [String] = []
+        for label in scopedLabels + legacyLabels where seen.insert(label).inserted {
+            combined.append(label)
+        }
+        return combined
+    }
+
+    private func allLabelsQuery(context: LAContext) -> [String: Any] {
+        scope.applying(to: legacyAllLabelsQuery(context: context))
+    }
+
+    private func legacyAllLabelsQuery(context: LAContext) -> [String: Any] {
+        [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecReturnAttributes as String: true,
             kSecMatchLimit as String: kSecMatchLimitAll,
             kSecUseAuthenticationContext as String: context
         ]
+    }
+
+    private func fetchLabels(query: [String: Any]) throws -> [String] {
         let (status, result) = copyItem(query as CFDictionary)
         if status == errSecItemNotFound || status == errSecInteractionNotAllowed {
             return []
@@ -143,22 +181,25 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
     public func save(label: String, data: Data, accessControlFlags: SecAccessControlCreateFlags = [.userPresence]) throws {
         let lookup = lookup(label: label, serviceName: serviceName)
 
-        var baseItem = lookup
-        baseItem[kSecValueData as String] = data
-        baseItem[kSecAttrSynchronizable as String] = false
-        baseItem[kSecAttrDescription as String] = "Clavis private key record"
-
         // An empty flag set is reserved for an opaque Secure Enclave reference.
         // The hardware key itself owns the authentication policy; the reference
         // is device-bound metadata and contains no exportable private scalar.
         if accessControlFlags.isEmpty {
-            var referenceAttributes = baseItem
-            referenceAttributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            var saveStatus = updateItem(lookup as CFDictionary, referenceAttributes as CFDictionary)
+            let referenceUpdateAttributes: [String: Any] = [
+                kSecValueData as String: data,
+                kSecAttrSynchronizable as String: false,
+                kSecAttrDescription as String: "Clavis private key record",
+                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            ]
+            var referenceAddAttributes = lookup
+            for (key, value) in referenceUpdateAttributes {
+                referenceAddAttributes[key] = value
+            }
+            var saveStatus = updateItem(lookup as CFDictionary, referenceUpdateAttributes as CFDictionary)
             if saveStatus == errSecItemNotFound {
-                saveStatus = addItem(referenceAttributes as CFDictionary)
+                saveStatus = addItem(referenceAddAttributes as CFDictionary)
                 if saveStatus == errSecDuplicateItem {
-                    saveStatus = updateItem(lookup as CFDictionary, referenceAttributes as CFDictionary)
+                    saveStatus = updateItem(lookup as CFDictionary, referenceUpdateAttributes as CFDictionary)
                 }
             }
             guard saveStatus == errSecSuccess else {
@@ -176,20 +217,21 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
         }
 
         let accessControl = try PrivateKeyAccessControl.make(flags: passwordFlags)
-        var protectedAttributes: [String: Any] = [
+        let protectedUpdateAttributes: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrSynchronizable as String: false,
             kSecAttrDescription as String: "Clavis private key record",
             kSecAttrAccessControl as String: accessControl
         ]
-        var saveStatus = updateItem(lookup as CFDictionary, protectedAttributes as CFDictionary)
+        var saveStatus = updateItem(lookup as CFDictionary, protectedUpdateAttributes as CFDictionary)
         if saveStatus == errSecItemNotFound {
-            for (key, value) in baseItem where protectedAttributes[key] == nil {
-                protectedAttributes[key] = value
+            var protectedAddAttributes = lookup
+            for (key, value) in protectedUpdateAttributes {
+                protectedAddAttributes[key] = value
             }
-            saveStatus = addItem(protectedAttributes as CFDictionary)
+            saveStatus = addItem(protectedAddAttributes as CFDictionary)
             if saveStatus == errSecDuplicateItem {
-                saveStatus = updateItem(lookup as CFDictionary, protectedAttributes as CFDictionary)
+                saveStatus = updateItem(lookup as CFDictionary, protectedUpdateAttributes as CFDictionary)
             }
         }
 
@@ -209,37 +251,97 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
         if !prompt.isEmpty {
             context.localizedReason = prompt
         }
-        let (status, result) = loadItem(label: label, serviceName: serviceName, context: context)
+        let (status, result) = loadItem(baseLookup: lookup(label: label, serviceName: serviceName), context: context)
         if status == errSecSuccess, let data = result as? Data {
             return data
         }
-        guard status == errSecItemNotFound else {
-            throw PrivateKeyStoreError.keychain(status)
+        if status == errSecItemNotFound {
+            if case .dataProtection = scope {
+                return try migrateLegacyItem(label: label, context: context, prompt: prompt)
+            }
+            return nil
         }
-        return nil
+        throw PrivateKeyStoreError.keychain(status)
+    }
+
+    private func migrateLegacyItem(label: String, context: LAContext, prompt: String) throws -> Data? {
+        let legacy = legacyLookup(label: label, serviceName: serviceName)
+        guard var legacyData = try loadOwnedLegacyData(baseLookup: legacy, context: context) else {
+            return nil
+        }
+        defer {
+            legacyData.withUnsafeMutableBytes { ptr in
+                if let baseAddress = ptr.baseAddress {
+                    SecureMemory.zero(baseAddress, byteCount: ptr.count)
+                }
+            }
+            legacyData.removeAll(keepingCapacity: false)
+        }
+
+        // Drain bridged NSData allocations from SecItemAdd/SecItemUpdate before defer wipes legacyData.
+        try autoreleasepool {
+            try save(label: label, data: legacyData, accessControlFlags: [])
+        }
+
+        var deleteQuery = legacy
+        deleteQuery[kSecUseAuthenticationContext as String] = context
+        _ = deleteItem(deleteQuery as CFDictionary)
+
+        return legacyData.withUnsafeBytes { raw -> Data in
+            guard let base = raw.baseAddress, !raw.isEmpty else { return Data() }
+            return Data(bytes: base, count: raw.count)
+        }
+    }
+
+    /// Reads the legacy Keychain item inside an autorelease pool and copies it into a
+    /// uniquely owned Swift `Data` so the bridged `CFData`/`NSData` object is released
+    /// immediately and `defer` zeroing operates on a dedicated buffer without CoW.
+    private func loadOwnedLegacyData(baseLookup: [String: Any], context: LAContext) throws -> Data? {
+        try autoreleasepool {
+            let (status, result) = loadItem(baseLookup: baseLookup, context: context)
+            if status == errSecItemNotFound {
+                return nil
+            }
+            guard status == errSecSuccess, let bridged = result as? Data else {
+                throw PrivateKeyStoreError.keychain(status)
+            }
+            return bridged.withUnsafeBytes { raw -> Data in
+                guard let base = raw.baseAddress, !raw.isEmpty else { return Data() }
+                return Data(bytes: base, count: raw.count)
+            }
+        }
     }
 
     public func remove(label: String, context: LAContext?, prompt: String) throws {
         ClavisLogger.promptDebug("clavis-code", "PrivateKeyStore: removing private key '\(label)' with prompt \"\(prompt)\"")
+        if let context, !prompt.isEmpty {
+            context.localizedReason = prompt
+        }
         var query = lookup(label: label, serviceName: serviceName)
         if let context {
-            if !prompt.isEmpty {
-                context.localizedReason = prompt
-            }
             query[kSecUseAuthenticationContext as String] = context
         }
         let status = deleteItem(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw PrivateKeyStoreError.keychain(status)
         }
+        if case .dataProtection = scope {
+            var legacyQuery = legacyLookup(label: label, serviceName: serviceName)
+            if let context {
+                legacyQuery[kSecUseAuthenticationContext as String] = context
+            }
+            let legacyStatus = deleteItem(legacyQuery as CFDictionary)
+            guard legacyStatus == errSecSuccess || legacyStatus == errSecItemNotFound else {
+                throw PrivateKeyStoreError.keychain(legacyStatus)
+            }
+        }
     }
 
     private func loadItem(
-        label: String,
-        serviceName: String,
+        baseLookup: [String: Any],
         context: LAContext
     ) -> (OSStatus, AnyObject?) {
-        var query = lookup(label: label, serviceName: serviceName)
+        var query = baseLookup
         query.merge([
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
@@ -249,6 +351,10 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
     }
 
     private func lookup(label: String, serviceName: String) -> [String: Any] {
+        scope.applying(to: legacyLookup(label: label, serviceName: serviceName))
+    }
+
+    private func legacyLookup(label: String, serviceName: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,

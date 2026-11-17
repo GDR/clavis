@@ -81,6 +81,23 @@ public struct PublicKeyStore {
     private static var generation: UInt64 = 0
     /// Backing store when `disableKeychainMirrorForTesting` is set.
     private static var memoryOnlyKeys: [String: SSHKeyInfo] = [:]
+    private static var _scopeOverrideForTesting: KeychainScope?
+    internal static var scopeOverrideForTesting: KeychainScope? {
+        get {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return _scopeOverrideForTesting
+        }
+        set {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            _scopeOverrideForTesting = newValue
+        }
+    }
+
+    private static var activeScope: KeychainScope {
+        scopeOverrideForTesting ?? .processDefault
+    }
 
     #if DEBUG
     @TaskLocal public static var testKeychainLoader: (@Sendable () -> [SSHKeyInfo])?
@@ -200,6 +217,7 @@ public struct PublicKeyStore {
         cachedKeys = nil
         cachedAt = .distantPast
         memoryOnlyKeys = [:]
+        _scopeOverrideForTesting = nil
         disableKeychainMirrorForTesting = isRunningUnderXCTest
         #if DEBUG
         forcedSaveErrorForTesting = nil
@@ -211,6 +229,54 @@ public struct PublicKeyStore {
     }
 
     // MARK: - Keychain Public Record Mirroring & Recovery
+
+    internal static func makeLookupQuery(account: String?, scope: KeychainScope) -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: KeychainManager.publicServiceName
+        ]
+        if let account {
+            query[kSecAttrAccount as String] = account
+        }
+        scope.apply(to: &query)
+        return query
+    }
+
+    internal static func makeSaveAttributes(data: Data, scope: KeychainScope) -> [String: Any] {
+        var attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            kSecAttrSynchronizable as String: false,
+            kSecAttrDescription as String: "Clavis public key metadata"
+        ]
+        #if os(macOS)
+        // Legacy login keychain items use SecAccess so CLI/GUI/agent share access without
+        // prompts; Data Protection Keychain uses kSecAttrAccessGroup and rejects kSecAttrAccess.
+        if scope == .legacyLogin {
+            var access: SecAccess?
+            if clavisSecAccessCreate("Clavis public key metadata" as CFString, nil, &access) == errSecSuccess, let access {
+                attributes[kSecAttrAccess as String] = access
+            }
+        }
+        #endif
+        return attributes
+    }
+
+    private static func saveKeyInfo(_ info: SSHKeyInfo, scope: KeychainScope) throws {
+        let data = try JSONEncoder().encode(info)
+        let lookup = makeLookupQuery(account: info.label, scope: scope)
+        let attributes = makeSaveAttributes(data: data, scope: scope)
+        var status = SecItemUpdate(lookup as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            var item = lookup
+            for (key, value) in attributes { item[key] = value }
+            status = SecItemAdd(item as CFDictionary, nil)
+            if status == errSecDuplicateItem {
+                status = SecItemUpdate(lookup as CFDictionary, attributes as CFDictionary)
+            }
+        }
+        guard status == errSecSuccess else { throw PublicKeyStoreError.keychain(status) }
+    }
 
     public static func saveToKeychain(_ info: SSHKeyInfo) {
         try? saveToKeychainChecked(info)
@@ -230,31 +296,7 @@ public struct PublicKeyStore {
             invalidateCache()
             return
         }
-        let data = try JSONEncoder().encode(info)
-        let lookup: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: KeychainManager.publicServiceName,
-            kSecAttrAccount as String: info.label
-        ]
-        var attributes: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-            kSecAttrSynchronizable as String: false,
-            kSecAttrDescription as String: "Clavis public key metadata"
-        ]
-        #if os(macOS)
-        var access: SecAccess?
-        if clavisSecAccessCreate("Clavis public key metadata" as CFString, nil, &access) == errSecSuccess, let access {
-            attributes[kSecAttrAccess as String] = access
-        }
-        #endif
-        var status = SecItemUpdate(lookup as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            var item = lookup
-            for (key, value) in attributes { item[key] = value }
-            status = SecItemAdd(item as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw PublicKeyStoreError.keychain(status) }
+        try saveKeyInfo(info, scope: activeScope)
         invalidateCache()
     }
 
@@ -276,26 +318,48 @@ public struct PublicKeyStore {
             invalidateCache()
             return
         }
-        let lookup: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: KeychainManager.publicServiceName,
-            kSecAttrAccount as String: label
-        ]
+        let scope = activeScope
+        let lookup = makeLookupQuery(account: label, scope: scope)
         let status = SecItemDelete(lookup as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw PublicKeyStoreError.keychain(status)
+        }
+        if case .dataProtection = scope {
+            let legacyLookup = makeLookupQuery(account: label, scope: .legacyLogin)
+            _ = SecItemDelete(legacyLookup as CFDictionary)
         }
         invalidateCache()
     }
 
     public static func loadAllFromKeychain() -> [SSHKeyInfo] {
         guard isKeychainAccessAllowed else { return [] }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: KeychainManager.publicServiceName,
-            kSecReturnAttributes as String: true,
-            kSecMatchLimit as String: kSecMatchLimitAll
-        ]
+        let scope = activeScope
+        let scopedKeys = loadAllFromKeychain(scope: scope)
+        guard case .dataProtection = scope, scopedKeys.isEmpty else {
+            return scopedKeys
+        }
+
+        let legacyKeys = loadAllFromKeychain(scope: .legacyLogin)
+        guard !legacyKeys.isEmpty else {
+            return []
+        }
+
+        for info in legacyKeys {
+            do {
+                try saveKeyInfo(info, scope: scope)
+                let legacyLookup = makeLookupQuery(account: info.label, scope: .legacyLogin)
+                _ = SecItemDelete(legacyLookup as CFDictionary)
+            } catch {
+                // Keep the legacy copy intact if migrating to Data Protection Keychain fails.
+            }
+        }
+        return legacyKeys
+    }
+
+    private static func loadAllFromKeychain(scope: KeychainScope) -> [SSHKeyInfo] {
+        var query = makeLookupQuery(account: nil, scope: scope)
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitAll
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess else { return [] }
@@ -304,13 +368,9 @@ public struct PublicKeyStore {
         let dicts = (result as? [[String: Any]]) ?? (result as? [String: Any]).map { [$0] } ?? []
         for dict in dicts {
             guard let account = dict[kSecAttrAccount as String] as? String else { continue }
-            let itemQuery: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: KeychainManager.publicServiceName,
-                kSecAttrAccount as String: account,
-                kSecReturnData as String: true,
-                kSecMatchLimit as String: kSecMatchLimitOne
-            ]
+            var itemQuery = makeLookupQuery(account: account, scope: scope)
+            itemQuery[kSecReturnData as String] = true
+            itemQuery[kSecMatchLimit as String] = kSecMatchLimitOne
             var itemResult: AnyObject?
             if SecItemCopyMatching(itemQuery as CFDictionary, &itemResult) == errSecSuccess,
                let data = itemResult as? Data,

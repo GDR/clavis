@@ -15,6 +15,7 @@ public final class KeychainAgentPolicyStore: AgentPolicyStoring, @unchecked Send
     public static let configuredIndexAccount = "configured-index"
 
     private let service: String
+    private let scope: KeychainScope
     private let addItem: (CFDictionary) -> OSStatus
     private let deleteItem: (CFDictionary) -> OSStatus
     private let updateItem: (CFDictionary, CFDictionary) -> OSStatus
@@ -24,6 +25,7 @@ public final class KeychainAgentPolicyStore: AgentPolicyStoring, @unchecked Send
 
     public init(
         service: String = KeychainAgentPolicyStore.serviceName,
+        scope: KeychainScope = .processDefault,
         addItem: @escaping (CFDictionary) -> OSStatus = { SecItemAdd($0, nil) },
         deleteItem: @escaping (CFDictionary) -> OSStatus = { SecItemDelete($0) },
         updateItem: @escaping (CFDictionary, CFDictionary) -> OSStatus = { SecItemUpdate($0, $1) },
@@ -34,6 +36,7 @@ public final class KeychainAgentPolicyStore: AgentPolicyStoring, @unchecked Send
         }
     ) {
         self.service = service
+        self.scope = scope
         self.addItem = addItem
         self.deleteItem = deleteItem
         self.updateItem = updateItem
@@ -41,11 +44,11 @@ public final class KeychainAgentPolicyStore: AgentPolicyStoring, @unchecked Send
     }
 
     private func query(account: String) -> [String: Any] {
-        [
+        scope.applying(to: [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
-        ]
+        ])
     }
 
     public func policy(forFingerprint fingerprint: String) throws -> AgentKeyPolicy {

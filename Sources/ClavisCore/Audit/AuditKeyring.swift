@@ -116,6 +116,7 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
     public static let notificationName = NSNotification.Name("com.clavis.auditKeyringChanged")
 
     private let service: String
+    private let scope: KeychainScope
     private let addItem: @Sendable (CFDictionary) -> OSStatus
     private let deleteItem: @Sendable (CFDictionary) -> OSStatus
     private let updateItem: @Sendable (CFDictionary, CFDictionary) -> OSStatus
@@ -123,11 +124,17 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
 
     private let lock = NSLock()
     private var cachedPublicKey: AuditReadPublicKey?
+    private var cachedMode: AuditReadMode?
+    private var cacheGeneration: UInt64 = 0
     private var observer: NSObjectProtocol?
 
-    public convenience init(service: String = KeychainAuditKeyring.defaultService) {
+    public convenience init(
+        service: String = KeychainAuditKeyring.defaultService,
+        scope: KeychainScope = .processDefault
+    ) {
         self.init(
             service: service,
+            scope: scope,
             addItem: { SecItemAdd($0, nil) },
             deleteItem: { SecItemDelete($0) },
             updateItem: { SecItemUpdate($0, $1) },
@@ -139,32 +146,33 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
         )
     }
 
-    private static var isRunningUnderXCTest: Bool {
-        ClavisEnvironment.isTesting
-    }
-
     init(
         service: String,
+        scope: KeychainScope = .processDefault,
         addItem: @escaping @Sendable (CFDictionary) -> OSStatus,
         deleteItem: @escaping @Sendable (CFDictionary) -> OSStatus,
         updateItem: @escaping @Sendable (CFDictionary, CFDictionary) -> OSStatus,
         copyItem: @escaping @Sendable (CFDictionary) -> (OSStatus, AnyObject?)
     ) {
         self.service = service
+        self.scope = scope
         self.addItem = addItem
         self.deleteItem = deleteItem
         self.updateItem = updateItem
         self.copyItem = copyItem
 
-        if !Self.isRunningUnderXCTest {
+        if !ClavisEnvironment.isTesting {
             self.observer = DistributedNotificationCenter.default().addObserver(
                 forName: Self.notificationName,
                 object: nil,
                 queue: nil
             ) { [weak self] _ in
-                self?.lock.lock()
-                self?.cachedPublicKey = nil
-                self?.lock.unlock()
+                guard let self else { return }
+                self.lock.lock()
+                self.cachedPublicKey = nil
+                self.cachedMode = nil
+                self.cacheGeneration &+= 1
+                self.lock.unlock()
             }
         }
     }
@@ -175,12 +183,25 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
         }
     }
 
+    private func baseQuery(account: String? = nil) -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service
+        ]
+        if let account {
+            query[kSecAttrAccount as String] = account
+        }
+        scope.apply(to: &query)
+        return query
+    }
+
     public func currentPublicKey() throws -> AuditReadPublicKey {
         lock.lock()
         if let cached = cachedPublicKey {
             lock.unlock()
             return cached
         }
+        let capturedGeneration = cacheGeneration
         lock.unlock()
 
         guard let curData = readItemData(account: "current") else {
@@ -190,26 +211,25 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
             throw AuditKeyringError.corruptedItem
         }
 
-        let key = try loadKeyItem(keyID: keyID)
+        let (key, mode) = try loadKeyItemWithMode(keyID: keyID)
         lock.lock()
-        cachedPublicKey = key
+        if cacheGeneration == capturedGeneration {
+            cachedPublicKey = key
+            cachedMode = mode
+        }
         lock.unlock()
         return key
     }
 
     private func readItemData(account: String) -> Data? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
+        var query = baseQuery(account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         let (status, result) = copyItem(query as CFDictionary)
         return status == errSecSuccess ? result as? Data : nil
     }
 
-    private func loadKeyItem(keyID: String) throws -> AuditReadPublicKey {
+    private func loadKeyItemWithMode(keyID: String) throws -> (AuditReadPublicKey, AuditReadMode) {
         guard let data = readItemData(account: keyID) else {
             throw AuditKeyringError.keyNotFound(keyID)
         }
@@ -218,7 +238,7 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
               let pubKey = try? P256.KeyAgreement.PublicKey(x963Representation: pubData) else {
             throw AuditKeyringError.corruptedItem
         }
-        return AuditReadPublicKey(keyID: item.keyID, publicKey: pubKey)
+        return (AuditReadPublicKey(keyID: item.keyID, publicKey: pubKey), item.mode)
     }
 
     private func generateAndStoreSEKey(mode: AuditReadMode, context: LAContext? = nil) throws -> (AuditReadPublicKey, String) {
@@ -255,13 +275,9 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
         )
         let itemData = try JSONEncoder().encode(item)
 
-        let itemQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: keyID,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecValueData as String: itemData
-        ]
+        var itemQuery = baseQuery(account: keyID)
+        itemQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        itemQuery[kSecValueData as String] = itemData
         let addStatus = addItem(itemQuery as CFDictionary)
         if addStatus != errSecSuccess && addStatus != errSecDuplicateItem {
             throw AuditKeyringError.keychainError(addStatus)
@@ -276,58 +292,79 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
     }
 
     public func setCurrent(keyID: String) throws {
-        let keyItem = try loadKeyItem(keyID: keyID)
+        lock.lock()
+        do {
+            let (keyItem, mode) = try loadKeyItemWithMode(keyID: keyID)
 
-        let currentQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: "current"
-        ]
-        let updateAttributes: [String: Any] = [
-            kSecValueData as String: Data(keyID.utf8)
-        ]
-        let updateStatus = updateItem(currentQuery as CFDictionary, updateAttributes as CFDictionary)
-        if updateStatus == errSecItemNotFound {
-            var addCurrent = currentQuery
-            addCurrent[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            addCurrent[kSecValueData as String] = Data(keyID.utf8)
-            let addCurStatus = addItem(addCurrent as CFDictionary)
-            if addCurStatus != errSecSuccess {
-                throw AuditKeyringError.keychainError(addCurStatus)
+            let currentQuery = baseQuery(account: "current")
+            let updateAttributes: [String: Any] = [
+                kSecValueData as String: Data(keyID.utf8)
+            ]
+            let updateStatus = updateItem(currentQuery as CFDictionary, updateAttributes as CFDictionary)
+            if updateStatus == errSecItemNotFound {
+                var addCurrent = currentQuery
+                addCurrent[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+                addCurrent[kSecValueData as String] = Data(keyID.utf8)
+                let addCurStatus = addItem(addCurrent as CFDictionary)
+                if addCurStatus != errSecSuccess {
+                    throw AuditKeyringError.keychainError(addCurStatus)
+                }
+            } else if updateStatus != errSecSuccess {
+                throw AuditKeyringError.keychainError(updateStatus)
             }
-        } else if updateStatus != errSecSuccess {
-            throw AuditKeyringError.keychainError(updateStatus)
+
+            cachedPublicKey = keyItem
+            cachedMode = mode
+            cacheGeneration &+= 1
+        } catch {
+            lock.unlock()
+            throw error
         }
+        lock.unlock()
 
         notifyKeyringChanged()
-        lock.lock()
-        cachedPublicKey = keyItem
-        lock.unlock()
     }
 
     public func currentMode() throws -> AuditReadMode {
+        lock.lock()
+        if let cached = cachedMode {
+            lock.unlock()
+            return cached
+        }
+        let capturedGeneration = cacheGeneration
+        lock.unlock()
+
         guard let curData = readItemData(account: "current"),
               let keyID = String(data: curData, encoding: .utf8) else {
+            lock.lock()
+            if cacheGeneration == capturedGeneration {
+                cachedMode = .passwordOrBiometry
+            }
+            lock.unlock()
             return .passwordOrBiometry
         }
         guard let data = readItemData(account: keyID),
               let item = try? JSONDecoder().decode(AuditReadKeyItem.self, from: data) else {
             throw AuditKeyringError.corruptedItem
         }
+
+        lock.lock()
+        if cacheGeneration == capturedGeneration {
+            cachedMode = item.mode
+        }
+        lock.unlock()
         return item.mode
     }
 
     public func deleteKey(keyID: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
         if let curData = readItemData(account: "current"),
            let curID = String(data: curData, encoding: .utf8),
            curID == keyID {
             throw AuditKeyringError.cannotDeleteCurrentKey
         }
-        let delQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: keyID
-        ]
+        let delQuery = baseQuery(account: keyID)
         let status = deleteItem(delQuery as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {
             throw AuditKeyringError.keychainError(status)
@@ -337,30 +374,28 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
     private func createAndSetCurrentKey(mode: AuditReadMode) throws -> AuditReadPublicKey {
         let (pubKey, keyID) = try generateAndStoreSEKey(mode: mode)
 
-        let currentQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: "current",
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecValueData as String: Data(keyID.utf8)
-        ]
+        lock.lock()
+        var currentQuery = baseQuery(account: "current")
+        currentQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        currentQuery[kSecValueData as String] = Data(keyID.utf8)
         let currentStatus = addItem(currentQuery as CFDictionary)
         if currentStatus == errSecDuplicateItem {
-            let delQuery: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: service,
-                kSecAttrAccount as String: keyID
-            ]
+            let delQuery = baseQuery(account: keyID)
             _ = deleteItem(delQuery as CFDictionary)
+            // Release lock before re-entering currentPublicKey() (NSLock is non-reentrant).
+            lock.unlock()
             return try currentPublicKey()
         } else if currentStatus != errSecSuccess {
+            lock.unlock()
             throw AuditKeyringError.keychainError(currentStatus)
         }
 
-        notifyKeyringChanged()
-        lock.lock()
         cachedPublicKey = pubKey
+        cachedMode = mode
+        cacheGeneration &+= 1
         lock.unlock()
+
+        notifyKeyringChanged()
         return pubKey
     }
 
@@ -431,17 +466,15 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
     }
 
     public func knownKeyIDs() throws -> [String] {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecReturnAttributes as String: true,
-            kSecMatchLimit as String: kSecMatchLimitAll
-        ]
+        var query = baseQuery()
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitAll
         let (status, result) = copyItem(query as CFDictionary)
         if status == errSecItemNotFound {
             return []
         }
-        guard status == errSecSuccess, let items = result as? [[String: Any]] else {
+        guard status == errSecSuccess,
+              let items = (result as? [[String: Any]]) ?? (result as? [NSDictionary])?.compactMap({ $0 as? [String: Any] }) else {
             throw AuditKeyringError.keychainError(status)
         }
         return items.compactMap { dict in
@@ -453,7 +486,7 @@ public final class KeychainAuditKeyring: AuditKeyring, @unchecked Sendable {
     }
 
     private func notifyKeyringChanged() {
-        guard !Self.isRunningUnderXCTest else { return }
+        guard !ClavisEnvironment.isTesting else { return }
         DistributedNotificationCenter.default().postNotificationName(
             Self.notificationName,
             object: nil,
