@@ -34,15 +34,29 @@
             dontFixup = true;
 
             installPhase = ''
-              mkdir -p $out/bin
-              cp Clavis $out/bin/clavis
-              cp clavis-agent $out/bin/clavis-agent
-              cp clavis-cli $out/bin/clavis-cli
-              cp -R Clavis_ClavisCore.bundle $out/bin/Clavis_ClavisCore.bundle
+              mkdir -p $out/bin $out/Applications
 
               # Preserve the complete application bundle and its CI signature.
-              mkdir -p $out/Applications
               cp -R Clavis.app $out/Applications/Clavis.app
+
+              # Wrap executables into Clavis.app so Bundle.main.executableURL resolves
+              # inside the bundle for AgentLifecycleManager and Bundle.clavisCore.
+              cat > $out/bin/clavis-cli <<EOF
+              #!/bin/sh
+              exec "$out/Applications/Clavis.app/Contents/Helpers/clavis-cli" "\$@"
+              EOF
+
+              cat > $out/bin/clavis <<EOF
+              #!/bin/sh
+              exec "$out/Applications/Clavis.app/Contents/MacOS/Clavis" "\$@"
+              EOF
+
+              cat > $out/bin/clavis-agent <<EOF
+              #!/bin/sh
+              exec "$out/Applications/Clavis.app/Contents/Helpers/Clavis Agent.app/Contents/MacOS/clavis-agent" "\$@"
+              EOF
+
+              chmod +x $out/bin/clavis $out/bin/clavis-agent $out/bin/clavis-cli
             '';
 
             meta = with pkgs.lib; {
