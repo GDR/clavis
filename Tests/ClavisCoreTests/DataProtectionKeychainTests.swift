@@ -463,6 +463,37 @@ struct DataProtectionKeychainTests {
         #expect(backend.deleteQueries.count == 8)
     }
 
+    @Test func privateKeyStoreLegacyProbeSuppressesPromptUIAndFallsBackOnDenied() throws {
+        for deniedStatus in [errSecInteractionNotAllowed, errSecAuthFailed] {
+            let backend = MockKeychainBackend()
+            let service = "com.clavis.test.legacy-prompt-suppressed"
+            let label = "cross-team-legacy"
+            backend.seed(service: service, account: label, scope: .legacyLogin, data: Data([0xAA]))
+            backend.forcedLegacyCopyStatus = deniedStatus
+
+            let store = makePrivateKeyStore(serviceName: service, scope: Self.dpScope, backend: backend)
+            let loaded = try store.load(label: label, context: LAContext(), prompt: "Authenticate")
+
+            #expect(loaded == nil)
+            #expect(backend.copyQueries.count == 2)
+            assertScopedQuery(backend.copyQueries[0], expectedGroup: Self.testGroup)
+            assertLegacyQuery(backend.copyQueries[1])
+            #expect(backend.copyQueries[1]["u_AuthUI"] as? String == "u_AuthUIS")
+            #expect(backend.storedData(service: service, account: label, scope: Self.dpScope) == nil)
+        }
+    }
+
+    @Test func publicKeyStoreResetsLegacyMigrationFlagOnResetForTesting() {
+        PublicKeyStore.resetForTesting()
+        defer { PublicKeyStore.resetForTesting() }
+
+        #expect(!PublicKeyStore.didAttemptLegacyMigrationForTesting)
+        PublicKeyStore.didAttemptLegacyMigrationForTesting = true
+        #expect(PublicKeyStore.didAttemptLegacyMigrationForTesting)
+        PublicKeyStore.resetForTesting()
+        #expect(!PublicKeyStore.didAttemptLegacyMigrationForTesting)
+    }
+
     // MARK: - In-Memory Hot-Read Caching
 
     @Test func applicationRegistryCachesRepeatedLoadsAndClearsOnFailedSave() throws {
@@ -740,6 +771,7 @@ private final class MockKeychainBackend: @unchecked Sendable {
 
     var forcedAddStatus: OSStatus?
     var forcedUpdateStatus: OSStatus?
+    var forcedLegacyCopyStatus: OSStatus?
 
     var addQueries: [[String: Any]] {
         lock.lock(); defer { lock.unlock() }
@@ -853,6 +885,9 @@ private final class MockKeychainBackend: @unchecked Sendable {
             )
             guard let data = storage[key] else {
                 return (errSecItemNotFound, nil)
+            }
+            if !isDP, let forcedLegacyCopyStatus, (dict[kSecReturnAttributes as String] as? Bool) != true {
+                return (forcedLegacyCopyStatus, nil)
             }
             if (dict[kSecReturnAttributes as String] as? Bool) == true {
                 let attrs: [String: Any] = [kSecAttrAccount as String: account]

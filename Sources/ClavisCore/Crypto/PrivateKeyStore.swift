@@ -298,8 +298,8 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
     /// immediately and `defer` zeroing operates on a dedicated buffer without CoW.
     private func loadOwnedLegacyData(baseLookup: [String: Any], context: LAContext) throws -> Data? {
         try autoreleasepool {
-            let (status, result) = loadItem(baseLookup: baseLookup, context: context)
-            if status == errSecItemNotFound {
+            let (status, result) = loadItem(baseLookup: baseLookup, context: context, suppressUI: true)
+            if status == errSecItemNotFound || status == errSecInteractionNotAllowed || status == errSecAuthFailed {
                 return nil
             }
             guard status == errSecSuccess, let bridged = result as? Data else {
@@ -339,7 +339,8 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
 
     private func loadItem(
         baseLookup: [String: Any],
-        context: LAContext
+        context: LAContext,
+        suppressUI: Bool = false
     ) -> (OSStatus, AnyObject?) {
         var query = baseLookup
         query.merge([
@@ -347,6 +348,11 @@ public final class KeychainPrivateKeyStore: PrivateKeyStoring {
             kSecMatchLimit as String: kSecMatchLimitOne,
             kSecUseAuthenticationContext as String: context
         ]) { _, new in new }
+        if suppressUI {
+            // Suppress legacy SecurityAgent Keychain ACL prompts (`kSecUseAuthenticationUISkip`)
+            // so inaccessible cross-team legacy items fall through to EncryptedVaultStore.
+            query["u_AuthUI"] = "u_AuthUIS"
+        }
         return copyItem(query as CFDictionary)
     }
 
