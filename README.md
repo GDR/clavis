@@ -46,14 +46,11 @@ For local development and relaunching:
 just run debug
 ```
 
-P-256 private keys are generated inside and never leave the Secure Enclave. The opaque Secure Enclave key reference (`dataRepresentation`) is stored in the device-bound Login Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`) and backed up in the encrypted recovery vault (`~/.config/clavis/vault`), whose master key is itself a Secure Enclave key. Hardware access control (`.userPresence` or `.biometryCurrentSet`) is enforced by the Secure Enclave itself without requiring provisioning-restricted Data Protection Keychain entitlements (`keychain-access-groups`), so both local builds and distributed binaries run cleanly without provisioning profiles. Key purpose separation (`general`, `gitSigningOnly`, `agent`), rate limits, and prompt attribution are enforced by Clavis, and key deletion strictly requires user authentication before modifying stores.
-The build script gives every certificate-signed Clavis executable the original
-GUI Code Signing Identifier (`Clavis`), so existing GUI-created records and all
-shipped clients have the same designated requirement. Independently signed or plain
-`swift run` executables are not equivalent Keychain clients. Records created by
-older signatures are copied once, after an authenticated read, to a versioned
-service owned by the current signed client. The old record is retained as a
-recovery fallback and is no longer consulted after the copy succeeds.
+P-256 private keys are generated inside and never leave the Secure Enclave. The opaque Secure Enclave key reference (`dataRepresentation`) is stored in Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`) and backed up in the encrypted recovery vault (`~/.config/clavis/vault`), whose master key is itself a Secure Enclave key. Hardware access control (`.userPresence` or `.biometryCurrentSet`) is enforced by the Secure Enclave itself; key purpose separation (`general`, `gitSigningOnly`, `agent`), rate limits, and prompt attribution are enforced by Clavis, and key deletion strictly requires user authentication before modifying stores.
+
+- **Data Protection Keychain (provisioned builds)**: When matching macOS provisioning profiles for `com.clavis.app` and `com.clavis.agent` (granting `<TEAM_ID>.com.clavis.shared` or `<TEAM_ID>.*`) are available—passed via `CLAVIS_APP_PROVISION_PROFILE` and `CLAVIS_AGENT_PROVISION_PROFILE` or auto-discovered in `packaging/macos/`, `~/Library/Developer/Xcode/UserData/Provisioning Profiles`, or `~/Library/MobileDevice/Provisioning Profiles`—`just sign` embeds `Contents/embedded.provisionprofile` and signs `Clavis.app` and `Clavis Agent.app` with `keychain-access-groups` = `["<TEAM_ID>.com.clavis.shared"]` (pass `CLAVIS_REQUIRE_PROVISIONING=1` to fail closed if missing). At runtime `KeychainScope.processDefault` inspects the process entitlements and stores Clavis items in the macOS Data Protection Keychain (`kSecUseDataProtectionKeychain` + `<TEAM_ID>.com.clavis.shared`), sharing them between `Clavis.app` and `Clavis Agent.app` without legacy `SecAccess` ACL prompts. Legacy Login Keychain private key items are migrated once on authenticated read and removed from the legacy partition after the Data Protection copy succeeds.
+- **Login Keychain fallback (unprovisioned builds)**: When the provisioning profile pair is absent, `just sign` omits provisioning entitlements (`Entitlements.plist`) and signs `Apple Development` / `Developer ID Application` binaries with a Team-OU designated requirement (`identifier "Clavis"` anchored to Apple with `certificate leaf[subject.OU] = "<TEAM_ID>"`). At runtime `KeychainScope.processDefault` automatically falls back to the Login Keychain, where items rely on the shared `Clavis` identifier and Team-OU designated requirement. Independently signed or plain `swift run` executables are not equivalent Keychain clients.
+- **Socket-only `clavis-cli`**: Standalone binaries (`Clavis`, `clavis-agent`, and `Contents/Helpers/clavis-cli`) are always signed without provisioning entitlements. `clavis-cli` does not access Keychain or the recovery vault directly: all key and vault commands (`list`, `export-pub`, `generate`, `kind`, `delete`, `lock`, `vault repair`, `run`) are routed over the `LOCAL_PEERTOKEN`-authenticated personal daemon control socket (`~/.ssh/clavis.sock`), auto-starting `Clavis Agent.app` if needed. Both client and daemon mutually verify peer code identity (`ClavisCodeTrust`, requiring the shared `Clavis` identifier and Team ID in release builds), validate peer process continuity, and serialize mutating/interactive requests through `SigningPromptGate`; the dedicated agent socket (`~/.ssh/clavis-agent.sock`) rejects all control requests.
 
 For an explicitly local, non-distributable build without a certificate, opt in
 to ad-hoc signing with `CLAVIS_ALLOW_ADHOC_SIGNING=1 just`. Helper launch is
@@ -78,8 +75,19 @@ certificate, an explicit Team ID, and Apple notarization:
   `CLAVIS_EXPECTED_TEAM_ID=4G6X3KNZUS` (your 10-character Apple Developer Team ID), and
   `CLAVIS_NOTARIZE=1`, along with the secrets `MACOS_CERTIFICATE_BASE64`, `MACOS_CERTIFICATE_PWD`,
   `NOTARY_KEY_BASE64` (App Store Connect API key `.p8`, base64), `NOTARY_KEY_ID`, and
-  `NOTARY_ISSUER_ID`. You can inspect or populate all of these in one step with
-  `MACOS_CERTIFICATE_PWD='<p12-password>' just ci-signing-setup <DeveloperID.p12> <AuthKey.p8> <KEY_ID> <ISSUER_ID>`.
+  `NOTARY_ISSUER_ID`. To enable Data Protection Keychain in release artifacts, also provide the
+  atomic provisioning profile pair `MACOS_APP_PROVISION_PROFILE_BASE64` (`com.clavis.app`) and
+  `MACOS_AGENT_PROVISION_PROFILE_BASE64` (`com.clavis.agent`). You can inspect or populate all of
+  these in one step with:
+  ```bash
+  MACOS_CERTIFICATE_PWD='<p12-password>' just ci-signing-setup \
+    <DeveloperID.p12> <AuthKey.p8> <KEY_ID> <ISSUER_ID> \
+    [owner/repo] [<Clavis.provisionprofile> <ClavisAgent.provisionprofile>]
+  ```
+- When both `MACOS_APP_PROVISION_PROFILE_BASE64` and `MACOS_AGENT_PROVISION_PROFILE_BASE64` are set,
+  CI stages them, sets `CLAVIS_REQUIRE_PROVISIONING=1`, and embeds them into `Clavis.app` and
+  `Clavis Agent.app` (CI fails closed if only one of the pair is set; if neither is set, CI
+  continues with an unprovisioned release build).
 - CI imports Apple's WWDR G3/G6 and `DeveloperIDG2CA` intermediate certificates into an ephemeral
   keychain, verifies the `Developer ID Application` identity matches `CLAVIS_EXPECTED_TEAM_ID`,
   and signs every binary, resource bundle, helper app, `Clavis.app`, and `.dmg` with secure
@@ -131,6 +139,8 @@ git commit -S -m "signed commit"
 
 ## 🛠 Project Structure
 
-- `Sources/ClavisCore`: Shared engine containing `KeychainManager` and `SSHAgentServer`.
+- `Sources/ClavisCore`: Shared engine containing `KeychainManager`, `KeychainScope`, `EncryptedVaultStore`, `CLIService`, and `SSHAgentServer`.
 - `Sources/Clavis`: Menu Bar status item (`MenuBarExtra`) and SwiftUI Key Management dashboard.
-- `Tests/ClavisTests`: Unit test suite.
+- `Sources/ClavisAgent`: Background SSH agent daemon (`Clavis Agent.app`).
+- `Sources/ClavisCLI`: Socket-only `clavis-cli` executable delegating key and vault operations over `~/.ssh/clavis.sock`.
+- `Tests/ClavisCoreTests`, `Tests/ClavisAppTests`, `Tests/ClavisTestSupport`: Swift Testing unit and integration suites.
