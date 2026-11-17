@@ -27,14 +27,17 @@ extension Bundle {
         enclosingBundleURL: URL? = nil
     ) -> Bundle? {
         let execDir = executableURL?.deletingLastPathComponent()
+        let resolvedExecDir = executableURL?.resolvingSymlinksInPath().deletingLastPathComponent()
         let candidates: [URL?] = [
             // 1. Standard macOS .app bundle: Contents/Resources/ (Clavis.app & Clavis Agent.app)
             resourceURL?.appendingPathComponent(bundleName),
             // 2. Standalone binary directory ($out/bin/) or bundle root
             bundleURL?.appendingPathComponent(bundleName),
             execDir?.appendingPathComponent(bundleName),
+            resolvedExecDir?.appendingPathComponent(bundleName),
             // 3. Nested helper executable inside .app (e.g. Contents/Helpers/clavis-cli -> ../Resources/)
             execDir?.deletingLastPathComponent().appendingPathComponent("Resources/\(bundleName)"),
+            resolvedExecDir?.deletingLastPathComponent().appendingPathComponent("Resources/\(bundleName)"),
             // 4. Sibling to enclosing test/framework bundle (.build/.../ClavisCoreTests.xctest)
             enclosingBundleURL?.deletingLastPathComponent().appendingPathComponent(bundleName)
         ]

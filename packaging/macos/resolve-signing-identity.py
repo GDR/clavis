@@ -1,15 +1,30 @@
 #!/usr/bin/env python3
-"""Resolve an unambiguous macOS code-signing identity and timestamp policy."""
+"""Resolve an unambiguous macOS code-signing identity, provisioning profiles, and timestamp policy."""
 
 from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import os
+from pathlib import Path
+import plistlib
 import re
 import shlex
 import subprocess
 import sys
+import time
+from typing import Any, Callable
+
+APP_BUNDLE_ID = "com.clavis.app"
+AGENT_BUNDLE_ID = "com.clavis.agent"
+SHARED_KEYCHAIN_SUFFIX = "com.clavis.shared"
+DEFAULT_REPO_PROFILE_DIR = Path(__file__).resolve().parent
+DEFAULT_USER_PROFILE_DIRS = (
+    Path.home() / "Library/Developer/Xcode/UserData/Provisioning Profiles",
+    Path.home() / "Library/MobileDevice/Provisioning Profiles",
+)
 
 TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
 SHA1_RE = re.compile(r"^[0-9A-Fa-f]{40}$")
@@ -52,12 +67,35 @@ class SigningIdentity:
 
 
 @dataclass(frozen=True)
+class ProvisioningProfile:
+    path: str
+    uuid: str
+    name: str
+    app_id: str
+    team_ids: tuple[str, ...]
+    cert_sha1s: frozenset[str]
+    keychain_access_groups: tuple[str, ...]
+    platforms: tuple[str, ...]
+    expires_ts: float
+    expires_str: str
+
+
+@dataclass(frozen=True)
 class ResolvedSigning:
     sign_arg: str
     sign_cn: str
     sign_team_id: str
     sign_label: str
     timestamp_flag: str
+    designated_req: str = ""
+
+
+@dataclass(frozen=True)
+class ResolvedProvisioning:
+    mode: str
+    app_profile: str
+    agent_profile: str
+    keychain_access_group: str
 
 
 def parse_openssl_not_after(value: str) -> float:
@@ -178,6 +216,337 @@ def _pick_best(candidates: list[SigningIdentity], preferred_team_id: str) -> Sig
     # Python sort is stable, so ties preserve keychain discovery order.
     ranked = sorted(pool, key=lambda c: c.not_after_ts, reverse=True)
     return ranked[0]
+
+
+def compute_designated_req(sign_arg: str, sign_cn: str, sign_team_id: str) -> str:
+    """Return the team-anchored designated requirement for Apple-rooted identities."""
+    if (
+        sign_arg != "-"
+        and sign_team_id
+        and (
+            sign_cn.startswith("Apple Development")
+            or sign_cn.startswith("Developer ID Application")
+        )
+    ):
+        return (
+            '=designated => identifier "Clavis" and anchor apple generic and '
+            '(certificate 1[field.1.2.840.113635.100.6.2.1] /* exists */ or '
+            'certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */) and '
+            f'certificate leaf[subject.OU] = "{sign_team_id}"'
+        )
+    return ""
+
+
+def is_macos_platform(platforms: tuple[str, ...]) -> bool:
+    """Return True strictly when macOS/OSX is present in the profile Platform list."""
+    lowered = {p.lower() for p in platforms if p}
+    return bool(lowered & {"macos", "osx"})
+
+
+def _normalize_str_tuple(raw: Any) -> tuple[str, ...]:
+    if isinstance(raw, str):
+        return (raw,) if raw else ()
+    if isinstance(raw, (list, tuple)):
+        return tuple(str(item) for item in raw if item)
+    return ()
+
+
+def parse_provisioning_plist(data: dict[str, Any], path: str = "") -> ProvisioningProfile:
+    """Extract normalized metadata and entitlements from a decoded provisioning plist."""
+    if not isinstance(data, dict):
+        raise ResolutionError(f"❌ Provisioning profile '{path or '<plist>'}' did not decode to a dictionary.")
+
+    raw_certs = data.get("DeveloperCertificates")
+    cert_sha1s: set[str] = set()
+    if isinstance(raw_certs, (list, tuple)):
+        for cert in raw_certs:
+            if isinstance(cert, (bytes, bytearray)):
+                cert_sha1s.add(hashlib.sha1(bytes(cert)).hexdigest().upper())
+
+    team_ids = _normalize_str_tuple(data.get("TeamIdentifier"))
+    platforms = _normalize_str_tuple(data.get("Platform"))
+
+    exp = data.get("ExpirationDate")
+    if isinstance(exp, datetime):
+        exp_utc = exp.replace(tzinfo=timezone.utc) if exp.tzinfo is None else exp.astimezone(timezone.utc)
+        expires_ts = exp_utc.timestamp()
+        expires_str = exp_utc.strftime("%Y-%m-%d %H:%M:%SZ")
+    else:
+        expires_ts = 0.0
+        expires_str = "unknown"
+
+    entitlements = data.get("Entitlements")
+    if not isinstance(entitlements, dict):
+        entitlements = {}
+
+    app_id = str(entitlements.get("com.apple.application-identifier") or "")
+    keychain_access_groups = _normalize_str_tuple(entitlements.get("keychain-access-groups"))
+
+    # If UIDeviceFamily is present without a macOS/OSX platform, platforms stays non-macOS and fails matching.
+    return ProvisioningProfile(
+        path=path,
+        uuid=str(data.get("UUID") or ""),
+        name=str(data.get("Name") or ""),
+        app_id=app_id,
+        team_ids=team_ids,
+        cert_sha1s=frozenset(cert_sha1s),
+        keychain_access_groups=keychain_access_groups,
+        platforms=platforms,
+        expires_ts=expires_ts,
+        expires_str=expires_str,
+    )
+
+
+def load_provisioning_profile(path: str, *, explicit: bool = False) -> ProvisioningProfile:
+    """Decode and parse a .provisionprofile using `/usr/bin/security cms -D -i`."""
+    expanded = os.path.expanduser(path)
+    if expanded.lower().endswith(".mobileprovision") and not explicit:
+        raise ResolutionError(f"❌ Refusing iOS '.mobileprovision' profile during macOS auto-discovery: '{expanded}'.")
+    if not os.path.isfile(expanded):
+        raise ResolutionError(f"❌ Provisioning profile not found: '{expanded}'.")
+
+    proc = subprocess.run(
+        ["/usr/bin/security", "cms", "-D", "-i", expanded],
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        detail = proc.stderr.decode("utf-8", errors="replace").strip() if proc.stderr else "invalid CMS envelope"
+        raise ResolutionError(f"❌ Failed to decode provisioning profile '{expanded}': {detail}")
+
+    try:
+        plist_data = plistlib.loads(proc.stdout)
+    except Exception as exc:
+        raise ResolutionError(f"❌ Failed to parse plist inside provisioning profile '{expanded}': {exc}") from exc
+
+    return parse_provisioning_plist(plist_data, path=expanded)
+
+
+def _keychain_group_matches(groups: tuple[str, ...], *, team_id: str, shared_group: str) -> bool:
+    if shared_group in groups:
+        return True
+    # Apple Developer Portal macOS profiles commonly issue `<TEAM_ID>.*` as the keychain-access-groups allowlist.
+    if team_id and shared_group.startswith(f"{team_id}.") and f"{team_id}.*" in groups:
+        return True
+    return False
+
+
+def profile_mismatch_reasons(
+    profile: ProvisioningProfile,
+    *,
+    bundle_id: str,
+    team_id: str,
+    cert_sha1: str,
+    shared_group: str,
+    now_ts: float,
+) -> list[str]:
+    """Return human-readable reasons why `profile` does not match, or empty list if valid."""
+    reasons: list[str] = []
+    if not is_macos_platform(profile.platforms):
+        found = list(profile.platforms) if profile.platforms else ["(missing)"]
+        reasons.append(f"platform {found} is not macOS")
+    if not team_id or team_id not in profile.team_ids:
+        reasons.append(f"TeamIdentifier {list(profile.team_ids) or ['(none)']} does not include '{team_id}'")
+    if not cert_sha1 or cert_sha1.upper() not in profile.cert_sha1s:
+        reasons.append(f"signing cert SHA-1 '{cert_sha1.upper()}' is not in DeveloperCertificates")
+    expected_app_id = f"{team_id}.{bundle_id}" if team_id else bundle_id
+    if profile.app_id != expected_app_id:
+        reasons.append(f"com.apple.application-identifier '{profile.app_id or '(missing)'}' != '{expected_app_id}'")
+    if not _keychain_group_matches(profile.keychain_access_groups, team_id=team_id, shared_group=shared_group):
+        reasons.append(
+            f"keychain-access-groups {list(profile.keychain_access_groups)} does not cover '{shared_group}'"
+        )
+    if profile.expires_ts <= now_ts:
+        reasons.append(f"expired at {profile.expires_str}")
+    return reasons
+
+
+def profile_matches(
+    profile: ProvisioningProfile,
+    *,
+    bundle_id: str,
+    team_id: str,
+    cert_sha1: str,
+    shared_group: str,
+    now_ts: float | None = None,
+) -> bool:
+    """Return True if `profile` satisfies macOS platform, team, cert, app ID, shared keychain, and expiry checks."""
+    check_ts = time.time() if now_ts is None else now_ts
+    return (
+        bool(team_id)
+        and team_id in profile.team_ids
+        and bool(cert_sha1)
+        and cert_sha1.upper() in profile.cert_sha1s
+        and profile.app_id == f"{team_id}.{bundle_id}"
+        and _keychain_group_matches(profile.keychain_access_groups, team_id=team_id, shared_group=shared_group)
+        and profile.expires_ts > check_ts
+        and is_macos_platform(profile.platforms)
+    )
+
+
+def discover_provisioning_profiles(
+    *,
+    repo_dir: Path | None = None,
+    user_dirs: tuple[Path, ...] | list[Path] | None = None,
+) -> list[ProvisioningProfile]:
+    """Discover and parse `.provisionprofile` files from repo-local and Xcode/MobileDevice directories."""
+    repo_base = DEFAULT_REPO_PROFILE_DIR if repo_dir is None else repo_dir
+    search_dirs = DEFAULT_USER_PROFILE_DIRS if user_dirs is None else tuple(user_dirs)
+
+    candidates: list[Path] = [
+        repo_base / "Clavis.provisionprofile",
+        repo_base / "ClavisAgent.provisionprofile",
+    ]
+    for directory in search_dirs:
+        if directory.is_dir():
+            candidates.extend(sorted(directory.glob("*.provisionprofile")))
+
+    profiles: list[ProvisioningProfile] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        real = os.path.realpath(candidate)
+        if real in seen:
+            continue
+        seen.add(real)
+        try:
+            profiles.append(load_provisioning_profile(str(candidate), explicit=False))
+        except ResolutionError:
+            # Skip unreadable/non-macOS stray files during auto-discovery; explicit paths still fail closed.
+            continue
+    return profiles
+
+
+def resolve_provisioning(
+    resolved: ResolvedSigning,
+    *,
+    app_profile: str = "",
+    agent_profile: str = "",
+    require_provisioning: bool = False,
+    discovered_profiles: list[ProvisioningProfile] | None = None,
+    profile_loader: Callable[[str], ProvisioningProfile] | None = None,
+    now_ts: float | None = None,
+) -> ResolvedProvisioning:
+    """Resolve atomic (Clavis.app + Clavis Agent.app) Data Protection provisioning profiles."""
+    check_ts = time.time() if now_ts is None else now_ts
+    app_arg = app_profile.strip()
+    agent_arg = agent_profile.strip()
+    has_explicit_pair = bool(app_arg or agent_arg)
+
+    if has_explicit_pair and (not app_arg or not agent_arg):
+        raise ResolutionError(
+            "❌ Both --app-profile and --agent-profile must be provided together (atomic Data Protection pair)."
+        )
+
+    if resolved.sign_arg == "-" or not resolved.sign_team_id:
+        if has_explicit_pair:
+            raise ResolutionError(
+                "❌ Explicit provisioning profiles require a real signing certificate with a Team ID (cannot use ad-hoc '-')."
+            )
+        if require_provisioning:
+            raise ResolutionError(
+                "❌ CLAVIS_REQUIRE_PROVISIONING=1 requires a real signing identity with a Team ID and matching provisioning profiles."
+            )
+        return ResolvedProvisioning(
+            mode="unprovisioned",
+            app_profile="",
+            agent_profile="",
+            keychain_access_group="",
+        )
+
+    team_id = resolved.sign_team_id
+    cert_sha1 = resolved.sign_arg
+    shared_group = f"{team_id}.{SHARED_KEYCHAIN_SUFFIX}"
+    loader = profile_loader or (lambda path: load_provisioning_profile(path, explicit=True))
+
+    if has_explicit_pair:
+        loaded_app = loader(app_arg)
+        loaded_agent = loader(agent_arg)
+        app_reasons = profile_mismatch_reasons(
+            loaded_app,
+            bundle_id=APP_BUNDLE_ID,
+            team_id=team_id,
+            cert_sha1=cert_sha1,
+            shared_group=shared_group,
+            now_ts=check_ts,
+        )
+        if app_reasons:
+            raise ResolutionError(
+                f"❌ App provisioning profile '{loaded_app.path}' is invalid for {APP_BUNDLE_ID}: {'; '.join(app_reasons)}."
+            )
+        agent_reasons = profile_mismatch_reasons(
+            loaded_agent,
+            bundle_id=AGENT_BUNDLE_ID,
+            team_id=team_id,
+            cert_sha1=cert_sha1,
+            shared_group=shared_group,
+            now_ts=check_ts,
+        )
+        if agent_reasons:
+            raise ResolutionError(
+                f"❌ Agent provisioning profile '{loaded_agent.path}' is invalid for {AGENT_BUNDLE_ID}: {'; '.join(agent_reasons)}."
+            )
+        return ResolvedProvisioning(
+            mode="data-protection",
+            app_profile=loaded_app.path,
+            agent_profile=loaded_agent.path,
+            keychain_access_group=shared_group,
+        )
+
+    profiles = discover_provisioning_profiles() if discovered_profiles is None else discovered_profiles
+    app_matches = [
+        p
+        for p in profiles
+        if profile_matches(
+            p,
+            bundle_id=APP_BUNDLE_ID,
+            team_id=team_id,
+            cert_sha1=cert_sha1,
+            shared_group=shared_group,
+            now_ts=check_ts,
+        )
+    ]
+    agent_matches = [
+        p
+        for p in profiles
+        if profile_matches(
+            p,
+            bundle_id=AGENT_BUNDLE_ID,
+            team_id=team_id,
+            cert_sha1=cert_sha1,
+            shared_group=shared_group,
+            now_ts=check_ts,
+        )
+    ]
+
+    if app_matches and agent_matches:
+        best_app = sorted(app_matches, key=lambda p: p.expires_ts, reverse=True)[0]
+        best_agent = sorted(agent_matches, key=lambda p: p.expires_ts, reverse=True)[0]
+        return ResolvedProvisioning(
+            mode="data-protection",
+            app_profile=best_app.path,
+            agent_profile=best_agent.path,
+            keychain_access_group=shared_group,
+        )
+
+    if require_provisioning:
+        missing_bundles: list[str] = []
+        if not app_matches:
+            missing_bundles.append(APP_BUNDLE_ID)
+        if not agent_matches:
+            missing_bundles.append(AGENT_BUNDLE_ID)
+        raise ResolutionError(
+            "❌ CLAVIS_REQUIRE_PROVISIONING=1 failed: missing or invalid macOS provisioning profile(s) for "
+            f"{', '.join(missing_bundles)} (team={team_id}, cert={cert_sha1}, group={shared_group})."
+        )
+
+    return ResolvedProvisioning(
+        mode="unprovisioned",
+        app_profile="",
+        agent_profile="",
+        keychain_access_group="",
+    )
 
 
 def select_identity(
@@ -309,6 +678,7 @@ def select_identity(
         sign_team_id=chosen.team_id,
         sign_label=_format_label(chosen),
         timestamp_flag=ts_flag,
+        designated_req=compute_designated_req(chosen.sha1, chosen.cn, chosen.team_id),
     )
 
 
@@ -322,8 +692,11 @@ def print_status(
     notarize: bool,
     allow_adhoc: bool,
     timestamp_mode: str,
+    app_profile: str = "",
+    agent_profile: str = "",
+    require_provisioning: bool = False,
 ) -> int:
-    """Print keychain signing diagnostics; return 0 on success or 1 on failure."""
+    """Print keychain signing and Data Protection provisioning diagnostics; return 0 on success or 1 on failure."""
     scope = keychain or "default search list (login + system)"
     target_team = expected_team_id or preferred_team_id
     print(f"Keychain scope:     {scope}")
@@ -357,6 +730,21 @@ def print_status(
         )
         print(f"Active selection:   {resolved.sign_label} ({resolved.timestamp_flag})")
         print(f"codesign --sign:    {resolved.sign_arg}")
+        print(f"Designated req:     {resolved.designated_req or '(default / none)'}")
+
+        provisioning = resolve_provisioning(
+            resolved,
+            app_profile=app_profile,
+            agent_profile=agent_profile,
+            require_provisioning=require_provisioning,
+        )
+        if provisioning.mode == "data-protection":
+            print(f"Data Protection:    enabled ({provisioning.mode}, group: {provisioning.keychain_access_group})")
+            print(f"  App profile:      {provisioning.app_profile}")
+            print(f"  Agent profile:    {provisioning.agent_profile}")
+        else:
+            reason = "ad-hoc / no Team ID" if (resolved.sign_arg == "-" or not resolved.sign_team_id) else "atomic pair not found"
+            print(f"Data Protection:    {provisioning.mode} ({reason}; legacy keychain fallback)")
         return 0
     except ResolutionError as err:
         print(f"\n{err}", file=sys.stderr)
@@ -447,7 +835,264 @@ def run_self_test() -> None:
     assert extract_team_id("CN=Apple Worldwide Developer Relations,OU=G3,O=Apple Inc.") == ""
     assert parse_openssl_not_after("Nov  8 12:45:16 2027 GMT") > parse_openssl_not_after("Sep 20 10:57:40 2027 GMT")
 
-    print("✅ resolve-signing-identity self-tests passed (7/7).")
+    # 8. DESIGNATED_REQ exact values for Apple Development, Developer ID, local custom, and ad-hoc.
+    expected_req = (
+        '=designated => identifier "Clavis" and anchor apple generic and '
+        '(certificate 1[field.1.2.840.113635.100.6.2.1] /* exists */ or '
+        'certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */) and '
+        'certificate leaf[subject.OU] = "4G6X3KNZUS"'
+    )
+    assert r1.designated_req == expected_req, f"unexpected Apple Development DESIGNATED_REQ: {r1.designated_req!r}"
+    assert r2.designated_req == expected_req, f"unexpected Developer ID DESIGNATED_REQ: {r2.designated_req!r}"
+    assert r6.designated_req == "", f"expected empty DESIGNATED_REQ for ad-hoc, got {r6.designated_req!r}"
+    local_custom = SigningIdentity(
+        sha1="4444444444444444444444444444444444444444",
+        cn="Clavis Local Development",
+        team_id="",
+        not_after_ts=1900000000.0,
+        not_after="Mar 18 00:26:40 2030 GMT",
+    )
+    r_local = select_identity([local_custom], preferred_team_id="4G6X3KNZUS")
+    assert r_local.designated_req == "", f"expected empty DESIGNATED_REQ for custom local cert, got {r_local.designated_req!r}"
+
+    # 9. Provisioning plist parsing & UTC ExpirationDate handling.
+    now_ts = 1800000000.0
+    future_dt = datetime(2028, 6, 1, 12, 0, 0)  # naive UTC as returned by plistlib.loads
+    past_dt = datetime(2025, 1, 1, 0, 0, 0)
+    fake_cert_der = b"fake-developer-id-der-cert"
+    fake_cert_sha1 = hashlib.sha1(fake_cert_der).hexdigest().upper()
+    assert fake_cert_sha1 != dev_id_newer.sha1
+
+    parsed_mac = parse_provisioning_plist(
+        {
+            "UUID": "uuid-app-1",
+            "Name": "Clavis macOS App",
+            "TeamIdentifier": ["4G6X3KNZUS"],
+            "Platform": "OSX",
+            "ExpirationDate": future_dt,
+            "DeveloperCertificates": [fake_cert_der],
+            "Entitlements": {
+                "com.apple.application-identifier": "4G6X3KNZUS.com.clavis.app",
+                "keychain-access-groups": ["4G6X3KNZUS.com.clavis.shared"],
+            },
+        },
+        path="/tmp/Clavis.provisionprofile",
+    )
+    assert parsed_mac.platforms == ("OSX",)
+    assert fake_cert_sha1 in parsed_mac.cert_sha1s
+    assert parsed_mac.expires_ts == future_dt.replace(tzinfo=timezone.utc).timestamp()
+
+    parsed_ios = parse_provisioning_plist(
+        {
+            "UUID": "uuid-ios-1",
+            "Name": "iOS Team Provisioning Profile: *",
+            "TeamIdentifier": ["4G6X3KNZUS"],
+            "Platform": ["iOS", "xrOS", "visionOS"],
+            "UIDeviceFamily": [1, 2],
+            "ExpirationDate": future_dt,
+            "DeveloperCertificates": [fake_cert_der],
+            "Entitlements": {
+                "com.apple.application-identifier": "4G6X3KNZUS.com.clavis.app",
+                "keychain-access-groups": ["4G6X3KNZUS.com.clavis.shared"],
+            },
+        },
+        path="/tmp/ios.mobileprovision",
+    )
+    assert not profile_matches(
+        parsed_ios,
+        bundle_id=APP_BUNDLE_ID,
+        team_id="4G6X3KNZUS",
+        cert_sha1=fake_cert_sha1,
+        shared_group="4G6X3KNZUS.com.clavis.shared",
+        now_ts=now_ts,
+    ), "iOS profile must be rejected"
+
+    # Profile with UIDeviceFamily and missing Platform must also be rejected.
+    parsed_no_platform = parse_provisioning_plist(
+        {
+            "UUID": "uuid-no-plat",
+            "Name": "Missing Platform",
+            "TeamIdentifier": ["4G6X3KNZUS"],
+            "UIDeviceFamily": [1],
+            "ExpirationDate": future_dt,
+            "DeveloperCertificates": [fake_cert_der],
+            "Entitlements": {
+                "com.apple.application-identifier": "4G6X3KNZUS.com.clavis.app",
+                "keychain-access-groups": ["4G6X3KNZUS.com.clavis.shared"],
+            },
+        },
+        path="/tmp/noplat.provisionprofile",
+    )
+    assert not profile_matches(
+        parsed_no_platform,
+        bundle_id=APP_BUNDLE_ID,
+        team_id="4G6X3KNZUS",
+        cert_sha1=fake_cert_sha1,
+        shared_group="4G6X3KNZUS.com.clavis.shared",
+        now_ts=now_ts,
+    )
+
+    # 10. Cert SHA-1 mismatch, expired profile, wrong keychain group, and wildcard group checks.
+    app_older = ProvisioningProfile(
+        path="/tmp/Clavis-older.provisionprofile",
+        uuid="u-app-old",
+        name="Clavis App Old",
+        app_id="4G6X3KNZUS.com.clavis.app",
+        team_ids=("4G6X3KNZUS",),
+        cert_sha1s=frozenset({dev_id_newer.sha1}),
+        keychain_access_groups=("4G6X3KNZUS.com.clavis.shared",),
+        platforms=("macOS",),
+        expires_ts=now_ts + 1000.0,
+        expires_str="2027-01-15 08:16:40Z",
+    )
+    app_newer = ProvisioningProfile(
+        path="/tmp/Clavis-newer.provisionprofile",
+        uuid="u-app-new",
+        name="Clavis App New",
+        app_id="4G6X3KNZUS.com.clavis.app",
+        team_ids=("4G6X3KNZUS",),
+        cert_sha1s=frozenset({dev_id_newer.sha1}),
+        keychain_access_groups=("4G6X3KNZUS.*",),
+        platforms=("OSX",),
+        expires_ts=now_ts + 5000.0,
+        expires_str="2027-01-15 09:23:20Z",
+    )
+    agent_valid = ProvisioningProfile(
+        path="/tmp/ClavisAgent.provisionprofile",
+        uuid="u-agent",
+        name="Clavis Agent",
+        app_id="4G6X3KNZUS.com.clavis.agent",
+        team_ids=("4G6X3KNZUS",),
+        cert_sha1s=frozenset({dev_id_newer.sha1}),
+        keychain_access_groups=("4G6X3KNZUS.com.clavis.shared",),
+        platforms=("macOS",),
+        expires_ts=now_ts + 2000.0,
+        expires_str="2027-01-15 08:33:20Z",
+    )
+    agent_expired = ProvisioningProfile(
+        path="/tmp/ClavisAgent-expired.provisionprofile",
+        uuid="u-agent-exp",
+        name="Clavis Agent Expired",
+        app_id="4G6X3KNZUS.com.clavis.agent",
+        team_ids=("4G6X3KNZUS",),
+        cert_sha1s=frozenset({dev_id_newer.sha1}),
+        keychain_access_groups=("4G6X3KNZUS.com.clavis.shared",),
+        platforms=("macOS",),
+        expires_ts=past_dt.replace(tzinfo=timezone.utc).timestamp(),
+        expires_str="2025-01-01 00:00:00Z",
+    )
+    agent_wrong_cert = ProvisioningProfile(
+        path="/tmp/ClavisAgent-wrongcert.provisionprofile",
+        uuid="u-agent-cert",
+        name="Clavis Agent Wrong Cert",
+        app_id="4G6X3KNZUS.com.clavis.agent",
+        team_ids=("4G6X3KNZUS",),
+        cert_sha1s=frozenset({dev_id_older.sha1}),
+        keychain_access_groups=("4G6X3KNZUS.com.clavis.shared",),
+        platforms=("macOS",),
+        expires_ts=now_ts + 2000.0,
+        expires_str="2027-01-15 08:33:20Z",
+    )
+
+    assert not profile_matches(
+        agent_wrong_cert,
+        bundle_id=AGENT_BUNDLE_ID,
+        team_id="4G6X3KNZUS",
+        cert_sha1=dev_id_newer.sha1,
+        shared_group="4G6X3KNZUS.com.clavis.shared",
+        now_ts=now_ts,
+    ), "cert SHA-1 mismatch must be rejected"
+    assert not profile_matches(
+        agent_expired,
+        bundle_id=AGENT_BUNDLE_ID,
+        team_id="4G6X3KNZUS",
+        cert_sha1=dev_id_newer.sha1,
+        shared_group="4G6X3KNZUS.com.clavis.shared",
+        now_ts=now_ts,
+    ), "expired profile must be rejected"
+
+    # 11. Atomic pair auto-discovery picks latest valid pair -> data-protection.
+    prov_ok = resolve_provisioning(
+        r2,
+        discovered_profiles=[parsed_ios, app_older, app_newer, agent_expired, agent_valid],
+        now_ts=now_ts,
+    )
+    assert prov_ok.mode == "data-protection"
+    assert prov_ok.app_profile == app_newer.path
+    assert prov_ok.agent_profile == agent_valid.path
+    assert prov_ok.keychain_access_group == "4G6X3KNZUS.com.clavis.shared"
+
+    # 12. Single profile only -> unprovisioned when optional, error when required.
+    prov_single = resolve_provisioning(
+        r2,
+        discovered_profiles=[app_newer, agent_expired, agent_wrong_cert],
+        require_provisioning=False,
+        now_ts=now_ts,
+    )
+    assert prov_single.mode == "unprovisioned"
+    assert prov_single.app_profile == ""
+    assert prov_single.agent_profile == ""
+    assert prov_single.keychain_access_group == ""
+
+    try:
+        resolve_provisioning(
+            r2,
+            discovered_profiles=[app_newer, agent_expired],
+            require_provisioning=True,
+            now_ts=now_ts,
+        )
+        raise AssertionError("expected ResolutionError when require_provisioning=True and agent profile missing")
+    except ResolutionError as err:
+        assert AGENT_BUNDLE_ID in str(err)
+
+    # 13. Explicit profile enforcement: partial explicit pair or invalid explicit profile fails closed.
+    try:
+        resolve_provisioning(r2, app_profile=app_newer.path, agent_profile="", now_ts=now_ts)
+        raise AssertionError("expected ResolutionError for single explicit --app-profile")
+    except ResolutionError:
+        pass
+
+    profile_map = {
+        app_newer.path: app_newer,
+        agent_valid.path: agent_valid,
+        parsed_ios.path: parsed_ios,
+        agent_expired.path: agent_expired,
+        agent_wrong_cert.path: agent_wrong_cert,
+    }
+    prov_explicit = resolve_provisioning(
+        r2,
+        app_profile=app_newer.path,
+        agent_profile=agent_valid.path,
+        profile_loader=profile_map.__getitem__,
+        now_ts=now_ts,
+    )
+    assert prov_explicit.mode == "data-protection"
+    assert prov_explicit.app_profile == app_newer.path
+    assert prov_explicit.agent_profile == agent_valid.path
+
+    for bad_agent in (parsed_ios.path, agent_expired.path, agent_wrong_cert.path):
+        try:
+            resolve_provisioning(
+                r2,
+                app_profile=app_newer.path,
+                agent_profile=bad_agent,
+                profile_loader=profile_map.__getitem__,
+                now_ts=now_ts,
+            )
+            raise AssertionError(f"expected ResolutionError for invalid explicit agent profile {bad_agent}")
+        except ResolutionError:
+            pass
+
+    # 14. Ad-hoc cannot enable provisioning; fails if require_provisioning=True.
+    prov_adhoc = resolve_provisioning(r6, discovered_profiles=[app_newer, agent_valid], now_ts=now_ts)
+    assert prov_adhoc.mode == "unprovisioned"
+    try:
+        resolve_provisioning(r6, require_provisioning=True, now_ts=now_ts)
+        raise AssertionError("expected ResolutionError for ad-hoc with require_provisioning=True")
+    except ResolutionError:
+        pass
+
+    print("✅ resolve-signing-identity self-tests passed (14/14).")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -459,6 +1104,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--notarize", default="0", help="1 if notarization is enabled")
     parser.add_argument("--allow-adhoc", default="0", help="1 to allow '-' ad-hoc fallback when no cert exists")
     parser.add_argument("--timestamp-mode", default="auto", help="auto | secure | none")
+    parser.add_argument("--app-profile", default="", help="Explicit macOS provisioning profile for com.clavis.app")
+    parser.add_argument("--agent-profile", default="", help="Explicit macOS provisioning profile for com.clavis.agent")
+    parser.add_argument("--require-provisioning", default="0", help="1 to fail if Data Protection provisioning pair is missing")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--shell", action="store_true", help="Emit shell variable assignments (default)")
     mode.add_argument("--status", action="store_true", help="Print diagnostic summary")
@@ -474,6 +1122,7 @@ def main(argv: list[str] | None = None) -> int:
 
     notarize = args.notarize == "1"
     allow_adhoc = args.allow_adhoc == "1"
+    require_provisioning = args.require_provisioning == "1"
     identities = load_identities(args.keychain)
 
     if args.status:
@@ -486,6 +1135,9 @@ def main(argv: list[str] | None = None) -> int:
             notarize=notarize,
             allow_adhoc=allow_adhoc,
             timestamp_mode=args.timestamp_mode,
+            app_profile=args.app_profile,
+            agent_profile=args.agent_profile,
+            require_provisioning=require_provisioning,
         )
 
     try:
@@ -498,6 +1150,12 @@ def main(argv: list[str] | None = None) -> int:
             allow_adhoc=allow_adhoc,
             timestamp_mode=args.timestamp_mode,
         )
+        provisioning = resolve_provisioning(
+            resolved,
+            app_profile=args.app_profile,
+            agent_profile=args.agent_profile,
+            require_provisioning=require_provisioning,
+        )
     except ResolutionError as err:
         print(str(err), file=sys.stderr)
         return 1
@@ -507,6 +1165,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"SIGN_TEAM_ID={shlex.quote(resolved.sign_team_id)}")
     print(f"SIGN_LABEL={shlex.quote(resolved.sign_label)}")
     print(f"TIMESTAMP_FLAG={shlex.quote(resolved.timestamp_flag)}")
+    print(f"PROVISION_MODE={shlex.quote(provisioning.mode)}")
+    print(f"APP_PROVISION_PROFILE={shlex.quote(provisioning.app_profile)}")
+    print(f"AGENT_PROVISION_PROFILE={shlex.quote(provisioning.agent_profile)}")
+    print(f"KEYCHAIN_ACCESS_GROUP={shlex.quote(provisioning.keychain_access_group)}")
+    print(f"DESIGNATED_REQ={shlex.quote(resolved.designated_req)}")
     return 0
 
 

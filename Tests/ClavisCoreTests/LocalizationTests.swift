@@ -486,7 +486,22 @@ import Testing
         )
         #expect(resolvedFromHelper?.bundleURL.standardizedFileURL == expectedAppBundleURL.standardizedFileURL)
 
-        // 3. Standalone Nix / build directory layout ($out/bin/{clavis,Clavis_ClavisCore.bundle})
+        // 3. Symlinked helper executable (e.g. /opt/bin/clavis-cli -> ../Clavis.app/Contents/Helpers/clavis-cli)
+        let helperBinURL = appHelpers.appendingPathComponent("clavis-cli")
+        try Data().write(to: helperBinURL)
+        let symlinkDir = tempRoot.appendingPathComponent("symlink-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: symlinkDir, withIntermediateDirectories: true)
+        let symlinkURL = symlinkDir.appendingPathComponent("clavis-cli")
+        try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: helperBinURL)
+        let resolvedFromSymlink = Bundle.resolveClavisResourceBundle(
+            bundleName: bundleName,
+            resourceURL: nil,
+            bundleURL: symlinkDir,
+            executableURL: symlinkURL
+        )
+        #expect(resolvedFromSymlink?.bundleURL.standardizedFileURL == expectedAppBundleURL.standardizedFileURL)
+
+        // 4. Standalone Nix / build directory layout ($out/bin/{clavis,Clavis_ClavisCore.bundle})
         let binDir = tempRoot.appendingPathComponent("bin", isDirectory: true)
         let expectedBinBundleURL = try makeDummyBundle(at: binDir)
         let resolvedFromBin = Bundle.resolveClavisResourceBundle(

@@ -8,6 +8,9 @@ sign_identity := env_var_or_default("CLAVIS_SIGN_IDENTITY", "")
 team_id := env_var_or_default("CLAVIS_TEAM_ID", "4G6X3KNZUS")
 allow_adhoc := env_var_or_default("CLAVIS_ALLOW_ADHOC_SIGNING", "0")
 expected_team_id := env_var_or_default("CLAVIS_EXPECTED_TEAM_ID", "")
+app_profile := env_var_or_default("CLAVIS_APP_PROVISION_PROFILE", "")
+agent_profile := env_var_or_default("CLAVIS_AGENT_PROVISION_PROFILE", "")
+require_provisioning := env_var_or_default("CLAVIS_REQUIRE_PROVISIONING", "0")
 # auto: secure (Apple-timestamped) signatures for Developer ID builds, none for local builds.
 timestamp_mode := env_var_or_default("CLAVIS_TIMESTAMP", "auto")
 # Set to 1 to notarize and staple release artifacts (requires a Developer ID Application identity).
@@ -134,10 +137,73 @@ sign config=config: (bundle config)
         --expected-team-id "{{ expected_team_id }}" \
         --notarize "{{ notarize }}" \
         --allow-adhoc "{{ allow_adhoc }}" \
-        --timestamp-mode "{{ timestamp_mode }}")"
+        --timestamp-mode "{{ timestamp_mode }}" \
+        --app-profile "{{ app_profile }}" \
+        --agent-profile "{{ agent_profile }}" \
+        --require-provisioning "{{ require_provisioning }}")"
     eval "$resolved"
 
     echo "🔐 Signing binaries with identity: $SIGN_LABEL ($TIMESTAMP_FLAG)..."
+
+    rm -f "$app_bundle/Contents/embedded.provisionprofile" \
+          "$agent_bundle/Contents/embedded.provisionprofile"
+
+    app_ent="$entitlements"
+    agent_ent="$entitlements"
+    expect_provisioned="0"
+    tmp_app_ent=""
+    tmp_agent_ent=""
+
+    cleanup_sign_tmp() {
+        if [ -n "${tmp_app_ent:-}" ]; then rm -f "$tmp_app_ent"; fi
+        if [ -n "${tmp_agent_ent:-}" ]; then rm -f "$tmp_agent_ent"; fi
+    }
+    trap cleanup_sign_tmp EXIT
+
+    write_provisioned_entitlements() {
+        local out_path="$1"
+        local app_identifier="$2"
+        cat > "$out_path" <<PLIST
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+        <key>com.apple.application-identifier</key>
+        <string>$app_identifier</string>
+        <key>com.apple.developer.team-identifier</key>
+        <string>$SIGN_TEAM_ID</string>
+        <key>keychain-access-groups</key>
+        <array>
+            <string>$KEYCHAIN_ACCESS_GROUP</string>
+        </array>
+    </dict>
+    </plist>
+    PLIST
+        /usr/bin/plutil -lint "$out_path" >/dev/null
+    }
+
+    if [ "$PROVISION_MODE" = "data-protection" ]; then
+        if [ -z "$SIGN_TEAM_ID" ] || [ -z "$KEYCHAIN_ACCESS_GROUP" ] || [ -z "$APP_PROVISION_PROFILE" ] || [ -z "$AGENT_PROVISION_PROFILE" ]; then
+            echo "❌ Incomplete Data Protection provisioning resolution." >&2
+            exit 1
+        fi
+        tmp_app_ent="$(mktemp -t clavis-app-entitlements)"
+        tmp_agent_ent="$(mktemp -t clavis-agent-entitlements)"
+        app_ent="$tmp_app_ent"
+        agent_ent="$tmp_agent_ent"
+        expect_provisioned="1"
+
+        write_provisioned_entitlements "$app_ent" "$SIGN_TEAM_ID.com.clavis.app"
+        write_provisioned_entitlements "$agent_ent" "$SIGN_TEAM_ID.com.clavis.agent"
+
+        cp "$APP_PROVISION_PROFILE" "$app_bundle/Contents/embedded.provisionprofile"
+        cp "$AGENT_PROVISION_PROFILE" "$agent_bundle/Contents/embedded.provisionprofile"
+        chmod 0644 "$app_bundle/Contents/embedded.provisionprofile" \
+                   "$agent_bundle/Contents/embedded.provisionprofile"
+        echo "🛡️  Data Protection Keychain enabled (group: $KEYCHAIN_ACCESS_GROUP)"
+    else
+        echo "ℹ️  Data Protection provisioning inactive ($PROVISION_MODE); signing without keychain-access-groups."
+    fi
 
     verify_signature_metadata() {
         local target="$1"
@@ -192,6 +258,8 @@ sign config=config: (bundle config)
     sign_and_verify() {
         local target="$1"
         local is_deep="${2:-0}"
+        local ent_file="${3:-$entitlements}"
+        local target_provisioned="${4:-0}"
 
         if [ ! -e "$target" ]; then
             echo "❌ Target not found: $target" >&2
@@ -205,9 +273,10 @@ sign config=config: (bundle config)
             ${keychain:+--keychain "$keychain"} \
             --sign "$SIGN_ARG" \
             --identifier "Clavis" \
+            ${DESIGNATED_REQ:+--requirements "$DESIGNATED_REQ"} \
             --options runtime \
             "$TIMESTAMP_FLAG" \
-            --entitlements "$entitlements" \
+            --entitlements "$ent_file" \
             "$target"
 
         if [ "$is_deep" = "1" ]; then
@@ -222,7 +291,12 @@ sign config=config: (bundle config)
             echo "❌ Unexpanded \$(AppIdentifierPrefix) found in signed entitlements of $target." >&2
             exit 1
         fi
-        if echo "$signed_ent" | grep -Eq "keychain-access-groups|com.apple.security.application-groups|com.apple.application-identifier"; then
+        if [ "$target_provisioned" = "1" ]; then
+            if ! echo "$signed_ent" | grep -Fq "keychain-access-groups" || ! echo "$signed_ent" | grep -Fq "$KEYCHAIN_ACCESS_GROUP"; then
+                echo "❌ Expected Data Protection keychain-access-groups '$KEYCHAIN_ACCESS_GROUP' in signed entitlements of $target." >&2
+                exit 1
+            fi
+        elif echo "$signed_ent" | grep -Eq "keychain-access-groups|com.apple.security.application-groups|com.apple.application-identifier"; then
             echo "❌ Provisioning-dependent entitlement unexpectedly present in $target." >&2
             exit 1
         fi
@@ -237,20 +311,20 @@ sign config=config: (bundle config)
         sign_resource_bundle "$resource_bundle"
     done
 
-    # Sign standalone CLIs and nested bundle helpers
+    # Sign standalone CLIs and nested bundle helpers (always unprovisioned)
     for binary in "$build_dir/Clavis" \
                   "$build_dir/clavis-agent" \
                   "$build_dir/clavis-cli" \
                   "$app_bundle/Contents/Helpers/clavis-cli"; do
-        sign_and_verify "$binary" 0
+        sign_and_verify "$binary" 0 "$entitlements" "0"
     done
 
     # Sign the nested agent app so macOS can attribute authentication prompts
     # to a bundle with the Clavis icon instead of a generic executable.
-    sign_and_verify "$agent_bundle" 1
+    sign_and_verify "$agent_bundle" 1 "$agent_ent" "$expect_provisioned"
 
     # Sign the top-level Clavis.app bundle
-    sign_and_verify "$app_bundle" 1
+    sign_and_verify "$app_bundle" 1 "$app_ent" "$expect_provisioned"
     echo "✅ Signing and verification complete."
 
 # Create drag-to-install disk image (.dmg)
@@ -284,7 +358,10 @@ dmg config=config: (sign config)
         --expected-team-id "{{ expected_team_id }}" \
         --notarize "{{ notarize }}" \
         --allow-adhoc "1" \
-        --timestamp-mode "{{ timestamp_mode }}")"
+        --timestamp-mode "{{ timestamp_mode }}" \
+        --app-profile "{{ app_profile }}" \
+        --agent-profile "{{ agent_profile }}" \
+        --require-provisioning "{{ require_provisioning }}")"
     eval "$resolved"
 
     if [ "$SIGN_ARG" != "-" ]; then
@@ -402,10 +479,13 @@ signing-status:
         --expected-team-id "{{ expected_team_id }}" \
         --notarize "{{ notarize }}" \
         --allow-adhoc "{{ allow_adhoc }}" \
-        --timestamp-mode "{{ timestamp_mode }}"
+        --timestamp-mode "{{ timestamp_mode }}" \
+        --app-profile "{{ app_profile }}" \
+        --agent-profile "{{ agent_profile }}" \
+        --require-provisioning "{{ require_provisioning }}"
 
 # Inspect or upload GitHub Release signing & notarization configuration (Team {{ team_id }})
-ci-signing-setup p12_path="" notary_p8_path="" notary_key_id="" notary_issuer_id="" repo="GDR/clavis":
+ci-signing-setup p12_path="" notary_p8_path="" notary_key_id="" notary_issuer_id="" repo="GDR/clavis" app_profile_path="" agent_profile_path="":
     #!/usr/bin/env bash
     set -euo pipefail
     repo="{{ repo }}"
@@ -414,6 +494,8 @@ ci-signing-setup p12_path="" notary_p8_path="" notary_key_id="" notary_issuer_id
     notary_p8_path="{{ notary_p8_path }}"
     notary_key_id="{{ notary_key_id }}"
     notary_issuer_id="{{ notary_issuer_id }}"
+    app_profile_path="{{ app_profile_path }}"
+    agent_profile_path="{{ agent_profile_path }}"
 
     if command -v gh >/dev/null 2>&1; then
         echo "🔎 GitHub configuration for $repo (environment: release):"
@@ -429,19 +511,30 @@ ci-signing-setup p12_path="" notary_p8_path="" notary_key_id="" notary_issuer_id
 
     if [ -z "$p12_path" ]; then
         cat <<EOF
-    Next steps to configure Developer ID signing & notarization for team $team:
+    Next steps to configure Developer ID signing, Data Protection provisioning & notarization for team $team:
       1. In Xcode -> Settings -> Accounts -> Damir Garifullin ($team) -> Manage Certificates -> '+' -> Developer ID Application.
          Export that certificate + private key from Keychain Access as DeveloperID.p12.
       2. Create an App Store Connect API Key (https://appstoreconnect.apple.com/access/integrations/api, role Developer or App Manager),
          download AuthKey_<KEY_ID>.p8, and copy <KEY_ID> and <ISSUER_ID>.
-      3. Run:
-         MACOS_CERTIFICATE_PWD='<p12-password>' just ci-signing-setup path/to/DeveloperID.p12 path/to/AuthKey_XXXX.p8 <KEY_ID> <ISSUER_ID>
+      3. In Apple Developer Portal (https://developer.apple.com/account/resources/identifiers/list) for team $team:
+         - Register explicit App IDs 'com.clavis.app' and 'com.clavis.agent' with the Keychain Sharing capability enabled.
+         - Under Profiles -> '+' -> Distribution -> Developer ID (macOS), create one provisioning profile for 'com.clavis.app'
+           (save as Clavis.provisionprofile) and one for 'com.clavis.agent' (save as ClavisAgent.provisionprofile),
+           both tied to your Developer ID Application certificate.
+      4. Run (with optional provisioning profile pair at the end to enable Data Protection Keychain in release CI):
+         MACOS_CERTIFICATE_PWD='<p12-password>' just ci-signing-setup \\
+           path/to/DeveloperID.p12 path/to/AuthKey_XXXX.p8 <KEY_ID> <ISSUER_ID> $repo \\
+           path/to/Clavis.provisionprofile path/to/ClavisAgent.provisionprofile
     EOF
         exit 0
     fi
 
     if [ -z "$notary_p8_path" ] || [ -z "$notary_key_id" ] || [ -z "$notary_issuer_id" ]; then
-        echo "❌ Usage: MACOS_CERTIFICATE_PWD='<pwd>' just ci-signing-setup <p12_path> <notary_p8_path> <notary_key_id> <notary_issuer_id> [repo]" >&2
+        echo "❌ Usage: MACOS_CERTIFICATE_PWD='<pwd>' just ci-signing-setup <p12_path> <notary_p8_path> <notary_key_id> <notary_issuer_id> [repo] [app_profile_path] [agent_profile_path]" >&2
+        exit 1
+    fi
+    if [ -n "$app_profile_path$agent_profile_path" ] && { [ -z "$app_profile_path" ] || [ -z "$agent_profile_path" ]; }; then
+        echo "❌ Both app_profile_path and agent_profile_path must be provided together (atomic Data Protection pair)." >&2
         exit 1
     fi
     if [ ! -f "$p12_path" ]; then
@@ -454,6 +547,14 @@ ci-signing-setup p12_path="" notary_p8_path="" notary_key_id="" notary_issuer_id
     fi
     if ! head -n 1 "$notary_p8_path" | grep -q -- "-----BEGIN PRIVATE KEY-----"; then
         echo "❌ $notary_p8_path does not look like a PKCS#8 .p8 private key." >&2
+        exit 1
+    fi
+    if [ -n "$app_profile_path" ] && [ ! -f "$app_profile_path" ]; then
+        echo "❌ App provisioning profile not found: $app_profile_path" >&2
+        exit 1
+    fi
+    if [ -n "$agent_profile_path" ] && [ ! -f "$agent_profile_path" ]; then
+        echo "❌ Agent provisioning profile not found: $agent_profile_path" >&2
         exit 1
     fi
     if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
@@ -488,12 +589,13 @@ ci-signing-setup p12_path="" notary_p8_path="" notary_key_id="" notary_issuer_id
         exit 1
     fi
 
-    CLAVIS_CERTS_PEM="$certs_pem" /usr/bin/python3 - "$team" << 'PY'
-    import os, re, subprocess, sys
-    team = sys.argv[1]
+    CLAVIS_CERTS_PEM="$certs_pem" /usr/bin/python3 - "$team" "$app_profile_path" "$agent_profile_path" << 'PY'
+    import hashlib, importlib.util, os, re, subprocess, sys, time
+    team, app_profile_path, agent_profile_path = sys.argv[1], sys.argv[2], sys.argv[3]
     pem_all = os.environ["CLAVIS_CERTS_PEM"]
     blocks = re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", pem_all, re.S)
     matched = []
+    matched_sha1s = []
     subjects = []
     for pem in blocks:
         out = subprocess.check_output(
@@ -503,13 +605,59 @@ ci-signing-setup p12_path="" notary_p8_path="" notary_key_id="" notary_issuer_id
         ).strip()
         subjects.append(out)
         if re.search(r"CN=Developer ID Application:", out) and re.search(rf"(?:^|[,/])\s*OU={re.escape(team)}(?:\s*(?:[,/]|$))", out):
+            der = subprocess.check_output(
+                ["/usr/bin/openssl", "x509", "-outform", "DER"],
+                input=pem.encode("utf-8"),
+            )
             matched.append(out)
+            matched_sha1s.append(hashlib.sha1(der).hexdigest().upper())
     if not matched:
         print(f"❌ No 'Developer ID Application' certificate with OU={team} found in .p12.", file=sys.stderr)
         for s in subjects:
             print(f"   Found: {s}", file=sys.stderr)
         sys.exit(1)
     print(f"✅ Verified certificate in .p12: {matched[0]}")
+
+    if app_profile_path and agent_profile_path:
+        spec = importlib.util.spec_from_file_location("resolve_signing", "packaging/macos/resolve-signing-identity.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        now_ts = time.time()
+        shared_group = f"{team}.com.clavis.shared"
+        for label, bundle_id, prof_path in (
+            ("app", "com.clavis.app", app_profile_path),
+            ("agent", "com.clavis.agent", agent_profile_path),
+        ):
+            try:
+                prof = mod.load_provisioning_profile(prof_path, explicit=True)
+            except mod.ResolutionError as err:
+                print(str(err), file=sys.stderr)
+                sys.exit(1)
+            if not any(
+                mod.profile_matches(
+                    prof,
+                    bundle_id=bundle_id,
+                    team_id=team,
+                    cert_sha1=sha1,
+                    shared_group=shared_group,
+                    now_ts=now_ts,
+                )
+                for sha1 in matched_sha1s
+            ):
+                reasons = mod.profile_mismatch_reasons(
+                    prof,
+                    bundle_id=bundle_id,
+                    team_id=team,
+                    cert_sha1=matched_sha1s[0],
+                    shared_group=shared_group,
+                    now_ts=now_ts,
+                )
+                print(
+                    f"❌ Invalid {label} provisioning profile '{prof_path}' for {bundle_id}: {'; '.join(reasons)}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            print(f"✅ Verified {label} provisioning profile: {prof.name or prof.uuid} ({bundle_id})")
     PY
 
     echo "☁️ Updating GitHub environment 'release' on $repo..."
@@ -523,6 +671,11 @@ ci-signing-setup p12_path="" notary_p8_path="" notary_key_id="" notary_issuer_id
     base64 < "$notary_p8_path" | tr -d '\n' | gh secret set NOTARY_KEY_BASE64 --env release -R "$repo"
     printf '%s' "$notary_key_id" | gh secret set NOTARY_KEY_ID --env release -R "$repo"
     printf '%s' "$notary_issuer_id" | gh secret set NOTARY_ISSUER_ID --env release -R "$repo"
+
+    if [ -n "$app_profile_path" ] && [ -n "$agent_profile_path" ]; then
+        base64 < "$app_profile_path" | tr -d '\n' | gh secret set MACOS_APP_PROVISION_PROFILE_BASE64 --env release -R "$repo"
+        base64 < "$agent_profile_path" | tr -d '\n' | gh secret set MACOS_AGENT_PROVISION_PROFILE_BASE64 --env release -R "$repo"
+    fi
 
     echo "✅ GitHub release environment secrets & variables configured for $repo (team $team)."
 

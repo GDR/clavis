@@ -299,6 +299,26 @@ jobs:
           echo "$NOTARY_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/notary.p8"
           echo "CLAVIS_NOTARY_KEY_PATH=$RUNNER_TEMP/notary.p8" >> "$GITHUB_ENV"
 
+      - name: Prepare provisioning profiles
+        env:
+          APP_PROFILE_BASE64: ${{ secrets.MACOS_APP_PROVISION_PROFILE_BASE64 }}
+          AGENT_PROFILE_BASE64: ${{ secrets.MACOS_AGENT_PROVISION_PROFILE_BASE64 }}
+        run: |
+          if [ -n "$APP_PROFILE_BASE64" ] && [ -n "$AGENT_PROFILE_BASE64" ]; then
+            umask 077
+            printf '%s' "$APP_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/Clavis.provisionprofile"
+            printf '%s' "$AGENT_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/ClavisAgent.provisionprofile"
+            echo "CLAVIS_APP_PROVISION_PROFILE=$RUNNER_TEMP/Clavis.provisionprofile" >> "$GITHUB_ENV"
+            echo "CLAVIS_AGENT_PROVISION_PROFILE=$RUNNER_TEMP/ClavisAgent.provisionprofile" >> "$GITHUB_ENV"
+            echo "CLAVIS_REQUIRE_PROVISIONING=1" >> "$GITHUB_ENV"
+            echo "✅ Staged macOS provisioning profile pair for Data Protection signing."
+          elif [ -n "$APP_PROFILE_BASE64" ] || [ -n "$AGENT_PROFILE_BASE64" ]; then
+            echo "❌ Incomplete provisioning profile configuration: both MACOS_APP_PROVISION_PROFILE_BASE64 and MACOS_AGENT_PROVISION_PROFILE_BASE64 must be set together." >&2
+            exit 1
+          else
+            echo "::notice::MACOS_APP_PROVISION_PROFILE_BASE64 and MACOS_AGENT_PROVISION_PROFILE_BASE64 are not set; continuing with unprovisioned release build."
+          fi
+
       - name: Build, Sign, and Package
         env:
           CLAVIS_VERSION: ${{ steps.semver.outputs.version }}
@@ -336,7 +356,7 @@ jobs:
           if [ -n "${KEYCHAIN_PWD_FILE:-}" ]; then
             rm -f "$KEYCHAIN_PWD_FILE"
           fi
-          rm -f "$RUNNER_TEMP/keychain-pwd.txt" "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/AppleWWDRCAG3.cer" "$RUNNER_TEMP/AppleWWDRCAG6.cer" "$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          rm -f "$RUNNER_TEMP/keychain-pwd.txt" "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/AppleWWDRCAG3.cer" "$RUNNER_TEMP/AppleWWDRCAG6.cer" "$RUNNER_TEMP/DeveloperIDG2CA.cer" "$RUNNER_TEMP/Clavis.provisionprofile" "$RUNNER_TEMP/ClavisAgent.provisionprofile"
 
   publish:
     name: Publish Release
