@@ -31,6 +31,7 @@ public final class KeychainPinAttemptStore: PinAttemptStoring, @unchecked Sendab
 
     private let service: String
     private let account: String
+    private let scope: KeychainScope
     private let addItem: @Sendable (CFDictionary) -> OSStatus
     private let deleteItem: @Sendable (CFDictionary) -> OSStatus
     private let updateItem: @Sendable (CFDictionary, CFDictionary) -> OSStatus
@@ -38,11 +39,13 @@ public final class KeychainPinAttemptStore: PinAttemptStoring, @unchecked Sendab
 
     public convenience init(
         service: String = KeychainPinAttemptStore.defaultService,
-        account: String = KeychainPinAttemptStore.defaultAccount
+        account: String = KeychainPinAttemptStore.defaultAccount,
+        scope: KeychainScope = .processDefault
     ) {
         self.init(
             service: service,
             account: account,
+            scope: scope,
             addItem: { SecItemAdd($0, nil) },
             deleteItem: { SecItemDelete($0) },
             updateItem: { SecItemUpdate($0, $1) },
@@ -57,6 +60,7 @@ public final class KeychainPinAttemptStore: PinAttemptStoring, @unchecked Sendab
     init(
         service: String = KeychainPinAttemptStore.defaultService,
         account: String = KeychainPinAttemptStore.defaultAccount,
+        scope: KeychainScope = .processDefault,
         addItem: @escaping @Sendable (CFDictionary) -> OSStatus,
         deleteItem: @escaping @Sendable (CFDictionary) -> OSStatus,
         updateItem: @escaping @Sendable (CFDictionary, CFDictionary) -> OSStatus,
@@ -64,20 +68,25 @@ public final class KeychainPinAttemptStore: PinAttemptStoring, @unchecked Sendab
     ) {
         self.service = service
         self.account = account
+        self.scope = scope
         self.addItem = addItem
         self.deleteItem = deleteItem
         self.updateItem = updateItem
         self.copyItem = copyItem
     }
 
-    public func load() throws -> PinAttemptState {
-        let query: [String: Any] = [
+    private var baseQuery: [String: Any] {
+        scope.applying(to: [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
+            kSecAttrAccount as String: account
+        ])
+    }
+
+    public func load() throws -> PinAttemptState {
+        var query = baseQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         let (status, result) = copyItem(query as CFDictionary)
         if status == errSecItemNotFound {
             throw PinAttemptError.missing
@@ -100,35 +109,29 @@ public final class KeychainPinAttemptStore: PinAttemptStoring, @unchecked Sendab
             throw PinAttemptError.writeFailed
         }
 
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
+        let query = baseQuery
         let updateAttributes: [String: Any] = [
             kSecValueData as String: data
         ]
-        let updateStatus = updateItem(query as CFDictionary, updateAttributes as CFDictionary)
+        var updateStatus = updateItem(query as CFDictionary, updateAttributes as CFDictionary)
         if updateStatus == errSecItemNotFound {
             var addQuery = query
             addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
             addQuery[kSecValueData as String] = data
             let addStatus = addItem(addQuery as CFDictionary)
-            if addStatus != errSecSuccess {
-                throw PinAttemptError.writeFailed
+            if addStatus == errSecDuplicateItem {
+                updateStatus = updateItem(query as CFDictionary, updateAttributes as CFDictionary)
+            } else {
+                updateStatus = addStatus
             }
-        } else if updateStatus != errSecSuccess {
+        }
+        if updateStatus != errSecSuccess {
             throw PinAttemptError.writeFailed
         }
     }
 
     public func delete() throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        let status = deleteItem(query as CFDictionary)
+        let status = deleteItem(baseQuery as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {
             throw PinAttemptError.writeFailed
         }

@@ -759,6 +759,7 @@ public final class KeychainMasterKeyPinStore: MasterKeyPinStoring, @unchecked Se
 
     private let service: String
     private let account: String
+    private let scope: KeychainScope
     private let addItem: @Sendable (CFDictionary) -> OSStatus
     private let deleteItem: @Sendable (CFDictionary) -> OSStatus
     private let updateItem: @Sendable (CFDictionary, CFDictionary) -> OSStatus
@@ -766,11 +767,13 @@ public final class KeychainMasterKeyPinStore: MasterKeyPinStoring, @unchecked Se
 
     public convenience init(
         service: String = KeychainMasterKeyPinStore.serviceName,
-        account: String = KeychainMasterKeyPinStore.accountName
+        account: String = KeychainMasterKeyPinStore.accountName,
+        scope: KeychainScope = .processDefault
     ) {
         self.init(
             service: service,
             account: account,
+            scope: scope,
             addItem: { SecItemAdd($0, nil) },
             deleteItem: { SecItemDelete($0) },
             updateItem: { SecItemUpdate($0, $1) },
@@ -785,6 +788,7 @@ public final class KeychainMasterKeyPinStore: MasterKeyPinStoring, @unchecked Se
     init(
         service: String,
         account: String,
+        scope: KeychainScope = .processDefault,
         addItem: @escaping @Sendable (CFDictionary) -> OSStatus,
         deleteItem: @escaping @Sendable (CFDictionary) -> OSStatus,
         updateItem: @escaping @Sendable (CFDictionary, CFDictionary) -> OSStatus,
@@ -792,20 +796,25 @@ public final class KeychainMasterKeyPinStore: MasterKeyPinStoring, @unchecked Se
     ) {
         self.service = service
         self.account = account
+        self.scope = scope
         self.addItem = addItem
         self.deleteItem = deleteItem
         self.updateItem = updateItem
         self.copyItem = copyItem
     }
 
-    public func loadPin() throws -> Data? {
-        let query: [String: Any] = [
+    private var baseLookup: [String: Any] {
+        scope.applying(to: [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
+            kSecAttrAccount as String: account
+        ])
+    }
+
+    public func loadPin() throws -> Data? {
+        var query = baseLookup
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         let (status, result) = copyItem(query as CFDictionary)
         if status == errSecSuccess, let data = result as? Data {
             return data
@@ -817,11 +826,7 @@ public final class KeychainMasterKeyPinStore: MasterKeyPinStoring, @unchecked Se
     }
 
     public func savePin(_ pin: Data) throws {
-        let lookup: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
+        let lookup = baseLookup
         let attributes: [String: Any] = [
             kSecValueData as String: pin,
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
@@ -843,12 +848,7 @@ public final class KeychainMasterKeyPinStore: MasterKeyPinStoring, @unchecked Se
     }
 
     public func removePin() throws {
-        let lookup: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        let status = deleteItem(lookup as CFDictionary)
+        let status = deleteItem(baseLookup as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw MasterKeyPinStoreError.keychain(status)
         }
