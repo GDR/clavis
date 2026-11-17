@@ -41,6 +41,264 @@ public enum HistoryCheckArgError: Error, Equatable, LocalizedError {
     }
 }
 
+public protocol CLIBackend {
+    func listKeys() throws -> [SSHKeyInfo]
+    func generateKey(
+        label: String,
+        algorithm: String,
+        storageType: KeyStorageType,
+        biometricPolicy: BiometricPolicy?,
+        keyPurpose: KeyPurpose
+    ) throws -> SSHKeyInfo
+    func changeKind(label: String, to newPurpose: KeyPurpose) throws
+    func deleteKey(label: String) throws
+    func lockAll() throws
+    func inspectVaultMasterKey() throws -> VaultMasterKeyInspection
+    func saveVaultMasterKeyPin(
+        expectedPin: Data,
+        replacePin: Bool
+    ) throws
+}
+
+public struct InProcessCLIBackend: CLIBackend {
+    private let keyManager: KeychainManager
+    private let agentLifecycle: AgentLifecycleManager
+    private let vaultStore: EncryptedVaultStore
+
+    public init(
+        keyManager: KeychainManager = .shared,
+        agentLifecycle: AgentLifecycleManager = .shared,
+        vaultStore: EncryptedVaultStore = .shared
+    ) {
+        self.keyManager = keyManager
+        self.agentLifecycle = agentLifecycle
+        self.vaultStore = vaultStore
+    }
+
+    public func listKeys() throws -> [SSHKeyInfo] {
+        try keyManager.listKeys()
+    }
+
+    public func generateKey(
+        label: String,
+        algorithm: String,
+        storageType: KeyStorageType,
+        biometricPolicy: BiometricPolicy?,
+        keyPurpose: KeyPurpose
+    ) throws -> SSHKeyInfo {
+        try keyManager.generateKey(
+            label: label,
+            algorithm: algorithm,
+            storageType: storageType,
+            biometricPolicy: biometricPolicy,
+            keyPurpose: keyPurpose
+        )
+    }
+
+    public func changeKind(label: String, to newPurpose: KeyPurpose) throws {
+        try keyManager.changeKind(label: label, to: newPurpose)
+    }
+
+    public func deleteKey(label: String) throws {
+        try keyManager.deleteKey(label: label)
+    }
+
+    public func lockAll() throws {
+        GitSigningGraceManager.shared.invalidateAll()
+        try agentLifecycle.sendLockAllToAgent()
+    }
+
+    public func inspectVaultMasterKey() throws -> VaultMasterKeyInspection {
+        let pubKey: P256.KeyAgreement.PublicKey
+        let fingerprint: String
+        do {
+            (pubKey, fingerprint) = try vaultStore.verifyMasterKey()
+        } catch {
+            throw VaultInspectionError.verificationFailed(error)
+        }
+
+        let masterKeyURL = vaultStore.vaultDirectoryURL.appendingPathComponent("master.key")
+        let createdAtISO8601: String?
+        if let created = (try? FileManager.default.attributesOfItem(atPath: masterKeyURL.path))?[.creationDate] as? Date {
+            createdAtISO8601 = ISO8601DateFormatter().string(from: created)
+        } else {
+            createdAtISO8601 = nil
+        }
+
+        let expectedPin = Data(SHA256.hash(data: pubKey.rawRepresentation))
+        let existingPin: Data?
+        do {
+            existingPin = try vaultStore.activePinStore.loadPin()
+        } catch {
+            throw VaultInspectionError.readPinFailed(
+                error,
+                fingerprint: fingerprint,
+                createdAtISO8601: createdAtISO8601
+            )
+        }
+
+        return VaultMasterKeyInspection(
+            fingerprint: fingerprint,
+            createdAtISO8601: createdAtISO8601,
+            existingPin: existingPin,
+            expectedPin: expectedPin
+        )
+    }
+
+    public func saveVaultMasterKeyPin(
+        expectedPin: Data,
+        replacePin: Bool
+    ) throws {
+        guard expectedPin.count == 32 else {
+            throw EncryptedVaultStore.VaultError.masterKeyTampered
+        }
+        let (pubKey, _) = try vaultStore.verifyMasterKey()
+        let serverExpectedPin = Data(SHA256.hash(data: pubKey.rawRepresentation))
+        guard expectedPin == serverExpectedPin else {
+            throw EncryptedVaultStore.VaultError.masterKeyTampered
+        }
+        if let existingPin = try vaultStore.activePinStore.loadPin(),
+           existingPin != serverExpectedPin,
+           !replacePin {
+            throw EncryptedVaultStore.VaultError.masterKeyTampered
+        }
+        try vaultStore.activePinStore.savePin(serverExpectedPin)
+    }
+}
+
+public struct SocketCLIBackend: CLIBackend {
+    private let agentLifecycle: AgentLifecycleManager
+
+    public init(agentLifecycle: AgentLifecycleManager = .shared) {
+        self.agentLifecycle = agentLifecycle
+    }
+
+    private func ensureDaemonAvailable() throws {
+        agentLifecycle.ensureAgentRunning()
+        guard agentLifecycle.isAgentRunning else {
+            throw AgentLifecycleError.agentControlFailed("Clavis SSH Agent daemon is not running and could not be started.")
+        }
+    }
+
+    private func unwrap<T>(_ response: CLIControlResponse, extract: (CLIControlResponse) -> T?) throws -> T {
+        if case .failure(let message) = response {
+            throw CLIControlClientError.remoteFailure(message)
+        }
+        guard let value = extract(response) else {
+            throw CLIControlClientError.unexpectedResponse
+        }
+        return value
+    }
+
+    public func listKeys() throws -> [SSHKeyInfo] {
+        try ensureDaemonAvailable()
+        let response = try agentLifecycle.sendCLIControl(.listKeys)
+        return try unwrap(response) {
+            if case .keys(let keys) = $0 { return keys }
+            return nil
+        }
+    }
+
+    public func generateKey(
+        label: String,
+        algorithm: String,
+        storageType: KeyStorageType,
+        biometricPolicy: BiometricPolicy?,
+        keyPurpose: KeyPurpose
+    ) throws -> SSHKeyInfo {
+        try ensureDaemonAvailable()
+        let response = try agentLifecycle.sendCLIControl(
+            .generateKey(
+                label: label,
+                algorithm: algorithm,
+                storageType: storageType,
+                biometricPolicy: biometricPolicy,
+                keyPurpose: keyPurpose
+            )
+        )
+        return try unwrap(response) {
+            if case .key(let info) = $0 { return info }
+            return nil
+        }
+    }
+
+    public func changeKind(label: String, to newPurpose: KeyPurpose) throws {
+        try ensureDaemonAvailable()
+        let response = try agentLifecycle.sendCLIControl(.changeKind(label: label, newPurpose: newPurpose))
+        _ = try unwrap(response) {
+            if case .ok = $0 { return () }
+            return nil
+        }
+    }
+
+    public func deleteKey(label: String) throws {
+        try ensureDaemonAvailable()
+        let response = try agentLifecycle.sendCLIControl(.deleteKey(label: label))
+        _ = try unwrap(response) {
+            if case .ok = $0 { return () }
+            return nil
+        }
+    }
+
+    public func lockAll() throws {
+        try agentLifecycle.sendLockAllToAgent()
+    }
+
+    public func inspectVaultMasterKey() throws -> VaultMasterKeyInspection {
+        try ensureDaemonAvailable()
+        let response = try agentLifecycle.sendCLIControl(.inspectVaultMasterKey)
+        return try unwrap(response) {
+            if case .vaultInspection(let inspection) = $0 { return inspection }
+            return nil
+        }
+    }
+
+    public func saveVaultMasterKeyPin(
+        expectedPin: Data,
+        replacePin: Bool
+    ) throws {
+        try ensureDaemonAvailable()
+        let response = try agentLifecycle.sendCLIControl(
+            .saveVaultMasterKeyPin(
+                expectedPin: expectedPin,
+                replacePin: replacePin
+            )
+        )
+        _ = try unwrap(response) {
+            if case .ok = $0 { return () }
+            return nil
+        }
+    }
+}
+
+private enum CLIControlClientError: LocalizedError {
+    case remoteFailure(String)
+    case unexpectedResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .remoteFailure(let message):
+            return message
+        case .unexpectedResponse:
+            return "Unexpected response from Clavis SSH Agent daemon."
+        }
+    }
+}
+
+private enum VaultInspectionError: LocalizedError {
+    case verificationFailed(Error)
+    case readPinFailed(Error, fingerprint: String, createdAtISO8601: String?)
+
+    var errorDescription: String? {
+        switch self {
+        case .verificationFailed(let error):
+            return error.localizedDescription
+        case .readPinFailed(let error, _, _):
+            return error.localizedDescription
+        }
+    }
+}
+
 public struct CLIService {
     public static func handle(
         args: [String],
@@ -49,6 +307,43 @@ public struct CLIService {
         vaultStore: EncryptedVaultStore = .shared,
         isTTY: Bool = (isatty(STDIN_FILENO) != 0),
         confirmationPrompt: (() -> String?)? = nil
+    ) -> CLICommandResult? {
+        let backend = InProcessCLIBackend(
+            keyManager: keyManager,
+            agentLifecycle: agentLifecycle,
+            vaultStore: vaultStore
+        )
+        return handleWithBackend(
+            args: args,
+            backend: backend,
+            agentLifecycle: agentLifecycle,
+            isTTY: isTTY,
+            confirmationPrompt: confirmationPrompt
+        )
+    }
+
+    public static func handleSocketOnly(
+        args: [String],
+        agentLifecycle: AgentLifecycleManager = .shared,
+        isTTY: Bool = (isatty(STDIN_FILENO) != 0),
+        confirmationPrompt: (() -> String?)? = nil
+    ) -> CLICommandResult? {
+        let backend = SocketCLIBackend(agentLifecycle: agentLifecycle)
+        return handleWithBackend(
+            args: args,
+            backend: backend,
+            agentLifecycle: agentLifecycle,
+            isTTY: isTTY,
+            confirmationPrompt: confirmationPrompt
+        )
+    }
+
+    private static func handleWithBackend(
+        args: [String],
+        backend: any CLIBackend,
+        agentLifecycle: AgentLifecycleManager,
+        isTTY: Bool,
+        confirmationPrompt: (() -> String?)?
     ) -> CLICommandResult? {
         guard args.count > 1 else { return nil }
 
@@ -71,7 +366,7 @@ public struct CLIService {
             let algorithm = "ECDSA P-256"
             let policy: BiometricPolicy? = isCurrentSet ? .biometryCurrentSet : .userPresence
             do {
-                let info = try keyManager.generateKey(
+                let info = try backend.generateKey(
                     label: label,
                     algorithm: algorithm,
                     storageType: storage,
@@ -85,7 +380,7 @@ public struct CLIService {
 
         case .list:
             do {
-                let keys = try keyManager.listKeys()
+                let keys = try backend.listKeys()
                 let lines = formatKeyListEntries(keys: keys)
                 return CLICommandResult(exitCode: 0, output: lines.joined(separator: "\n"))
             } catch {
@@ -102,16 +397,15 @@ public struct CLIService {
             }
 
             do {
-                try keyManager.changeKind(label: label, to: newPurpose)
+                try backend.changeKind(label: label, to: newPurpose)
                 return CLICommandResult(exitCode: 0, output: CLIMessages.successfullyChangedKind(label: label, newPurpose: newPurpose))
             } catch {
                 return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.failedToChangeKind(error: error))
             }
 
         case .lock:
-            GitSigningGraceManager.shared.invalidateAll()
             do {
-                try agentLifecycle.sendLockAllToAgent()
+                try backend.lockAll()
                 return CLICommandResult(exitCode: 0, output: CLIMessages.lockedAll)
             } catch {
                 return CLICommandResult(exitCode: 1, output: "", error: "Lock failed: \(error.localizedDescription)")
@@ -124,7 +418,7 @@ public struct CLIService {
             let label = args[2].trimmingCharacters(in: .whitespaces)
             ClavisLogger.promptDebug("clavis-cli", "CLIService: delete key '\(label)' requested")
             do {
-                try keyManager.deleteKey(label: label)
+                try backend.deleteKey(label: label)
                 return CLICommandResult(exitCode: 0, output: CLIMessages.successfullyDeleted(label: label))
             } catch {
                 return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.failedToDelete(error: error))
@@ -136,7 +430,7 @@ public struct CLIService {
             }
             let label = args[2].trimmingCharacters(in: .whitespaces)
             do {
-                let keys = try keyManager.listKeys()
+                let keys = try backend.listKeys()
                 guard let match = keys.first(where: { $0.label == label }) else {
                     return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.keyNotFound(label: label))
                 }
@@ -171,34 +465,34 @@ public struct CLIService {
                 )
             }
 
-            let pubKey: P256.KeyAgreement.PublicKey
-            let fingerprint: String
+            let inspection: VaultMasterKeyInspection
             do {
-                (pubKey, fingerprint) = try vaultStore.verifyMasterKey()
+                inspection = try backend.inspectVaultMasterKey()
+            } catch VaultInspectionError.readPinFailed(let error, let fingerprint, let createdAtISO8601) {
+                var partialLines = ["Master key fingerprint: \(fingerprint)"]
+                if let createdAtISO8601 {
+                    partialLines.append("master.key created: \(createdAtISO8601)")
+                }
+                ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt failed reading Keychain pin: \(error.localizedDescription)")
+                return CLICommandResult(
+                    exitCode: 1,
+                    output: partialLines.joined(separator: "\n"),
+                    error: "Failed to read Keychain pin: \(error.localizedDescription)"
+                )
             } catch {
                 ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt failed during verification: \(error.localizedDescription)")
                 return CLICommandResult(exitCode: 1, output: "", error: "Failed to verify vault master key: \(error.localizedDescription)")
             }
 
             var outputLines: [String] = []
-            outputLines.append("Master key fingerprint: \(fingerprint)")
+            outputLines.append("Master key fingerprint: \(inspection.fingerprint)")
             // The Secure Enclave check in verifyMasterKey proves the key is usable, not that it is the
             // original one. The creation date is a second signal the owner can compare with memory.
-            let masterKeyURL = vaultStore.vaultDirectoryURL.appendingPathComponent("master.key")
-            if let created = (try? FileManager.default.attributesOfItem(atPath: masterKeyURL.path))?[.creationDate] as? Date {
-                outputLines.append("master.key created: \(ISO8601DateFormatter().string(from: created))")
+            if let created = inspection.createdAtISO8601 {
+                outputLines.append("master.key created: \(created)")
             }
 
-            let expectedPin = Data(SHA256.hash(data: pubKey.rawRepresentation))
-            let existingPin: Data?
-            do {
-                existingPin = try vaultStore.activePinStore.loadPin()
-            } catch {
-                ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt failed reading Keychain pin: \(error.localizedDescription)")
-                return CLICommandResult(exitCode: 1, output: outputLines.joined(separator: "\n"), error: "Failed to read Keychain pin: \(error.localizedDescription)")
-            }
-
-            if let existingPin, existingPin != expectedPin {
+            if let existingPin = inspection.existingPin, existingPin != inspection.expectedPin {
                 // The pin is SHA-256(master.pub), so it renders in the same format as `fingerprint`
                 // and can be compared with it directly.
                 let pinnedFingerprint = EncryptedVaultStore.fingerprint(forPin: existingPin)
@@ -213,15 +507,15 @@ public struct CLIService {
                 }
                 outputLines.append("WARNING: Replacing existing mismatched vault master key pin in Keychain!")
                 outputLines.append("If you do not recognize the master key fingerprint above, do not confirm: master.key may have been replaced.")
-                ClavisLogger.log("SECURITY_ALERT", "Vault repair replacing pin \(pinnedFingerprint) with \(fingerprint).")
+                ClavisLogger.log("SECURITY_ALERT", "Vault repair replacing pin \(pinnedFingerprint) with \(inspection.fingerprint).")
             }
 
             let confirmed: Bool
-            ClavisLogger.promptDebug("clavis-cli", "CLIService: displaying vault repair confirmation prompt (fingerprint: \(fingerprint))")
+            ClavisLogger.promptDebug("clavis-cli", "CLIService: displaying vault repair confirmation prompt (fingerprint: \(inspection.fingerprint))")
             if let confirmationPrompt {
                 confirmed = confirmationPrompt()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "yes"
             } else {
-                print("Repair vault master key pin for fingerprint \(fingerprint)? Type 'yes' to confirm: ", terminator: "")
+                print("Repair vault master key pin for fingerprint \(inspection.fingerprint)? Type 'yes' to confirm: ", terminator: "")
                 fflush(stdout)
                 let input = readLine(strippingNewline: true)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 confirmed = (input == "yes")
@@ -234,8 +528,11 @@ public struct CLIService {
             }
 
             do {
-                try vaultStore.activePinStore.savePin(expectedPin)
-                ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt succeeded: master key pin restored (fingerprint: \(fingerprint)).")
+                try backend.saveVaultMasterKeyPin(
+                    expectedPin: inspection.expectedPin,
+                    replacePin: replacePin
+                )
+                ClavisLogger.log("SECURITY_ALERT", "Vault repair attempt succeeded: master key pin restored (fingerprint: \(inspection.fingerprint)).")
                 outputLines.append("Vault master key pin successfully repaired.")
                 return CLICommandResult(exitCode: 0, output: outputLines.joined(separator: "\n"))
             } catch {
@@ -246,7 +543,7 @@ public struct CLIService {
         case .run:
             return handleRun(
                 args: Array(args.dropFirst(2)),
-                keyManager: keyManager,
+                backend: backend,
                 agentLifecycle: agentLifecycle
             )
 
@@ -458,7 +755,7 @@ public struct CLIService {
 
     private static func handleRun(
         args: [String],
-        keyManager: KeychainManager,
+        backend: any CLIBackend,
         agentLifecycle: AgentLifecycleManager
     ) -> CLICommandResult {
         let options: AgentRunOptions
@@ -473,7 +770,12 @@ public struct CLIService {
             return CLICommandResult(exitCode: 1, output: "", error: AgentRunError.agentNotRunning.localizedDescription)
         }
 
-        let keys = (try? keyManager.listKeys()) ?? []
+        let keys: [SSHKeyInfo]
+        do {
+            keys = try backend.listKeys()
+        } catch {
+            return CLICommandResult(exitCode: 1, output: "", error: CLIMessages.failedToList(error: error))
+        }
         let key: SSHKeyInfo
         do {
             key = try AgentRunner.chooseKey(options.keyLabel, keys: keys)
