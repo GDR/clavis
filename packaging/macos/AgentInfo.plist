@@ -20,7 +20,7 @@
     <string>@VERSION@</string>
     <key>CFBundleVersion</key>
     <string>@BUILD_VERSION@</string>
-    <key>LSBackgroundOnly</key>
+    <key>LSUIElement</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
