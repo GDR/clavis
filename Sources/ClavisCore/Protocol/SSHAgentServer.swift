@@ -118,6 +118,7 @@ public class SSHAgentServer {
         agentSessions: AgentSessionRegistry = .shared,
         agentPolicies: AgentPolicyStoring = KeychainAgentPolicyStore(),
         authenticator: UserAuthenticating = LocalUserAuthenticator(),
+        signingPromptPresenter: SigningPromptAuthenticating? = nil,
         notificationPoster: @escaping (String, [String: String]) -> Void = { name, userInfo in
             DistributedNotificationCenter.default().postNotificationName(
                 NSNotification.Name(name),
@@ -165,6 +166,7 @@ public class SSHAgentServer {
             auditRecorder: auditRecorder,
             agentPolicies: agentPolicies,
             authenticator: authenticator,
+            signingPromptPresenter: signingPromptPresenter,
             notificationPoster: notificationPoster,
             peerProcessValidator: resolvedPeerValidator
         )
@@ -224,6 +226,10 @@ public class SSHAgentServer {
 
     public func stop() {
         socketServer.stop()
+    }
+
+    public func setSigningPromptPresenter(_ presenter: SigningPromptAuthenticating?) {
+        signingPolicyEvaluator.setSigningPromptPresenter(presenter)
     }
 
     internal func reserveClientSlot(clientPid: pid_t? = nil, clientExecutablePath: String? = nil) -> Bool {

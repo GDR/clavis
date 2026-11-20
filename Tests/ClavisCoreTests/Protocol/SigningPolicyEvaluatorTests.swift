@@ -1,6 +1,7 @@
 import Testing
 import CryptoKit
 import Foundation
+import LocalAuthentication
 @testable import ClavisCore
 @testable import ClavisTestSupport
 
@@ -277,5 +278,198 @@ final class SigningPolicyEvaluatorTests {
             ),
             "World-writable binary in Nix store must be rejected"
         )
+    }
+
+    // MARK: - SigningPromptAuthenticating Seam Tests
+
+    private final class MockSigningPromptPresenter: SigningPromptAuthenticating, @unchecked Sendable {
+        private let lock = NSLock()
+        private(set) var requests: [SigningAuthenticationRequest] = []
+        private(set) var issuedContexts: [TrackableLAContext] = []
+        var nextScope: KeyGracePeriod = .always
+        var errorToThrow: Error?
+
+        func authenticateSigningRequest(_ request: SigningAuthenticationRequest) throws -> SigningAuthenticationOutcome {
+            lock.lock()
+            requests.append(request)
+            let err = errorToThrow
+            let scope = nextScope
+            lock.unlock()
+            if let err {
+                throw err
+            }
+            let ctx = TrackableLAContext()
+            lock.lock()
+            issuedContexts.append(ctx)
+            lock.unlock()
+            return SigningAuthenticationOutcome(context: ctx, selectedScope: scope)
+        }
+    }
+
+    private struct UncertainApplicationAccess: ApplicationRequestAuthorizing {
+        private let revision = UUID()
+        func authorize(key: SSHKeyInfo, operation: KeyOperation, role: AgentSocketRole, pid: pid_t, path: String, start: UInt64) throws -> ApplicationRequestLease {
+            .init(eligibility: .authenticatedOnceOnly, revision: revision, caller: nil)
+        }
+        func validate(_ lease: ApplicationRequestLease, pid: pid_t, path: String, start: UInt64) throws -> Bool { true }
+    }
+
+    @Test
+    func test_signingPromptPresenter_authenticatedOnceOnly_usesPresenterAndSkipsFallback() async throws {
+        try await fixture.run {
+            let fallbackAuth = CountingAuthenticator()
+            let keyMgr = fixture.makeKeyManager(authenticator: fallbackAuth, gitSigningGraceManager: graceManager)
+            let presenter = MockSigningPromptPresenter()
+            let uncertainEval = SigningPolicyEvaluator(
+                applicationAccess: UncertainApplicationAccess(),
+                keyManager: keyMgr,
+                gitSigningGraceManager: graceManager,
+                auditRecorder: recorder,
+                authenticator: fallbackAuth,
+                signingPromptPresenter: presenter,
+                peerProcessValidator: { _, _, _ in true }
+            )
+            let keyInfo = try keyMgr.generateKey(label: "github-ssh-key")
+            let pid = getpid()
+            let start = ProcessInspector.processStartTime(pid: pid) ?? 0
+            let decision = try uncertainEval.evaluateSigningRequest(
+                keyBlob: keyInfo.publicKeyBlob,
+                dataToSign: Data("ssh-userauth-challenge".utf8),
+                flags: 0,
+                role: .personal,
+                clientPid: pid,
+                clientExecutablePath: "/usr/bin/ssh",
+                clientStartTime: start
+            )
+
+            guard case .approved(let sig) = decision else {
+                Issue.record("Expected approved SSH signature via SigningPromptAuthenticating")
+                return
+            }
+            #expect(!sig.isEmpty)
+            #expect(fallbackAuth.authenticationCount == 0, "Fallback system modal must not run when presenter is wired")
+            #expect(presenter.requests.count == 1)
+            #expect(presenter.requests.first?.isUncertainCaller == true)
+            #expect(presenter.requests.first?.allowsSessionScope == false)
+            #expect(presenter.requests.first?.operation == .ssh)
+            #expect(presenter.requests.first?.operationLabel == "Authenticate with SSH")
+            #expect(presenter.requests.first?.peerPath == "/usr/bin/ssh")
+            #expect(presenter.issuedContexts.first?.isInvalidated == true)
+        }
+    }
+
+    @Test
+    func test_signingPromptPresenter_eligibleSSHAndGitBurst_singlePromptAndCancelHandling() async throws {
+        try await fixture.run {
+            let fallbackAuth = CountingAuthenticator()
+            let keyMgr = fixture.makeKeyManager(authenticator: fallbackAuth, gitSigningGraceManager: graceManager)
+            let presenter = MockSigningPromptPresenter()
+            let eval = SigningPolicyEvaluator(
+                applicationAccess: TestApplicationAccess(),
+                keyManager: keyMgr,
+                gitSigningGraceManager: graceManager,
+                auditRecorder: recorder,
+                authenticator: fallbackAuth,
+                signingPromptPresenter: presenter,
+                peerProcessValidator: { _, _, _ in true }
+            )
+            let keyInfo = try keyMgr.generateKey(label: "eligible-presenter-key")
+            let pid = getpid()
+            let realPath = ProcessInspector.getProcessPath(pid: pid) ?? "/usr/bin/git"
+            let start = ProcessInspector.processStartTime(pid: pid) ?? 0
+
+            // 1. Eligible SSH request
+            let sshDecision = try eval.evaluateSigningRequest(
+                keyBlob: keyInfo.publicKeyBlob,
+                dataToSign: Data("ssh-auth".utf8),
+                flags: 0,
+                role: .personal,
+                clientPid: pid,
+                clientExecutablePath: "/usr/bin/ssh",
+                clientStartTime: start
+            )
+            guard case .approved = sshDecision else {
+                Issue.record("Expected approved eligible SSH request")
+                return
+            }
+            #expect(presenter.requests.count == 1)
+            #expect(presenter.requests.last?.allowsSessionScope == false)
+            #expect(presenter.requests.last?.operation == .ssh)
+
+            // 2. Git commit #1 -> single-shot prompt
+            let gitPayload = SSHSIGPayload(
+                namespace: "git",
+                hashAlgorithm: "sha256",
+                messageHash: Data(repeating: 0x22, count: 32)
+            ).serialize()
+            let commit1 = try eval.evaluateSigningRequest(
+                keyBlob: keyInfo.publicKeyBlob,
+                dataToSign: gitPayload,
+                flags: 0,
+                role: .personal,
+                clientPid: pid,
+                clientExecutablePath: realPath,
+                clientStartTime: start
+            )
+            guard case .approved = commit1 else {
+                Issue.record("Expected approved Git commit #1")
+                return
+            }
+            #expect(presenter.requests.count == 2)
+            #expect(presenter.requests.last?.allowsSessionScope == false)
+            #expect(presenter.requests.last?.operationLabel == "Sign a Git commit")
+
+            // 3. Git commit #2 within 30s -> unified 1-step session prompt creates grant without second auth
+            presenter.nextScope = .fifteenMinutes
+            let commit2 = try eval.evaluateSigningRequest(
+                keyBlob: keyInfo.publicKeyBlob,
+                dataToSign: gitPayload,
+                flags: 0,
+                role: .personal,
+                clientPid: pid,
+                clientExecutablePath: realPath,
+                clientStartTime: start
+            )
+            guard case .approved = commit2 else {
+                Issue.record("Expected approved Git commit #2 with 15-min grant")
+                return
+            }
+            #expect(presenter.requests.count == 3)
+            #expect(presenter.requests.last?.allowsSessionScope == true)
+            #expect(fallbackAuth.authenticationCount == 0)
+
+            // 4. Git commit #3 uses active grant with 0 extra prompts
+            let commit3 = try eval.evaluateSigningRequest(
+                keyBlob: keyInfo.publicKeyBlob,
+                dataToSign: gitPayload,
+                flags: 0,
+                role: .personal,
+                clientPid: pid,
+                clientExecutablePath: realPath,
+                clientStartTime: start
+            )
+            guard case .approved = commit3 else {
+                Issue.record("Expected approved Git commit #3 via active grant")
+                return
+            }
+            #expect(presenter.requests.count == 3, "Commit #3 must reuse the active Git grant without prompting")
+            #expect(recorder.events.last?.reason == .viaGitGrant)
+
+            // 5. User cancellation maps to .denied and .cancelled audit result
+            presenter.errorToThrow = UserAuthenticationError.rejected(LAError(.userCancel))
+            let cancelled = try eval.evaluateSigningRequest(
+                keyBlob: keyInfo.publicKeyBlob,
+                dataToSign: Data("ssh-cancel".utf8),
+                flags: 0,
+                role: .personal,
+                clientPid: pid,
+                clientExecutablePath: "/usr/bin/ssh",
+                clientStartTime: start
+            )
+            #expect(cancelled == .denied)
+            #expect(recorder.events.last?.result == .cancelled)
+            #expect(recorder.events.last?.reason == .userCancelled)
+            #expect(fallbackAuth.authenticationCount == 0)
+        }
     }
 }
