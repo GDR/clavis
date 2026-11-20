@@ -35,8 +35,9 @@ enum HistoryText {
     static var loadingEvents: String { ClavisUIStrings.History.loadingEvents }
 }
 
-/// Fixed header region of History: search row, applied badges and the matching count.
-/// Everything here sits in the safe-area bar; only the results scroll beneath it.
+/// S09.filters: the live filter controls — search field plus calendar/sort — sized to sit INSIDE
+/// the sticky 52pt History toolbar row, beside the "History" title (one line, never a row below).
+/// Applied badges, diagnostics and the matching count live in `HistoryFilterSummary` underneath.
 struct HistoryFilterHeader: View {
     @ObservedObject var viewModel: HistoryViewModel
     @ObservedObject var ui: HistoryUIState
@@ -44,54 +45,18 @@ struct HistoryFilterHeader: View {
     static let horizontalInset: CGFloat = 20
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                HistorySearchBar(viewModel: viewModel, ui: ui)
+        HStack(spacing: 8) {
+            HistorySearchBar(viewModel: viewModel, ui: ui)
 
-                AdaptiveGlassEffectContainer(spacing: 8) {
-                    calendarButton
-                    sortButton
-                }
+            AdaptiveGlassEffectContainer(spacing: 8) {
+                calendarButton
+                sortButton
             }
-            .padding(.top, 4)
-
-            if let error = viewModel.draftError {
-                Text(error.message)
-                    .font(.system(size: 11))
-                    .foregroundColor(.red)
-                    .padding(.top, 6)
-                    .padding(.leading, 11)
-                    .accessibilityLabel(error.message)
-            }
-
-            HistoryBadgeRow(viewModel: viewModel)
-
-            Text(countText)
-                .font(.system(size: 12).monospacedDigit())
-                .foregroundColor(DesignTokens.textSecondary)
-                .help(viewModel.filter.needsSensitiveScan && viewModel.unreadableScanned > 0 ? HistoryText.unreadableHelp : "")
-                .padding(.top, 10)
-                .padding(.bottom, 10)
-                .accessibilityLabel(countText)
         }
-        .padding(.horizontal, Self.horizontalInset)
+        .frame(maxWidth: .infinity)
     }
 
-    private var countText: String {
-        if viewModel.isLoading && viewModel.records.isEmpty { return HistoryText.loadingEvents }
-        var text: String
-        if let total = viewModel.totalMatching {
-            text = HistoryText.matchingCount(total)
-        } else {
-            text = HistoryText.matchingSoFar(viewModel.records.count)
-        }
-        if viewModel.filter.needsSensitiveScan, viewModel.unreadableScanned > 0 {
-            text += " · " + HistoryText.unreadable(viewModel.unreadableScanned)
-        }
-        return text
-    }
-
-    // MARK: Calendar & Sort — same native control size as History/Settings above
+    // MARK: Calendar & Sort — same native control size as the toolbar controls
 
     private func binding(for surface: HistorySurface) -> Binding<Bool> {
         Binding(
@@ -133,6 +98,51 @@ struct HistoryFilterHeader: View {
         .popover(isPresented: binding(for: .sort), arrowEdge: .bottom) {
             HistorySortPopover(viewModel: viewModel, onChosen: { ui.dismiss() })
         }
+    }
+}
+
+/// Pinned companion to the toolbar row: draft diagnostics, applied filter badges and the matching
+/// count. Still part of the safe-area bar; only the results scroll beneath it.
+struct HistoryFilterSummary: View {
+    @ObservedObject var viewModel: HistoryViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let error = viewModel.draftError {
+                Text(error.message)
+                    .font(.system(size: 11))
+                    .foregroundColor(.red)
+                    .padding(.top, 6)
+                    .padding(.leading, 11)
+                    .accessibilityLabel(error.message)
+            }
+
+            HistoryBadgeRow(viewModel: viewModel)
+
+            Text(countText)
+                .font(.system(size: 12).monospacedDigit())
+                .foregroundColor(DesignTokens.textSecondary)
+                .help(viewModel.filter.needsSensitiveScan && viewModel.unreadableScanned > 0 ? HistoryText.unreadableHelp : "")
+                .padding(.top, 10)
+                .padding(.bottom, 10)
+                .accessibilityLabel(countText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, HistoryFilterHeader.horizontalInset)
+    }
+
+    private var countText: String {
+        if viewModel.isLoading && viewModel.records.isEmpty { return HistoryText.loadingEvents }
+        var text: String
+        if let total = viewModel.totalMatching {
+            text = HistoryText.matchingCount(total)
+        } else {
+            text = HistoryText.matchingSoFar(viewModel.records.count)
+        }
+        if viewModel.filter.needsSensitiveScan, viewModel.unreadableScanned > 0 {
+            text += " · " + HistoryText.unreadable(viewModel.unreadableScanned)
+        }
+        return text
     }
 }
 

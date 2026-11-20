@@ -167,15 +167,18 @@ public struct KeyDetailInspectorView: View {
     public var onToggleHistory: (() -> Void)?
 
     @Environment(\.headerCenterOffset) private var headerCenterOffset
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @StateObject private var applicationsModel: ApplicationSettingsModel
 
     @State private var isRenaming: Bool = false
     @State private var draftKeyName: String = ""
     @State private var showingDeleteAlert: Bool = false
     @State private var showingRotateInfoAlert: Bool = false
+    @State private var showingPolicyGuidance: Bool = false
     @State private var changePurposeError: String? = nil
     @State private var showingChangePurposeError: Bool = false
     @State private var lastActivityDate: Date? = nil
+    @State private var lastActivityCaller: String? = nil
 
     @State private var copiedPublicKey: Bool = false
     @State private var copiedFingerprint: Bool = false
@@ -242,7 +245,7 @@ public struct KeyDetailInspectorView: View {
             : "Touch ID, Apple Watch, or your Mac password."
     }
 
-    private var isBotKey: Bool {
+    private var isAgentKey: Bool {
         key.effectiveAccessProfile.type == .bot
     }
 
@@ -278,7 +281,7 @@ public struct KeyDetailInspectorView: View {
     }
 
     private var displayedApplications: [RegisteredApplication] {
-        if isBotKey {
+        if isAgentKey {
             return applicationsModel.applications
         } else {
             return applicationsModel.applications.filter { $0.classification == .block }
@@ -340,7 +343,7 @@ public struct KeyDetailInspectorView: View {
                 confirmationSection
                 accessSection
                 recentActivitySection
-                dangerZoneSection
+                keyLifecycleSection
             }
             .id("inspectorTop")
             .padding(.horizontal, 28)
@@ -364,14 +367,14 @@ public struct KeyDetailInspectorView: View {
             await applicationsModel.load()
         }
         .onAppear {
-            lastActivityDate = appState.lastActivityDate(for: key)
+            refreshLastActivity()
         }
         .onChange(of: key.id) { _ in
             isRenaming = false
             isRemoveMode = false
             expandedAppIds.removeAll()
             selectedForRemoval.removeAll()
-            lastActivityDate = appState.lastActivityDate(for: key)
+            refreshLastActivity()
         }
         .alert(Self.deleteConfirmationTitle(label: key.label), isPresented: $showingDeleteAlert) {
             Button(ClavisUIStrings.Common.delete, role: .destructive) {
@@ -389,6 +392,11 @@ public struct KeyDetailInspectorView: View {
         } message: {
             Text("Key rotation will generate a replacement Secure Enclave keypair and keep existing policy grants.")
         }
+        .alert("Change confirmation policy", isPresented: $showingPolicyGuidance) {
+            Button(ClavisUIStrings.Common.ok, role: .cancel) {}
+        } message: {
+            Text("The confirmation policy is fixed at creation. Rotate “\(key.label)” to create a replacement key with a different policy.")
+        }
         .alert(ClavisUIStrings.Common.error, isPresented: $showingChangePurposeError) {
             Button(ClavisUIStrings.Common.ok, role: .cancel) {}
         } message: {
@@ -396,16 +404,14 @@ public struct KeyDetailInspectorView: View {
         }
     }
 
-    // MARK: - Prominent Header
+    // MARK: - Integrated Detail Toolbar (S03.toolbar)
 
-    /// One row on the traffic-light line: key icon, title, History. The band is exactly the control
-    /// height plus equal top/bottom padding, so the scroll-edge material sits symmetrically around it.
+    /// One unified 52pt band on the traffic-light midline: key tile, title + exception-only status
+    /// pill, owner/last-used subtitle, and a single trailing ⋯ action control.
     private var prominentHeader: some View {
         HStack(alignment: .center, spacing: 12) {
             identityRow
-            if let onToggleHistory {
-                ProminentHistoryButton(isActive: false, action: onToggleHistory)
-            }
+            overflowMenu
         }
         .padding(.horizontal, 28)
         .frame(height: KeyListView.toolbarHeight)
@@ -414,64 +420,177 @@ public struct KeyDetailInspectorView: View {
 
     private var identityRow: some View {
         HStack(alignment: .center, spacing: 12) {
-            keyTile(size: 36, cornerRadius: 9, iconSize: 22)
+            keyTile(size: 36, cornerRadius: 9, iconSize: 18)
 
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 1) {
                 if isRenaming {
                     InlineKeyRenameField(
                         text: $draftKeyName,
                         onCommit: commitInlineRename,
                         onCancel: cancelInlineRename
                     )
-                    .frame(height: 24, alignment: .leading)
+                    .frame(height: 20, alignment: .leading)
                     .overlay(alignment: .bottom) {
                         Rectangle()
-                            .fill(DesignTokens.accentBlue)
+                            .fill(Color.accentColor)
                             .frame(height: 1)
                     }
                     .accessibilityLabel("Key name")
                 } else {
-                    HStack(spacing: 7) {
+                    HStack(spacing: 8) {
                         Text(key.label)
-                            .font(.system(size: 20, weight: .bold))
+                            .font(.system(size: 18, weight: .bold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                             .truncationMode(.tail)
 
                         Button(action: beginInlineRename) {
                             Image(systemName: "pencil")
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(DesignTokens.textSecondary)
                         }
                         .buttonStyle(.plain)
                         .help("Rename \(key.label)")
                         .accessibilityLabel("Rename \(key.label)")
+
+                        // Exception-only status pill: Disabled is the only non-nominal badge.
+                        if !isKeyEnabled {
+                            Text("Disabled")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(DesignTokens.textSecondary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(DesignTokens.cardBackground))
+                                .overlay(Capsule().strokeBorder(DesignTokens.cardBorder, lineWidth: 1))
+                                .fixedSize()
+                        }
                     }
-                    .frame(height: 24, alignment: .leading)
+                    .frame(height: 20, alignment: .leading)
                 }
 
+                Text(toolbarSubtitle)
+                    .font(.system(size: 12))
+                    .foregroundStyle(DesignTokens.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            // The removed visible caption stays available to assistive technology.
             .accessibilityElement(children: .contain)
-            .accessibilityValue(heroSubtitleText)
+            .accessibilityValue(toolbarSubtitle)
         }
     }
 
-    /// Type/storage/disabled summary, exposed only as an accessibility value (no visible caption).
-    private var heroSubtitleText: String {
-        var parts: [String] = [
-            isBotKey ? "Bot" : "Personal",
-            "Secure Enclave"
-        ]
-        if !isKeyEnabled {
-            parts.append("Disabled")
+    /// S03.hero.subtitle: owner profile + last used only (purpose/storage live in the form below).
+    private var toolbarSubtitle: String {
+        Self.toolbarSubtitle(isAgentKey: isAgentKey, lastUsed: lastUsedSummary)
+    }
+
+    private var lastUsedSummary: String? {
+        guard let date = lastActivityDate else { return nil }
+        let calendar = Calendar.current
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "HH:mm"
+        var text: String
+        if calendar.isDateInToday(date) {
+            text = timeFormatter.string(from: date)
+        } else if calendar.isDateInYesterday(date) {
+            text = "Yesterday \(timeFormatter.string(from: date))"
+        } else {
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateStyle = .medium
+            dateFormatter.timeStyle = .none
+            text = "\(dateFormatter.string(from: date)) \(timeFormatter.string(from: date))"
         }
-        return parts.joined(separator: " · ")
+        if let caller = lastActivityCaller, !caller.isEmpty {
+            text += " · \(caller)"
+        }
+        return text
+    }
+
+    /// S03.toolbar.more: the only trailing control (D-39): Connect & Test… plus key actions.
+    private var overflowMenu: some View {
+        Menu {
+            Button {
+                appState.connectTarget = key
+                appState.activeSheet = .connect
+            } label: {
+                Label("Connect & Test…", systemImage: "arrow.triangle.2.circlepath")
+            }
+            Button {
+                copyOpenSSHWithFeedback()
+            } label: {
+                Label("Copy Public Key", systemImage: "doc.on.doc")
+            }
+            Button {
+                toggleKeyEnabled()
+            } label: {
+                Label(isKeyEnabled ? "Disable" : "Enable", systemImage: isKeyEnabled ? "pause.circle" : "play.circle")
+            }
+            Divider()
+            Button {
+                rotateKey()
+            } label: {
+                Label("Rotate…", systemImage: "arrow.triangle.2.circlepath")
+            }
+            Button(role: .destructive) {
+                showingDeleteAlert = true
+            } label: {
+                Label("Delete…", systemImage: "trash")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 16.5, weight: .medium))
+                .foregroundStyle(.primary)
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .frame(width: KeyListView.actionControlHeight, height: KeyListView.actionControlHeight)
+        .modifier(CapsuleGlassBackground(isActive: false, isHovered: false, reduceTransparency: reduceTransparency))
+        .help("Key actions")
+        .accessibilityLabel("Key actions")
+    }
+
+    private func toggleKeyEnabled() {
+        if isKeyEnabled {
+            changeProfile(capabilities: KeyCapabilities(ssh: false, signature: false))
+        } else {
+            changeProfile(capabilities: KeyCapabilities(ssh: true, signature: true))
+        }
+    }
+
+    private func rotateKey() {
+        if let onShowToast {
+            onShowToast("Key rotation will be connected in ClavisCore")
+        } else {
+            showingRotateInfoAlert = true
+        }
+    }
+
+    /// Latest signing event for the subtitle: time plus requesting app when it can be read.
+    private func refreshLastActivity() {
+        lastActivityDate = appState.lastActivityDate(for: key)
+        lastActivityCaller = nil
+        var query = AuditQuery()
+        query.keyFingerprint = key.fingerprint
+        query.limit = 1
+        guard let store = try? AuditStore(),
+              let record = (try? store.query(query))?.first else { return }
+        let unsealer = AuditUnsealer(
+            keyring: HistoryViewModel.makeDefaultKeyring(),
+            store: store,
+            context: PanelLockController.shared.unlockContext
+        )
+        if case .plaintext(let sens) = unsealer.open(record),
+           let caller = sens.callerName, !caller.isEmpty {
+            lastActivityCaller = caller
+        }
     }
 
     private func keyTile(size: CGFloat, cornerRadius: CGFloat, iconSize: CGFloat) -> some View {
-        let gradientColors: [Color] = isBotKey
+        let gradientColors: [Color] = isAgentKey
             ? [Color(red: 0.69, green: 0.35, blue: 0.94), Color(red: 0.54, green: 0.22, blue: 0.82)]
             : [Color(red: 0.12, green: 0.58, blue: 1.0), Color(red: 0.0, green: 0.45, blue: 0.96)]
 
@@ -486,7 +605,7 @@ public struct KeyDetailInspectorView: View {
                 )
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
-            Image(systemName: isBotKey ? "cpu" : "person.fill")
+            Image(systemName: isAgentKey ? "cpu" : "person.fill")
                 .font(.system(size: iconSize, weight: .semibold))
                 .foregroundStyle(.white)
         }
@@ -499,7 +618,7 @@ public struct KeyDetailInspectorView: View {
             Image(systemName: "pause.circle.fill")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(DesignTokens.accentOrange)
-            Text("This key is disabled. All SSH and Git signing requests are refused.")
+            Text("This key is disabled. Nothing can sign with it.")
                 .font(.system(size: 12.5))
                 .foregroundStyle(.primary)
             Spacer()
@@ -539,17 +658,7 @@ public struct KeyDetailInspectorView: View {
 
     private var publicKeySection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                sectionHeaderTitle("Public Key")
-                Spacer()
-                Button(action: addToGitHub) {
-                    Text("Add to GitHub…")
-                        .font(.system(size: 12, weight: .regular))
-                        .foregroundStyle(DesignTokens.accentBlue)
-                }
-                .buttonStyle(.plain)
-                .help("Copy public key and open GitHub SSH settings")
-            }
+            sectionHeaderTitle("Public Key")
 
             VStack(spacing: 0) {
                 // Row 1: OpenSSH Public Key
@@ -613,27 +722,7 @@ public struct KeyDetailInspectorView: View {
 
                 insetDivider
 
-                // Storage and algorithm (full detail moved out of the compact header)
-                HStack(spacing: 12) {
-                    Text("Algorithm")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.primary)
-
-                    Spacer(minLength: 12)
-
-                    Text("Secure Enclave (\(key.algorithm))")
-                        .font(.system(size: 12))
-                        .foregroundStyle(DesignTokens.textSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .textSelection(.enabled)
-                }
-                .padding(.horizontal, 12)
-                .frame(minHeight: 38)
-
-                insetDivider
-
-                // Row 4: Public key file
+                // Row 3: Public key file
                 HStack(spacing: 12) {
                     Text("Public key file")
                         .font(.system(size: 13))
@@ -662,36 +751,79 @@ public struct KeyDetailInspectorView: View {
                 .frame(minHeight: 38)
             }
             .modifier(SettingsGroupCardModifier())
+
+            // S03.public-key.footnote: storage guarantee lives here, not in the toolbar subtitle.
+            Text(Self.publicKeyStorageFootnote)
+                .font(.system(size: 11.5))
+                .foregroundStyle(DesignTokens.textSecondary)
+                .padding(.horizontal, 2)
         }
     }
 
     // MARK: - Section 2: Confirmation
 
     private var confirmationSection: some View {
-        let profile = key.effectiveAccessProfile
+        let policy = key.effectiveBiometricPolicy
+        let period = appState.gracePeriod(for: key)
         return VStack(alignment: .leading, spacing: 8) {
             sectionHeaderTitle("Confirmation")
 
             VStack(spacing: 0) {
-                // Row 1: Key profile
-                HStack(spacing: 12) {
-                    Text("Key profile")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.primary)
-
-                    Spacer(minLength: 12)
-
-                    settingsPopupLabel(profile.type.title)
+                // Row 1: Confirmation policy (D-40: how you prove presence)
+                confirmationRow(
+                    label: "Confirmation policy",
+                    sublabel: "How you prove presence when a prompt fires"
+                ) {
+                    settingsPopupLabel(policy.title)
                         .overlay {
                             Menu {
-                                ForEach(KeyType.allCases, id: \.self) { type in
+                                ForEach(Self.confirmationPolicies, id: \.self) { option in
                                     Button {
-                                        changeProfile(type: type)
+                                        selectConfirmationPolicy(option)
                                     } label: {
-                                        if profile.type == type {
-                                            Label(type.title, systemImage: "checkmark")
+                                        if policy == option {
+                                            Label(option.title, systemImage: "checkmark")
                                         } else {
-                                            Text(type.title)
+                                            Text(option.title)
+                                        }
+                                    }
+                                    // INV-08: biometric-bound keys can never become password-only.
+                                    .disabled(option == .devicePasscode && Self.isBiometricBound(policy))
+                                }
+                                Divider()
+                                // Legacy policy is read-only; moving off it requires a new key.
+                                Button {} label: {
+                                    Text("\(BiometricPolicy.biometryCurrentSet.title) — Requires new key → Rotate")
+                                }
+                                .disabled(true)
+                            } label: {
+                                Color.clear
+                            }
+                            .menuStyle(.borderlessButton)
+                            .menuIndicator(.hidden)
+                        }
+                        .help("The confirmation policy is fixed at creation; changing it requires Rotate.")
+                        .accessibilityLabel("Confirmation policy")
+                }
+
+                insetDivider
+
+                // Row 2: Unlocked timeout (D-40: how long one confirmation is reused)
+                confirmationRow(
+                    label: "Unlocked timeout",
+                    sublabel: "How long one confirmation is reused (key + requesting app)"
+                ) {
+                    settingsPopupLabel(period.title)
+                        .overlay {
+                            Menu {
+                                ForEach(KeyGracePeriod.allCases, id: \.self) { option in
+                                    Button {
+                                        appState.setGracePeriod(option, for: key)
+                                    } label: {
+                                        if period == option {
+                                            Label(option.title, systemImage: "checkmark")
+                                        } else {
+                                            Text(option.title)
                                         }
                                     }
                                 }
@@ -701,108 +833,67 @@ public struct KeyDetailInspectorView: View {
                             .menuStyle(.borderlessButton)
                             .menuIndicator(.hidden)
                         }
-                        .help("Changing key type requires fresh authentication and revokes approvals.")
-                        .accessibilityLabel("Key profile")
+                        .accessibilityLabel("Unlocked timeout")
                 }
-                .padding(.horizontal, 12)
-                .frame(minHeight: 38)
-
-                insetDivider
-
-                // Row 2: Confirmation level
-                HStack(spacing: 12) {
-                    Text("Confirmation level")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.primary)
-
-                    Spacer(minLength: 12)
-
-                    Text(Self.approvalSummaryText(for: key))
-                        .font(.system(size: 13))
-                        .foregroundStyle(DesignTokens.textSecondary)
-                }
-                .padding(.horizontal, 12)
-                .frame(minHeight: 38)
-
-                insetDivider
-
-                // Row 3: SSH authentication
-                HStack(spacing: 12) {
-                    Text("SSH authentication")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.primary)
-
-                    Spacer(minLength: 12)
-
-                    Toggle("", isOn: Binding(
-                        get: { profile.capabilities.ssh },
-                        set: { enabled in
-                            changeProfile(capabilities: KeyCapabilities(
-                                ssh: enabled,
-                                signature: profile.capabilities.signature
-                            ))
-                        }
-                    ))
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .labelsHidden()
-                    .accessibilityLabel("SSH authentication enabled")
-                }
-                .padding(.horizontal, 12)
-                .frame(minHeight: 38)
-
-                insetDivider
-
-                // Row 4: Git signing
-                HStack(spacing: 12) {
-                    Text("Git signing")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.primary)
-
-                    Spacer(minLength: 12)
-
-                    Toggle("", isOn: Binding(
-                        get: { profile.capabilities.signature },
-                        set: { enabled in
-                            changeProfile(capabilities: KeyCapabilities(
-                                ssh: profile.capabilities.ssh,
-                                signature: enabled
-                            ))
-                        }
-                    ))
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .labelsHidden()
-                    .accessibilityLabel("Git signing enabled")
-                }
-                .padding(.horizontal, 12)
-                .frame(minHeight: 38)
             }
             .modifier(SettingsGroupCardModifier())
 
-            Text(Self.approvalDescriptionText(for: key))
+            // S03.confirmation.footnote: session semantics + hardware minimum when applicable.
+            Text(Self.confirmationFootnote(for: key, period: period))
                 .font(.system(size: 11.5))
                 .foregroundStyle(DesignTokens.textSecondary)
                 .padding(.horizontal, 2)
         }
     }
 
+    /// Grouped-form row with a regular-weight label and an explanatory sublabel (prototype `R(l,x,sub)`).
+    private func confirmationRow<Control: View>(
+        label: String,
+        sublabel: String,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.primary)
+                Text(sublabel)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(DesignTokens.textSecondary)
+            }
+
+            Spacer(minLength: 12)
+
+            control()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .frame(minHeight: 38)
+    }
+
+    /// No in-place policy mutation exists (hardware minimum is fixed at creation), so choosing a
+    /// different policy points at Rotate instead of silently changing nothing.
+    private func selectConfirmationPolicy(_ option: BiometricPolicy) {
+        guard option != key.effectiveBiometricPolicy else { return }
+        showingPolicyGuidance = true
+    }
+
     // MARK: - Section 3: Access / Never Allow (Expandable NSOutlineView Variant 3)
 
     private var accessSection: some View {
         let apps = displayedApplications
-        let candidateAppsForPlus: [RegisteredApplication] = isBotKey
+        let candidateAppsForPlus: [RegisteredApplication] = isAgentKey
             ? applicationsModel.applications.filter { $0.classification != .bot }
             : applicationsModel.applications.filter { $0.classification != .block }
 
         return VStack(alignment: .leading, spacing: 8) {
-            sectionHeaderTitle(isBotKey ? "Access" : "Never Allow")
+            sectionHeaderTitle(isAgentKey ? "Access" : "Never Allow")
 
             VStack(spacing: 0) {
                 if apps.isEmpty {
                     HStack {
                         Text(
-                            isBotKey
+                            isAgentKey
                                 ? "No applications configured — unlisted apps ask on first use."
                                 : "No blocked applications — any personal app can request Touch ID."
                         )
@@ -847,7 +938,7 @@ public struct KeyDetailInspectorView: View {
 
                                     Spacer(minLength: 8)
 
-                                    if isBotKey {
+                                    if isAgentKey {
                                         settingsPopupLabel(app.classification.title)
                                             .overlay {
                                                 Menu {
@@ -965,7 +1056,7 @@ public struct KeyDetailInspectorView: View {
                                             Task {
                                                 await applicationsModel.classify(
                                                     app,
-                                                    as: isBotKey ? .bot : .block
+                                                    as: isAgentKey ? .bot : .block
                                                 )
                                             }
                                         } label: {
@@ -1085,7 +1176,7 @@ public struct KeyDetailInspectorView: View {
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
         panel.treatsFilePackagesAsDirectories = false
-        let targetClassification: ApplicationClassification = isBotKey ? .bot : .block
+        let targetClassification: ApplicationClassification = isAgentKey ? .bot : .block
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
             Task { @MainActor in
@@ -1180,85 +1271,81 @@ public struct KeyDetailInspectorView: View {
         }
     }
 
-    // MARK: - Section 5: Danger Zone
+    // MARK: - Section 5: Key Lifecycle (calm neutral card, never a red "Danger Zone")
 
-    private var dangerZoneSection: some View {
+    private var keyLifecycleSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionHeaderTitle("Danger Zone")
+            sectionHeaderTitle("Key Lifecycle")
 
             VStack(spacing: 0) {
-                // Disable Key / Enable Key
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(isKeyEnabled ? "Disable Key" : "Enable Key")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.primary)
-                        Text("Temporarily stop all SSH and Git signing requests for this key.")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(DesignTokens.textSecondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
+                // Disable this key / Enable this key
+                lifecycleRow(
+                    label: isKeyEnabled ? "Disable this key" : "Enable this key",
+                    sublabel: isKeyEnabled
+                        ? "Temporarily refuse all signing requests while keeping grants and settings intact."
+                        : "This key is currently disabled. Re-enable it to allow signing again."
+                ) {
                     settingsActionButton(isKeyEnabled ? "Disable Key" : "Enable Key") {
-                        if isKeyEnabled {
-                            changeProfile(capabilities: KeyCapabilities(ssh: false, signature: false))
-                        } else {
-                            changeProfile(capabilities: KeyCapabilities(ssh: true, signature: true))
-                        }
+                        toggleKeyEnabled()
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
 
                 insetDivider
 
-                // Rotate Key…
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Rotate Key")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.primary)
-                        Text("Generate a new Secure Enclave keypair and replace this key.")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(DesignTokens.textSecondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
+                // Rotate key
+                lifecycleRow(
+                    label: "Rotate key",
+                    sublabel: "Create a replacement key with the same settings."
+                ) {
                     settingsActionButton("Rotate Key…") {
-                        if let onShowToast {
-                            onShowToast("Key rotation will be connected in ClavisCore")
-                        } else {
-                            showingRotateInfoAlert = true
-                        }
+                        rotateKey()
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
 
                 insetDivider
 
-                // Delete Key…
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Delete Key")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.primary)
-                        Text("Permanently destroy this key from the Secure Enclave and revoke its approvals.")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(DesignTokens.textSecondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    Button("Delete Key…", role: .destructive) {
+                // Delete this key (red label, neutral card)
+                lifecycleRow(
+                    label: "Delete this key",
+                    sublabel: "Permanently destroy the private key on this Mac. Issued signatures cannot be revoked (INV-01)."
+                ) {
+                    Button {
                         showingDeleteAlert = true
+                    } label: {
+                        Text("Delete Key…")
+                            .font(.system(size: 12, weight: .regular))
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
-                    .controlSize(.small)
+                    .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
             }
             .modifier(SettingsGroupCardModifier())
         }
+    }
+
+    private func lifecycleRow<Control: View>(
+        label: String,
+        sublabel: String,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.primary)
+                Text(sublabel)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(DesignTokens.textSecondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            control()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
     }
 
     // MARK: - Shared UI Helpers & Actions
@@ -1319,14 +1406,6 @@ public struct KeyDetailInspectorView: View {
             changePurposeError = error.localizedDescription
             showingChangePurposeError = true
         }
-    }
-
-    private func addToGitHub() {
-        copyOpenSSH()
-        if !ClavisEnvironment.isTesting, let url = URL(string: "https://github.com/settings/ssh/new") {
-            NSWorkspace.shared.open(url)
-        }
-        onShowToast?("Public key copied — opening GitHub SSH settings")
     }
 
     private func copyOpenSSHWithFeedback() {
@@ -1510,28 +1589,53 @@ public extension KeyDetailInspectorView {
         return (name: name, socketPath: path, status: status, isActive: isSocketActive)
     }
 
-    /// Semantic actions available in the header overflow (•••) menu.
+    /// Semantic actions available in the toolbar overflow (⋯) menu — the only trailing control.
     enum OverflowMenuAction: String, CaseIterable, Equatable, Sendable {
-        case copyDeployKey
-        case copyOpenSSH
-        case copyFingerprint
-        case changePurpose
+        case copyPublicKey
+        case toggleEnabled
+        case rotateKey
         case deleteKey
     }
 
-    /// Returns the ordered list of actions present in the overflow (•••) menu for the given key.
+    /// Returns the ordered list of actions present in the overflow (⋯) menu for the given key.
+    /// History never lives here (it has its own toolbar/sidebar entry points).
     static func overflowMenuActions(for key: SSHKeyInfo) -> [OverflowMenuAction] {
-        var actions: [OverflowMenuAction] = []
-        if key.purpose == .agent {
-            actions.append(.copyDeployKey)
+        [.copyPublicKey, .toggleEnabled, .rotateKey, .deleteKey]
+    }
+
+    // MARK: - D-40 Confirmation Copy (S03.confirmation)
+
+    /// The three current confirmation policies, in prototype order.
+    static let confirmationPolicies: [BiometricPolicy] = [.biometryOrPasscode, .userPresence, .devicePasscode]
+
+    /// Biometric-bound keys carry a hardware minimum that can never be lowered to password-only.
+    static func isBiometricBound(_ policy: BiometricPolicy) -> Bool {
+        policy == .biometryCurrentSet || policy == .biometryOrPasscode
+    }
+
+    /// S03.confirmation.footnote: "Confirm with <policy subtitle>. One confirmation is reused for
+    /// <timeout> per requesting app; inside that window, signing is silent." + hardware minimum.
+    static func confirmationFootnote(for key: SSHKeyInfo, period: KeyGracePeriod) -> String {
+        let policy = key.effectiveBiometricPolicy
+        var text = "Confirm with \(policy.subtitle). One confirmation is reused for \(period.title) per requesting app; inside that window, signing is silent."
+        if isBiometricBound(policy) {
+            text += " Hardware minimum: biometric-bound (fixed at creation)."
         }
-        actions.append(.copyOpenSSH)
-        actions.append(.copyFingerprint)
-        if key.purpose == .general || key.purpose == .agent {
-            actions.append(.changePurpose)
+        return text
+    }
+
+    /// S03.public-key.footnote: the storage guarantee under the Public Key card.
+    static var publicKeyStorageFootnote: String {
+        "Private key stored in Secure Enclave · never leaves this Mac."
+    }
+
+    /// S03.hero.subtitle: owner profile + last used only.
+    static func toolbarSubtitle(isAgentKey: Bool, lastUsed: String?) -> String {
+        let owner = isAgentKey ? "Agent key" : "Personal key"
+        if let lastUsed, !lastUsed.isEmpty {
+            return "\(owner) · Last used \(lastUsed)"
         }
-        actions.append(.deleteKey)
-        return actions
+        return "\(owner) · Not used yet"
     }
 
     /// Returns the 2-line title stack strings (title and algorithm/storage subtitle).

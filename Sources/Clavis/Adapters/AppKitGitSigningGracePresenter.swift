@@ -61,7 +61,9 @@ public struct AppKitGitSigningGracePresenter: GitSigningGracePresenter {
     ) -> NotchPromptRequest {
         let matchedKey = PublicKeyStore.loadAll().first(where: { $0.label == keyLabel })
         let resolvedKeyType = keyType ?? matchedKey?.effectiveAccessProfile.type ?? .personal
-        let allowsPassword = matchedKey.map { $0.effectiveBiometricPolicy == .userPresence } ?? true
+        let policy = matchedKey?.effectiveBiometricPolicy ?? .userPresence
+        let confirmationMode = NotchConfirmationMode(biometricPolicy: policy)
+        let allowsPassword = NotchConfirmationMode.allowsPasswordFallback(for: policy)
 
         let callerInfo = resolveCallerMetadata(from: clientDesc, keyType: resolvedKeyType)
 
@@ -76,7 +78,8 @@ public struct AppKitGitSigningGracePresenter: GitSigningGracePresenter {
             agentWarning: callerInfo.agentWarning,
             initialScope: initialScope,
             showsScopeSelector: true,
-            allowsPasswordFallback: allowsPassword
+            allowsPasswordFallback: allowsPassword,
+            confirmationMode: confirmationMode
         )
     }
 

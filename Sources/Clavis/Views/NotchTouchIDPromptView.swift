@@ -320,9 +320,11 @@ public enum NotchPlacementCalculator {
 // MARK: - Session Scope & Prompt Models
 
 /// Session duration choices available in the MacBook Notch Touch ID prompt (`S-08` / `US-02` / `US-45`).
+/// D-40 picker: Once · 15 min · 8 hours · Until Lock · 1 Day (`.ux/app.js` `N_SCOPES`).
 public enum NotchSessionScope: String, CaseIterable, Identifiable, Equatable, Sendable {
     case once
     case fifteenMinutes
+    case eightHours
     case untilLock
     case oneDay
 
@@ -334,6 +336,8 @@ public enum NotchSessionScope: String, CaseIterable, Identifiable, Equatable, Se
             return "Once"
         case .fifteenMinutes:
             return "15 min"
+        case .eightHours:
+            return "8 hours"
         case .untilLock:
             return "Until Lock"
         case .oneDay:
@@ -341,27 +345,32 @@ public enum NotchSessionScope: String, CaseIterable, Identifiable, Equatable, Se
         }
     }
 
-    /// Scope summary displayed below "Touch ID to confirm" in the authentication stage.
+    /// Scope summary displayed below the Touch ID title in the authentication stage (`N_SCOPES.desc`).
     public var approvalSummaryText: String {
         switch self {
         case .once:
-            return "Approve this request only"
+            return "This single request only"
         case .fifteenMinutes:
-            return "Approve for 15 minutes"
+            return "Reuse for 15 minutes"
+        case .eightHours:
+            return "Reuse for 8 hours"
         case .untilLock:
-            return "Approve until lock"
+            return "Reuse until Mac sleeps or locks"
         case .oneDay:
-            return "Approve for up to 24 hours"
+            return "Reuse for 24 hours"
         }
     }
 
     /// Upper-bound reuse duration in seconds (`nil` for single-shot `.once`).
+    /// `.untilLock` keeps the 8-hour upper bound for `GitSigningGraceManager` lease compatibility.
     public var durationSeconds: TimeInterval? {
         switch self {
         case .once:
             return nil
         case .fifteenMinutes:
             return 15 * 60
+        case .eightHours:
+            return 8 * 3600
         case .untilLock:
             return 8 * 3600
         case .oneDay:
@@ -369,12 +378,62 @@ public enum NotchSessionScope: String, CaseIterable, Identifiable, Equatable, Se
         }
     }
 
+    /// D-40 mapping onto the core unlocked-timeout model (`KeyGracePeriod`).
+    public var keyGracePeriod: KeyGracePeriod {
+        switch self {
+        case .once:
+            return .always
+        case .fifteenMinutes:
+            return .fifteenMinutes
+        case .eightHours:
+            return .session
+        case .untilLock:
+            return .untilLock
+        case .oneDay:
+            return .oneDay
+        }
+    }
+
+    /// Resolves a core unlocked timeout into the notch picker scope, when it is one of the five D-40 choices.
+    public static func from(gracePeriod: KeyGracePeriod) -> NotchSessionScope? {
+        switch gracePeriod {
+        case .always:
+            return .once
+        case .fifteenMinutes:
+            return .fifteenMinutes
+        case .session:
+            return .eightHours
+        case .untilLock:
+            return .untilLock
+        case .oneDay:
+            return .oneDay
+        default:
+            return nil
+        }
+    }
+
+    /// D-40 session copy: what one confirmation buys for the requesting app.
+    public var sessionReuseText: String {
+        if self == .once {
+            return "Every request asks again."
+        }
+        return "One confirmation is reused for \(title) per requesting app; inside that window, signing is silent."
+    }
+
+    /// D-40 toast copy after an approved signing request (`showQ` / `sys` in `.ux/app.js`).
+    public func nextRequestsToastText(callerName: String) -> String {
+        if self == .once {
+            return "Next requests from \(callerName) will ask again"
+        }
+        return "Next requests from \(callerName) won't ask for \(title.lowercased())"
+    }
+
     /// Maps the notch session scope to `GitSigningPromptChoice` for `GitSigningGraceManager` compatibility.
     public var gitSigningPromptChoice: GitSigningPromptChoice {
         switch self {
         case .once:
             return .singleShot
-        case .fifteenMinutes, .untilLock, .oneDay:
+        case .fifteenMinutes, .eightHours, .untilLock, .oneDay:
             return .grantSession(duration: durationSeconds ?? 900)
         }
     }
@@ -390,6 +449,120 @@ public enum NotchPromptResult: Equatable, Sendable {
     case denied
 }
 
+/// D-36: every request prompt renders in the single notch confirmation window.
+/// These are the approval variants formerly carried by the separate floating approval card.
+public enum NotchPromptKind: String, Equatable, Sendable {
+    /// Personal-key signing prompt with the session-scope picker (`sys` in `.ux/app.js`).
+    case signing
+    /// Agent first use on an Agent key: info strip + Deny · Always Allow… · Allow Once.
+    case agentFirstUse
+    /// App update keeps access: affected keys + lineage, Review… · Deny · Keep….
+    case keepAccess
+    /// Same lineage, different Team ID: Deny (default focus) · Review as new app.
+    case signatureChanged
+    /// Agent reaches a Personal key: warning + scope picker + Never allow · Route to agent socket… · Continue.
+    case agentOnPersonal
+
+    /// Only signing-style prompts show the session-scope picker (`n-scope` renders for `kind === "sys"`).
+    public var showsScopePicker: Bool {
+        self == .signing || self == .agentOnPersonal
+    }
+}
+
+/// First-use info strip (`S08.notch.info`): Identity / Via / Trust breadth / Detected by.
+public struct NotchFirstUseInfo: Equatable, Sendable {
+    public let identity: String
+    public let via: String
+    /// Trust breadth, e.g. "Codex and everything it launches".
+    public let trustDescription: String
+    public let isBroadApp: Bool
+    /// Detection evidence, e.g. "agent marker + process chain".
+    public let detectedBy: String
+
+    public init(
+        identity: String,
+        via: String,
+        trustDescription: String,
+        isBroadApp: Bool = false,
+        detectedBy: String = "agent marker + process chain"
+    ) {
+        self.identity = identity
+        self.via = via
+        self.trustDescription = trustDescription
+        self.isBroadApp = isBroadApp
+        self.detectedBy = detectedBy
+    }
+}
+
+/// Keep-access info strip: affected keys + lineage note (`showQ` `t == "keep"`).
+public struct NotchKeepAccessInfo: Equatable, Sendable {
+    public let affectedKeys: [String]
+    public let lineage: String
+    public let fromVersion: String
+    public let toVersion: String
+
+    public init(affectedKeys: [String], lineage: String, fromVersion: String, toVersion: String) {
+        self.affectedKeys = affectedKeys
+        self.lineage = lineage
+        self.fromVersion = fromVersion
+        self.toVersion = toVersion
+    }
+
+    /// "Keeps access to N key(s): …" line.
+    public var affectedKeysText: String {
+        let count = affectedKeys.count
+        return "Keeps access to \(count) key\(count == 1 ? "" : "s"): \(affectedKeys.joined(separator: ", "))."
+    }
+
+    /// Lineage note shown under the affected keys.
+    public var lineageNote: String {
+        "Same lineage (\(lineage)), new identity (cdhash). Access moves to the new version after you approve."
+    }
+}
+
+/// Signature-changed warning payload (`showQ` `t == "sig"`).
+public struct NotchSignatureChangeInfo: Equatable, Sendable {
+    public let oldIdentity: String
+    public let newTeamID: String
+
+    public init(oldIdentity: String, newTeamID: String) {
+        self.oldIdentity = oldIdentity
+        self.newTeamID = newTeamID
+    }
+
+    public var warningText: String {
+        "Same app lineage, different Team ID (\(oldIdentity) → Team ID \(newTeamID)). It's treated as a new app and has no access."
+    }
+}
+
+/// Which allow action armed the Touch ID step for an agent first-use prompt.
+public enum NotchAllowMode: String, Equatable, Sendable {
+    case once
+    case always
+}
+
+/// Full decision surface of the unified notch prompt (D-36). `NotchPromptResult` stays the legacy
+/// signing-only channel so existing grace-presenters keep compiling; approval callers use this type.
+public enum NotchApprovalDecision: Equatable, Sendable {
+    /// Signing / agent-on-Personal approval with the chosen session scope.
+    case approved(scope: NotchSessionScope, method: NotchApprovalMethod)
+    /// Agent first use: permanent grant for the app and everything it launches.
+    case alwaysAllow(method: NotchApprovalMethod)
+    /// Agent first use: this single request only.
+    case allowOnce(method: NotchApprovalMethod)
+    /// Keep access: access moves to the new version.
+    case keepAccess(method: NotchApprovalMethod)
+    /// Keep access "Review…": caller opens the affected key in Key Detail.
+    case reviewAccess
+    /// Signature changed "Review as new app": caller converts the request to first-use.
+    case reviewAsNewApp
+    /// "Never allow" / "Always deny … on this key…": permanent deny on this key.
+    case neverAllow
+    /// Agent-on-Personal "Route to agent socket…": caller opens routing settings.
+    case routeToAgentSocket
+    case denied
+}
+
 /// Optional warning banner shown when an AI agent requests a Personal key (`US-72` / `US-73`).
 public struct NotchAgentWarning: Equatable, Sendable {
     public let title: String
@@ -399,6 +572,39 @@ public struct NotchAgentWarning: Equatable, Sendable {
         self.title = title
         self.detail = detail
     }
+
+    /// D-36 agent-on-Personal warning copy (`showQ` `t == "pagent"`).
+    public static func agentOnPersonal(detectedBy: String = "agent marker + process chain") -> NotchAgentWarning {
+        NotchAgentWarning(
+            title: "Agent requests your Personal key",
+            detail: "Detected by: \(detectedBy)"
+        )
+    }
+}
+
+/// D-40 confirmation method rendered in the 1-step Notch Island (`sign_prompt` Variant 01).
+public enum NotchConfirmationMode: String, CaseIterable, Equatable, Sendable {
+    case touchIDOrPassword
+    case presenceOrPassword
+    case passwordOnly
+
+    public init(biometricPolicy: BiometricPolicy) {
+        switch biometricPolicy {
+        case .biometryOrPasscode, .biometryCurrentSet:
+            self = .touchIDOrPassword
+        case .userPresence:
+            self = .presenceOrPassword
+        case .devicePasscode:
+            self = .passwordOnly
+        }
+    }
+
+    public static func allowsPasswordFallback(for policy: BiometricPolicy) -> Bool {
+        policy != .biometryCurrentSet
+    }
+
+    public var allowsBiometrics: Bool { self != .passwordOnly }
+    public var allowsCompanionWatch: Bool { self == .presenceOrPassword }
 }
 
 public struct NotchPromptRequest: Equatable, Sendable {
@@ -415,6 +621,15 @@ public struct NotchPromptRequest: Equatable, Sendable {
     public let permittedScopes: [NotchSessionScope]
     public let showsScopeSelector: Bool
     public let allowsPasswordFallback: Bool
+    public let confirmationMode: NotchConfirmationMode
+    /// D-36 approval variant carried by the unified notch window.
+    public let kind: NotchPromptKind
+    public let firstUseInfo: NotchFirstUseInfo?
+    public let keepAccessInfo: NotchKeepAccessInfo?
+    public let signatureChangeInfo: NotchSignatureChangeInfo?
+    /// Queue indicator: "1 of N · " prefix in the step hint when more than one request is pending.
+    public let queuePosition: Int
+    public let queueCount: Int
 
     public init(
         callerName: String,
@@ -429,7 +644,14 @@ public struct NotchPromptRequest: Equatable, Sendable {
         initialScope: NotchSessionScope = .untilLock,
         permittedScopes: [NotchSessionScope]? = nil,
         showsScopeSelector: Bool = true,
-        allowsPasswordFallback: Bool = true
+        allowsPasswordFallback: Bool = true,
+        confirmationMode: NotchConfirmationMode = .presenceOrPassword,
+        kind: NotchPromptKind = .signing,
+        firstUseInfo: NotchFirstUseInfo? = nil,
+        keepAccessInfo: NotchKeepAccessInfo? = nil,
+        signatureChangeInfo: NotchSignatureChangeInfo? = nil,
+        queuePosition: Int = 1,
+        queueCount: Int = 1
     ) {
         self.callerName = callerName
         self.callerPath = callerPath
@@ -440,10 +662,19 @@ public struct NotchPromptRequest: Equatable, Sendable {
         self.operation = operation
         self.warningText = warningText
         self.agentWarning = agentWarning
+        self.confirmationMode = confirmationMode
+        self.kind = kind
+        self.firstUseInfo = firstUseInfo
+        self.keepAccessInfo = keepAccessInfo
+        self.signatureChangeInfo = signatureChangeInfo
+        self.queuePosition = max(1, queuePosition)
+        self.queueCount = max(1, queueCount)
+        // Approval variants without a session picker never expose scope choices.
+        let effectiveShowsScopeSelector = showsScopeSelector && kind.showsScopePicker
         let resolvedPermitted: [NotchSessionScope]
-        if let permittedScopes, !permittedScopes.isEmpty {
+        if let permittedScopes, !permittedScopes.isEmpty, effectiveShowsScopeSelector {
             resolvedPermitted = permittedScopes
-        } else if showsScopeSelector {
+        } else if effectiveShowsScopeSelector {
             resolvedPermitted = NotchSessionScope.allCases
         } else {
             resolvedPermitted = [.once]
@@ -454,8 +685,17 @@ public struct NotchPromptRequest: Equatable, Sendable {
         } else {
             self.initialScope = resolvedPermitted.first ?? .once
         }
-        self.showsScopeSelector = showsScopeSelector
-        self.allowsPasswordFallback = allowsPasswordFallback
+        self.showsScopeSelector = effectiveShowsScopeSelector
+        self.allowsPasswordFallback = (confirmationMode == .passwordOnly) ? true : allowsPasswordFallback
+    }
+
+    /// 1-step Notch Island (`sign_prompt` Variant 01): signing requests open directly armed
+    /// without a separate Continue review gate; approval variants keep their review step.
+    public var opensDirectlyToAuthentication: Bool { kind == .signing }
+
+    public var initialExpandedPhase: NotchPromptPhase {
+        guard opensDirectlyToAuthentication else { return .reviewing }
+        return confirmationMode == .passwordOnly ? .passwordEntry : .awaitingAuthentication
     }
 
     /// Human-readable operation title displayed in the right shoulder of the notch panel.
@@ -482,6 +722,18 @@ public struct NotchPromptRequest: Equatable, Sendable {
         if let agentWarning {
             return agentWarning
         }
+        if kind == .signatureChanged, let signatureChangeInfo {
+            return NotchAgentWarning(
+                title: "Signature changed",
+                detail: signatureChangeInfo.warningText
+            )
+        }
+        if kind == .agentFirstUse, let firstUseInfo, firstUseInfo.isBroadApp {
+            return NotchAgentWarning(
+                title: "\(callerName) is a Broad app.",
+                detail: "Allow the agent itself instead."
+            )
+        }
         guard let warningText = warningText?.trimmingCharacters(in: .whitespacesAndNewlines),
               !warningText.isEmpty else {
             return nil
@@ -495,6 +747,81 @@ public struct NotchPromptRequest: Equatable, Sendable {
         return NotchAgentWarning(
             title: keyType == .personal ? "Agent requests your Personal key" : warningText,
             detail: keyType == .personal ? warningText : "Verify requester identity before approving"
+        )
+    }
+
+    /// Whether the prompt renders the translucent info strip (`n-info`) below the identity row.
+    public var hasInfoStrip: Bool {
+        (kind == .agentFirstUse && firstUseInfo != nil) || (kind == .keepAccess && keepAccessInfo != nil)
+    }
+
+    /// Step hint with the queue indicator prefix ("1 of N · ") when several requests are pending.
+    public var stepHintText: String {
+        let base: String
+        switch kind {
+        case .signing, .agentOnPersonal:
+            base = "1 of 2 · Review the session scope"
+        case .agentFirstUse:
+            base = "1 of 2 · Review the request"
+        case .keepAccess:
+            base = "1 of 2 · Review the update"
+        case .signatureChanged:
+            base = "Review the signer change"
+        }
+        guard queueCount > 1 else { return base }
+        return "\(queuePosition) of \(queueCount) · \(base)"
+    }
+
+    /// Returns a copy carrying an updated queue indicator for the step hint.
+    public func withQueue(position: Int, count: Int) -> NotchPromptRequest {
+        NotchPromptRequest(
+            callerName: callerName,
+            callerPath: callerPath,
+            processChain: processChain,
+            keyLabel: keyLabel,
+            keyType: keyType,
+            keyTypeSubtitle: keyTypeSubtitle,
+            operation: operation,
+            warningText: warningText,
+            agentWarning: agentWarning,
+            initialScope: initialScope,
+            permittedScopes: permittedScopes,
+            showsScopeSelector: showsScopeSelector,
+            allowsPasswordFallback: allowsPasswordFallback,
+            confirmationMode: confirmationMode,
+            kind: kind,
+            firstUseInfo: firstUseInfo,
+            keepAccessInfo: keepAccessInfo,
+            signatureChangeInfo: signatureChangeInfo,
+            queuePosition: position,
+            queueCount: count
+        )
+    }
+
+    /// D-36 "Review as new app": a signature-changed request converts into an agent first-use request.
+    public func convertedToFirstUse(via: String? = nil) -> NotchPromptRequest {
+        let resolvedVia = via ?? processChain
+        let info = firstUseInfo ?? NotchFirstUseInfo(
+            identity: signatureChangeInfo.map { "Team ID \($0.newTeamID)" } ?? "unverified",
+            via: resolvedVia,
+            trustDescription: "\(callerName) and everything it launches"
+        )
+        return NotchPromptRequest(
+            callerName: callerName,
+            callerPath: callerPath,
+            processChain: processChain,
+            keyLabel: keyLabel,
+            keyType: keyType,
+            keyTypeSubtitle: keyTypeSubtitle,
+            operation: operation,
+            initialScope: initialScope,
+            showsScopeSelector: false,
+            allowsPasswordFallback: allowsPasswordFallback,
+            confirmationMode: confirmationMode,
+            kind: .agentFirstUse,
+            firstUseInfo: info,
+            queuePosition: queuePosition,
+            queueCount: queueCount
         )
     }
 }
@@ -614,6 +941,10 @@ public final class NotchPromptViewModel: ObservableObject {
     @Published public var phase: NotchPromptPhase
     @Published public private(set) var isPromptFocused: Bool = true
     @Published public private(set) var selectedScope: NotchSessionScope
+    /// Which first-use allow action armed the Touch ID step (D-36: Allow Once vs Always Allow…).
+    @Published public private(set) var allowMode: NotchAllowMode = .once
+    /// Full D-36 decision once the prompt finishes; `NotchPromptResult` remains the legacy signing channel.
+    public private(set) var approvalDecision: NotchApprovalDecision?
     public var isScopeLocked: Bool { phase == .verifying || phase == .approved || isCompleted }
     @Published public private(set) var biometricFailure: NotchBiometricFailure? = nil
     @Published public private(set) var failureShakeTrigger: Int = 0
@@ -671,7 +1002,7 @@ public final class NotchPromptViewModel: ObservableObject {
         self.passwordVerifier = passwordVerifier
         self.onComplete = onComplete
 
-        if initialPhase == .awaitingAuthentication {
+        if initialPhase == .awaitingAuthentication && request.confirmationMode.allowsBiometrics {
             startEmbeddedBiometricListeningIfNeeded()
         }
     }
@@ -685,15 +1016,20 @@ public final class NotchPromptViewModel: ObservableObject {
         self.embeddedAuthContext = context
     }
 
-    /// Transitions from `.idle` into the Step 1 `.reviewing` state without arming biometrics.
+    /// Transitions from `.idle` into the initial active stage (`request.initialExpandedPhase`),
+    /// arming biometrics immediately for 1-step signing prompts.
     public func expand() {
         guard !isCompleted else { return }
+        let targetPhase = request.initialExpandedPhase
         withAnimation(Self.runtimeTransitionAnimation) {
             passwordError = nil
             biometricFailure = nil
             showsApprovedLayoutWhileCollapsed = false
             isPromptFocused = true
-            phase = .reviewing
+            phase = targetPhase
+        }
+        if targetPhase == .awaitingAuthentication {
+            startEmbeddedBiometricListeningIfNeeded()
         }
     }
 
@@ -717,18 +1053,70 @@ public final class NotchPromptViewModel: ObservableObject {
         selectScope(scopes[max(0, min(scopes.count - 1, index + direction))])
     }
 
-    /// Continue arms biometric authentication while allowing duration changes until verification.
+    /// Continue arms biometric authentication (or password entry for `.passwordOnly`) while allowing duration changes until verification.
     public func continueToAuthentication() {
         guard !isCompleted else { return }
         guard phase == .reviewing || phase == .idle else { return }
+        let targetPhase: NotchPromptPhase = request.confirmationMode == .passwordOnly ? .passwordEntry : .awaitingAuthentication
         withAnimation(Self.runtimeTransitionAnimation) {
             isPromptFocused = true
             biometricFailure = nil
             passwordError = nil
             passwordText = ""
-            phase = .awaitingAuthentication
+            phase = targetPhase
         }
-        startEmbeddedBiometricListeningIfNeeded()
+        if targetPhase == .awaitingAuthentication {
+            startEmbeddedBiometricListeningIfNeeded()
+        }
+    }
+
+    /// D-36 first-use / keep-access: either allow action arms the reserved Touch ID step.
+    /// `mode` selects the permanent-grant vs single-request sub-copy for agent first use.
+    public func armAuthentication(mode: NotchAllowMode) {
+        guard !isCompleted else { return }
+        guard phase == .reviewing || phase == .idle else { return }
+        allowMode = mode
+        continueToAuthentication()
+    }
+
+    /// D-36 keep-access "Review…": closes the prompt so the caller can open the affected key in Key Detail.
+    public func reviewAccess() {
+        guard !isCompleted, request.kind == .keepAccess else { return }
+        collapseAndFinish(decision: .reviewAccess)
+    }
+
+    /// D-36 signature-changed "Review as new app": closes the prompt; the caller re-presents
+    /// `request.convertedToFirstUse()` as an agent first-use request.
+    public func reviewAsNewApp() {
+        guard !isCompleted, request.kind == .signatureChanged else { return }
+        collapseAndFinish(decision: .reviewAsNewApp)
+    }
+
+    /// D-36 "Never allow" (agent-on-Personal) and the first-use info-strip link
+    /// "Always deny … on this key…": permanent deny, no signature issued.
+    public func neverAllow() {
+        guard !isCompleted, request.kind == .agentOnPersonal || request.kind == .agentFirstUse else { return }
+        collapseAndFinish(decision: .neverAllow)
+    }
+
+    /// D-36 agent-on-Personal "Route to agent socket…": closes the prompt so the caller can open routing settings.
+    public func routeToAgentSocket() {
+        guard !isCompleted, request.kind == .agentOnPersonal else { return }
+        collapseAndFinish(decision: .routeToAgentSocket)
+    }
+
+    private func collapseAndFinish(decision: NotchApprovalDecision) {
+        attemptGeneration &+= 1
+        cancelEmbeddedBiometricListening()
+        withAnimation(Self.runtimeCollapseAnimation) {
+            passwordText = ""
+            passwordError = nil
+            biometricFailure = nil
+            showsApprovedLayoutWhileCollapsed = false
+            phase = .idle
+        }
+        approvalDecision = decision
+        finish(with: .denied)
     }
 
     /// Updates presentation focus (`true` when the prompt window is key/focused, `false` when focus leaves the prompt).
@@ -741,10 +1129,12 @@ public final class NotchPromptViewModel: ObservableObject {
         withAnimation(Self.runtimeTransitionAnimation) {
             isPromptFocused = focused
             if !focused && phase == .passwordEntry {
-                // Hide and clear the password drawer when unfocused so it is not keyboard-accessible.
+                // Hide and clear the password input when unfocused so it is not keyboard-accessible.
                 passwordText = ""
                 passwordError = nil
-                phase = .awaitingAuthentication
+                if request.confirmationMode.allowsBiometrics {
+                    phase = .awaitingAuthentication
+                }
             }
         }
     }
@@ -763,7 +1153,7 @@ public final class NotchPromptViewModel: ObservableObject {
 
     /// Closes the inline password fallback drawer, clears transient password input, and returns to `.awaitingAuthentication`.
     public func closePasswordDrawer() {
-        guard !isCompleted, phase == .passwordEntry else { return }
+        guard !isCompleted, phase == .passwordEntry, request.confirmationMode.allowsBiometrics else { return }
         withAnimation(Self.runtimeTransitionAnimation) {
             passwordError = nil
             passwordText = ""
@@ -816,10 +1206,10 @@ public final class NotchPromptViewModel: ObservableObject {
         }
     }
 
-    /// Arms a live `LAContext` and evaluates biometrics in the background so the user can rest their finger on the sensor
-    /// immediately after pressing `Continue →`.
+    /// Arms a live `LAContext` and evaluates biometrics in the background so the user can sign
+    /// immediately once presented.
     public func startEmbeddedBiometricListeningIfNeeded() {
-        guard !isCompleted, phase == .awaitingAuthentication else { return }
+        guard !isCompleted, phase == .awaitingAuthentication, request.confirmationMode.allowsBiometrics else { return }
         guard Self.isEmbeddedBiometricAvailable else { return }
         guard embeddedBiometricTask == nil else { return }
 
@@ -829,6 +1219,7 @@ public final class NotchPromptViewModel: ObservableObject {
         self.embeddedAuthContext = context
         let generation = self.attemptGeneration
         let reason = "approve \(request.displayOperation.lowercased()) for \(request.keyLabel)"
+        let allowsCompanion = request.confirmationMode.allowsCompanionWatch
 
         embeddedBiometricTask = Task { @MainActor [weak self] in
             // Allow `LAAuthenticationView(context:)` to mount in the view hierarchy before starting sensor evaluation.
@@ -840,7 +1231,7 @@ public final class NotchPromptViewModel: ObservableObject {
 
             do {
                 let policy: LAPolicy
-                if #available(macOS 15.0, *) {
+                if #available(macOS 15.0, *), allowsCompanion {
                     policy = .deviceOwnerAuthenticationWithBiometricsOrCompanion
                 } else {
                     policy = .deviceOwnerAuthenticationWithBiometrics
@@ -946,7 +1337,9 @@ public final class NotchPromptViewModel: ObservableObject {
             withAnimation(Self.runtimeTransitionAnimation) {
                 passwordText = ""
                 phase = .passwordEntry
-                passwordError = "Incorrect password. Try again or use Touch ID."
+                passwordError = request.confirmationMode == .passwordOnly
+                    ? "Incorrect password. Try again."
+                    : "Incorrect password. Try again or use Touch ID."
             }
             return false
         }
@@ -969,6 +1362,7 @@ public final class NotchPromptViewModel: ObservableObject {
             showsApprovedLayoutWhileCollapsed = false
             phase = .idle
         }
+        approvalDecision = .denied
         finish(with: .denied)
     }
 
@@ -979,18 +1373,28 @@ public final class NotchPromptViewModel: ObservableObject {
         cancelEmbeddedBiometricListening()
         passwordText = ""
         passwordError = nil
+        approvalDecision = .denied
         finish(with: .denied)
     }
 
     /// Handles the `Return` / `Enter` key according to the current stage:
     /// - In `.reviewing`: advances to authentication (`continueToAuthentication()`).
+    /// - For signature-changed prompts Deny keeps the default focus, so Return denies.
     /// - In `.passwordEntry`: submits the password (`submitPassword()`).
     /// - Never directly approves a request without authentication.
     public func handleReturnKey() {
         guard !isCompleted, isPromptFocused else { return }
+        if request.kind == .signatureChanged, phase == .reviewing || phase == .idle {
+            deny()
+            return
+        }
         switch phase {
         case .reviewing:
-            continueToAuthentication()
+            if request.kind == .agentFirstUse {
+                armAuthentication(mode: .once)
+            } else {
+                continueToAuthentication()
+            }
         case .passwordEntry:
             Task { @MainActor in
                 _ = await submitPassword()
@@ -1000,9 +1404,84 @@ public final class NotchPromptViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Direction 11 Authentication & Splash Copy (D-36 / D-40)
+
+    /// Auth step title per confirmation mode and prompt variant (`sign_prompt` Variant 01).
+    public var authTitleText: String {
+        if let biometricFailure {
+            return biometricFailure.title
+        }
+        if phase == .verifying {
+            return "Verifying…"
+        }
+        switch request.kind {
+        case .signing, .agentOnPersonal:
+            switch request.confirmationMode {
+            case .touchIDOrPassword:
+                return "Touch ID to sign"
+            case .presenceOrPassword:
+                return "Touch ID or Apple Watch"
+            case .passwordOnly:
+                return "Mac login password"
+            }
+        case .agentFirstUse:
+            return allowMode == .always ? "Touch ID to Always Allow" : "Touch ID to Allow Once"
+        case .keepAccess:
+            return "Touch ID to Keep"
+        case .signatureChanged:
+            return "Touch ID to Sign"
+        }
+    }
+
+    /// Touch ID step sub-copy: permanent grant vs single request for first use,
+    /// version move for keep access, scope description for signing prompts.
+    public var authSubtitleText: String {
+        if let biometricFailure {
+            return biometricFailure.subtitle(
+                allowsPasswordFallback: request.allowsPasswordFallback,
+                scope: selectedScope
+            )
+        }
+        switch request.kind {
+        case .agentFirstUse:
+            return allowMode == .always
+                ? "Permanent grant · \(request.callerName) and everything it launches"
+                : "This single request only"
+        case .keepAccess:
+            return "Access moves to version \(request.keepAccessInfo?.toVersion ?? "")"
+        case .signing, .agentOnPersonal, .signatureChanged:
+            return selectedScope.approvalSummaryText
+        }
+    }
+
+    /// Approved splash result label (`paintNotch` `resLbl`): scope label for signing,
+    /// allow mode for first use, "Access kept" for keep access.
+    public var approvedResultLabel: String {
+        switch request.kind {
+        case .agentFirstUse:
+            return allowMode == .always ? "Always Allow" : "Allow Once"
+        case .keepAccess:
+            return "Access kept"
+        case .signing, .agentOnPersonal, .signatureChanged:
+            return selectedScope.title
+        }
+    }
+
     private func completeApproval(method: NotchApprovalMethod, generation: UInt64) async {
         guard !isCompleted, attemptGeneration == generation else { return }
         let approvedScope = selectedScope
+        switch request.kind {
+        case .signing, .agentOnPersonal:
+            approvalDecision = .approved(scope: approvedScope, method: method)
+        case .agentFirstUse:
+            approvalDecision = allowMode == .always
+                ? .alwaysAllow(method: method)
+                : .allowOnce(method: method)
+        case .keepAccess:
+            approvalDecision = .keepAccess(method: method)
+        case .signatureChanged:
+            approvalDecision = .denied
+        }
         withAnimation(Self.runtimeTransitionAnimation) {
             passwordText = ""
             passwordError = nil
@@ -1138,7 +1617,7 @@ struct NotchRadialHaloOverlay: View {
     let panelBlack: Color
 
     /// Number of concentric SDF shells used to approximate a continuous radial falloff over `featherRadius` (`15pt`).
-    private static let shellCount: Int = 15
+    private static let shellCount: Int = 20
 
     /// Computes the radial black opacity at a given distance (`0 ... featherRadius`) outside the physical notch boundary.
     static func radialOpacity(atDistance distance: CGFloat, featherRadius: CGFloat = 15.0) -> Double {
@@ -1198,6 +1677,7 @@ public struct NotchTouchIDPromptView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @FocusState private var isPasswordFieldFocused: Bool
+    @FocusState private var isDenyButtonFocused: Bool
     @State private var isAuthCopyRevealed: Bool = false
     @State private var lastOpenSize = CGSize(width: 540, height: 214)
 
@@ -1214,6 +1694,9 @@ public struct NotchTouchIDPromptView: View {
     private static let stepHintColor = Color(red: 170.0 / 255.0, green: 170.0 / 255.0, blue: 181.0 / 255.0) // #aaaab5
     private static let denyBtnText = Color(red: 1.0, green: 156.0 / 255.0, blue: 165.0 / 255.0) // #ff9ca5
     private static let errorTextRed = Color(red: 1.0, green: 179.0 / 255.0, blue: 174.0 / 255.0) // #ffb3ae
+    // D-36 info strip (`n-info` / `n-link` in `.ux/style.css`)
+    private static let infoStripText = Color(red: 214.0 / 255.0, green: 214.0 / 255.0, blue: 221.0 / 255.0) // #d6d6dd
+    private static let infoStripLink = Color(red: 100.0 / 255.0, green: 181.0 / 255.0, blue: 246.0 / 255.0) // #64b5f6
 
     public init(viewModel: NotchPromptViewModel) {
         self.viewModel = viewModel
@@ -1226,9 +1709,13 @@ public struct NotchTouchIDPromptView: View {
         max(0, viewModel.screenGeometry.effectiveTopClearance - 32.0)
     }
 
-    /// Base open height (`214pt` standard, `278pt` with optional agent warning, plus any extra hardware top clearance).
+    /// Base open height (`214pt` standard, `+64pt` with an optional warning banner, `+80pt` with an
+    /// approval info strip, plus any extra hardware top clearance).
     public var openHeight: CGFloat {
-        (viewModel.request.effectiveWarning != nil ? 278 : 214) + extraTopClearanceOffset
+        var height: CGFloat = 214
+        if viewModel.request.effectiveWarning != nil { height += 64 }
+        if viewModel.request.hasInfoStrip { height += 80 }
+        return height + extraTopClearanceOffset
     }
 
     /// Fixed layout width for the authorization stage so internal elements (such as the unified `"from => to"` identity row)
@@ -1255,7 +1742,11 @@ public struct NotchTouchIDPromptView: View {
 
     public var islandHeight: CGFloat {
         let hasWarning = viewModel.request.effectiveWarning != nil
+        let hasInfo = viewModel.request.hasInfoStrip
         let topExtra = extraTopClearanceOffset
+        // Focus-aware collapse keeps identity + warning/info visible; controls fold away.
+        let collapsedReviewHeight: CGFloat = 112 + (hasWarning ? 64 : 0) + (hasInfo ? 80 : 0)
+        let collapsedArmedHeight: CGFloat = collapsedReviewHeight + 54
         switch viewModel.phase {
         case .idle, .denied:
             return viewModel.screenGeometry.effectiveTopClearance
@@ -1263,23 +1754,29 @@ public struct NotchTouchIDPromptView: View {
             return 120 + topExtra
         case .reviewing:
             if !viewModel.isPromptFocused {
-                return (hasWarning ? 176 : 112) + topExtra
+                return collapsedReviewHeight + topExtra
             }
             return openHeight
         case .awaitingAuthentication:
             if !viewModel.isPromptFocused {
-                return (hasWarning ? 230 : 166) + topExtra
+                return collapsedArmedHeight + topExtra
             }
             return openHeight
         case .passwordEntry:
-            if !viewModel.isPromptFocused {
-                return (hasWarning ? 230 : 166) + topExtra
-            }
             let errorExtra: CGFloat = viewModel.passwordError != nil ? 20 : 0
+            if viewModel.request.confirmationMode == .passwordOnly {
+                if !viewModel.isPromptFocused {
+                    return collapsedReviewHeight + topExtra
+                }
+                return openHeight + errorExtra
+            }
+            if !viewModel.isPromptFocused {
+                return collapsedArmedHeight + topExtra
+            }
             return openHeight + 64 + errorExtra
         case .verifying:
             if !viewModel.isPromptFocused {
-                return (hasWarning ? 230 : 166) + topExtra
+                return collapsedArmedHeight + topExtra
             }
             return openHeight
         }
@@ -1391,7 +1888,7 @@ public struct NotchTouchIDPromptView: View {
             if viewModel.screenGeometry.hasHardwareNotch {
                 NotchRadialHaloOverlay(cutoutWidth: viewModel.screenGeometry.cutoutWidth,
                     cutoutHeight: viewModel.screenGeometry.cutoutHeight,
-                    featherRadius: Self.notchRadialFeatherRadius, panelBlack: Self.panelBlack)
+                    featherRadius: Self.notchRadialFeatherRadius, panelBlack: Color.black)
                     .frame(width: viewModel.screenGeometry.cutoutWidth + 30,
                            height: viewModel.screenGeometry.cutoutHeight + 15)
                     // The halo stays aligned with the hardware notch; only the portion
@@ -1418,6 +1915,9 @@ public struct NotchTouchIDPromptView: View {
         .animation(effectiveAnimation, value: viewModel.biometricFailure)
         .onAppear {
             isAuthCopyRevealed = viewModel.phase.isAuthenticationArmed
+            if viewModel.request.kind == .signatureChanged && viewModel.phase == .reviewing {
+                isDenyButtonFocused = true
+            }
         }
         .onChange(of: viewModel.phase.isAuthenticationArmed) { armed in
             if armed {
@@ -1441,6 +1941,20 @@ public struct NotchTouchIDPromptView: View {
                     isPasswordFieldFocused = true
                 }
             } else {
+                isPasswordFieldFocused = false
+            }
+            // Signature-changed prompts keep Deny as the default focus.
+            if newPhase == .reviewing && viewModel.request.kind == .signatureChanged {
+                isDenyButtonFocused = true
+            }
+        }
+        .onChange(of: viewModel.isPromptFocused) { focused in
+            if focused && viewModel.phase == .passwordEntry {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    NotchPromptWindowController.shared.panel?.makeKey()
+                    isPasswordFieldFocused = true
+                }
+            } else if !focused {
                 isPasswordFieldFocused = false
             }
         }
@@ -1600,9 +2114,12 @@ public struct NotchTouchIDPromptView: View {
         let baseOpenHeight = openHeight
         let stageWidth = openStageWidth
         let identityTop: CGFloat = 48 + topExtra
-        let warningTop: CGFloat = 104 + topExtra
-        let scopeTop: CGFloat = (warning != nil ? 168 : 104) + topExtra
-        let stepHintTop: CGFloat = baseOpenHeight - 45
+        let hasInfo = viewModel.request.hasInfoStrip
+        let infoTop: CGFloat = 104 + topExtra
+        let warningTop: CGFloat = (hasInfo ? 184 : 104) + topExtra
+        let scopeTop: CGFloat = (warning != nil ? (hasInfo ? 248 : 168) : (hasInfo ? 184 : 104)) + topExtra
+        // Three-button agent-on-Personal footer moves the step hint above the actions (`tri` in Direction 11).
+        let stepHintTop: CGFloat = baseOpenHeight - (viewModel.request.kind == .agentOnPersonal ? 74 : 45)
         let authRowTop: CGFloat = (!isFocused && isArmed) ? (baseOpenHeight - 108) : (baseOpenHeight - 60)
         let actionsTop: CGFloat = baseOpenHeight - 54
         let passwordDrawerTop: CGFloat = baseOpenHeight + 12
@@ -1615,9 +2132,10 @@ public struct NotchTouchIDPromptView: View {
         let authRowRadial = bottomElementRadialOffset(isLeading: true, rowTop: authRowTop, reduceMotion: reduceMotion)
         let actionsRadial = bottomElementRadialOffset(isLeading: false, rowTop: actionsTop, reduceMotion: reduceMotion)
 
+        let isPasswordOnlyInline = (viewModel.request.confirmationMode == .passwordOnly && isArmed)
         let activeFadeOpacity = foregroundContentOpacity
         let scopeOpacity: Double = isFocused ? 1 : 0
-        let stepHintOpacity: Double = isFocused && !isArmed ? 1 : 0
+        let stepHintOpacity: Double = (!isPasswordOnlyInline && isFocused && !isArmed) ? 1 : 0
         let actionsOpacity: Double = isFocused ? 1 : 0
 
         return ZStack(alignment: .topLeading) {
@@ -1630,7 +2148,17 @@ public struct NotchTouchIDPromptView: View {
                 .offset(x: 0, y: identityTop + identityOffsetY)
                 .opacity(activeFadeOpacity)
 
-            // 2. Optional Agent Warning (`top: 104pt + topExtra`, `height: 48pt`, `horizontal padding: 22pt`)
+            // 2a. Approval info strip (`n-info`, `top: 104pt + topExtra`, `height: 64pt`, D-36 first-use / keep-access)
+            if hasInfo {
+                approvalInfoStrip
+                    .padding(.horizontal, 22)
+                    .frame(width: stageWidth, height: 64, alignment: .center)
+                    .compositingGroup()
+                    .offset(x: 0, y: infoTop)
+                    .opacity(activeFadeOpacity)
+            }
+
+            // 2b. Optional Warning Banner (`height: 48pt`, `horizontal padding: 22pt`, below the info strip when present)
             if let warning {
                 agentWarningBanner(warning)
                     .padding(.horizontal, 22)
@@ -1641,7 +2169,7 @@ public struct NotchTouchIDPromptView: View {
                     .opacity(activeFadeOpacity)
             }
 
-            // 3. Four-Segment Session Picker (`top: 104pt` or `168pt` + `topExtra`, `height: 34pt`, `horizontal padding: 22pt`)
+            // 3. Five-Segment Session Picker (`Once · 15 min · 8 hours · Until Lock · 1 Day`, `height: 34pt`)
             if viewModel.request.showsScopeSelector {
                 sessionScopePicker
                     .padding(.horizontal, 22)
@@ -1653,53 +2181,67 @@ public struct NotchTouchIDPromptView: View {
                     .accessibilityHidden(!isFocused || isCollapsed)
             }
 
-            // 4. Step 1 Review Hint (`left: 22pt`, `top: openHeight - 45pt`)
-            reviewStepHint
-                .compositingGroup()
-                .offset(
-                    x: 22 + stepHintRadial.width,
-                    y: stepHintTop + stepHintRadial.height + (!isCollapsed && isArmed && !reduceMotion ? -4 : 0)
-                )
-                .opacity(stepHintOpacity)
-                .accessibilityHidden(!isFocused || isArmed || isCollapsed)
+            if isPasswordOnlyInline {
+                let isInlineVisible = (isFocused && !isCollapsed)
+                passwordOnlyInlineRow
+                    .padding(.horizontal, 22)
+                    .frame(width: stageWidth, alignment: .topLeading)
+                    .offset(
+                        x: 0,
+                        y: (actionsTop - 2) + (reduceMotion ? 0 : (isInlineVisible ? 0 : -8))
+                    )
+                    .opacity(isInlineVisible ? 1.0 : 0.0)
+                    .disabled(!isInlineVisible || viewModel.phase == .verifying)
+                    .accessibilityHidden(!isInlineVisible)
+            } else {
+                // 4. Step 1 Review Hint (`left: 22pt`, `top: openHeight - 45pt`)
+                reviewStepHint
+                    .compositingGroup()
+                    .offset(
+                        x: 22 + stepHintRadial.width,
+                        y: stepHintTop + stepHintRadial.height + (!isCollapsed && isArmed && !reduceMotion ? -4 : 0)
+                    )
+                    .opacity(stepHintOpacity)
+                    .accessibilityHidden(!isFocused || isArmed || isCollapsed)
 
-            // 5. Step 2 Authentication Row (`left: 22pt`, `top: openHeight - 60pt` or `openHeight - 108pt` when unfocused)
-            // IMPORTANT: Keep ancestor opacity at 1.0 and transform at identity on the container holding
-            // `LAAuthenticationView` while `isArmed == true` so macOS `NSOcclusionDetectionView` never fires `LAError.systemCancel`.
-            authenticationRow(isArmed: isArmed, isClosingFromArmed: isCollapsed && isScopeLocked)
-                .frame(height: 40, alignment: .leading)
-                .offset(
-                    x: 22 + ((isCollapsed && !isArmed) ? authRowRadial.width : 0),
-                    y: authRowTop + ((isCollapsed && !isArmed) ? authRowRadial.height : 0)
-                )
-                .allowsHitTesting(isArmed)
-                .accessibilityHidden(!isArmed)
+                // 5. Step 2 Authentication Row (`left: 22pt`, `top: openHeight - 60pt` or `openHeight - 108pt` when unfocused)
+                // IMPORTANT: Keep ancestor opacity at 1.0 and transform at identity on the container holding
+                // `LAAuthenticationView` while `isArmed == true` so macOS `NSOcclusionDetectionView` never fires `LAError.systemCancel`.
+                authenticationRow(isArmed: isArmed, isClosingFromArmed: isCollapsed && isScopeLocked)
+                    .frame(height: 40, alignment: .leading)
+                    .offset(
+                        x: 22 + ((isCollapsed && !isArmed) ? authRowRadial.width : 0),
+                        y: authRowTop + ((isCollapsed && !isArmed) ? authRowRadial.height : 0)
+                    )
+                    .allowsHitTesting(isArmed)
+                    .accessibilityHidden(!isArmed)
 
-            // 6. Main Action Buttons (`right: 22pt`, `top: openHeight - 54pt`, `height: 29pt`)
-            HStack(spacing: 8) {
-                Spacer(minLength: 0)
-                actionButtonsRow
-            }
-            .padding(.horizontal, 22)
-            .frame(width: stageWidth, height: 29, alignment: .trailing)
-            .offset(x: actionsRadial.width, y: actionsTop + actionsRadial.height)
-            .opacity(actionsOpacity)
-            .disabled(!isFocused || isCollapsed)
-            .accessibilityHidden(!isFocused || isCollapsed)
-
-            // 7. Inline Password Fallback Drawer (`left: 22pt`, `right: 22pt`, `top: openHeight + 12pt`)
-            let isPasswordVisible = (viewModel.phase == .passwordEntry && isFocused && !isCollapsed)
-            passwordDrawerRow
+                // 6. Main Action Buttons (`right: 22pt`, `top: openHeight - 54pt`, `height: 29pt`)
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    actionButtonsRow
+                }
                 .padding(.horizontal, 22)
-                .frame(width: stageWidth, alignment: .topLeading)
+                .frame(width: stageWidth, height: 29, alignment: .trailing)
+                .offset(x: actionsRadial.width, y: actionsTop + actionsRadial.height)
+                .opacity(actionsOpacity)
+                .disabled(!isFocused || isCollapsed)
+                .accessibilityHidden(!isFocused || isCollapsed)
 
-                .offset(
-                    x: 0,
-                    y: passwordDrawerTop + (reduceMotion ? 0 : (isPasswordVisible ? 0 : (isCollapsed ? -6.0 : -12)))
-                )
-                .opacity(isPasswordVisible ? 1.0 : 0.0)
-                .disabled(!isPasswordVisible)
-                .accessibilityHidden(!isPasswordVisible)
+                // 7. Inline Password Fallback Drawer (`left: 22pt`, `right: 22pt`, `top: openHeight + 12pt`)
+                let isPasswordVisible = (viewModel.phase == .passwordEntry && isFocused && !isCollapsed)
+                passwordDrawerRow
+                    .padding(.horizontal, 22)
+                    .frame(width: stageWidth, alignment: .topLeading)
+
+                    .offset(
+                        x: 0,
+                        y: passwordDrawerTop + (reduceMotion ? 0 : (isPasswordVisible ? 0 : (isCollapsed ? -6.0 : -12)))
+                    )
+                    .opacity(isPasswordVisible ? 1.0 : 0.0)
+                    .disabled(!isPasswordVisible)
+                    .accessibilityHidden(!isPasswordVisible)
+            }
         }
         .frame(width: stageWidth, height: presentationHeight, alignment: .topLeading)
     }
@@ -1769,10 +2311,10 @@ public struct NotchTouchIDPromptView: View {
     private var requesterIconTile: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(red: 35.0 / 255.0, green: 35.0 / 255.0, blue: 39.0 / 255.0))
+                .fill(Color.white.opacity(0.08))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.13), lineWidth: 1)
+                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
                 )
 
             if let appIcon = resolvedCallerIcon {
@@ -1783,35 +2325,28 @@ public struct NotchTouchIDPromptView: View {
                     .frame(width: 24, height: 24)
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             } else {
-                Text(">_")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundStyle(Color(red: 142.0 / 255.0, green: 245.0 / 255.0, blue: 192.0 / 255.0))
+                Image(systemName: "terminal")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.88))
             }
         }
         .frame(width: 36, height: 36)
     }
 
     private var keyIconTile: some View {
-        ZStack {
+        // Untinted monochrome glass tile on Liquid Glass (sign_prompt Variant 01).
+        let symbolName = viewModel.request.keyType != .personal ? "cpu" : "person"
+        return ZStack {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 34.0 / 255.0, green: 96.0 / 255.0, blue: 186.0 / 255.0), // #2260ba
-                            Color(red: 16.0 / 255.0, green: 57.0 / 255.0, blue: 120.0 / 255.0)  // #103978
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+                .fill(Color.white.opacity(0.08))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
                 )
 
-            Image(systemName: "key.horizontal.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Color.white)
+            Image(systemName: symbolName)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.90))
         }
         .frame(width: 36, height: 36)
     }
@@ -1856,7 +2391,79 @@ public struct NotchTouchIDPromptView: View {
         .accessibilityLabel("Warning: \(warning.title). \(warning.detail)")
     }
 
-    // MARK: - Four-Segment Session Picker (`Once`, `15 min`, `Until Lock`, `1 Day`)
+    // MARK: - Approval Info Strip (D-36 · `n-info`: Identity / Via / Trust breadth / Detected by)
+
+    @ViewBuilder
+    private var approvalInfoStrip: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if let info = viewModel.request.firstUseInfo, viewModel.request.kind == .agentFirstUse {
+                firstUseIdentityLine(info)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                firstUseTrustLine(info)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Button {
+                    viewModel.neverAllow()
+                } label: {
+                    Text("Always deny \(viewModel.request.callerName) on this key…")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Self.infoStripLink)
+                        .underline()
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Always deny \(viewModel.request.callerName) on this key")
+            } else if let info = viewModel.request.keepAccessInfo, viewModel.request.kind == .keepAccess {
+                keepAccessKeysLine(info)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(info.lineageNote)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Self.infoStripText)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 64, maxHeight: 64, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.white.opacity(0.06))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                )
+        )
+        .accessibilityElement(children: .contain)
+    }
+
+    private func firstUseIdentityLine(_ info: NotchFirstUseInfo) -> Text {
+        let label = Text("Identity: ").font(.system(size: 11)).foregroundColor(Self.infoStripText)
+        let identity = Text(info.identity).font(.system(size: 11, weight: .semibold)).foregroundColor(Color.white)
+        let via = Text(" · Via: \(info.via)").font(.system(size: 11)).foregroundColor(Self.infoStripText)
+        return label + identity + via
+    }
+
+    private func firstUseTrustLine(_ info: NotchFirstUseInfo) -> Text {
+        let breadth = info.isBroadApp ? " (Broad)" : ""
+        let trust = Text("Trust: \(info.trustDescription)\(breadth). ").font(.system(size: 11)).foregroundColor(Self.infoStripText)
+        let detectedLabel = Text("Detected by ").font(.system(size: 11)).foregroundColor(Self.infoStripText)
+        let detected = Text(info.detectedBy).font(.system(size: 11, weight: .semibold)).foregroundColor(Color.white)
+        let marker = Text(" ⓘ").font(.system(size: 11)).foregroundColor(Self.infoStripText)
+        return trust + detectedLabel + detected + marker
+    }
+
+    private func keepAccessKeysLine(_ info: NotchKeepAccessInfo) -> Text {
+        let count = info.affectedKeys.count
+        let label = Text("Keeps access to \(count) key\(count == 1 ? "" : "s"): ").font(.system(size: 11)).foregroundColor(Self.infoStripText)
+        let keys = Text(info.affectedKeys.joined(separator: ", ")).font(.system(size: 11, weight: .semibold)).foregroundColor(Color.white)
+        let period = Text(".").font(.system(size: 11)).foregroundColor(Self.infoStripText)
+        return label + keys + period
+    }
+
+    // MARK: - Five-Segment Session Picker (`Once`, `15 min`, `8 hours`, `Until Lock`, `1 Day`)
 
     @ViewBuilder
     private var sessionScopePicker: some View {
@@ -1882,13 +2489,14 @@ public struct NotchTouchIDPromptView: View {
         .labelsHidden()
         .frame(height: 34)
         .disabled(viewModel.isScopeLocked)
+        .help(viewModel.selectedScope.sessionReuseText)
         .accessibilityLabel("Session duration")
     }
 
     // MARK: - Review Hint & Authentication Row
 
     private var reviewStepHint: some View {
-        Text("1 of 2 · Review the session scope")
+        Text(viewModel.request.stepHintText)
             .font(.system(size: 11, weight: .regular))
             .foregroundStyle(Self.stepHintColor)
             .lineLimit(1)
@@ -1897,65 +2505,82 @@ public struct NotchTouchIDPromptView: View {
     private func authenticationRow(isArmed: Bool, isClosingFromArmed: Bool = false) -> some View {
         let failure = viewModel.biometricFailure
         let isFailedMatch = (failure == .notRecognized)
-        let titleText = failure?.title ?? "Touch ID to confirm"
-        let subtitleText = failure?.subtitle(
-            allowsPasswordFallback: viewModel.request.allowsPasswordFallback,
-            scope: viewModel.selectedScope
-        ) ?? viewModel.selectedScope.approvalSummaryText
+        let titleText = viewModel.authTitleText
+        let subtitleText = viewModel.authSubtitleText
         let effectiveIconOpacity: Double = isArmed ? foregroundContentOpacity : (isClosingFromArmed ? Self.collapsedContentOpacity : 0.0)
+        let showsWatchSensor = viewModel.request.confirmationMode.allowsCompanionWatch && isArmed
 
         return HStack(spacing: 11) {
-            Button {
-                viewModel.retryBiometrics()
-            } label: {
-                ZStack {
-                    Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [
-                                    (isFailedMatch ? Color(red: 1.0, green: 0.41, blue: 0.38) : Color(red: 1.0, green: 0.35, blue: 0.47)).opacity(0.24),
-                                    Color.clear
-                                ],
-                                center: .center,
-                                startRadius: 2,
-                                endRadius: 17
-                            )
-                        )
-                        .frame(width: 34, height: 34)
-                        .overlay(
-                            Circle()
-                                .strokeBorder(
-                                    isFailedMatch
-                                        ? Color(red: 1.0, green: 105.0 / 255.0, blue: 97.0 / 255.0).opacity(0.72)
-                                        : Color(red: 1.0, green: 90.0 / 255.0, blue: 121.0 / 255.0).opacity(0.30),
-                                    lineWidth: 1.5
+            HStack(spacing: 8) {
+                Button {
+                    viewModel.retryBiometrics()
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(
+                                RadialGradient(
+                                    colors: [
+                                        (isFailedMatch ? Color(red: 1.0, green: 0.41, blue: 0.38) : Color(red: 1.0, green: 55.0 / 255.0, blue: 95.0 / 255.0)).opacity(0.24),
+                                        Color.clear
+                                    ],
+                                    center: .center,
+                                    startRadius: 2,
+                                    endRadius: 17
                                 )
-                        )
-                        .opacity(effectiveIconOpacity)
-
-                    if isArmed, let authContext = viewModel.embeddedAuthContext {
-                        NotchEmbeddedTouchIDView(context: authContext)
-                            .id(ObjectIdentifier(authContext))
-                            .frame(width: 32, height: 32)
-                            .clipShape(Circle())
-                    } else if isArmed || isClosingFromArmed {
-                        Image(systemName: viewModel.phase == .verifying ? "checkmark" : "touchid")
-                            .font(.system(size: 17, weight: .medium))
-                            .foregroundStyle(
-                                isFailedMatch
-                                    ? Self.errorTextRed
-                                    : Color(red: 1.0, green: 122.0 / 255.0, blue: 147.0 / 255.0)
+                            )
+                            .frame(width: 34, height: 34)
+                            .overlay(
+                                Circle()
+                                    .strokeBorder(
+                                        isFailedMatch
+                                            ? Color(red: 1.0, green: 105.0 / 255.0, blue: 97.0 / 255.0).opacity(0.72)
+                                            : Color(red: 1.0, green: 55.0 / 255.0, blue: 95.0 / 255.0).opacity(0.32),
+                                        lineWidth: 1.5
+                                    )
                             )
                             .opacity(effectiveIconOpacity)
+
+                        if isArmed, let authContext = viewModel.embeddedAuthContext {
+                            NotchEmbeddedTouchIDView(context: authContext)
+                                .id(ObjectIdentifier(authContext))
+                                .frame(width: 32, height: 32)
+                                .clipShape(Circle())
+                        } else if isArmed || isClosingFromArmed {
+                            Image(systemName: viewModel.phase == .verifying ? "checkmark" : "touchid")
+                                .font(.system(size: 17, weight: .medium))
+                                .foregroundStyle(
+                                    isFailedMatch
+                                        ? Self.errorTextRed
+                                        : Color(red: 1.0, green: 55.0 / 255.0, blue: 95.0 / 255.0)
+                                )
+                                .opacity(effectiveIconOpacity)
+                        }
                     }
+                    .frame(width: 34, height: 34)
+                    .modifier(HorizontalShakeEffect(animatableData: reduceMotion ? 0 : CGFloat(viewModel.failureShakeTrigger)))
                 }
-                .frame(width: 34, height: 34)
-                .modifier(HorizontalShakeEffect(animatableData: reduceMotion ? 0 : CGFloat(viewModel.failureShakeTrigger)))
+                .buttonStyle(.plain)
+                .focusable(false)
+                .help("Touch ID sensor — click to retry")
+                .accessibilityLabel(titleText)
+
+                if showsWatchSensor {
+                    ZStack {
+                        Circle()
+                            .fill(Color.white.opacity(0.08))
+                            .overlay(
+                                Circle()
+                                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+                            )
+                        Image(systemName: "applewatch")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(Color.white.opacity(0.86))
+                    }
+                    .frame(width: 34, height: 34)
+                    .opacity(effectiveIconOpacity)
+                    .accessibilityLabel("Apple Watch approval supported")
+                }
             }
-            .buttonStyle(.plain)
-            .focusable(false)
-            .help("Touch ID sensor — click to retry")
-            .accessibilityLabel(titleText)
 
             // Custom authentication copy reveals with ~80ms delay, 280ms fade, and 6pt upward movement (no zoom when open).
             // Fades `100% => 50%` when closing from armed state.
@@ -1978,39 +2603,166 @@ public struct NotchTouchIDPromptView: View {
         .frame(height: 40, alignment: .leading)
     }
 
-    // MARK: - Main Action Buttons
+    // MARK: - Main Action Buttons (D-36 variants)
 
+    @ViewBuilder
     private var actionButtonsRow: some View {
         let isAuthenticatedStage = viewModel.phase.isAuthenticationArmed
+        let kind = viewModel.request.kind
 
-        return HStack(spacing: 8) {
-            Button("Deny") { viewModel.deny() }
-                .foregroundStyle(Self.denyBtnText)
-                .modifier(NotchActionButtonStyle(isProminent: false))
-                .accessibilityLabel("Deny request")
-
-            if viewModel.phase != .approved {
-                Button {
-                    if !isAuthenticatedStage {
-                        viewModel.continueToAuthentication()
-                    } else {
-                        viewModel.togglePasswordDrawer()
-                    }
-                } label: {
-                    Text(!isAuthenticatedStage ? "Continue →" : (viewModel.phase == .passwordEntry ? "Hide Password" : "Unlock with Password…"))
+        HStack(spacing: 8) {
+            if isAuthenticatedStage {
+                // Armed Touch ID stage: Deny stays available; the prominent action morphs into the password drawer toggle.
+                denyButton
+                if viewModel.phase != .approved {
+                    passwordDrawerToggle
                 }
-                .foregroundStyle(Color.white)
-                .modifier(NotchActionButtonStyle(isProminent: !isAuthenticatedStage))
-                .disabled(isAuthenticatedStage && (!viewModel.request.allowsPasswordFallback || viewModel.phase == .verifying))
-                .help(isAuthenticatedStage && !viewModel.request.allowsPasswordFallback ? "This key requires Touch ID; password unlock is disabled by its policy." : "")
-                .accessibilityLabel(
-                    !isAuthenticatedStage ? "Continue to authentication" : (viewModel.phase == .passwordEntry ? "Hide Password" : "Unlock with Password")
-                )
+            } else {
+                switch kind {
+                case .signing:
+                    denyButton
+                    continueButton
+                case .agentFirstUse:
+                    denyButton
+                    Button("Always Allow…") { viewModel.armAuthentication(mode: .always) }
+                        .foregroundStyle(Color.white)
+                        .modifier(NotchActionButtonStyle(isProminent: false))
+                        .accessibilityLabel("Always Allow this app")
+                    Button("Allow Once") { viewModel.armAuthentication(mode: .once) }
+                        .foregroundStyle(Color.white)
+                        .modifier(NotchActionButtonStyle(isProminent: true))
+                        .accessibilityLabel("Allow this single request")
+                case .keepAccess:
+                    Button("Review…") { viewModel.reviewAccess() }
+                        .foregroundStyle(Color.white)
+                        .modifier(NotchActionButtonStyle(isProminent: false))
+                        .accessibilityLabel("Review the affected key")
+                    denyButton
+                    Button("Keep…") { viewModel.armAuthentication(mode: .once) }
+                        .foregroundStyle(Color.white)
+                        .modifier(NotchActionButtonStyle(isProminent: true))
+                        .accessibilityLabel("Keep access for the new version")
+                case .signatureChanged:
+                    // Deny keeps the default focus; Return denies (see `handleReturnKey`).
+                    denyButton
+                    Button("Review as new app") { viewModel.reviewAsNewApp() }
+                        .foregroundStyle(Color.white)
+                        .modifier(NotchActionButtonStyle(isProminent: true))
+                        .accessibilityLabel("Review as a new app")
+                case .agentOnPersonal:
+                    Button("Never allow") { viewModel.neverAllow() }
+                        .foregroundStyle(Self.denyBtnText)
+                        .modifier(NotchActionButtonStyle(isProminent: false))
+                        .accessibilityLabel("Never allow this agent on this key")
+                    Button("Route to agent socket…") { viewModel.routeToAgentSocket() }
+                        .foregroundStyle(Color.white)
+                        .modifier(NotchActionButtonStyle(isProminent: false))
+                        .accessibilityLabel("Route this agent to the agent socket")
+                    continueButton
+                }
             }
         }
         .font(.system(size: 11, weight: .medium))
         .controlSize(.large)
         .frame(height: 29)
+    }
+
+    private var denyButton: some View {
+        Button("Deny") { viewModel.deny() }
+            .foregroundStyle(Self.denyBtnText)
+            .modifier(NotchActionButtonStyle(isProminent: false))
+            .focused($isDenyButtonFocused)
+            .accessibilityLabel("Deny request")
+    }
+
+    private var continueButton: some View {
+        Button {
+            viewModel.continueToAuthentication()
+        } label: {
+            Text("Continue →")
+        }
+        .foregroundStyle(Color.white)
+        .modifier(NotchActionButtonStyle(isProminent: true))
+        .accessibilityLabel("Continue to authentication")
+    }
+
+    private var passwordDrawerToggle: some View {
+        Button {
+            viewModel.togglePasswordDrawer()
+        } label: {
+            Text(viewModel.phase == .passwordEntry ? "Hide" : "Password…")
+        }
+        .foregroundStyle(Color.white)
+        .modifier(NotchActionButtonStyle(isProminent: false))
+        .disabled(!viewModel.request.allowsPasswordFallback || viewModel.phase == .verifying)
+        .help(!viewModel.request.allowsPasswordFallback ? "This key requires Touch ID; password unlock is disabled by its policy." : "")
+        .accessibilityLabel(viewModel.phase == .passwordEntry ? "Hide Password" : "Use Password")
+    }
+
+    // MARK: - Inline Password-Only Row (D-40 `devicePasscode`)
+
+    private var passwordOnlyInlineRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "lock")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.68))
+
+                SecureField("Mac login password", text: $viewModel.passwordText)
+                    .textFieldStyle(.plain)
+                    .controlSize(.large)
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(.primary)
+                    .focused($isPasswordFieldFocused)
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32)
+                    .background {
+                        Capsule()
+                            .fill(reduceTransparency ? Color(nsColor: .textBackgroundColor) : Color.primary.opacity(0.08))
+                    }
+                    .overlay {
+                        Capsule()
+                            .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
+                    }
+                    .overlay {
+                        if isPasswordFieldFocused {
+                            Capsule()
+                                .stroke(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 2)
+                                .padding(-3)
+                        }
+                    }
+                    .onSubmit {
+                        Task { @MainActor in
+                            _ = await viewModel.submitPassword()
+                        }
+                    }
+                    .accessibilityLabel("Mac login password")
+
+                denyButton
+                    .font(.system(size: 11, weight: .medium))
+
+                Button {
+                    Task { @MainActor in
+                        _ = await viewModel.submitPassword()
+                    }
+                } label: {
+                    Text("Sign")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .foregroundStyle(Color.white)
+                .modifier(NotchActionButtonStyle(isProminent: true))
+                .controlSize(.large)
+                .accessibilityLabel("Sign with password")
+            }
+            .frame(height: 32)
+
+            if let error = viewModel.passwordError {
+                Text(error)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(Self.errorTextRed)
+                    .padding(.leading, 4)
+            }
+        }
     }
 
     // MARK: - Inline Password Drawer
@@ -2086,12 +2838,12 @@ public struct NotchTouchIDPromptView: View {
                 .frame(width: 34, height: 34)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Approved · \(viewModel.selectedScope.title)")
+                    Text("Approved")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(Color.white)
                         .lineLimit(1)
 
-                    Text("\(viewModel.request.callerName) → \(viewModel.request.keyLabel)")
+                    Text("\(viewModel.request.callerName) · \(viewModel.approvedResultLabel)")
                         .font(.system(size: 11, weight: .regular))
                         .foregroundStyle(Self.subtitleGray)
                         .lineLimit(1)

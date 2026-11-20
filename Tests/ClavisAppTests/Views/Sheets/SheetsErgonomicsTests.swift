@@ -35,10 +35,46 @@ final class SheetsErgonomicsTests {
         let sheet = CreateKeySheet(appState: appState)
         #expect(sheet.appState === appState)
         #expect(sheet.isGenerateDisabled)
-        #expect(CreateKeySheet.defaultBiometricPolicy == .biometryCurrentSet)
+        // D-40 / E2: User Presence is the creation default; legacy biometryCurrentSet
+        // remains a model case but is not offered on new keys.
+        #expect(CreateKeySheet.defaultBiometricPolicy == .userPresence)
         #expect(CreateKeySheet.defaultPurpose == .general)
-        #expect(BiometricPolicy.allCases == [.biometryCurrentSet, .userPresence])
-        #expect(CreateKeySheet.secureEnclaveExplanation.contains("Apple Secure Enclave using NIST P-256"))
+        #expect(BiometricPolicy.allCases == [.biometryCurrentSet, .userPresence, .biometryOrPasscode, .devicePasscode])
+        #expect(CreateKeySheet.creationPolicies == [.biometryOrPasscode, .userPresence, .devicePasscode])
+        #expect(CreateKeySheet.sheetTitle == "New Key")
+        #expect(CreateKeySheet.storageFootnoteText.contains("Apple Secure Enclave (P-256)"))
+        #expect(CreateKeySheet.namePlaceholderText == "GitHub SSH")
+        #expect(CreateKeySheet.typeFootnote(for: .personal) == "Personal keys never appear on the agent socket.")
+        #expect(CreateKeySheet.typeFootnote(for: .bot) == "For AI agents. Each app is approved on first use.")
+        #expect(CreateKeySheet.confirmationFootnote(policy: .userPresence, timeout: .fifteenMinutes) == "Touch ID, Apple Watch, or password. Unlocks 15 min per app.")
+        #expect(CreateKeySheet.confirmationFootnote(policy: .biometryOrPasscode, timeout: .always) == "Touch ID (invalidated if fingerprints change). Prompts on every request.")
+        #expect(CreateKeySheet.confirmationFootnote(policy: .devicePasscode, timeout: .untilLock) == "Mac login password only. Stays unlocked until lock per app.")
+    }
+
+    @Test func testCreateKeyGenerateGating() {
+        // Disabled until name non-empty AND at least one capability on.
+        #expect(CreateKeySheet.isGenerateDisabled(name: "", sshEnabled: true, signatureEnabled: true, isCreating: false))
+        #expect(CreateKeySheet.isGenerateDisabled(name: "   ", sshEnabled: true, signatureEnabled: true, isCreating: false))
+        #expect(CreateKeySheet.isGenerateDisabled(name: "Work GitHub", sshEnabled: false, signatureEnabled: false, isCreating: false))
+        #expect(CreateKeySheet.isGenerateDisabled(name: "Work GitHub", sshEnabled: true, signatureEnabled: true, isCreating: true))
+        #expect(!CreateKeySheet.isGenerateDisabled(name: "Work GitHub", sshEnabled: true, signatureEnabled: false, isCreating: false))
+        #expect(!CreateKeySheet.isGenerateDisabled(name: "Work GitHub", sshEnabled: false, signatureEnabled: true, isCreating: false))
+    }
+
+    @Test func testCreateKeyUnlockedTimeoutOptions() {
+        // D-40: Once · 15 min · 8 hours · Until Lock · 1 Day, default 15 min.
+        #expect(CreateKeySheet.unlockedTimeoutOptions.map(\.title) == ["Once", "15 min", "8 hours", "Until Lock", "1 Day"])
+        #expect(CreateKeySheet.unlockedTimeoutOptions.map(\.period) == [.always, .fifteenMinutes, .session, .untilLock, .oneDay])
+        #expect(CreateKeySheet.defaultUnlockedTimeout == .fifteenMinutes)
+        #expect(KeyGracePeriod.defaultPeriod(for: .general) == .fifteenMinutes)
+        #expect(KeyGracePeriod.defaultPeriod(for: .agent) == .fifteenMinutes)
+    }
+
+    @Test func testCreateKeyLearnPopoverContent() {
+        #expect(CreateKeyReferenceContent.title == "New Key Reference")
+        #expect(CreateKeyReferenceContent.rows.map(\.label) == [
+            "Type", "Strict Biometrics", "User Presence", "Password", "Timeout", "Storage"
+        ])
     }
 
     @Test func testAboutProvenanceVersionAndCommit() {

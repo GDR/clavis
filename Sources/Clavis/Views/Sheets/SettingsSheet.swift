@@ -14,6 +14,11 @@ public struct SettingsView: View {
     @State private var isSettingsAuthenticated: Bool
     @State private var isAuthenticating: Bool = false
 
+    // General-pane preferences (D-37). Local persistence until the app/daemon
+    // exposes these settings (cross-cutting follow-up).
+    @AppStorage("clavis.settings.showMenuBarItem") private var showMenuBarItem = true
+    @AppStorage("clavis.settings.notifyDecisions") private var notifyOnDecisions = true
+
     // Vault Sync & Repair State (#95)
     @State private var vaultSyncReport: VaultSyncReport? = nil
     @State private var isCheckingVault: Bool = false
@@ -114,8 +119,55 @@ public struct SettingsView: View {
         }
     }
 
+    /// General-area groups for the single Settings pane (D-37). The surrounding
+    /// `Form` lives in `SettingsNavigation`, so these are plain sections.
     private var generalSettings: some View {
-                Form {
+                Group {
+                    // General (D-37 / S-12): login, menu bar, notifications
+                    SettingsGroup(title: "General") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            SettingsRow(
+                                icon: "power",
+                                iconColor: Color(red: 0.0, green: 0.48, blue: 1.0),
+                                title: ClavisUIStrings.Settings.launchAtLoginTitle,
+                                subtitle: ClavisUIStrings.Settings.launchAtLoginSubtitle
+                            ) {
+                                Toggle("", isOn: Binding(
+                                    get: { appState.launchAtLogin },
+                                    set: { appState.setLaunchAtLogin($0) }
+                                ))
+                                .toggleStyle(.switch)
+                                .labelsHidden()
+                            }
+
+                            Divider()
+
+                            SettingsRow(
+                                icon: "menubar.rectangle",
+                                iconColor: DesignTokens.accentIndigo,
+                                title: "Show menu bar item",
+                                subtitle: ""
+                            ) {
+                                Toggle("", isOn: $showMenuBarItem)
+                                    .toggleStyle(.switch)
+                                    .labelsHidden()
+                            }
+
+                            Divider()
+
+                            SettingsRow(
+                                icon: "bell.badge",
+                                iconColor: DesignTokens.accentOrange,
+                                title: "Notify on refusals and decisions",
+                                subtitle: ""
+                            ) {
+                                Toggle("", isOn: $notifyOnDecisions)
+                                    .toggleStyle(.switch)
+                                    .labelsHidden()
+                            }
+                        }
+                    }
+
                     // Control Panel Lock Section
                     SettingsGroup(title: ClavisUIStrings.PanelLock.settingsSection) {
                         VStack(alignment: .leading, spacing: 10) {
@@ -176,23 +228,6 @@ public struct SettingsView: View {
 
                 if let unlockMethodError {
                     Text(unlockMethodError).font(.callout).foregroundStyle(.secondary)
-                }
-
-                // System Startup Section
-                SettingsGroup(title: ClavisUIStrings.Settings.startupSection) {
-                    SettingsRow(
-                        icon: "power",
-                        iconColor: Color(red: 0.0, green: 0.48, blue: 1.0),
-                        title: ClavisUIStrings.Settings.launchAtLoginTitle,
-                        subtitle: ClavisUIStrings.Settings.launchAtLoginSubtitle
-                    ) {
-                        Toggle("", isOn: Binding(
-                            get: { appState.launchAtLogin },
-                            set: { appState.setLaunchAtLogin($0) }
-                        ))
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                    }
                 }
 
                 // Vault Integrity & Repair Section (#95)
@@ -344,8 +379,6 @@ public struct SettingsView: View {
                     }
                 }
                 }
-                .formStyle(.grouped)
-                .scrollContentBackground(.hidden)
                 .onAppear {
                     checkVaultSync()
                 }

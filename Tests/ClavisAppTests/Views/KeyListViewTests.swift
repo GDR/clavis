@@ -305,11 +305,20 @@ struct KeyListViewTests {
     func testContactsSidebarAndEmptyStateConstants() {
         #expect(KeyListView.sidebarWidth == 260)
         #expect(KeyListView.toolbarHeight == 52)
-        #expect(KeyListView.searchCapsuleHeight == 32)
+        #expect(KeyListView.toolbarHeight == DesignTokens.toolbarBandHeight)
+        #expect(KeyListView.searchCapsuleHeight == 34)
         #expect(KeyListView.actionControlHeight == 36)
-        #expect(KeyListView.emptyStateTitle == "A key that stays on your Mac.")
-        #expect(KeyListView.emptyStateSubtitle.contains("Secure Enclave"))
-        #expect(KeyListView.emptyStateCreateButtonTitle == "Create your first key")
+        // S-02 empty state: AppIcon emblem (72pt, radius 16) above "Welcome to Clavis".
+        #expect(KeyListView.emptyStateEmblemSize == 72)
+        #expect(KeyListView.emptyStateEmblemCornerRadius == 16)
+        #expect(KeyListView.emptyStateTitle == "Welcome to Clavis")
+        #expect(KeyListView.emptyStateSubtitle == "Clavis creates keys that never leave this Mac and signs SSH and Git requests for you and your agents.")
+        #expect(KeyListView.emptyStateSteps == [
+            "Create a key, protected by Touch ID",
+            "Add it to GitHub",
+            "Test it (about 2 minutes)"
+        ])
+        #expect(KeyListView.emptyStateCreateButtonTitle == "Create Key…")
         #expect(KeyListView.historyVerifiedTooltip.contains("linked hashes"))
     }
 
@@ -320,6 +329,7 @@ struct KeyListViewTests {
         let agentKey = keys[1]
         let gitKey = keys[2]
 
+        // S02.key-row subtitle is the capability summary only; lock state is not a row badge.
         let lockedGeneralRow = KeySidebarRowView(
             key: generalKey,
             isSelected: false,
@@ -327,7 +337,7 @@ struct KeyListViewTests {
             showDivider: true,
             onSelect: {}
         )
-        #expect(lockedGeneralRow.subtitleText == "SSH & Git · Locked")
+        #expect(lockedGeneralRow.subtitleText == "SSH & Git signing")
         #expect(lockedGeneralRow.showDivider == true)
 
         let unlockedAgentRow = KeySidebarRowView(
@@ -337,7 +347,7 @@ struct KeyListViewTests {
             showDivider: false,
             onSelect: {}
         )
-        #expect(unlockedAgentRow.subtitleText == "Agent · Unlocked")
+        #expect(unlockedAgentRow.subtitleText == "SSH authentication")
         #expect(unlockedAgentRow.showDivider == false)
 
         let lockedGitRow = KeySidebarRowView(
@@ -347,7 +357,19 @@ struct KeyListViewTests {
             showDivider: true,
             onSelect: {}
         )
-        #expect(lockedGitRow.subtitleText == "Git signing · Locked")
+        #expect(lockedGitRow.subtitleText == "Git signing")
+    }
+
+    @Test
+    func testSidebarRowGlossaryUsesAgentNeverBot() {
+        let keys = makeSampleKeys()
+        let agentPresentation = LibraryKeyPresentation(profile: keys[1].effectiveAccessProfile)
+        #expect(agentPresentation.typeTitle == "Agent")
+        #expect(agentPresentation.accessibilitySummary == "Agent, SSH")
+        #expect(!agentPresentation.accessibilitySummary.contains("Bot"))
+
+        let personalPresentation = LibraryKeyPresentation(profile: keys[0].effectiveAccessProfile)
+        #expect(personalPresentation.typeTitle == "Personal")
     }
 }
 

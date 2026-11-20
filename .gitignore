@@ -1,11 +1,12 @@
 .build/
-result
-.DS_Store
 .direnv/
-.plans/
+.DS_Store
 .planning/
+.plans/
+.ux/
 clavis-macos-*.tar.gz
 clavis-macos-*.tar.gz.sha256
+result
 clavis-macos-*.dmg
 clavis-macos-*.dmg.sha256
 *.md

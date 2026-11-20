@@ -11,30 +11,59 @@ struct NotchTouchIDPromptTests {
     @Test
     func sessionScopeTitlesDurationsAndGraceMapping() {
         let all = NotchSessionScope.allCases
-        #expect(all == [.once, .fifteenMinutes, .untilLock, .oneDay])
+        #expect(all == [.once, .fifteenMinutes, .eightHours, .untilLock, .oneDay])
         #expect(NotchSessionScope.once.title == "Once")
         #expect(NotchSessionScope.fifteenMinutes.title == "15 min")
+        #expect(NotchSessionScope.eightHours.title == "8 hours")
         #expect(NotchSessionScope.untilLock.title == "Until Lock")
         #expect(NotchSessionScope.oneDay.title == "1 Day")
 
-        #expect(NotchSessionScope.once.approvalSummaryText == "Approve this request only")
-        #expect(NotchSessionScope.fifteenMinutes.approvalSummaryText == "Approve for 15 minutes")
-        #expect(NotchSessionScope.untilLock.approvalSummaryText == "Approve until lock")
-        #expect(NotchSessionScope.oneDay.approvalSummaryText == "Approve for up to 24 hours")
+        // D-40 / N_SCOPES sub-copy shown under the Touch ID title.
+        #expect(NotchSessionScope.once.approvalSummaryText == "This single request only")
+        #expect(NotchSessionScope.fifteenMinutes.approvalSummaryText == "Reuse for 15 minutes")
+        #expect(NotchSessionScope.eightHours.approvalSummaryText == "Reuse for 8 hours")
+        #expect(NotchSessionScope.untilLock.approvalSummaryText == "Reuse until Mac sleeps or locks")
+        #expect(NotchSessionScope.oneDay.approvalSummaryText == "Reuse for 24 hours")
 
         #expect(NotchSessionScope.once.durationSeconds == nil)
         #expect(NotchSessionScope.fifteenMinutes.durationSeconds == 900)
+        #expect(NotchSessionScope.eightHours.durationSeconds == 28_800)
         #expect(NotchSessionScope.untilLock.durationSeconds == 28_800)
         #expect(NotchSessionScope.oneDay.durationSeconds == 86_400)
 
+        // D-40 mapping onto KeyGracePeriod (Once → always, 8 hours → session).
+        #expect(NotchSessionScope.once.keyGracePeriod == .always)
+        #expect(NotchSessionScope.fifteenMinutes.keyGracePeriod == .fifteenMinutes)
+        #expect(NotchSessionScope.eightHours.keyGracePeriod == .session)
+        #expect(NotchSessionScope.untilLock.keyGracePeriod == .untilLock)
+        #expect(NotchSessionScope.oneDay.keyGracePeriod == .oneDay)
+        for scope in NotchSessionScope.allCases {
+            #expect(NotchSessionScope.from(gracePeriod: scope.keyGracePeriod) == scope)
+        }
+        #expect(NotchSessionScope.from(gracePeriod: .fiveMinutes) == nil)
+
+        // D-40 session copy and post-approval toast copy.
+        #expect(NotchSessionScope.fifteenMinutes.sessionReuseText
+            == "One confirmation is reused for 15 min per requesting app; inside that window, signing is silent.")
+        #expect(NotchSessionScope.eightHours.sessionReuseText
+            == "One confirmation is reused for 8 hours per requesting app; inside that window, signing is silent.")
+        #expect(NotchSessionScope.once.sessionReuseText == "Every request asks again.")
+        #expect(NotchSessionScope.fifteenMinutes.nextRequestsToastText(callerName: "Terminal")
+            == "Next requests from Terminal won't ask for 15 min")
+        #expect(NotchSessionScope.untilLock.nextRequestsToastText(callerName: "Terminal")
+            == "Next requests from Terminal won't ask for until lock")
+        #expect(NotchSessionScope.once.nextRequestsToastText(callerName: "Terminal")
+            == "Next requests from Terminal will ask again")
+
         #expect(NotchSessionScope.once.gitSigningPromptChoice == .singleShot)
         #expect(NotchSessionScope.fifteenMinutes.gitSigningPromptChoice == .grantSession(duration: 900))
+        #expect(NotchSessionScope.eightHours.gitSigningPromptChoice == .grantSession(duration: 28_800))
         #expect(NotchSessionScope.untilLock.gitSigningPromptChoice == .grantSession(duration: 28_800))
         #expect(NotchSessionScope.oneDay.gitSigningPromptChoice == .grantSession(duration: 86_400))
     }
 
     @Test
-    func reviewStageDoesNotArmBiometricsAndAllowsScopeChangesAfterContinue() async {
+    func signingOpensDirectlyInOneStepAndScopeChangesStayLive() async {
         let request = NotchPromptRequest(
             callerName: "Terminal",
             processChain: "git → ssh-keygen",
@@ -42,7 +71,8 @@ struct NotchTouchIDPromptTests {
             keyType: .personal,
             operation: "Sign a Git commit",
             initialScope: .fifteenMinutes,
-            showsScopeSelector: true
+            showsScopeSelector: true,
+            confirmationMode: .presenceOrPassword
         )
 
         var biometricCallCount = 0
@@ -65,45 +95,34 @@ struct NotchTouchIDPromptTests {
         #expect(viewModel.phase == .idle)
         #expect(viewModel.selectedScope == .fifteenMinutes)
         #expect(!viewModel.isScopeLocked)
+        #expect(request.opensDirectlyToAuthentication)
+        #expect(request.initialExpandedPhase == .awaitingAuthentication)
 
-        // Step 1: Expand into reviewing. Biometrics must NOT be armed or invoked in .reviewing.
+        // 1-step signing expands directly into .awaitingAuthentication with no Continue step.
         viewModel.expand()
-        #expect(viewModel.phase == .reviewing)
-        #expect(!viewModel.phase.isAuthenticationArmed)
+        #expect(viewModel.phase == .awaitingAuthentication)
+        #expect(viewModel.phase.isAuthenticationArmed)
         #expect(!viewModel.isScopeLocked)
-        #expect(viewModel.embeddedAuthContext == nil)
+        #expect(viewModel.authTitleText == "Touch ID or Apple Watch")
         #expect(biometricCallCount == 0)
         #expect(capturedResult == nil)
 
-        // Scope can be changed freely during review
+        // Scope remains editable while armed.
         for scope in NotchSessionScope.allCases {
             viewModel.selectScope(scope)
             #expect(viewModel.selectedScope == scope)
         }
 
-        // Keyboard arrow navigation works during review
+        // Keyboard arrow navigation works cleanly while armed.
         viewModel.selectScope(.fifteenMinutes)
         viewModel.selectAdjacentScope(direction: 1)
-        #expect(viewModel.selectedScope == .untilLock)
+        #expect(viewModel.selectedScope == .eightHours)
 
-        // Step 2: Continue captures and locks the chosen scope and enters awaitingAuthentication
-        viewModel.continueToAuthentication()
-        #expect(viewModel.phase == .awaitingAuthentication)
-        #expect(viewModel.phase.isAuthenticationArmed)
-        #expect(!viewModel.isScopeLocked)
-        #expect(viewModel.selectedScope == .untilLock)
-        #expect(capturedResult == nil)
-
-        // The duration remains editable after Continue; approval uses the new choice.
-        viewModel.selectScope(.once)
-        viewModel.selectAdjacentScope(direction: 1)
-        #expect(viewModel.selectedScope == .fifteenMinutes)
-
-        // Now biometric authentication can authorize the request with the locked scope
+        // Biometric approval completes with the selected scope.
         await viewModel.approveWithBiometrics()
         #expect(biometricCallCount == 1)
         #expect(viewModel.phase == .approved)
-        #expect(capturedResult == .approved(scope: .fifteenMinutes, method: .biometrics))
+        #expect(capturedResult == .approved(scope: .eightHours, method: .biometrics))
     }
 
     @Test
@@ -157,7 +176,7 @@ struct NotchTouchIDPromptTests {
         let request = NotchPromptRequest(
             callerName: "Claude Code",
             processChain: "claude → git → ssh",
-            keyLabel: "Deploy Bot",
+            keyLabel: "Deploy Agent",
             keyType: .bot,
             operation: "Authenticate with SSH",
             initialScope: .once
@@ -653,15 +672,15 @@ struct NotchTouchIDPromptTests {
         #expect(agentOnPersonal.effectiveWarning?.title == "Agent requests your Personal key")
         #expect(agentOnPersonal.effectiveWarning?.detail.contains("Claude Code") == true)
 
-        let agentOnBotKey = AppKitGitSigningGracePresenter.makePromptRequest(
-            keyLabel: "Deploy Bot",
+        let agentOnAgentKey = AppKitGitSigningGracePresenter.makePromptRequest(
+            keyLabel: "Deploy Agent",
             clientDesc: "claude",
             keyType: .bot,
             operation: "Authenticate with SSH"
         )
-        #expect(agentOnBotKey.callerName == "Claude Code")
-        #expect(agentOnBotKey.keyTypeSubtitle == "Agent key")
-        #expect(agentOnBotKey.effectiveWarning == nil)
+        #expect(agentOnAgentKey.callerName == "Claude Code")
+        #expect(agentOnAgentKey.keyTypeSubtitle == "Agent key")
+        #expect(agentOnAgentKey.effectiveWarning == nil)
     }
 
     @Test
@@ -690,10 +709,8 @@ struct NotchTouchIDPromptTests {
             signedDisplayNanoseconds: 0,
             biometricAuthenticator: { true },
             onPresented: { viewModel in
-                #expect(viewModel.phase == .reviewing)
-                viewModel.selectScope(.once)
-                viewModel.continueToAuthentication()
                 #expect(viewModel.phase == .awaitingAuthentication)
+                viewModel.selectScope(.once)
                 Task { @MainActor in
                     await viewModel.approveWithBiometrics()
                 }
@@ -1012,6 +1029,579 @@ struct NotchTouchIDPromptTests {
                     hostingView.cacheDisplay(in: hostingView.bounds, to: failBitmap)
                     if let failPng = failBitmap.representation(using: .png, properties: [:]) {
                         try failPng.write(to: directory.appendingPathComponent("personal-failedBiometrics.png"))
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - D-36 Unified Approval Variants
+
+    private static func makeFirstUseRequest(isBroad: Bool = false) -> NotchPromptRequest {
+        NotchPromptRequest(
+            callerName: "Codex",
+            processChain: "codex → agent → git → ssh",
+            keyLabel: "Agent SSH",
+            keyType: .bot,
+            operation: "Authenticate with SSH",
+            kind: .agentFirstUse,
+            firstUseInfo: NotchFirstUseInfo(
+                identity: "ad-hoc · cdhash c07d…12",
+                via: "Codex › agent › git › ssh",
+                trustDescription: "Codex and everything it launches",
+                isBroadApp: isBroad
+            )
+        )
+    }
+
+    @Test
+    func agentFirstUseVariantArmsTouchIDWithGrantSubCopy() async {
+        let request = Self.makeFirstUseRequest()
+        #expect(request.showsScopeSelector == false)
+        #expect(request.permittedScopes == [.once])
+        #expect(request.hasInfoStrip)
+        #expect(request.stepHintText == "1 of 2 · Review the request")
+
+        var capturedResult: NotchPromptResult?
+        let viewModel = NotchPromptViewModel(
+            request: request,
+            initialPhase: .reviewing,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false,
+            biometricAuthenticator: { true },
+            onComplete: { capturedResult = $0 }
+        )
+        let view = NotchTouchIDPromptView(viewModel: viewModel)
+        // Info strip adds 80pt to the 214pt base; no scope picker is shown.
+        #expect(view.openHeight == 294)
+        #expect(view.islandHeight == 294)
+
+        // Always Allow… arms the Touch ID step with the permanent-grant sub-copy.
+        viewModel.armAuthentication(mode: .always)
+        #expect(viewModel.phase == .awaitingAuthentication)
+        #expect(viewModel.allowMode == .always)
+        #expect(viewModel.authTitleText == "Touch ID to Always Allow")
+        #expect(viewModel.authSubtitleText == "Permanent grant · Codex and everything it launches")
+
+        await viewModel.approveWithBiometrics()
+        #expect(viewModel.approvalDecision == .alwaysAllow(method: .biometrics))
+        #expect(viewModel.approvedResultLabel == "Always Allow")
+        #expect(capturedResult == .approved(scope: .once, method: .biometrics))
+
+        // Allow Once arms the single-request sub-copy instead.
+        let onceVM = NotchPromptViewModel(
+            request: request,
+            initialPhase: .reviewing,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false,
+            biometricAuthenticator: { true }
+        )
+        onceVM.armAuthentication(mode: .once)
+        #expect(onceVM.authTitleText == "Touch ID to Allow Once")
+        #expect(onceVM.authSubtitleText == "This single request only")
+        await onceVM.approveWithBiometrics()
+        #expect(onceVM.approvalDecision == .allowOnce(method: .biometrics))
+        #expect(onceVM.approvedResultLabel == "Allow Once")
+    }
+
+    @Test
+    func broadAppFirstUseShowsWarningAndAlwaysDenyLinkNeverAllows() {
+        let request = Self.makeFirstUseRequest(isBroad: true)
+        #expect(request.effectiveWarning?.title == "Codex is a Broad app.")
+        #expect(request.effectiveWarning?.detail == "Allow the agent itself instead.")
+        let view = NotchTouchIDPromptView(viewModel: NotchPromptViewModel(request: request, initialPhase: .reviewing))
+        // Info strip (80) + Broad warning (64) on top of the 214pt base.
+        #expect(view.openHeight == 358)
+
+        let viewModel = NotchPromptViewModel(request: request, initialPhase: .reviewing)
+        viewModel.neverAllow()
+        #expect(viewModel.approvalDecision == .neverAllow)
+        #expect(viewModel.phase == .idle)
+    }
+
+    @Test
+    func keepAccessVariantReviewDenyKeep() async {
+        let request = NotchPromptRequest(
+            callerName: "Claude Code",
+            processChain: "claude → git → ssh",
+            keyLabel: "Agent SSH",
+            keyType: .bot,
+            operation: "updated 2.1.303 → 2.2.0",
+            kind: .keepAccess,
+            keepAccessInfo: NotchKeepAccessInfo(
+                affectedKeys: ["Agent SSH", "Agent Git Signing"],
+                lineage: "claude-code (Nix)",
+                fromVersion: "2.1.303",
+                toVersion: "2.2.0"
+            )
+        )
+        #expect(request.showsScopeSelector == false)
+        #expect(request.stepHintText == "1 of 2 · Review the update")
+        #expect(request.keepAccessInfo?.affectedKeysText == "Keeps access to 2 keys: Agent SSH, Agent Git Signing.")
+        #expect(request.keepAccessInfo?.lineageNote
+            == "Same lineage (claude-code (Nix)), new identity (cdhash). Access moves to the new version after you approve.")
+
+        // Review… closes the prompt so the caller can open the affected key.
+        let reviewVM = NotchPromptViewModel(request: request, initialPhase: .reviewing)
+        reviewVM.reviewAccess()
+        #expect(reviewVM.approvalDecision == .reviewAccess)
+        #expect(reviewVM.phase == .idle)
+
+        // Keep… arms Touch ID with the version-move sub-copy.
+        let keepVM = NotchPromptViewModel(
+            request: request,
+            initialPhase: .reviewing,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false,
+            biometricAuthenticator: { true }
+        )
+        keepVM.armAuthentication(mode: .once)
+        #expect(keepVM.authTitleText == "Touch ID to Keep")
+        #expect(keepVM.authSubtitleText == "Access moves to version 2.2.0")
+        await keepVM.approveWithBiometrics()
+        #expect(keepVM.approvalDecision == .keepAccess(method: .biometrics))
+        #expect(keepVM.approvedResultLabel == "Access kept")
+    }
+
+    @Test
+    func signatureChangedDenyKeepsDefaultFocusAndReviewConvertsToFirstUse() {
+        let request = NotchPromptRequest(
+            callerName: "Claude Code",
+            processChain: "claude → git → ssh",
+            keyLabel: "Agent SSH",
+            keyType: .bot,
+            operation: "Authenticate with SSH",
+            kind: .signatureChanged,
+            signatureChangeInfo: NotchSignatureChangeInfo(
+                oldIdentity: "Team ID A1B2C3D4E5",
+                newTeamID: "Z9Y8X7W6V5"
+            )
+        )
+        #expect(request.showsScopeSelector == false)
+        #expect(request.stepHintText == "Review the signer change")
+        #expect(request.effectiveWarning?.detail
+            == "Same app lineage, different Team ID (Team ID A1B2C3D4E5 → Team ID Z9Y8X7W6V5). It's treated as a new app and has no access.")
+
+        // Deny keeps the default focus: Return denies instead of arming authentication.
+        let viewModel = NotchPromptViewModel(request: request, initialPhase: .reviewing)
+        viewModel.handleReturnKey()
+        #expect(viewModel.approvalDecision == .denied)
+        #expect(viewModel.phase == .idle)
+
+        // Review as new app converts the request into an agent first-use prompt.
+        let reviewVM = NotchPromptViewModel(request: request, initialPhase: .reviewing)
+        reviewVM.reviewAsNewApp()
+        #expect(reviewVM.approvalDecision == .reviewAsNewApp)
+        let converted = request.convertedToFirstUse(via: "claude › git › ssh")
+        #expect(converted.kind == .agentFirstUse)
+        #expect(converted.firstUseInfo?.identity == "Team ID Z9Y8X7W6V5")
+        #expect(converted.firstUseInfo?.via == "claude › git › ssh")
+        #expect(converted.effectiveWarning == nil)
+    }
+
+    @Test
+    func agentOnPersonalVariantNeverAllowRouteAndContinue() async {
+        let request = NotchPromptRequest(
+            callerName: "Claude Code",
+            processChain: "claude → git → ssh",
+            keyLabel: "GitHub SSH",
+            keyType: .personal,
+            operation: "Authenticate with SSH",
+            agentWarning: .agentOnPersonal(),
+            initialScope: .fifteenMinutes,
+            kind: .agentOnPersonal
+        )
+        #expect(request.showsScopeSelector)
+        #expect(request.effectiveWarning?.title == "Agent requests your Personal key")
+        #expect(request.effectiveWarning?.detail == "Detected by: agent marker + process chain")
+        #expect(request.stepHintText == "1 of 2 · Review the session scope")
+
+        let neverVM = NotchPromptViewModel(request: request, initialPhase: .reviewing)
+        neverVM.neverAllow()
+        #expect(neverVM.approvalDecision == .neverAllow)
+
+        let routeVM = NotchPromptViewModel(request: request, initialPhase: .reviewing)
+        routeVM.routeToAgentSocket()
+        #expect(routeVM.approvalDecision == .routeToAgentSocket)
+
+        // Continue arms Touch ID; approval carries the chosen session scope.
+        let continueVM = NotchPromptViewModel(
+            request: request,
+            initialPhase: .reviewing,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false,
+            biometricAuthenticator: { true }
+        )
+        continueVM.continueToAuthentication()
+        #expect(continueVM.phase == .awaitingAuthentication)
+        #expect(continueVM.authTitleText == "Touch ID or Apple Watch")
+        #expect(continueVM.authSubtitleText == "Reuse for 15 minutes")
+        await continueVM.approveWithBiometrics()
+        #expect(continueVM.approvalDecision == .approved(scope: .fifteenMinutes, method: .biometrics))
+        #expect(continueVM.approvedResultLabel == "15 min")
+    }
+
+    @Test
+    func queueIndicatorPrefixesStepHint() {
+        let first = Self.makeFirstUseRequest()
+        #expect(first.withQueue(position: 1, count: 1).stepHintText == "1 of 2 · Review the request")
+        // Queue prefix concatenates with the two-step hint, exactly as `showQ` does in the prototype.
+        #expect(first.withQueue(position: 1, count: 3).stepHintText == "1 of 3 · 1 of 2 · Review the request")
+        #expect(first.withQueue(position: 2, count: 3).stepHintText == "2 of 3 · 1 of 2 · Review the request")
+
+        let signing = NotchPromptRequest(
+            callerName: "Terminal", processChain: "git", keyLabel: "GitHub SSH",
+            keyType: .personal, operation: "Sign a Git commit"
+        )
+        #expect(signing.withQueue(position: 1, count: 2).stepHintText == "1 of 2 · 1 of 2 · Review the session scope")
+    }
+
+    @Test
+    func approvalVariantFocusCollapseKeepsInfoStripVisible() {
+        let viewModel = NotchPromptViewModel(request: Self.makeFirstUseRequest(), initialPhase: .reviewing)
+        let view = NotchTouchIDPromptView(viewModel: viewModel)
+        #expect(view.islandHeight == 294)
+        viewModel.setPromptFocused(false)
+        // Identity + info strip stay visible; controls fold away (112 + 80).
+        #expect(view.islandHeight == 192)
+        viewModel.setPromptFocused(true)
+        viewModel.armAuthentication(mode: .once)
+        viewModel.setPromptFocused(false)
+        #expect(view.islandHeight == 246)
+        viewModel.setPromptFocused(true)
+        viewModel.openPasswordDrawer()
+        #expect(view.islandHeight == 358)
+    }
+
+    @Test
+    func windowControllerQueueOpensNextRequestAfterDecision() async {
+        let controller = NotchPromptWindowController()
+        var presentedRequests: [NotchPromptRequest] = []
+
+        // Occupy the notch with a signing prompt so both approval requests queue behind it.
+        let signing = NotchPromptRequest(
+            callerName: "Terminal", processChain: "git → ssh-keygen",
+            keyLabel: "GitHub SSH", keyType: .personal, operation: "Sign a Git commit"
+        )
+        var signingVM: NotchPromptViewModel?
+        let signingTask = Task { @MainActor in
+            await controller.present(
+                request: signing,
+                verifyingDelayNanoseconds: 0,
+                signedDisplayNanoseconds: 0,
+                biometricAuthenticator: { true },
+                onPresented: { viewModel in signingVM = viewModel }
+            )
+        }
+        while signingVM == nil { await Task.yield() }
+
+        let first = Task { @MainActor in
+            await controller.submitApprovalRequest(
+                Self.makeFirstUseRequest(),
+                verifyingDelayNanoseconds: 0,
+                signedDisplayNanoseconds: 0,
+                biometricAuthenticator: { true },
+                onPresented: { viewModel in
+                    presentedRequests.append(viewModel.request)
+                    viewModel.armAuthentication(mode: .once)
+                    Task { @MainActor in await viewModel.approveWithBiometrics() }
+                }
+            )
+        }
+        let second = Task { @MainActor in
+            await controller.submitApprovalRequest(
+                Self.makeFirstUseRequest(),
+                verifyingDelayNanoseconds: 0,
+                signedDisplayNanoseconds: 0,
+                biometricAuthenticator: { true },
+                onPresented: { viewModel in
+                    presentedRequests.append(viewModel.request)
+                    viewModel.armAuthentication(mode: .always)
+                    Task { @MainActor in await viewModel.approveWithBiometrics() }
+                }
+            )
+        }
+        while controller.pendingApprovalCount < 3 { await Task.yield() }
+        #expect(controller.pendingApprovalCount == 3)
+
+        // Deciding the signing prompt opens the first queued approval with a "1 of 2" queue indicator.
+        signingVM?.deny()
+        _ = await signingTask.value
+        let firstDecision = await first.value
+        let secondDecision = await second.value
+        #expect(firstDecision == .allowOnce(method: .biometrics))
+        #expect(secondDecision == .alwaysAllow(method: .biometrics))
+        #expect(presentedRequests.count == 2)
+        #expect(presentedRequests[0].stepHintText == "1 of 2 · 1 of 2 · Review the request")
+        // After the first decision the next queued request opens; the last one has no queue prefix.
+        #expect(presentedRequests[1].queueCount == 1)
+        #expect(presentedRequests[1].stepHintText == "1 of 2 · Review the request")
+        #expect(controller.pendingApprovalCount == 0)
+    }
+
+    @Test
+    func presentApprovalDeliversVariantDecisionAndDismissDenies() async {
+        let controller = NotchPromptWindowController()
+        let request = NotchPromptRequest(
+            callerName: "Claude Code",
+            processChain: "claude → git → ssh",
+            keyLabel: "Agent SSH",
+            keyType: .bot,
+            operation: "Authenticate with SSH",
+            kind: .signatureChanged,
+            signatureChangeInfo: NotchSignatureChangeInfo(oldIdentity: "Team ID A1B2C3D4E5", newTeamID: "Z9Y8X7W6V5")
+        )
+        let decision = await controller.presentApproval(
+            request: request,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            onPresented: { viewModel in
+                viewModel.reviewAsNewApp()
+            }
+        )
+        #expect(decision == .reviewAsNewApp)
+
+        // Dismissing an open approval prompt denies it; queued requests are denied too.
+        let pending = Task { @MainActor in
+            await controller.submitApprovalRequest(
+                Self.makeFirstUseRequest(),
+                verifyingDelayNanoseconds: 0,
+                signedDisplayNanoseconds: 0,
+                biometricAuthenticator: { true }
+            )
+        }
+        while controller.activeViewModel == nil { await Task.yield() }
+        controller.dismiss()
+        #expect(await pending.value == .denied)
+        #expect(controller.pendingApprovalCount == 0)
+    }
+
+    @Test(arguments: [NotchPromptKind.agentFirstUse, .keepAccess, .signatureChanged, .agentOnPersonal])
+    func rendersApprovalVariantsInNotchWindow(kind: NotchPromptKind) async throws {
+        let request: NotchPromptRequest
+        switch kind {
+        case .agentFirstUse:
+            request = Self.makeFirstUseRequest(isBroad: true)
+        case .keepAccess:
+            request = NotchPromptRequest(
+                callerName: "Claude Code",
+                processChain: "claude → git → ssh",
+                keyLabel: "Agent SSH",
+                keyType: .bot,
+                operation: "updated 2.1.303 → 2.2.0",
+                kind: .keepAccess,
+                keepAccessInfo: NotchKeepAccessInfo(
+                    affectedKeys: ["Agent SSH", "Agent Git Signing"],
+                    lineage: "claude-code (Nix)",
+                    fromVersion: "2.1.303",
+                    toVersion: "2.2.0"
+                )
+            )
+        case .signatureChanged:
+            request = NotchPromptRequest(
+                callerName: "Claude Code",
+                processChain: "claude → git → ssh",
+                keyLabel: "Agent SSH",
+                keyType: .bot,
+                operation: "Authenticate with SSH",
+                kind: .signatureChanged,
+                signatureChangeInfo: NotchSignatureChangeInfo(oldIdentity: "Team ID A1B2C3D4E5", newTeamID: "Z9Y8X7W6V5")
+            )
+        case .agentOnPersonal:
+            request = NotchPromptRequest(
+                callerName: "Claude Code",
+                processChain: "claude → git → ssh",
+                keyLabel: "GitHub SSH",
+                keyType: .personal,
+                operation: "Authenticate with SSH",
+                agentWarning: .agentOnPersonal(),
+                initialScope: .fifteenMinutes,
+                kind: .agentOnPersonal
+            )
+        case .signing:
+            request = NotchPromptRequest(
+                callerName: "Terminal", processChain: "git → ssh-keygen",
+                keyLabel: "GitHub SSH", keyType: .personal, operation: "Sign a Git commit"
+            )
+        }
+
+        let viewModel = NotchPromptViewModel(
+            request: request,
+            initialPhase: .reviewing,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false
+        )
+        let rootView = NotchTouchIDPromptView(viewModel: viewModel)
+            .environment(\.colorScheme, .dark)
+            .frame(width: 640, height: 480, alignment: .top)
+            .background(Color(red: 0.14, green: 0.22, blue: 0.34))
+        let hostingView = NSHostingView(rootView: rootView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 640, height: 480)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.contentView = hostingView
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+
+        hostingView.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        hostingView.layoutSubtreeIfNeeded()
+
+        let bitmap = try #require(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
+        hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+        let png = try #require(bitmap.representation(using: .png, properties: [:]))
+        #expect(png.count > 2_000)
+
+        if ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW"] == "1" {
+            let path = ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW_DIR"] ?? "/private/tmp/clavis-notch-review"
+            let directory = URL(fileURLWithPath: path)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try png.write(to: directory.appendingPathComponent("approval-\(kind.rawValue).png"))
+        }
+    }
+
+    @Test
+    func confirmationModesMapPoliciesAndDriveOneStepBehavior() async {
+        // Policy -> confirmation mode + fallback flag mapping (D-40)
+        #expect(NotchConfirmationMode(biometricPolicy: .biometryOrPasscode) == .touchIDOrPassword)
+        #expect(NotchConfirmationMode.allowsPasswordFallback(for: .biometryOrPasscode))
+        #expect(NotchConfirmationMode(biometricPolicy: .userPresence) == .presenceOrPassword)
+        #expect(NotchConfirmationMode.allowsPasswordFallback(for: .userPresence))
+        #expect(NotchConfirmationMode(biometricPolicy: .devicePasscode) == .passwordOnly)
+        #expect(NotchConfirmationMode.allowsPasswordFallback(for: .devicePasscode))
+        #expect(NotchConfirmationMode(biometricPolicy: .biometryCurrentSet) == .touchIDOrPassword)
+        #expect(!NotchConfirmationMode.allowsPasswordFallback(for: .biometryCurrentSet))
+
+        // Password-only expands straight to .passwordEntry, keeps 214pt focused height,
+        // and clears + collapses to 112pt when unfocused without reverting to .awaitingAuthentication.
+        let pwRequest = NotchPromptRequest(
+            callerName: "Terminal",
+            processChain: "git → ssh",
+            keyLabel: "Password Key",
+            keyType: .personal,
+            operation: "Authenticate with SSH",
+            initialScope: .fifteenMinutes,
+            confirmationMode: .passwordOnly
+        )
+        #expect(pwRequest.initialExpandedPhase == .passwordEntry)
+        let pwVM = NotchPromptViewModel(
+            request: pwRequest,
+            initialPhase: .idle,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false,
+            passwordVerifier: { $0 == "secret" }
+        )
+        let pwView = NotchTouchIDPromptView(viewModel: pwVM)
+        pwVM.expand()
+        #expect(pwVM.phase == .passwordEntry)
+        #expect(pwVM.authTitleText == "Mac login password")
+        #expect(pwView.islandHeight == 214)
+
+        pwVM.passwordText = "partial"
+        pwVM.setPromptFocused(false)
+        #expect(pwVM.phase == .passwordEntry)
+        #expect(pwVM.passwordText.isEmpty)
+        #expect(pwView.islandHeight == 112)
+
+        pwVM.setPromptFocused(true)
+        #expect(pwVM.phase == .passwordEntry)
+        #expect(pwView.islandHeight == 214)
+
+        // Wrong password shows password-only error copy & expands height by 20pt.
+        pwVM.passwordText = "bad"
+        #expect(await pwVM.submitPassword() == false)
+        #expect(pwVM.passwordError == "Incorrect password. Try again.")
+        #expect(pwView.islandHeight == 234)
+
+        pwVM.passwordText = "secret"
+        #expect(await pwVM.submitPassword() == true)
+        #expect(pwVM.phase == .approved)
+
+        // Strict Touch ID mode disables companion Apple Watch.
+        let strictRequest = NotchPromptRequest(
+            callerName: "Terminal",
+            processChain: "git → ssh",
+            keyLabel: "Strict Key",
+            keyType: .personal,
+            operation: "Sign a Git commit",
+            confirmationMode: .touchIDOrPassword
+        )
+        #expect(!strictRequest.confirmationMode.allowsCompanionWatch)
+        #expect(strictRequest.initialExpandedPhase == .awaitingAuthentication)
+        let strictVM = NotchPromptViewModel(request: strictRequest, initialPhase: .idle)
+        strictVM.expand()
+        #expect(strictVM.phase == .awaitingAuthentication)
+        #expect(strictVM.authTitleText == "Touch ID to sign")
+    }
+
+    @Test(arguments: NotchConfirmationMode.allCases)
+    func rendersAllThreeConfirmationModesInVariant01(mode: NotchConfirmationMode) async throws {
+        let request = NotchPromptRequest(
+            callerName: "Terminal",
+            callerPath: "/System/Applications/Utilities/Terminal.app",
+            processChain: "Terminal › zsh › ssh",
+            keyLabel: "GitHub SSH",
+            keyType: .personal,
+            operation: "Authenticate with SSH",
+            initialScope: .fifteenMinutes,
+            allowsPasswordFallback: true,
+            confirmationMode: mode
+        )
+        let viewModel = NotchPromptViewModel(
+            request: request,
+            initialPhase: request.initialExpandedPhase,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false
+        )
+        let rootView = NotchTouchIDPromptView(viewModel: viewModel)
+            .environment(\.colorScheme, .dark)
+            .frame(width: 640, height: 320, alignment: .top)
+            .background(Color(red: 0.14, green: 0.22, blue: 0.34))
+        let hostingView = NSHostingView(rootView: rootView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 640, height: 320)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 320),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.contentView = hostingView
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+
+        hostingView.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        hostingView.layoutSubtreeIfNeeded()
+
+        let bitmap = try #require(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
+        hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+        let png = try #require(bitmap.representation(using: .png, properties: [:]))
+        #expect(png.count > 2_000)
+
+        if ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW"] == "1" {
+            let path = ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW_DIR"] ?? "/private/tmp/clavis-notch-review"
+            let directory = URL(fileURLWithPath: path)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let name = mode == .touchIDOrPassword ? "notch-strict" : (mode == .presenceOrPassword ? "notch-presence" : "notch-password")
+            try png.write(to: directory.appendingPathComponent("\(name).png"))
+            if mode == .passwordOnly {
+                viewModel.setPromptFocused(false)
+                hostingView.layoutSubtreeIfNeeded()
+                try await Task.sleep(nanoseconds: 50_000_000)
+                hostingView.layoutSubtreeIfNeeded()
+                if let ufBitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) {
+                    hostingView.cacheDisplay(in: hostingView.bounds, to: ufBitmap)
+                    if let ufPng = ufBitmap.representation(using: .png, properties: [:]) {
+                        try ufPng.write(to: directory.appendingPathComponent("notch-password-unfocused.png"))
                     }
                 }
             }

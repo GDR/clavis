@@ -6,8 +6,10 @@ import Testing
 @testable import ClavisTestSupport
 
 @Suite @MainActor struct SettingsRenderingTests {
-    @Test(arguments: ["General", "Bots"], [0, 1, 2, 3])
-    func modalRendersWithFloatingNavigation(tab: String, appearance: Int) async throws {
+    /// D-37: Settings is a single scrollable pane (no tab bar). Render it across
+    /// appearances with a populated unified Applications & Agents outline.
+    @Test(arguments: [0, 1, 2, 3])
+    func singlePaneRendersAcrossAppearances(appearance: Int) async throws {
         let dark = appearance & 1 != 0
         let accessibility = appearance & 2 != 0
         let fixture = try ClavisTestFixture()
@@ -16,7 +18,6 @@ import Testing
             let suite = "clavis.settings.render.\(UUID().uuidString)"
             let defaults = try #require(UserDefaults(suiteName: suite))
             defer { defaults.removePersistentDomain(forName: suite) }
-            defaults.set(tab, forKey: "clavis.settings.tab")
             let agent = MockAgentController()
             agent.stubbedApplicationRegistry = ApplicationRegistrySnapshot(applications: try [
                 "Claude Code", "Codex", "Antigravity", "OpenCode"
@@ -49,7 +50,7 @@ import Testing
             if ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW"] == "1" {
                 let directory = URL(fileURLWithPath: "/private/tmp/clavis-settings-review")
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                try png.write(to: directory.appendingPathComponent("\(tab.lowercased())-\(dark ? "dark" : "light")-\(accessibility ? "accessible" : "standard").png"))
+                try png.write(to: directory.appendingPathComponent("single-pane-\(dark ? "dark" : "light")-\(accessibility ? "accessible" : "standard").png"))
             }
         }
     }

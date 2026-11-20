@@ -129,6 +129,8 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         case nil: output.append(0)
         case .userPresence: output.append(1)
         case .biometryCurrentSet: output.append(2)
+        case .biometryOrPasscode: output.append(3)
+        case .devicePasscode: output.append(4)
         }
         if version >= 3 {
             output.append(accessProfile.type == .personal ? 1 : 2)
@@ -214,6 +216,8 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         case 0: biometric = nil
         case 1: biometric = .userPresence
         case 2: biometric = .biometryCurrentSet
+        case 3: biometric = .biometryOrPasscode
+        case 4: biometric = .devicePasscode
         default: throw PrivateKeyRecordError.corruptedRecord("Unknown biometric policy identifier")
         }
 

@@ -12,14 +12,14 @@ struct LibrarySidebarTests {
         #expect(presentation.capabilities == ["SSHSIG"])
     }
 
-    @Test func generalAndBotCapabilitiesRemainDistinctFromType() {
+    @Test func generalAndAgentCapabilitiesRemainDistinctFromType() {
         let personal = LibraryKeyPresentation(purpose: .general)
         let bot = LibraryKeyPresentation(purpose: .agent)
         #expect(personal.typeTitle == "Personal")
-        #expect(bot.typeTitle == "Bot")
+        #expect(bot.typeTitle == "Agent")
         #expect(personal.capabilities == ["SSH", "SSHSIG"])
         #expect(bot.capabilities == ["SSH"])
-        #expect(bot.accessibilitySummary == "Bot, SSH")
+        #expect(bot.accessibilitySummary == "Agent, SSH")
         #expect(personal.tileSymbol == "person.fill")
         #expect(bot.tileSymbol == "cpu")
         #expect(personal.purposeSummary == "SSH & Git signing")
@@ -56,8 +56,6 @@ struct LibrarySidebarTests {
         let interactiveFooter = LibraryAgentStatus(
             active: true,
             requestState: .accepting,
-            onTogglePause: {},
-            onLock: {},
             onOpenSettings: { settingsOpened = true }
         )
         _ = interactiveFooter.body

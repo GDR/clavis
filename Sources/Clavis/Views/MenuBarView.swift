@@ -2,26 +2,25 @@ import SwiftUI
 import AppKit
 import ClavisCore
 
+/// S01.menu: status, recent signing events, Copy public key, Lock Now, New Key…, Open Clavis.
+/// The pause/resume (kill switch) controls are gone (D-38); the request-pause state model stays
+/// and is still reflected in the passive status line.
 @MainActor
 public struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject var lock: PanelLockController
-    @State private var confirmingRequestPolicy = false
+    @StateObject private var history = HistoryViewModel()
+    @State private var pendingApprovals = NotchPromptWindowController.shared.pendingApprovalCount
+
+    /// Recent signing decisions shown in the menu (prototype: the five latest non-config events).
+    static let recentEventLimit = 5
+    static let lockNowTitle = "Lock Now"
+    static let copyPublicKeyTitle = "Copy public key"
+    static let showAllHistoryTitle = "Show All History"
+    static let noEventsTitle = "No signing events yet"
 
     public init(lock: PanelLockController? = nil) {
         self.lock = lock ?? .shared
-    }
-
-    /// The panel lock protects key metadata; it does not stop background signing.
-    func sessions(at date: Date) -> [MenuBarSession] {
-        MenuBarSession.active(
-            gitGraces: appState.activeGitGraces.isEmpty
-                ? appState.activeGitGrace.map { [$0] } ?? []
-                : appState.activeGitGraces,
-            agentSessions: appState.agentSessions,
-            keys: appState.keys,
-            at: date
-        )
     }
 
     public var body: some View {
@@ -33,84 +32,69 @@ public struct MenuBarView: View {
                 errorBanner(message)
             }
 
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                let activeSessions = sessions(at: context.date)
-                VStack(alignment: .leading, spacing: 1) {
-                    if lock.isEffectivelyLocked {
-                        emptyState(ClavisUIStrings.MenuBar.unlockToViewSessions)
-                    } else if activeSessions.isEmpty {
-                        emptyState(ClavisUIStrings.MenuBar.noActiveSessions)
-                    } else {
-                        // Keep long lists bounded while every authorization remains accessible.
-                        ScrollView {
-                            VStack(spacing: 1) {
-                                ForEach(activeSessions) { session in
-                                    MenuBarSessionRow(session: session, date: context.date) {
-                                        endSession(session)
-                                    }
-                                }
-                            }
-                        }
-                        .frame(height: min(CGFloat(activeSessions.count) * 49, 294))
-                    }
-
-                    MenuBarActionItem(
-                        title: ClavisUIStrings.MenuBar.lockAllKeys,
-                        icon: "lock"
-                    ) {
-                        appState.lockNow()
-                        appState.refreshAgentSessions()
-                    }
-                    .disabled(activeSessions.isEmpty)
+            if pendingApprovals > 0 {
+                Button {
+                    NotchPromptWindowController.shared.presentNextApprovalIfIdle()
+                    NotchPromptWindowController.shared.focusPromptWindow()
+                    WindowManager.shared.dismissMenuBarExtra()
+                } label: {
+                    Text("Answer pending (\(pendingApprovals))")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.accentColor)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
             }
+
+            recentEvents
+
+            Button(action: openAllHistory) {
+                Text(Self.showAllHistoryTitle)
+                    .font(.system(size: 12))
+                    .foregroundColor(.accentColor)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
 
             separator
 
-            MenuBarActionItem(
-                title: appState.requestPolicy.isPaused ? "Resume Requests…" : "Activate Kill Switch…",
-                icon: appState.requestPolicy.isPaused ? "play.circle" : "stop.circle"
-            ) { confirmingRequestPolicy = true }
-            .disabled(appState.requestPolicy.isBusy)
+            copyPublicKeyMenu
 
             MenuBarActionItem(
-                title: appState.isSocketActive
-                    ? ClavisUIStrings.MenuBar.restartAgent
-                    : ClavisUIStrings.MenuBar.startAgent,
-                icon: appState.isSocketActive ? "arrow.clockwise" : "play",
-                keyEquivalent: appState.isSocketActive ? "r" : "s",
-                modifiers: [.command, .shift]
+                title: Self.lockNowTitle,
+                icon: "lock",
+                shortcut: "⌘L"
             ) {
-                if appState.isSocketActive {
-                    appState.restartAgent()
-                } else {
-                    appState.startAgent()
-                }
-                appState.updateGitGraceState()
-                appState.refreshAgentSessions()
+                WindowManager.shared.dismissMenuBarExtra()
+                PanelLockController.shared.lock(reason: .lockNow)
+            }
+
+            MenuBarActionItem(
+                title: ClavisUIStrings.MenuBar.newKey,
+                icon: "plus",
+                shortcut: "⌘N"
+            ) {
+                WindowManager.shared.dismissMenuBarExtra()
+                WindowManager.shared.openKeyManager(sheet: .create)
             }
 
             MenuBarActionItem(
                 title: ClavisUIStrings.MenuBar.openClavis,
                 icon: "macwindow",
-                keyEquivalent: "o"
+                shortcut: "⌘O"
             ) {
+                WindowManager.shared.dismissMenuBarExtra()
                 WindowManager.shared.openKeyManager()
-            }
-
-            separator
-
-            MenuBarActionItem(
-                title: ClavisUIStrings.MenuBar.quit,
-                icon: "power",
-                keyEquivalent: "q"
-            ) {
-                confirmQuit()
             }
         }
         .padding(6)
         .frame(width: 306)
         .modifier(MenuBarBackgroundModifier())
+        .onReceive(NotchPromptWindowController.shared.queueChanges) { pendingApprovals = $0 }
         .background(
             WindowAccessor { window in
                 window.isOpaque = false
@@ -119,39 +103,34 @@ public struct MenuBarView: View {
                 WindowManager.shared.menuBarWindow = window
             }
         )
-        .onAppear { appState.refresh() }
+        .onAppear {
+            appState.refresh()
+            history.query.limit = Self.recentEventLimit
+            history.updateKeys(appState.keys)
+            if history.records.isEmpty && !history.isLoading { history.reload() }
+        }
+        .onChange(of: appState.keys) { history.updateKeys($0) }
         .task { await appState.requestPolicy.refresh() }
-        .confirmationDialog(appState.requestPolicy.isPaused ? "Resume requests?" : "Activate kill switch?", isPresented: $confirmingRequestPolicy) {
-            Button(appState.requestPolicy.isPaused ? "Resume Requests" : "Activate Kill Switch", role: .destructive) {
-                Task { await appState.setRequestsPaused(!appState.requestPolicy.isPaused) }
-            }
-        } message: {
-            Text(appState.requestPolicy.isPaused
-                 ? "Authentication is required. Revoked approvals will not be restored."
-                 : "Revoke approvals and pause new requests. Existing SSH connections may remain open.")
-        }
-        .task {
-            // Snapshots come from the agent; the one-second timeline only updates display.
-            while !Task.isCancelled {
-                appState.updateGitGraceState()
-                appState.refreshAgentSessions()
-                do {
-                    try await Task.sleep(nanoseconds: 5_000_000_000)
-                } catch {
-                    break
-                }
-            }
-        }
     }
+
+    // MARK: - Status
 
     private var header: some View {
         HStack(alignment: .center) {
             Text(ClavisUIStrings.Common.appName)
                 .font(.system(size: 13, weight: .semibold))
             Spacer(minLength: 12)
+            if pendingApprovals > 0 {
+                Text("\(pendingApprovals)")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(DesignTokens.accentOrange))
+            }
             HStack(spacing: 6) {
                 Circle()
-                    .fill(appState.isSocketActive ? MenuBarSessionRow.keyColor : Color.secondary)
+                    .fill(appState.isSocketActive ? DesignTokens.accentGreen : Color.secondary)
                     .frame(width: 6, height: 6)
                     .accessibilityHidden(true)
                 Text(appState.isSocketActive
@@ -170,15 +149,90 @@ public struct MenuBarView: View {
         Divider().padding(.horizontal, 9)
     }
 
-    private func emptyState(_ message: String) -> some View {
-        Text(message)
-            .font(.system(size: 12))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.leading, 34)
-            .padding(.trailing, 9)
-            .padding(.vertical, 12)
+    // MARK: - Recent events
+
+    /// Signing decisions only (config/lifecycle records are not signing events).
+    private var recentSigningRecords: [AuditRecord] {
+        Self.recentSigningRecords(from: history.records, limit: Self.recentEventLimit)
     }
+
+    static func recentSigningRecords(from records: [AuditRecord], limit: Int) -> [AuditRecord] {
+        records
+            .filter { $0.event.type == .signature || $0.event.type == .suppressed }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    @ViewBuilder
+    private var recentEvents: some View {
+        let records = recentSigningRecords
+        if records.isEmpty {
+            Text(Self.noEventsTitle)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 8)
+        } else {
+            VStack(spacing: 1) {
+                ForEach(records, id: \.seq) { record in
+                    MenuBarEventRow(record: record, viewModel: history, keys: appState.keys) {
+                        openHistory(for: record)
+                    }
+                }
+            }
+        }
+    }
+
+    private func openHistory(for record: AuditRecord) {
+        WindowManager.shared.dismissMenuBarExtra()
+        WindowManager.shared.openKeyManager()
+        appState.openHistoryPane(forKeyFingerprint: record.event.keyFingerprint)
+    }
+
+    private func openAllHistory() {
+        WindowManager.shared.dismissMenuBarExtra()
+        WindowManager.shared.openKeyManager()
+        appState.openHistoryPane()
+    }
+
+    // MARK: - Copy public key
+
+    private var copyPublicKeyMenu: some View {
+        Menu {
+            if appState.keys.isEmpty {
+                Text(ClavisUIStrings.MenuBar.noKeysAvailable)
+            }
+            ForEach(appState.keys) { key in
+                Button(key.label) {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(key.publicKeyOpenSSH, forType: .string)
+                }
+            }
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .frame(width: 16)
+                Text(Self.copyPublicKeyTitle)
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundColor(.primary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .accessibilityLabel(Self.copyPublicKeyTitle)
+    }
+
+    // MARK: - Error banner
 
     private func errorBanner(_ message: String) -> some View {
         HStack(alignment: .top, spacing: 9) {
@@ -197,95 +251,78 @@ public struct MenuBarView: View {
         .foregroundStyle(.red)
         .padding(9)
     }
-
-    private func endSession(_ session: MenuBarSession) {
-        switch session.target {
-        case .git(let keyLabel):
-            appState.revokeGitGrace(for: keyLabel)
-            appState.refreshAgentSessions()
-        case .agent(let sessionID):
-            appState.endAgentSession(id: sessionID)
-        }
-    }
-
-    private func confirmQuit() {
-        WindowManager.shared.dismissMenuBarExtra()
-        let alert = NSAlert()
-        alert.messageText = ClavisUIStrings.MenuBar.quitConfirmationTitle
-        alert.informativeText = appState.isSocketActive
-            ? ClavisUIStrings.MenuBar.quitConfirmationDetailsWithAgent
-            : ClavisUIStrings.MenuBar.quitConfirmationDetailsSimple
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: ClavisUIStrings.MenuBar.quit)
-        alert.addButton(withTitle: ClavisUIStrings.Common.cancel)
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
-            NSApplication.shared.terminate(nil)
-        }
-    }
 }
 
-struct MenuBarSessionRow: View {
-    let session: MenuBarSession
-    let date: Date
-    let onLock: () -> Void
+/// One recent signing event: ✓/✕ mark + key · requesting app · time. Clicking opens History
+/// scoped to the event's key.
+struct MenuBarEventRow: View {
+    let record: AuditRecord
+    @ObservedObject var viewModel: HistoryViewModel
+    let keys: [SSHKeyInfo]
+    let onOpen: () -> Void
 
-    static var keyColor: Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
-            appearance.isDarkMode
-                ? NSColor(srgbRed: 0.61, green: 0.85, blue: 0.69, alpha: 1)
-                : NSColor(srgbRed: 0.32, green: 0.57, blue: 0.39, alpha: 1)
-        })
+    @State private var isHovered = false
+
+    private var event: AuditEvent { record.event }
+    private var result: HistoryResult { HistoryResult(event.result) }
+
+    private var keyName: String {
+        if let fp = event.keyFingerprint,
+           let current = keys.first(where: { $0.fingerprint == fp }) {
+            return current.label
+        }
+        let sens = viewModel.resolvedSensitive(for: record)
+        if let label = sens.keyLabel, !label.isEmpty { return label }
+        if let fp = event.keyFingerprint { return String(fp.prefix(16)) }
+        return "Unknown key"
     }
 
-    private var purpose: String {
-        switch session.purpose {
-        case .general: return ClavisUIStrings.MenuBar.purposeSSHAndGit
-        case .gitSigningOnly: return ClavisUIStrings.MenuBar.purposeGit
-        case .agent: return ClavisUIStrings.KeyPurposeStrings.agentTitle
-        }
+    private var callerName: String? {
+        let sens = viewModel.resolvedSensitive(for: record)
+        guard let name = sens.callerName, !name.isEmpty else { return nil }
+        return name
+    }
+
+    private var timeText: String {
+        event.time.formatted(Date.FormatStyle(date: .omitted, time: .shortened))
     }
 
     var body: some View {
-        HStack(spacing: 9) {
-            Image(systemName: "key")
-                .font(.system(size: 14))
-                .foregroundStyle(Self.keyColor)
-                .frame(width: 16)
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(session.keyLabel)
-                    .font(.system(size: 13, weight: .medium))
+        Button(action: onOpen) {
+            HStack(spacing: 7) {
+                Image(systemName: result == .approved ? "checkmark" : "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(result == .approved ? DesignTokens.accentGreen : .red)
+                    .frame(width: 12)
+                    .accessibilityHidden(true)
+                Text(keyName)
+                    .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(purpose)
-                    .font(.system(size: 11))
+                if let callerName {
+                    Text("· \(callerName)")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 6)
+                Text(timeText)
+                    .font(.system(size: 11).monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .fixedSize()
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .help(session.toolName.map { "\(session.keyLabel) · \(purpose) · \($0)" } ?? "\(session.keyLabel) · \(purpose)")
-
-            Text(session.remainingTime(at: date))
-                .font(.system(size: 12).monospacedDigit())
-                .foregroundStyle(.secondary)
-                .fixedSize()
-                .frame(minWidth: 43, alignment: .trailing)
-                .accessibilityLabel(ClavisUIStrings.MenuBar.timeRemaining(session.remainingTime(at: date)))
-
-            Button(action: onLock) {
-                Image(systemName: "lock")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.borderless)
-            .help(ClavisUIStrings.MenuBar.lockKey(session.keyLabel))
-            .accessibilityLabel(ClavisUIStrings.MenuBar.lockKey(session.keyLabel))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
+            )
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 9)
-        .frame(height: 49)
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("\(keyName) · \(result.title) · \(timeText)")
+        .accessibilityLabel("\(keyName), \(result.title), \(timeText)")
     }
 }
 
