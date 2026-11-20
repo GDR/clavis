@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import ClavisCore
+import ClavisPromptUI
 
 guard PlatformSupport.hasSecureEnclave else {
     FileHandle.standardError.write(Data((PlatformSupport.unsupportedMessage + "\n").utf8))
@@ -53,6 +55,20 @@ agentServer.onPermanentListenerFailure = {
 }
 let resealer = AuditResealer()
 
+let hasGUISession = GitSigningPrompt.isGUISessionActive
+var notchAuthenticator: NotchSigningPromptAuthenticator?
+if hasGUISession {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    SystemEventMonitor.defaultSleepObserverFactory = { AppKitSleepObserver() }
+    SystemEventMonitor.shared.setSleepObserver(AppKitSleepObserver())
+    GitSigningGraceManager.shared.setPresenter(AppKitGitSigningGracePresenter())
+    let authenticator = NotchSigningPromptAuthenticator()
+    notchAuthenticator = authenticator
+    server.setSigningPromptPresenter(authenticator)
+    agentServer.setSigningPromptPresenter(authenticator)
+}
+
 do {
     try AgentServers.startAll(personal: server, agent: agentServer)
     resealer.start()
@@ -62,8 +78,12 @@ do {
         AuditRecorder.shared.record(AuditEvent(type: .lock, result: .info, reason: .screenLocked))
     }
     AgentSessionRegistry.shared.installSystemEventHandler()
-    withExtendedLifetime(terminationSignalSources) {
-        RunLoop.main.run()
+    withExtendedLifetime((terminationSignalSources, notchAuthenticator)) {
+        if hasGUISession {
+            NSApplication.shared.run()
+        } else {
+            RunLoop.main.run()
+        }
     }
 } catch {
     ClavisLogger.log(.agentDaemon, "Failed to start SSH agent server: \(error.localizedDescription)")
