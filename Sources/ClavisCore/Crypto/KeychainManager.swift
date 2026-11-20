@@ -725,7 +725,7 @@ public class KeychainManager {
         }
     }
 
-    /// Authorizes a 5-minute Git signing grant via Touch ID, returning an active grant.
+    /// Authorizes a Git signing grant via Touch ID or an already-evaluated `LAContext`, returning an active grant.
     @discardableResult
     internal func authorizeGitSigningGrant(
         key: SSHKeyInfo,
@@ -733,7 +733,8 @@ public class KeychainManager {
         clientIdentity: String,
         duration: TimeInterval = 300.0,
         maxOperations: Int = 200,
-        approvedProcess: GitApprovedProcess? = nil
+        approvedProcess: GitApprovedProcess? = nil,
+        existingContext: LAContext? = nil
     ) throws -> GitSigningGrant {
         guard key.effectiveAccessProfile.capabilities.signature else {
             if key.purpose == .agent { throw KeyPurposeError.notAllowedOnThisPath(.agent) }
@@ -743,6 +744,7 @@ public class KeychainManager {
         return try withVerifiedPrivateKeyRecord(
             for: key,
             prompt: prompt,
+            existingContext: existingContext,
             auditOnAuthFailure: false
         ) { context, record in
             try record.accessProfile.require(.signature)

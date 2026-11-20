@@ -39,6 +39,7 @@ public final class SigningPolicyEvaluator {
     private let applicationAccess: ApplicationRequestAuthorizing
     private let stateLock = NSLock()
     private var lastRateLimitAlertTimes: [String: Date] = [:]
+    private var _signingPromptPresenter: SigningPromptAuthenticating?
 
     private struct PendingSignAudit {
         var result: AuditResult = .failed
@@ -77,6 +78,7 @@ public final class SigningPolicyEvaluator {
         auditRecorder: AuditRecording = AuditRecorder.shared,
         agentPolicies: AgentPolicyStoring = KeychainAgentPolicyStore(),
         authenticator: UserAuthenticating = LocalUserAuthenticator(),
+        signingPromptPresenter: SigningPromptAuthenticating? = nil,
         notificationPoster: @escaping (String, [String: String]) -> Void = { name, userInfo in
             DistributedNotificationCenter.default().postNotificationName(
                 NSNotification.Name(name),
@@ -95,8 +97,30 @@ public final class SigningPolicyEvaluator {
         self.auditRecorder = auditRecorder
         self.agentPolicies = agentPolicies
         self.authenticator = authenticator
+        self._signingPromptPresenter = signingPromptPresenter
         self.notificationPoster = notificationPoster
         self.peerProcessValidator = peerProcessValidator ?? { ProcessInspector.peerProcessUnchanged(pid: $0, path: $1, startTime: $2) }
+    }
+
+    public func setSigningPromptPresenter(_ presenter: SigningPromptAuthenticating?) {
+        stateLock.lock()
+        _signingPromptPresenter = presenter
+        stateLock.unlock()
+    }
+
+    private var currentSigningPromptPresenter: SigningPromptAuthenticating? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return _signingPromptPresenter
+    }
+
+    private static func operationLabel(for dataToSign: Data, operation: KeyOperation) -> String {
+        switch operation {
+        case .ssh:
+            return "Authenticate with SSH"
+        case .signature:
+            return SSHSIGPayload.parse(from: dataToSign) != nil ? "Sign a Git commit" : "Sign data"
+        }
     }
 
     public func evaluateSigningRequest(
@@ -151,16 +175,37 @@ public final class SigningPolicyEvaluator {
         case .authenticatedOnceOnly:
             // No cache lookup, history heuristic, or remembered classification.
             guard !(role == .agent && (connection?.hasForwarding == true || connection?.hasFailedBind == true)) else { return .denied }
+            let reason = "Allow one \(operation == .ssh ? "SSH" : "Signature") request for '\(key.label)'? Caller identity is uncertain (\(Self.safeProcessPath(path)))."
+            let isForwarded = (connection?.hasForwarding == true) || (connection?.hasFailedBind == true)
             do {
                 let signature = try promptGate.run(
                     requester: .init(executablePath: path, pid: clientPid), clientSocket: clientSocket
                 ) {
-                    let context = try authenticator.authenticate(
-                        reason: "Allow one \(operation == .ssh ? "SSH" : "Signature") request for '\(key.label)'? Caller identity is uncertain (\(Self.safeProcessPath(path))).",
-                        policy: .deviceOwnerAuthentication
-                    )
-                    defer { context.invalidate() }
-                    return try keyManager.signSSH(key: key, data: dataToSign, prompt: "", useCache: false, existingContext: context, allowedPurposes: role.allowedPurposes)
+                    if let presenter = self.currentSigningPromptPresenter {
+                        let authRequest = SigningAuthenticationRequest(
+                            key: key,
+                            operation: operation,
+                            operationLabel: Self.operationLabel(for: dataToSign, operation: operation),
+                            callerName: nil,
+                            peerPid: clientPid,
+                            peerPath: path,
+                            allowsSessionScope: false,
+                            defaultScope: .always,
+                            reason: reason,
+                            isUncertainCaller: true,
+                            isForwardedAgent: isForwarded
+                        )
+                        let outcome = try presenter.authenticateSigningRequest(authRequest)
+                        defer { outcome.context.invalidate() }
+                        return try keyManager.signSSH(key: key, data: dataToSign, prompt: "", useCache: false, existingContext: outcome.context, allowedPurposes: role.allowedPurposes)
+                    } else {
+                        let context = try authenticator.authenticate(
+                            reason: reason,
+                            policy: .deviceOwnerAuthentication
+                        )
+                        defer { context.invalidate() }
+                        return try keyManager.signSSH(key: key, data: dataToSign, prompt: "", useCache: false, existingContext: context, allowedPurposes: role.allowedPurposes)
+                    }
                 }
                 decision = .approved(signature: signature)
             } catch {
@@ -363,14 +408,40 @@ public final class SigningPolicyEvaluator {
                     )
                     do {
                         let sigBlob = try promptGate.run(requester: requester, clientSocket: clientSocket) {
-                            try keyManager.signSSH(
-                                key: matchingKey,
-                                data: dataToSign,
-                                prompt: prompt,
-                                useCache: false,
-                                existingContext: nil,
-                                allowedPurposes: [.agent]
-                            )
+                            if let presenter = self.currentSigningPromptPresenter {
+                                let authRequest = SigningAuthenticationRequest(
+                                    key: matchingKey,
+                                    operation: .ssh,
+                                    operationLabel: "Authenticate with SSH",
+                                    callerName: session.toolName,
+                                    peerPid: pid,
+                                    peerPath: processPath,
+                                    allowsSessionScope: false,
+                                    defaultScope: .always,
+                                    reason: prompt,
+                                    isUncertainCaller: false,
+                                    isForwardedAgent: false
+                                )
+                                let outcome = try presenter.authenticateSigningRequest(authRequest)
+                                defer { outcome.context.invalidate() }
+                                return try keyManager.signSSH(
+                                    key: matchingKey,
+                                    data: dataToSign,
+                                    prompt: "",
+                                    useCache: false,
+                                    existingContext: outcome.context,
+                                    allowedPurposes: [.agent]
+                                )
+                            } else {
+                                return try keyManager.signSSH(
+                                    key: matchingKey,
+                                    data: dataToSign,
+                                    prompt: prompt,
+                                    useCache: false,
+                                    existingContext: nil,
+                                    allowedPurposes: [.agent]
+                                )
+                            }
                         }
                         audit.result = .allowed
                         audit.reason = .viaPrompt
@@ -461,38 +532,50 @@ public final class SigningPolicyEvaluator {
                         processPath: anchorPath ?? processPath,
                         pid: anchorPid ?? pid
                     )
-                    let choice = promptGate.runExclusive {
-                        self.gitSigningGraceManager.prompt(keyLabel: matchingKey.label, clientDesc: promptDesc)
-                    }
-                    switch choice {
-                    case .cancel:
-                        audit.result = .cancelled
-                        audit.reason = .userCancelled
-                        ClavisLogger.log("GIT_GRACE", "User cancelled Git signing session.")
-                        return .denied
+                    let isForwarded = (connection?.hasForwarding == true) || (connection?.hasFailedBind == true)
 
-                    case .grantFiveMinutes, .grantSession:
+                    func performGrantAndSign(
+                        duration: TimeInterval,
+                        existingContext: LAContext?
+                    ) throws -> Data? {
                         guard let anchor = gitAnchor else {
+                            existingContext?.invalidate()
                             audit.result = .denied
                             audit.reason = .gitAnchorUnavailable
                             ClavisLogger.log("SECURITY_ALERT", "Refusing Git signing grant: peer PID \(pid) (\(processPath)) cannot be anchored on a valid Git process.")
-                            return .denied
+                            return nil
                         }
-                        let grantDuration = max(1.0, choice.grantDurationSeconds ?? 300.0)
+                        let grantDuration = max(1.0, duration)
                         ClavisLogger.log("GIT_GRACE", "User approved \(Int(grantDuration))s Git signing session for \(promptDesc). Authorizing via Touch ID...")
                         let authPrompt = Self.gitSigningSessionReason(keyLabel: matchingKey.label) + " Requested by \(requester)."
-                        let grant = try promptGate.run(requester: requesterIdentity, clientSocket: clientSocket) {
-                            try keyManager.authorizeGitSigningGrant(
-                                key: matchingKey,
-                                prompt: authPrompt,
-                                clientIdentity: clientIdentity,
-                                duration: grantDuration,
-                                maxOperations: 200,
-                                approvedProcess: anchor
-                            )
+                        let grant: GitSigningGrant
+                        if let existingContext {
+                            do {
+                                grant = try keyManager.authorizeGitSigningGrant(
+                                    key: matchingKey,
+                                    prompt: "",
+                                    clientIdentity: clientIdentity,
+                                    duration: grantDuration,
+                                    maxOperations: 200,
+                                    approvedProcess: anchor,
+                                    existingContext: existingContext
+                                )
+                            } catch {
+                                existingContext.invalidate()
+                                throw error
+                            }
+                        } else {
+                            grant = try promptGate.run(requester: requesterIdentity, clientSocket: clientSocket) {
+                                try keyManager.authorizeGitSigningGrant(
+                                    key: matchingKey,
+                                    prompt: authPrompt,
+                                    clientIdentity: clientIdentity,
+                                    duration: grantDuration,
+                                    maxOperations: 200,
+                                    approvedProcess: anchor
+                                )
+                            }
                         }
-                        // Perform the commit #2 signature under the newly created grant.
-                        let grantedSignature: Data
                         do {
                             guard let signature = try self.gitSigningGraceManager.withGrant(
                                 for: matchingKey.label,
@@ -505,30 +588,93 @@ public final class SigningPolicyEvaluator {
                                 grant.invalidate()
                                 audit.result = .failed
                                 audit.reason = .signingError
-                                return .denied
+                                return nil
                             }
-                            grantedSignature = signature
+                            return signature
                         } catch {
                             grant.invalidate()
                             throw error
                         }
-                        sigBlob = grantedSignature
-                        isFromGitGrant = true
+                    }
 
-                    case .singleShot:
-                        ClavisLogger.log("GIT_GRACE", "User chose single-shot signing.")
-                        let prompt = isPeerGitHelper()
-                            ? Self.gitCommitSigningReason(keyLabel: matchingKey.label, requester: requester)
-                            : Self.dataSigningReason(keyLabel: matchingKey.label, requester: requester)
-                        sigBlob = try promptedSign(
+                    if let presenter = self.currentSigningPromptPresenter {
+                        let authPrompt = Self.gitSigningSessionReason(keyLabel: matchingKey.label) + " Requested by \(requester)."
+                        let authRequest = SigningAuthenticationRequest(
                             key: matchingKey,
-                            data: dataToSign,
-                            prompt: prompt,
-                            role: role,
-                            requester: requesterIdentity,
-                            clientSocket: clientSocket
+                            operation: .signature,
+                            operationLabel: "Sign a Git commit",
+                            callerName: callerName,
+                            peerPid: anchorPid ?? pid,
+                            peerPath: anchorPath ?? processPath,
+                            allowsSessionScope: true,
+                            defaultScope: .untilLock,
+                            reason: authPrompt,
+                            isUncertainCaller: false,
+                            isForwardedAgent: isForwarded
                         )
-                        self.gitSigningGraceManager.recordGitSignature(for: matchingKey.label, clientIdentity: clientIdentity)
+                        let outcome = try promptGate.run(requester: requesterIdentity, clientSocket: clientSocket) {
+                            try presenter.authenticateSigningRequest(authRequest)
+                        }
+                        if outcome.selectedScope == .always {
+                            defer { outcome.context.invalidate() }
+                            sigBlob = try keyManager.signSSH(
+                                key: matchingKey,
+                                data: dataToSign,
+                                prompt: "",
+                                useCache: false,
+                                existingContext: outcome.context,
+                                allowedPurposes: role.allowedPurposes
+                            )
+                            self.gitSigningGraceManager.recordGitSignature(for: matchingKey.label, clientIdentity: clientIdentity)
+                        } else {
+                            guard let grantedSignature = try performGrantAndSign(
+                                duration: outcome.selectedScope.durationSeconds ?? 300.0,
+                                existingContext: outcome.context
+                            ) else {
+                                return .denied
+                            }
+                            sigBlob = grantedSignature
+                            isFromGitGrant = true
+                        }
+                    } else {
+                        let choice = promptGate.runExclusive {
+                            self.gitSigningGraceManager.prompt(keyLabel: matchingKey.label, clientDesc: promptDesc)
+                        }
+                        switch choice {
+                        case .cancel:
+                            audit.result = .cancelled
+                            audit.reason = .userCancelled
+                            ClavisLogger.log("GIT_GRACE", "User cancelled Git signing session.")
+                            return .denied
+
+                        case .grantFiveMinutes, .grantSession:
+                            guard let grantedSignature = try performGrantAndSign(
+                                duration: choice.grantDurationSeconds ?? 300.0,
+                                existingContext: nil
+                            ) else {
+                                return .denied
+                            }
+                            sigBlob = grantedSignature
+                            isFromGitGrant = true
+
+                        case .singleShot:
+                            ClavisLogger.log("GIT_GRACE", "User chose single-shot signing.")
+                            let prompt = isPeerGitHelper()
+                                ? Self.gitCommitSigningReason(keyLabel: matchingKey.label, requester: requester)
+                                : Self.dataSigningReason(keyLabel: matchingKey.label, requester: requester)
+                            sigBlob = try promptedSign(
+                                key: matchingKey,
+                                data: dataToSign,
+                                prompt: prompt,
+                                role: role,
+                                requester: requesterIdentity,
+                                clientSocket: clientSocket,
+                                operation: .signature,
+                                callerName: callerName,
+                                isForwardedAgent: isForwarded
+                            )
+                            self.gitSigningGraceManager.recordGitSignature(for: matchingKey.label, clientIdentity: clientIdentity)
+                        }
                     }
                 } else {
                     // Commit #1 (single commit / first in a potential sequence) -> standard Touch ID, no dialog
@@ -541,18 +687,22 @@ public final class SigningPolicyEvaluator {
                         prompt: prompt,
                         role: role,
                         requester: requesterIdentity,
-                        clientSocket: clientSocket
+                        clientSocket: clientSocket,
+                        operation: .signature,
+                        callerName: callerName,
+                        isForwardedAgent: (connection?.hasForwarding == true) || (connection?.hasFailedBind == true)
                     )
                     self.gitSigningGraceManager.recordGitSignature(for: matchingKey.label, clientIdentity: clientIdentity)
                 }
             } else {
+                let isForwarded = (connection?.hasForwarding == true) || (connection?.hasFailedBind == true)
                 let prompt = Self.signatureReason(
                     keyLabel: matchingKey.label,
                     requester: requester,
                     processPath: processPath,
                     dataToSign: dataToSign,
                     keyBlob: matchingKey.publicKeyBlob,
-                    hasForwarding: (connection?.hasForwarding == true) || (connection?.hasFailedBind == true)
+                    hasForwarding: isForwarded
                 )
                 ClavisLogger.log("SSH_AGENT_SIGN", "Initiating signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
                 sigBlob = try promptedSign(
@@ -561,7 +711,10 @@ public final class SigningPolicyEvaluator {
                     prompt: prompt,
                     role: role,
                     requester: requesterIdentity,
-                    clientSocket: clientSocket
+                    clientSocket: clientSocket,
+                    operation: .ssh,
+                    callerName: callerName,
+                    isForwardedAgent: isForwarded
                 )
             }
 
@@ -695,10 +848,39 @@ public final class SigningPolicyEvaluator {
         prompt: String,
         role: AgentSocketRole,
         requester: SigningPromptGate.Requester? = nil,
-        clientSocket: Int32? = nil
+        clientSocket: Int32? = nil,
+        operation: KeyOperation? = nil,
+        callerName: String? = nil,
+        isForwardedAgent: Bool = false
     ) throws -> Data {
         try promptGate.run(requester: requester, clientSocket: clientSocket) {
-            try keyManager.signSSH(
+            if let presenter = self.currentSigningPromptPresenter, let requester {
+                let resolvedOp: KeyOperation = operation ?? (data.starts(with: SSHSIGPayload.magic) ? .signature : .ssh)
+                let authRequest = SigningAuthenticationRequest(
+                    key: key,
+                    operation: resolvedOp,
+                    operationLabel: Self.operationLabel(for: data, operation: resolvedOp),
+                    callerName: callerName,
+                    peerPid: requester.pid,
+                    peerPath: requester.executablePath,
+                    allowsSessionScope: false,
+                    defaultScope: .always,
+                    reason: prompt,
+                    isUncertainCaller: false,
+                    isForwardedAgent: isForwardedAgent
+                )
+                let outcome = try presenter.authenticateSigningRequest(authRequest)
+                defer { outcome.context.invalidate() }
+                return try keyManager.signSSH(
+                    key: key,
+                    data: data,
+                    prompt: "",
+                    useCache: false,
+                    existingContext: outcome.context,
+                    allowedPurposes: role.allowedPurposes
+                )
+            }
+            return try keyManager.signSSH(
                 key: key,
                 data: data,
                 prompt: prompt,
