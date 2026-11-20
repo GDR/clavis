@@ -151,6 +151,20 @@ public final class NotchOverlayPanel: NSPanel {
     }
 }
 
+/// Live authentication result returned by `NotchPromptWindowController.presentForAuthentication`,
+/// transferring ownership of the evaluated `LAContext` to the signing caller.
+public struct NotchAuthenticatedOutcome: @unchecked Sendable {
+    public let scope: NotchSessionScope
+    public let method: NotchApprovalMethod
+    public let context: LAContext?
+
+    public init(scope: NotchSessionScope, method: NotchApprovalMethod, context: LAContext?) {
+        self.scope = scope
+        self.method = method
+        self.context = context
+    }
+}
+
 @MainActor
 public final class NotchPromptWindowController: NSObject {
     public static let shared = NotchPromptWindowController()
@@ -182,6 +196,7 @@ public final class NotchPromptWindowController: NSObject {
     private var activeRequestID: UUID?
     private var activeContinuation: CheckedContinuation<NotchPromptResult, Never>?
     private var activeDecisionContinuation: CheckedContinuation<NotchApprovalDecision, Never>?
+    private var activeAuthOutcomeContinuation: CheckedContinuation<NotchAuthenticatedOutcome?, Never>?
     /// D-36 queue: pending approval requests wait here while one notch prompt is on screen;
     /// after a decision the next queued request opens automatically.
     private struct QueuedApproval {
@@ -579,6 +594,52 @@ public final class NotchPromptWindowController: NSObject {
         }
     }
 
+    /// Presents a live signing request in the MacBook Notch overlay and resumes as soon as an
+    /// authenticated `LAContext` is ready (while the `.approved` splash finishes animating).
+    public func presentForAuthentication(
+        request: NotchPromptRequest,
+        preferredDisplayID: CGDirectDisplayID? = nil,
+        verifyingDelayNanoseconds: UInt64 = 160_000_000,
+        signedDisplayNanoseconds: UInt64 = 900_000_000,
+        hardwarePasswordAuthenticator: (@MainActor () async -> LAContext?)? = nil,
+        onPresented: (@MainActor (NotchPromptViewModel) -> Void)? = nil
+    ) async -> NotchAuthenticatedOutcome? {
+        dismissActivePromptIfNeeded()
+        return await withCheckedContinuation { continuation in
+            self.activeAuthOutcomeContinuation = continuation
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                _ = await self.presentWithoutDismiss(
+                    request: request,
+                    preferredDisplayID: preferredDisplayID,
+                    verifyingDelayNanoseconds: verifyingDelayNanoseconds,
+                    signedDisplayNanoseconds: signedDisplayNanoseconds,
+                    biometricAuthenticator: NotchPromptWindowController.defaultBiometricAuthenticator,
+                    passwordVerifier: NotchPromptWindowController.defaultPasswordVerifier,
+                    hardwarePasswordAuthenticator: hardwarePasswordAuthenticator,
+                    onApprovalReady: { [weak self] scope, method, context in
+                        guard let self else {
+                            context?.invalidate()
+                            return
+                        }
+                        if let authContinuation = self.activeAuthOutcomeContinuation {
+                            self.activeAuthOutcomeContinuation = nil
+                            authContinuation.resume(
+                                returning: NotchAuthenticatedOutcome(scope: scope, method: method, context: context)
+                            )
+                        } else {
+                            context?.invalidate()
+                        }
+                    },
+                    onPresented: onPresented
+                )
+            }
+        }
+    }
+
     private func presentWithoutDismiss(
         request: NotchPromptRequest,
         preferredDisplayID: CGDirectDisplayID?,
@@ -586,6 +647,8 @@ public final class NotchPromptWindowController: NSObject {
         signedDisplayNanoseconds: UInt64,
         biometricAuthenticator: @escaping @MainActor () async -> Bool,
         passwordVerifier: @escaping @MainActor (String) async -> Bool,
+        hardwarePasswordAuthenticator: (@MainActor () async -> LAContext?)? = nil,
+        onApprovalReady: (@MainActor (NotchSessionScope, NotchApprovalMethod, LAContext?) -> Void)? = nil,
         onPresented: (@MainActor (NotchPromptViewModel) -> Void)?
     ) async -> NotchPromptResult {
         return await withCheckedContinuation { continuation in
@@ -604,7 +667,9 @@ public final class NotchPromptWindowController: NSObject {
                 signedDisplayNanoseconds: signedDisplayNanoseconds,
                 autoCollapseAfterSigned: true,
                 biometricAuthenticator: biometricAuthenticator,
-                passwordVerifier: passwordVerifier
+                passwordVerifier: passwordVerifier,
+                hardwarePasswordAuthenticator: hardwarePasswordAuthenticator,
+                onApprovalReady: onApprovalReady
             )
             let requestID = viewModel.requestID
             self.activeRequestID = requestID
@@ -617,6 +682,7 @@ public final class NotchPromptWindowController: NSObject {
             let panel = self.configurePanel(for: viewModel, preferredDisplayID: placement.displayID)
             panel.contentView?.layoutSubtreeIfNeeded()
             if !ClavisEnvironment.isTesting {
+                panel.orderFrontRegardless()
                 panel.makeKeyAndOrderFront(nil)
                 NotchOverlaySpaceCoordinator.shared.attach(window: panel)
             } else {
@@ -713,6 +779,9 @@ public final class NotchPromptWindowController: NSObject {
             globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, self.activeRequestID == requestID else { return }
+                    if let panel = self.panel, panel.frame.contains(NSEvent.mouseLocation) {
+                        return
+                    }
                     self.activeViewModel?.setPromptFocused(false)
                 }
             }
@@ -756,6 +825,10 @@ public final class NotchPromptWindowController: NSObject {
             activeDecisionContinuation = nil
             decisionContinuation.resume(returning: .denied)
         }
+        if let authContinuation = activeAuthOutcomeContinuation {
+            activeAuthOutcomeContinuation = nil
+            authContinuation.resume(returning: nil)
+        }
         // Explicit dismissal denies every queued approval as well; nothing is silently approved.
         // Queue-driven presentations keep the queue intact (`drainQueue: false`).
         if drainQueue {
@@ -784,6 +857,10 @@ public final class NotchPromptWindowController: NSObject {
         if let decisionContinuation = activeDecisionContinuation {
             activeDecisionContinuation = nil
             decisionContinuation.resume(returning: decision)
+        }
+        if let authContinuation = activeAuthOutcomeContinuation {
+            activeAuthOutcomeContinuation = nil
+            authContinuation.resume(returning: nil)
         }
         if ClavisEnvironment.isTesting {
             panel?.orderOut(nil)
@@ -831,7 +908,7 @@ public final class NotchPromptWindowController: NSObject {
         }
     }
 
-    /// Verifies the user's macOS login password against local OpenDirectory (`PanelLockController.verifyLocalAccountPassword`).
+    /// Verifies the user's macOS login password against local OpenDirectory (`LocalPasswordVerifier.verifyLocalAccountPassword`).
     /// Fails closed if verification is unavailable or running in uninjected test mode.
     public static func defaultPasswordVerifier(_ password: String) async -> Bool {
         #if DEBUG
@@ -841,7 +918,7 @@ public final class NotchPromptWindowController: NSObject {
         #endif
         guard !password.isEmpty else { return false }
         return await Task.detached {
-            PanelLockController.verifyLocalAccountPassword(password)
+            LocalPasswordVerifier.verifyLocalAccountPassword(password)
         }.value
     }
 }

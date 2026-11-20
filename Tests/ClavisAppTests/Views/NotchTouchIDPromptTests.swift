@@ -3,6 +3,7 @@ import SwiftUI
 import LocalAuthentication
 import Testing
 @testable import Clavis
+@testable import ClavisPromptUI
 @testable import ClavisCore
 
 @Suite @MainActor
@@ -222,10 +223,11 @@ struct NotchTouchIDPromptTests {
             autoCollapseAfterSigned: false,
             passwordVerifier: { candidate in
                 candidate == "correct-horse-battery-staple"
+            },
+            onComplete: { result in
+                capturedResult = result
             }
-        ) { result in
-            capturedResult = result
-        }
+        )
 
         // Advance to authentication and open password drawer
         viewModel.continueToAuthentication()
@@ -1606,5 +1608,140 @@ struct NotchTouchIDPromptTests {
                 }
             }
         }
+    }
+
+    private final class TrackingContext: LAContext {
+        private(set) var isInvalidated = false
+        override func invalidate() {
+            isInvalidated = true
+            super.invalidate()
+        }
+    }
+
+    @Test
+    func notchSigningPromptAuthenticatorMapsSSHAndGitBurstRequests() {
+        let sshKey = SSHKeyInfo(
+            label: "Github.com",
+            publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA Github.com",
+            publicKeyBlob: Data([1, 2, 3]),
+            fingerprint: "SHA256:test",
+            biometricPolicy: .userPresence
+        )
+        let sshRequest = SigningAuthenticationRequest(
+            key: sshKey,
+            operation: .ssh,
+            operationLabel: "Authenticate with SSH",
+            callerName: nil,
+            peerPid: 1,
+            peerPath: "/usr/bin/ssh",
+            allowsSessionScope: false,
+            defaultScope: .always,
+            reason: "Allow SSH",
+            isUncertainCaller: true,
+            isForwardedAgent: false
+        )
+        let mappedSSH = NotchSigningPromptAuthenticator.makeNotchRequest(from: sshRequest)
+        #expect(mappedSSH.displayOperation == "Authenticate with SSH")
+        #expect(mappedSSH.showsScopeSelector == false)
+        #expect(mappedSSH.processChain != "git → ssh-keygen")
+        #expect(mappedSSH.processChain == "ssh")
+        #expect(mappedSSH.effectiveWarning == nil)
+
+        let forwardedRequest = SigningAuthenticationRequest(
+            key: sshKey,
+            operation: .ssh,
+            operationLabel: "Authenticate with SSH",
+            callerName: nil,
+            peerPid: 1,
+            peerPath: "/usr/bin/ssh",
+            allowsSessionScope: false,
+            defaultScope: .always,
+            reason: "Allow SSH",
+            isUncertainCaller: true,
+            isForwardedAgent: true
+        )
+        let mappedForwarded = NotchSigningPromptAuthenticator.makeNotchRequest(from: forwardedRequest)
+        #expect(mappedForwarded.effectiveWarning?.title == "Forwarded SSH agent")
+        #expect(mappedForwarded.effectiveWarning?.detail == "Remote host requested a signature via agent forwarding")
+
+        let passwordKey = SSHKeyInfo(
+            label: "Git Key",
+            publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA Git",
+            publicKeyBlob: Data([4, 5, 6]),
+            fingerprint: "SHA256:git",
+            biometricPolicy: .devicePasscode
+        )
+        let burstRequest = SigningAuthenticationRequest(
+            key: passwordKey,
+            operation: .signature,
+            operationLabel: "Sign a Git commit",
+            callerName: "Ghostty",
+            peerPid: 1,
+            peerPath: "/usr/bin/git",
+            allowsSessionScope: true,
+            defaultScope: .untilLock,
+            reason: "Sign commits",
+            isUncertainCaller: false,
+            isForwardedAgent: false
+        )
+        let mappedBurst = NotchSigningPromptAuthenticator.makeNotchRequest(from: burstRequest)
+        #expect(mappedBurst.callerName == "Ghostty")
+        #expect(mappedBurst.displayOperation == "Sign a Git commit")
+        #expect(mappedBurst.showsScopeSelector == true)
+        #expect(mappedBurst.initialScope == .untilLock)
+        #expect(mappedBurst.confirmationMode == .passwordOnly)
+    }
+
+    @Test
+    func compactOneShotSigningHeightAndContextOwnership() {
+        let compactRequest = NotchPromptRequest(
+            callerName: "Ghostty",
+            callerPath: "/Applications/Ghostty.app",
+            processChain: "ghostty → zsh → ssh",
+            keyLabel: "Github.com",
+            keyType: .personal,
+            operation: "Authenticate with SSH",
+            initialScope: .once,
+            showsScopeSelector: false,
+            confirmationMode: .presenceOrPassword,
+            kind: .signing
+        )
+        let vm = NotchPromptViewModel(request: compactRequest, initialPhase: .idle)
+        let view = NotchTouchIDPromptView(viewModel: vm)
+        #expect(view.openHeight == 166)
+        vm.expand()
+        #expect(vm.phase == .awaitingAuthentication)
+        #expect(view.islandHeight == 166)
+        vm.setPromptFocused(false)
+        #expect(view.islandHeight == 166)
+
+        let warnRequest = NotchPromptRequest(
+            callerName: "ssh",
+            processChain: "ssh",
+            keyLabel: "Github.com",
+            keyType: .personal,
+            operation: "Authenticate with SSH",
+            warningText: "Forwarded SSH agent\nRemote host requested a signature via agent forwarding",
+            initialScope: .once,
+            showsScopeSelector: false,
+            confirmationMode: .presenceOrPassword,
+            kind: .signing
+        )
+        let warnView = NotchTouchIDPromptView(viewModel: NotchPromptViewModel(request: warnRequest, initialPhase: .awaitingAuthentication))
+        #expect(warnView.openHeight == 230)
+        #expect(warnView.islandHeight == 230)
+
+        // Ownership transfer returns context once without invalidating; deny() invalidates unconsumed context.
+        let takenCtx = TrackingContext()
+        vm.injectAuthenticatedContextForTesting(takenCtx)
+        let popped = vm.takeAuthenticatedContext()
+        #expect(popped === takenCtx)
+        #expect(takenCtx.isInvalidated == false)
+        #expect(vm.takeAuthenticatedContext() == nil)
+
+        let unconsumedCtx = TrackingContext()
+        vm.injectAuthenticatedContextForTesting(unconsumedCtx)
+        vm.deny()
+        #expect(unconsumedCtx.isInvalidated == true)
     }
 }

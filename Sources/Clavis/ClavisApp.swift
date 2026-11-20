@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import ClavisCore
+@_exported import ClavisPromptUI
 
 @MainActor
 final class ClavisApplicationDelegate: NSObject, NSApplicationDelegate {
