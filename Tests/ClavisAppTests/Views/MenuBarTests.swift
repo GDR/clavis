@@ -171,14 +171,67 @@ final class MenuBarTests {
         #expect(hosting.subviews.count >= 0)
     }
 
+    // MARK: - S01.menu: recent events replace the session list; pause/resume UI is gone (D-38)
+
     @Test
-    func sessionRowLockInvokesItsOwnAction() {
-        var locked = false
-        let session = MenuBarSession(target: .agent(sessionID: "session-a"), keyLabel: "Agent key",
-                                     purpose: .agent, expiresAt: Date().addingTimeInterval(60), toolName: "Tool")
-        let row = MenuBarSessionRow(session: session, date: Date()) { locked = true }
-        row.onLock()
-        #expect(locked)
+    func recentEventsKeepOnlySigningDecisionsUpToTheLimit() {
+        func record(_ seq: Int64, type: AuditEventType, result: AuditResult = .allowed) -> AuditRecord {
+            AuditRecord(seq: seq, event: AuditEvent(
+                time: Date(timeIntervalSince1970: 1_800_000_000 + TimeInterval(seq)),
+                type: type, result: result, keyFingerprint: "SHA256:menu"))
+        }
+        let records = [
+            record(9, type: .signature),
+            record(8, type: .policyChange),
+            record(7, type: .signature, result: .denied),
+            record(6, type: .keyCreate),
+            record(5, type: .suppressed),
+            record(4, type: .signature),
+            record(3, type: .lock),
+            record(2, type: .signature),
+            record(1, type: .signature)
+        ]
+        let recent = MenuBarView.recentSigningRecords(from: records, limit: MenuBarView.recentEventLimit)
+        #expect(recent.map(\.seq) == [9, 7, 5, 4, 2])
+        #expect(recent.count == MenuBarView.recentEventLimit)
+        #expect(MenuBarView.recentSigningRecords(from: [], limit: 5).isEmpty)
+    }
+
+    @Test
+    func menuBarEventRowOpensItsOwnAction() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("audit-\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = try AuditStore(url: url)
+        try store.insert(AuditEvent(
+            time: Date(timeIntervalSince1970: 1_800_000_000),
+            type: .signature,
+            result: .allowed,
+            reason: .viaPrompt,
+            keyFingerprint: "SHA256:menu",
+            sensitive: AuditSensitive(keyLabel: "Agent SSH", callerName: "Claude Code")
+        ))
+        let vm = HistoryViewModel(
+            store: { store }, keyring: nil, contextProvider: { nil },
+            notificationCenter: NotificationCenter()
+        )
+        vm.reload()
+        await vm.waitForLoad()
+        let record = try #require(vm.records.first)
+
+        var opened = false
+        let row = MenuBarEventRow(record: record, viewModel: vm, keys: []) { opened = true }
+        let hosting = NSHostingView(rootView: row)
+        hosting.layout()
+        row.onOpen()
+        #expect(opened)
+    }
+
+    @Test
+    func menuBarCopyAndActionTitlesMatchPrototype() {
+        #expect(MenuBarView.lockNowTitle == "Lock Now")
+        #expect(MenuBarView.copyPublicKeyTitle == "Copy public key")
+        #expect(MenuBarView.showAllHistoryTitle == "Show All History")
+        #expect(MenuBarView.recentEventLimit == 5)
     }
 
     @Test(arguments: [NSAppearance.Name.aqua, .darkAqua])

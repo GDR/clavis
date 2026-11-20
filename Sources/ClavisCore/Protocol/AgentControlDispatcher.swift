@@ -155,7 +155,8 @@ internal struct AgentControlDispatcher {
     func handleLockAll(payload: Data) -> Data {
         guard payload.count == 1 else { return Data([5]) }
         gitSigningGraceManager.invalidateAll(broadcast: false)
-        agentSessions.endAll(reason: .lockAll)
+        // INV-21 (D-40): lock clears Personal sessions (git grace + app-side LA sessions);
+        // valid Agent sessions keep signing until their lease expires.
         auditRecorder.record(
             AuditEvent(
                 type: .lock,

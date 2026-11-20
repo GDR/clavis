@@ -305,28 +305,70 @@ struct KeyDetailInspectorTests {
     }
 
     @Test
-    func testOverflowMenuDeduplicationAcrossKeyPurposes() {
-        // Agent keys contain deploy key, openSSH, fingerprint, change purpose, delete
-        let agentKey = makeTestKey(purpose: .agent)
-        let agentActions = KeyDetailInspectorView.overflowMenuActions(for: agentKey)
-        #expect(agentActions == [.copyDeployKey, .copyOpenSSH, .copyFingerprint, .changePurpose, .deleteKey])
-
-        // General keys contain openSSH, fingerprint, change purpose, delete
-        let generalKey = makeTestKey(purpose: .general)
-        let generalActions = KeyDetailInspectorView.overflowMenuActions(for: generalKey)
-        #expect(generalActions == [.copyOpenSSH, .copyFingerprint, .changePurpose, .deleteKey])
-
-        // Git signing keys contain openSSH, fingerprint, delete (immutable purpose)
-        let gitKey = makeTestKey(purpose: .gitSigningOnly)
-        let gitActions = KeyDetailInspectorView.overflowMenuActions(for: gitKey)
-        #expect(gitActions == [.copyOpenSSH, .copyFingerprint, .deleteKey])
-
-        // Assert Show History is NEVER present in the overflow menu for any key purpose
+    func testOverflowMenuIsTheOnlyTrailingControlAcrossKeyPurposes() {
+        // S03.toolbar.more: copy / enable / rotate / delete — identical for every owner type.
+        let expected: [KeyDetailInspectorView.OverflowMenuAction] = [.copyPublicKey, .toggleEnabled, .rotateKey, .deleteKey]
         for purpose in [KeyPurpose.general, KeyPurpose.agent, KeyPurpose.gitSigningOnly] {
             let key = makeTestKey(purpose: purpose)
             let actions = KeyDetailInspectorView.overflowMenuActions(for: key)
+            #expect(actions == expected)
+            // History never lives in the overflow menu (sidebar pill + Show All History link own it).
             #expect(!actions.contains(where: { "\($0)".lowercased().contains("history") }))
         }
+    }
+
+    // MARK: - D-40 Confirmation card & toolbar subtitle copy
+
+    @Test
+    func testToolbarSubtitleIsOwnerPlusLastUsedOnly() {
+        #expect(KeyDetailInspectorView.toolbarSubtitle(isAgentKey: false, lastUsed: "14:50 · Terminal")
+                == "Personal key · Last used 14:50 · Terminal")
+        #expect(KeyDetailInspectorView.toolbarSubtitle(isAgentKey: true, lastUsed: "14:32 · Claude Code")
+                == "Agent key · Last used 14:32 · Claude Code")
+        #expect(KeyDetailInspectorView.toolbarSubtitle(isAgentKey: false, lastUsed: nil)
+                == "Personal key · Not used yet")
+        #expect(KeyDetailInspectorView.toolbarSubtitle(isAgentKey: true, lastUsed: "")
+                == "Agent key · Not used yet")
+        // Glossary: never "Bot".
+        #expect(!KeyDetailInspectorView.toolbarSubtitle(isAgentKey: true, lastUsed: nil).contains("Bot"))
+    }
+
+    @Test
+    func testConfirmationPoliciesAndBiometricBinding() {
+        #expect(KeyDetailInspectorView.confirmationPolicies == [.biometryOrPasscode, .userPresence, .devicePasscode])
+        #expect(KeyDetailInspectorView.isBiometricBound(.biometryCurrentSet))
+        #expect(KeyDetailInspectorView.isBiometricBound(.biometryOrPasscode))
+        #expect(!KeyDetailInspectorView.isBiometricBound(.userPresence))
+        #expect(!KeyDetailInspectorView.isBiometricBound(.devicePasscode))
+    }
+
+    @Test
+    func testConfirmationFootnoteSessionSemanticsAndHardwareMinimum() {
+        let presenceKey = makeTestKey(biometricPolicy: .userPresence)
+        let presenceNote = KeyDetailInspectorView.confirmationFootnote(for: presenceKey, period: .fifteenMinutes)
+        #expect(presenceNote == "Confirm with \(BiometricPolicy.userPresence.subtitle). One confirmation is reused for 15 min per requesting app; inside that window, signing is silent.")
+        #expect(!presenceNote.contains("Hardware minimum"))
+
+        let strictKey = makeTestKey(biometricPolicy: .biometryOrPasscode)
+        let strictNote = KeyDetailInspectorView.confirmationFootnote(for: strictKey, period: .untilLock)
+        #expect(strictNote.contains("One confirmation is reused for Until Lock per requesting app"))
+        #expect(strictNote.hasSuffix(" Hardware minimum: biometric-bound (fixed at creation)."))
+
+        let legacyKey = makeTestKey(biometricPolicy: .biometryCurrentSet)
+        let legacyNote = KeyDetailInspectorView.confirmationFootnote(for: legacyKey, period: .oneDay)
+        #expect(legacyNote.contains("One confirmation is reused for 1 Day per requesting app"))
+        #expect(legacyNote.contains("Hardware minimum: biometric-bound (fixed at creation)."))
+
+        let passwordKey = makeTestKey(biometricPolicy: .devicePasscode)
+        let passwordNote = KeyDetailInspectorView.confirmationFootnote(for: passwordKey, period: .always)
+        #expect(passwordNote.contains("Confirm with \(BiometricPolicy.devicePasscode.subtitle)."))
+        #expect(!passwordNote.contains("Hardware minimum"))
+    }
+
+    @Test
+    func testPublicKeyStorageFootnote() {
+        #expect(KeyDetailInspectorView.publicKeyStorageFootnote
+                == "Private key stored in Secure Enclave · never leaves this Mac.")
     }
 
     @Test
@@ -932,6 +974,66 @@ struct KeyDetailInspectorTests {
         let historyScrollViews = collectScrollViews(in: hostingView)
         let historyRightSV = try #require(historyScrollViews.first { abs($0.frame.width - (911 - KeyListView.sidebarWidth)) < 1 && abs($0.frame.height - 400) < 1 })
         #expect(historyRightSV.contentInsets.top >= KeyListView.toolbarHeight)
+
+        if ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW"] == "1" {
+            let dirPath = ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW_DIR"] ?? "/private/tmp/clavis-toolbar-review"
+            let dir = URL(fileURLWithPath: dirPath)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let reviewAppState = AppState()
+            let sampleKey = makeTestKey(label: "Github.com", fingerprint: "SHA256:abc1234567890def1")
+            reviewAppState.keys = [sampleKey]
+            let rw = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 958, height: 640),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                backing: .buffered,
+                defer: false
+            )
+            rw.appearance = NSAppearance(named: .darkAqua)
+            rw.titlebarAppearsTransparent = true
+            rw.titleVisibility = .hidden
+            rw.titlebarSeparatorStyle = .none
+            let tb = NSToolbar(identifier: "ClavisMainWindowToolbarReview")
+            tb.allowsUserCustomization = false
+            tb.displayMode = .iconOnly
+            tb.showsBaselineSeparator = false
+            rw.toolbar = tb
+            rw.toolbarStyle = .unified
+            let rhc = NSHostingController(
+                rootView: KeyListView()
+                    .environmentObject(reviewAppState)
+                    .environment(\.colorScheme, .dark)
+            )
+            rw.contentViewController = rhc
+            rw.setContentSize(NSSize(width: 958, height: 640))
+            rw.orderFront(nil)
+            defer { rw.orderOut(nil) }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            // `KeyListView.onAppear` calls `refresh()`; re-seed the synthetic key afterwards.
+            reviewAppState.keys = [sampleKey]
+            RunLoop.main.run(until: Date().addingTimeInterval(0.25))
+            rhc.view.layoutSubtreeIfNeeded()
+            if let tf = rw.contentView?.superview,
+               let rep = tf.bitmapImageRepForCachingDisplay(in: tf.bounds) {
+                tf.cacheDisplay(in: tf.bounds, to: rep)
+                try rep.representation(using: .png, properties: [:])?.write(
+                    to: dir.appendingPathComponent("window-top-dark.png")
+                )
+            }
+            let rScrolls = collectScrollViews(in: rhc.view)
+            if let detSV = rScrolls.first(where: { $0.frame.width > 400 }),
+               let doc = detSV.documentView {
+                detSV.contentView.scroll(to: NSPoint(x: 0, y: min(140, max(0, doc.frame.height - detSV.contentView.bounds.height))))
+                detSV.reflectScrolledClipView(detSV.contentView)
+                RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+                if let tf = rw.contentView?.superview,
+                   let rep = tf.bitmapImageRepForCachingDisplay(in: tf.bounds) {
+                    tf.cacheDisplay(in: tf.bounds, to: rep)
+                    try rep.representation(using: .png, properties: [:])?.write(
+                        to: dir.appendingPathComponent("window-scrolled-dark.png")
+                    )
+                }
+            }
+        }
     }
 
     @Test
@@ -947,6 +1049,8 @@ struct KeyDetailInspectorTests {
 
         #expect(window.toolbar != nil)
         #expect(window.toolbarStyle == .unified)
+        #expect(window.toolbar?.displayMode == .iconOnly)
+        #expect(window.toolbar?.showsBaselineSeparator == false)
         #expect(window.toolbar?.allowsUserCustomization == false)
         // AppKit clamps setContentSize height to screen.visibleFrame.height on small CI virtual displays (e.g. 1024x768 -> 674pt visible height).
         #expect(window.frame.width == WindowManager.defaultWindowSize.width)
@@ -960,9 +1064,11 @@ struct KeyDetailInspectorTests {
         let closeRectInWindow = closeBtn.convert(closeBtn.bounds, to: nil)
         let closeCenterFromTop = window.frame.height - closeRectInWindow.midY
 
-        // Traffic lights keep their native position; the 56pt band's midline is shifted onto it via
-        // TrafficLightCenterReader, so native placement must stay near the band's nominal center.
-        #expect(abs(closeCenterFromTop - KeyListView.toolbarHeight / 2) <= 6)
+        // With `.iconOnly` unified toolbar, AppKit's titlebar band height equals `toolbarHeight` (52pt)
+        // so the traffic lights sit on the shared y = 26pt midline with the sidebar pill and S03.toolbar.
+        let nativeToolbarBandHeight = window.frame.height - window.contentLayoutRect.height
+        #expect(abs(nativeToolbarBandHeight - KeyListView.toolbarHeight) <= 1)
+        #expect(abs(closeCenterFromTop - KeyListView.toolbarHeight / 2) <= 2)
         #expect(closeRectInWindow.midX > 0)
     }
 }

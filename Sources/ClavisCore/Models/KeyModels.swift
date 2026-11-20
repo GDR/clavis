@@ -155,6 +155,10 @@ public enum KeyPurposeError: LocalizedError, Equatable {
 public enum BiometricPolicy: String, CaseIterable, Identifiable, Codable {
     case biometryCurrentSet = "biometryCurrentSet"
     case userPresence = "userPresence"
+    /// D-40: Touch ID required, password fallback; invalidated on fingerprint change.
+    case biometryOrPasscode = "biometryOrPasscode"
+    /// D-40: Mac login password only (no biometrics).
+    case devicePasscode = "devicePasscode"
 
     public var id: String { rawValue }
 
@@ -164,6 +168,8 @@ public enum BiometricPolicy: String, CaseIterable, Identifiable, Codable {
             return .deviceOwnerAuthentication
         case .biometryCurrentSet:
             return .deviceOwnerAuthenticationWithBiometrics
+        case .biometryOrPasscode, .devicePasscode:
+            return .deviceOwnerAuthentication
         }
     }
 
@@ -173,6 +179,10 @@ public enum BiometricPolicy: String, CaseIterable, Identifiable, Codable {
             return ClavisUIStrings.BiometricPolicyStrings.userPresenceTitle
         case .biometryCurrentSet:
             return ClavisUIStrings.BiometricPolicyStrings.currentSetTitle
+        case .biometryOrPasscode:
+            return ClavisUIStrings.BiometricPolicyStrings.biometryOrPasscodeTitle
+        case .devicePasscode:
+            return ClavisUIStrings.BiometricPolicyStrings.devicePasscodeTitle
         }
     }
 
@@ -182,6 +192,10 @@ public enum BiometricPolicy: String, CaseIterable, Identifiable, Codable {
             return ClavisUIStrings.BiometricPolicyStrings.userPresenceSubtitle
         case .biometryCurrentSet:
             return ClavisUIStrings.BiometricPolicyStrings.currentSetSubtitle
+        case .biometryOrPasscode:
+            return ClavisUIStrings.BiometricPolicyStrings.biometryOrPasscodeSubtitle
+        case .devicePasscode:
+            return ClavisUIStrings.BiometricPolicyStrings.devicePasscodeSubtitle
         }
     }
 
@@ -191,6 +205,10 @@ public enum BiometricPolicy: String, CaseIterable, Identifiable, Codable {
             return [.privateKeyUsage, .userPresence]
         case .biometryCurrentSet:
             return [.privateKeyUsage, .biometryCurrentSet]
+        case .biometryOrPasscode:
+            return [.privateKeyUsage, .biometryCurrentSet, .or, .devicePasscode]
+        case .devicePasscode:
+            return [.privateKeyUsage, .devicePasscode]
         }
     }
 }
@@ -205,13 +223,17 @@ public enum KeyGracePeriod: String, CaseIterable, Identifiable, Codable, Equatab
     case fifteenMinutes = "15"
     case oneHour = "60"
     case twoHours = "120"
+    /// D-40: session ends when the Mac locks or sleeps.
+    case untilLock = "untilLock"
+    /// D-40: one confirmation per day per requesting app.
+    case oneDay = "1440"
 
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
-        case .always: return "Always asks"
-        case .session: return "Per session"
+        case .always: return "Once"
+        case .session: return "8 hours"
         case .oneMinute: return "1 min"
         case .twoMinutes: return "2 min"
         case .fiveMinutes: return "5 min"
@@ -219,8 +241,13 @@ public enum KeyGracePeriod: String, CaseIterable, Identifiable, Codable, Equatab
         case .fifteenMinutes: return "15 min"
         case .oneHour: return "1 hour"
         case .twoHours: return "2 hours"
+        case .untilLock: return "Until Lock"
+        case .oneDay: return "1 Day"
         }
     }
+
+    /// D-40 / INV-21: sessions with this flag survive lock until they expire.
+    public var endsAtLock: Bool { self == .untilLock }
 
     public var durationSeconds: TimeInterval? {
         switch self {
@@ -233,6 +260,8 @@ public enum KeyGracePeriod: String, CaseIterable, Identifiable, Codable, Equatab
         case .fifteenMinutes: return 900
         case .oneHour: return 3600
         case .twoHours: return 7200
+        case .untilLock: return nil
+        case .oneDay: return 86400
         }
     }
 
@@ -247,18 +276,14 @@ public enum KeyGracePeriod: String, CaseIterable, Identifiable, Codable, Equatab
         case .fifteenMinutes: return 15
         case .oneHour: return 60
         case .twoHours: return 120
+        case .untilLock: return nil
+        case .oneDay: return 1440
         }
     }
 
+    /// D-40: every new key gets the same default unlocked timeout (15 min).
     public static func defaultPeriod(for purpose: KeyPurpose) -> KeyGracePeriod {
-        switch self.init(rawValue: "") {
-        default:
-            switch purpose {
-            case .general: return .fifteenMinutes
-            case .gitSigningOnly: return .fiveMinutes
-            case .agent: return .session
-            }
-        }
+        .fifteenMinutes
     }
 }
 

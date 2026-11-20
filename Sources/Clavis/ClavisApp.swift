@@ -167,6 +167,7 @@ struct ClavisApp: App {
                 Button("Preview Touch ID Notch Prompt") {
                     let key = appState.keys.first
                     let keyType = key?.effectiveAccessProfile.type ?? .personal
+                    let policy = key?.effectiveBiometricPolicy ?? .userPresence
                     let request = NotchPromptRequest(
                         callerName: "Terminal",
                         callerPath: "/System/Applications/Utilities/Terminal.app",
@@ -177,7 +178,8 @@ struct ClavisApp: App {
                         operation: "Sign a Git commit",
                         initialScope: key?.effectiveAccessProfile.type == .bot ? .fifteenMinutes : .untilLock,
                         showsScopeSelector: true,
-                        allowsPasswordFallback: key.map { $0.effectiveBiometricPolicy == .userPresence } ?? true
+                        allowsPasswordFallback: NotchConfirmationMode.allowsPasswordFallback(for: policy),
+                        confirmationMode: NotchConfirmationMode(biometricPolicy: policy)
                     )
                     Task { @MainActor in
                         _ = await NotchPromptWindowController.shared.present(request: request)

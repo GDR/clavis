@@ -20,6 +20,11 @@ public struct LockedPlaceholderView: View {
     public static let clarificationNotice = "Locking the control panel does not disable background SSH signing. Only allowed unattended Agent keys can sign; SSH and Git operations remain subject to their key policies."
     public static let subtitleText = "Unlock to manage keys and application access."
     public static let bottomContinuationNotice = "Allowed unattended Agent keys can sign"
+    /// INV-21 / D-40 lock banner & toast copy: Personal sessions clear at lock; Agent sessions survive until timeout.
+    public static let sessionLockNotice = "Personal sessions cleared; agent sessions continue until their timeout."
+    /// INV-21 locked status line (`S02.lock-status`): signing availability cannot be confirmed while locked.
+    public static let lockedStatusTitle = "Agent status unavailable"
+    public static let lockedStatusDetail = "Signing availability could not be confirmed"
     public static let passwordFieldLabel = "Mac login password"
     public static let passwordFieldPlaceholder = "Mac login password"
     public static let incorrectPasswordText = "Incorrect password. Try again."
@@ -119,6 +124,13 @@ public struct LockedPlaceholderView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(contrast == .increased ? .primary : .secondary)
                 .multilineTextAlignment(.center)
+            // INV-21 lock banner: Personal sessions clear; Agent sessions continue until their timeout.
+            Text(Self.sessionLockNotice)
+                .font(.system(size: 11))
+                .foregroundStyle(contrast == .increased ? .primary : .secondary)
+                .multilineTextAlignment(.center)
+                .padding(.top, 6)
+                .accessibilityIdentifier("lock.sessionNotice")
         }
     }
 
@@ -260,19 +272,18 @@ public struct LockedPlaceholderView: View {
 
     private var statusTitle: some View {
         HStack(spacing: 6) {
-            Circle().fill(statusIsActive ? Color.green : Color.secondary).frame(width: 5, height: 5)
+            // While locked the panel cannot confirm signing availability (INV-21); the dot stays neutral.
+            Circle().fill(Color.secondary).frame(width: 5, height: 5)
                 .accessibilityHidden(true)
-            Text(appState.requestPolicy.isPaused ? "Clavis paused" : statusIsActive ? "Clavis active" : "Agent status unavailable")
+            Text(appState.requestPolicy.isPaused ? "Clavis paused" : Self.lockedStatusTitle)
                 .fontWeight(.medium)
         }
     }
 
-    private var statusIsActive: Bool {
-        appState.isSocketActive && appState.requestPolicy.state == .accepting
-    }
     private var statusDetail: String {
         if appState.requestPolicy.isPaused { return "All signing is refused" }
-        return statusIsActive ? Self.bottomContinuationNotice : "Signing availability could not be confirmed"
+        // INV-21: agent sessions survive lock, but the locked panel never claims signing is confirmed.
+        return Self.lockedStatusDetail
     }
 
     private func clearSecrets() {

@@ -361,7 +361,8 @@ struct CLISocketControlTests {
             #expect(lockResult?.exitCode == 0)
             #expect(lockResult?.output == CLIMessages.lockedAll)
             #expect(harness.gitGrace.currentActiveGrant == nil)
-            #expect(harness.sessions.summaries().isEmpty)
+            // INV-21 (D-40): the agent session survives lock until its lease expires.
+            #expect(harness.sessions.summaries().contains(where: { $0.id == session.id }))
         }
     }
 

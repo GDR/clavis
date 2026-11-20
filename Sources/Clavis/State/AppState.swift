@@ -6,6 +6,7 @@ import UserNotifications
 public enum KeyManagerSheet: String, Identifiable {
     case create
     case settings
+    case connect
 
     public var id: String { rawValue }
 }
@@ -133,6 +134,8 @@ public class AppState: ObservableObject {
         }
     }
 
+    /// Key targeted by the Connect & Test sheet (S-05), set by the ⋯ menu / post-create flow.
+    @Published public var connectTarget: SSHKeyInfo? = nil
     @Published public var activeSheet: KeyManagerSheet? = nil {
         didSet {
             if settingsViewModel.activeSheet != activeSheet {

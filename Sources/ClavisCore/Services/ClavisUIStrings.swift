@@ -194,10 +194,10 @@ public enum ClavisUIStrings {
 
         public static var deleteAlertTitle: String { localized("inspector.delete_alert_title", "Delete Key") }
         public static func deleteAlertMessage(label: String) -> String {
-            localizedFormat("inspector.delete_alert_message", "Are you sure you want to delete '%@'? This action cannot be undone.", label)
+            localizedFormat("inspector.delete_alert_message", "Are you sure you want to delete '%@'? This action cannot be undone. Public keys registered elsewhere (GitHub, servers) stay valid there — remove them manually. Signatures already issued cannot be revoked.", label)
         }
         public static func deleteAlertMessage(label: String, fingerprint: String) -> String {
-            localizedFormat("inspector.delete_alert_message_with_fingerprint", "Are you sure you want to delete '%1$@' (%2$@)? This action cannot be undone.", label, fingerprint)
+            localizedFormat("inspector.delete_alert_message_with_fingerprint", "Are you sure you want to delete '%1$@' (%2$@)? This action cannot be undone. Public keys registered elsewhere (GitHub, servers) stay valid there — remove them manually. Signatures already issued cannot be revoked.", label, fingerprint)
         }
 
         public static var copyDeployKey: String { KeyDetail.copyDeployKey }
@@ -393,9 +393,13 @@ public enum ClavisUIStrings {
 
     public enum BiometricPolicyStrings {
         public static var userPresenceTitle: String { localized("biometric_policy.user_presence_title", "User Presence") }
-        public static var userPresenceSubtitle: String { localized("biometric_policy.user_presence_subtitle", "Touch ID, Apple Watch, or device password fallback") }
-        public static var currentSetTitle: String { localized("biometric_policy.current_set_title", "Strict Biometrics") }
-        public static var currentSetSubtitle: String { localized("biometric_policy.current_set_subtitle", "Touch ID only. Invalidated if system fingerprints change") }
+        public static var userPresenceSubtitle: String { localized("biometric_policy.user_presence_subtitle", "Touch ID, Apple Watch, or password") }
+        public static var currentSetTitle: String { localized("biometric_policy.current_set_title", "Strict Biometrics (legacy)") }
+        public static var currentSetSubtitle: String { localized("biometric_policy.current_set_subtitle", "Touch ID only, no password fallback. Invalidated if fingerprints change. Created before the password-fallback policy; Rotate to change.") }
+        public static var biometryOrPasscodeTitle: String { localized("biometric_policy.biometry_or_passcode_title", "Strict Biometrics") }
+        public static var biometryOrPasscodeSubtitle: String { localized("biometric_policy.biometry_or_passcode_subtitle", "Touch ID only, password fallback. Invalidated if fingerprints change.") }
+        public static var devicePasscodeTitle: String { localized("biometric_policy.device_passcode_title", "Password") }
+        public static var devicePasscodeSubtitle: String { localized("biometric_policy.device_passcode_subtitle", "Mac login password only. No biometrics.") }
     }
 
     public enum KeyPurposeStrings {

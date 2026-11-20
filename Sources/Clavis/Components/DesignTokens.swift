@@ -88,6 +88,10 @@ public enum DesignTokens {
             : NSColor(calibratedRed: 0.52, green: 0.18, blue: 0.72, alpha: 1.0) // #852EB8 (~6.84:1)
     })
 
+    /// D-35/D-39 era layout: unified split-view toolbar band (sidebar header + detail toolbar).
+    public static let toolbarBandHeight: CGFloat = 52
+    /// Footer Settings gear matches toolbar control sizing (pin 2026-11-18).
+    public static let footerGearSize: CGFloat = 36
     public static let textSecondary = Color(nsColor: NSColor.secondaryLabelColor)
     public static let textTertiary = Color(nsColor: NSColor.tertiaryLabelColor)
 }

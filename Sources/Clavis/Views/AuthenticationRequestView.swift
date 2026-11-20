@@ -6,6 +6,13 @@ import SwiftUI
 /// Variant 07 from ui/settings-lab. Presentation only: the host owns authentication,
 /// password fallback, cancellation, and the operation waiting for authorization.
 /// Do not treat displaying this view (or receiving a button callback) as authorization.
+///
+/// D-36 retirement note: request prompts (agent first use, keep access, signature changed,
+/// agent-on-Personal) no longer use a separate floating approval card — they all render in the
+/// single notch confirmation window (`NotchTouchIDPromptView` / `NotchPromptWindowController`,
+/// `NotchPromptKind` + `submitApprovalRequest`). This tile survives only as the in-window
+/// authentication surface for `PolicyMutationCoordinator` (settings mutations) until its callers
+/// (`KeyListView.AuthenticationTileHost`, `PolicyMutationCoordinator.Phase`) migrate to the notch.
 struct AuthenticationRequestView: View {
     enum Phase: Equatable {
         case waiting, failed, unavailable, saving, saveFailed, authenticated

@@ -467,7 +467,8 @@ struct AgentSessionProtocolTests {
     }
 
     @Test
-    func test_001_T4_lockAllEndsSessions() async throws {
+    /// INV-21 (D-40): lock clears Personal sessions; valid Agent sessions survive until expiry.
+    func test_001_T4_lockAllKeepsAgentSessionsUntilExpiry() async throws {
         defer { fixture.cleanup() }
         try await fixture.run {
             let key = try manager.generateKey(label: "agent-lockall-key", biometricPolicy: .userPresence, keyPurpose: .agent)
@@ -496,8 +497,9 @@ struct AgentSessionProtocolTests {
                 isTrustedControlPeer: { true }
             )
             #expect(response == Data([6]))
-            #expect(registry.count == 0)
-            #expect(auditRecorder.events.contains { $0.type == .sessionEnd && $0.reason == .lockAll })
+            #expect(registry.count == 1)
+            #expect(!auditRecorder.events.contains { $0.type == .sessionEnd && $0.reason == .lockAll })
+            #expect(auditRecorder.events.contains { $0.type == .lock })
         }
     }
 

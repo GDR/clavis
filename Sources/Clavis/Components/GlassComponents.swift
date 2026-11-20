@@ -93,8 +93,8 @@ public struct LiquidGlassControlModifier: ViewModifier {
                 .overlay(
                     shape.stroke(
                         isFocused
-                            ? DesignTokens.accentBlue.opacity(0.8)
-                            : (isSelected ? DesignTokens.accentBlue.opacity(0.55) : Color.clear),
+                            ? Color.accentColor.opacity(0.8)
+                            : (isSelected ? Color.accentColor.opacity(0.55) : Color.clear),
                         lineWidth: isFocused ? 1.5 : 1
                     )
                 )
@@ -108,8 +108,8 @@ public struct LiquidGlassControlModifier: ViewModifier {
                 .overlay(
                     shape.stroke(
                         isFocused
-                            ? DesignTokens.accentBlue.opacity(0.75)
-                            : (isSelected ? DesignTokens.accentBlue.opacity(0.45) : DesignTokens.cardBorder),
+                            ? Color.accentColor.opacity(0.75)
+                            : (isSelected ? Color.accentColor.opacity(0.45) : DesignTokens.cardBorder),
                         lineWidth: isFocused ? 1.5 : 1
                     )
                 )
@@ -122,7 +122,7 @@ public struct LiquidGlassControlModifier: ViewModifier {
         if let tint {
             glass = glass.tint(tint)
         } else if isSelected {
-            glass = glass.tint(DesignTokens.accentBlue.opacity(0.18))
+            glass = glass.tint(Color.accentColor.opacity(0.18))
         }
         return glass.interactive()
     }

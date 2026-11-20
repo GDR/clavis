@@ -5,7 +5,7 @@ public enum KeyType: String, Codable, CaseIterable, Sendable {
     case personal
     case bot
 
-    public var title: String { self == .personal ? "Personal" : "Bot" }
+    public var title: String { self == .personal ? "Personal" : "Agent" }
 }
 
 public enum KeyOperation: String, Codable, CaseIterable, Sendable {

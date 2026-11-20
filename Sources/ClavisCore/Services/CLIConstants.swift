@@ -76,7 +76,7 @@ public enum CLIMessages {
 
     public static let agentAndGitOnlyExclusive = "--agent and --git-only cannot be used together."
 
-    public static let lockedAll = "🔒 All active sessions and caches locked."
+    public static let lockedAll = "🔒 Locked. Personal sessions cleared; agent sessions continue until they expire."
 
     public static func noKeysFound() -> String {
         "No keys found in Keychain."

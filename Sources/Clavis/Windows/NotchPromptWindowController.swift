@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 import LocalAuthentication
 import Darwin
 import ClavisCore
@@ -156,7 +157,9 @@ public final class NotchPromptWindowController: NSObject {
     public nonisolated static let defaultPanelSize = NSSize(width: 640, height: 380)
 
     public private(set) var panel: NSPanel?
-    public private(set) var activeViewModel: NotchPromptViewModel?
+    public private(set) var activeViewModel: NotchPromptViewModel? {
+        didSet { queueChanges.send(pendingApprovalCount) }
+    }
     /// Retained identifier of the target display selected when the prompt was presented.
     /// Never stores an `NSScreen` reference directly; resolved against current screens when geometry updates.
     public private(set) var targetDisplayID: CGDirectDisplayID?
@@ -178,6 +181,25 @@ public final class NotchPromptWindowController: NSObject {
 
     private var activeRequestID: UUID?
     private var activeContinuation: CheckedContinuation<NotchPromptResult, Never>?
+    private var activeDecisionContinuation: CheckedContinuation<NotchApprovalDecision, Never>?
+    /// D-36 queue: pending approval requests wait here while one notch prompt is on screen;
+    /// after a decision the next queued request opens automatically.
+    private struct QueuedApproval {
+        let request: NotchPromptRequest
+        let continuation: CheckedContinuation<NotchApprovalDecision, Never>
+        let verifyingDelayNanoseconds: UInt64
+        let signedDisplayNanoseconds: UInt64
+        let biometricAuthenticator: @MainActor () async -> Bool
+        let passwordVerifier: @MainActor (String) async -> Bool
+        let onPresented: (@MainActor (NotchPromptViewModel) -> Void)?
+    }
+    private var approvalQueue: [QueuedApproval] = [] {
+        didSet { queueChanges.send(pendingApprovalCount) }
+    }
+    /// Menu-bar chip / "Answer pending" hook (D-36 queue surface).
+    public let queueChanges = PassthroughSubject<Int, Never>()
+    /// Synchronous guard: a dequeued approval is being presented even before its Task runs.
+    private var isPresentingQueuedApproval = false
     private var hideWorkItem: DispatchWorkItem?
     private var windowObservers: [NSObjectProtocol] = []
     private var screenParametersObserver: NSObjectProtocol?
@@ -218,11 +240,21 @@ public final class NotchPromptWindowController: NSObject {
         )
     }
 
-    /// Computes the required canvas size for the panel window, expanding if a custom notch or warning requires extra height/width.
-    private func requiredPanelCanvasSize(for geometry: NotchScreenGeometry) -> NSSize {
+    /// Computes the required canvas size for the panel window, expanding if a custom notch, warning,
+    /// or D-36 approval info strip requires extra height/width (including the password drawer).
+    private func requiredPanelCanvasSize(for geometry: NotchScreenGeometry, request: NotchPromptRequest? = nil) -> NSSize {
         let extraTop = max(0, geometry.effectiveTopClearance - 32.0)
         let width = max(Self.defaultPanelSize.width, geometry.cutoutWidth + 320.0)
-        let height = Self.defaultPanelSize.height + extraTop
+        var height = Self.defaultPanelSize.height + extraTop
+        if let request = request ?? activeViewModel?.request {
+            let contentHeight: CGFloat = 214
+                + (request.effectiveWarning != nil ? 64 : 0)
+                + (request.hasInfoStrip ? 80 : 0)
+                + 64 // password drawer
+                + 20 // password error line
+                + extraTop
+            height = max(height, contentHeight + 24)
+        }
         return NSSize(width: width, height: height)
     }
 
@@ -230,7 +262,8 @@ public final class NotchPromptWindowController: NSObject {
     private func resolvePlacement(
         explicitScreen: NSScreen? = nil,
         explicitScreenFrame: NSRect? = nil,
-        preferredDisplayID: CGDirectDisplayID? = nil
+        preferredDisplayID: CGDirectDisplayID? = nil,
+        request: NotchPromptRequest? = nil
     ) -> NotchScreenPlacement {
         if let explicitScreenFrame, explicitScreen == nil {
             let syntheticID = targetDisplayID ?? preferredDisplayID ?? 1
@@ -257,7 +290,7 @@ public final class NotchPromptWindowController: NSObject {
                     : nil
             )
             let prelim = NotchPlacementCalculator.calculatePlacement(for: descriptor, panelSize: Self.defaultPanelSize)
-            let canvasSize = requiredPanelCanvasSize(for: prelim.screenGeometry)
+            let canvasSize = requiredPanelCanvasSize(for: prelim.screenGeometry, request: request)
             return NotchPlacementCalculator.calculatePlacement(for: descriptor, panelSize: canvasSize)
         }
 
@@ -292,7 +325,7 @@ public final class NotchPromptWindowController: NSObject {
             for: resolvedDescriptor,
             panelSize: Self.defaultPanelSize
         )
-        let canvasSize = requiredPanelCanvasSize(for: preliminary.screenGeometry)
+        let canvasSize = requiredPanelCanvasSize(for: preliminary.screenGeometry, request: request)
         return NotchPlacementCalculator.calculatePlacement(
             for: resolvedDescriptor,
             panelSize: canvasSize
@@ -441,12 +474,125 @@ public final class NotchPromptWindowController: NSObject {
         onPresented: (@MainActor (NotchPromptViewModel) -> Void)? = nil
     ) async -> NotchPromptResult {
         dismissActivePromptIfNeeded()
+        return await presentWithoutDismiss(
+            request: request,
+            preferredDisplayID: preferredDisplayID,
+            verifyingDelayNanoseconds: verifyingDelayNanoseconds,
+            signedDisplayNanoseconds: signedDisplayNanoseconds,
+            biometricAuthenticator: biometricAuthenticator,
+            passwordVerifier: passwordVerifier,
+            onPresented: onPresented
+        )
+    }
 
+    /// D-36: presents any approval variant (first use, keep access, signature changed, agent-on-Personal)
+    /// in the same notch confirmation window and awaits the full approval decision.
+    public func presentApproval(
+        request: NotchPromptRequest,
+        preferredDisplayID: CGDirectDisplayID? = nil,
+        verifyingDelayNanoseconds: UInt64 = 160_000_000,
+        signedDisplayNanoseconds: UInt64 = 2_000_000_000,
+        biometricAuthenticator: @escaping @MainActor () async -> Bool = NotchPromptWindowController.defaultBiometricAuthenticator,
+        passwordVerifier: @escaping @MainActor (String) async -> Bool = NotchPromptWindowController.defaultPasswordVerifier,
+        onPresented: (@MainActor (NotchPromptViewModel) -> Void)? = nil
+    ) async -> NotchApprovalDecision {
+        // Replace any active prompt, but never drain the approval queue that feeds this presentation.
+        dismissActivePromptIfNeeded(drainQueue: false)
+        return await withCheckedContinuation { (continuation: CheckedContinuation<NotchApprovalDecision, Never>) in
+            self.activeDecisionContinuation = continuation
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    continuation.resume(returning: .denied)
+                    return
+                }
+                _ = await self.presentWithoutDismiss(
+                    request: request,
+                    preferredDisplayID: preferredDisplayID,
+                    verifyingDelayNanoseconds: verifyingDelayNanoseconds,
+                    signedDisplayNanoseconds: signedDisplayNanoseconds,
+                    biometricAuthenticator: biometricAuthenticator,
+                    passwordVerifier: passwordVerifier,
+                    onPresented: onPresented
+                )
+            }
+        }
+    }
+
+    /// D-36 queue entry point: submits an approval request to the single notch prompt surface.
+    /// While another prompt is on screen the request waits in the queue; after a decision the next
+    /// queued request opens with a "1 of N · " step hint. The pending count stays available for the menu-bar chip.
+    public func submitApprovalRequest(
+        _ request: NotchPromptRequest,
+        verifyingDelayNanoseconds: UInt64 = 160_000_000,
+        signedDisplayNanoseconds: UInt64 = 2_000_000_000,
+        biometricAuthenticator: @escaping @MainActor () async -> Bool = NotchPromptWindowController.defaultBiometricAuthenticator,
+        passwordVerifier: @escaping @MainActor (String) async -> Bool = NotchPromptWindowController.defaultPasswordVerifier,
+        onPresented: (@MainActor (NotchPromptViewModel) -> Void)? = nil
+    ) async -> NotchApprovalDecision {
+        await withCheckedContinuation { (continuation: CheckedContinuation<NotchApprovalDecision, Never>) in
+            self.approvalQueue.append(QueuedApproval(
+                request: request,
+                continuation: continuation,
+                verifyingDelayNanoseconds: verifyingDelayNanoseconds,
+                signedDisplayNanoseconds: signedDisplayNanoseconds,
+                biometricAuthenticator: biometricAuthenticator,
+                passwordVerifier: passwordVerifier,
+                onPresented: onPresented
+            ))
+            self.processApprovalQueue()
+        }
+    }
+
+    /// Number of approval requests waiting for a decision, including the one currently on screen.
+    public var pendingApprovalCount: Int {
+        approvalQueue.count + (activeViewModel != nil ? 1 : 0)
+    }
+
+    /// Surface the next queued approval when no prompt is on screen (menu-bar "Answer pending").
+    public func presentNextApprovalIfIdle() {
+        processApprovalQueue()
+    }
+
+    private func processApprovalQueue() {
+        guard !isPresentingQueuedApproval,
+              activeViewModel == nil, activeContinuation == nil, activeDecisionContinuation == nil,
+              !approvalQueue.isEmpty else { return }
+        let next = approvalQueue.removeFirst()
+        isPresentingQueuedApproval = true
+        let queuedRequest = next.request.withQueue(position: 1, count: approvalQueue.count + 1)
+        Task { @MainActor [weak self] in
+            guard let self else {
+                next.continuation.resume(returning: .denied)
+                return
+            }
+            let decision = await self.presentApproval(
+                request: queuedRequest,
+                verifyingDelayNanoseconds: next.verifyingDelayNanoseconds,
+                signedDisplayNanoseconds: next.signedDisplayNanoseconds,
+                biometricAuthenticator: next.biometricAuthenticator,
+                passwordVerifier: next.passwordVerifier,
+                onPresented: next.onPresented
+            )
+            self.isPresentingQueuedApproval = false
+            next.continuation.resume(returning: decision)
+            self.processApprovalQueue()
+        }
+    }
+
+    private func presentWithoutDismiss(
+        request: NotchPromptRequest,
+        preferredDisplayID: CGDirectDisplayID?,
+        verifyingDelayNanoseconds: UInt64,
+        signedDisplayNanoseconds: UInt64,
+        biometricAuthenticator: @escaping @MainActor () async -> Bool,
+        passwordVerifier: @escaping @MainActor (String) async -> Bool,
+        onPresented: (@MainActor (NotchPromptViewModel) -> Void)?
+    ) async -> NotchPromptResult {
         return await withCheckedContinuation { continuation in
             self.activeContinuation = continuation
             self.targetDisplayID = nil
 
-            let placement = self.resolvePlacement(preferredDisplayID: preferredDisplayID)
+            let placement = self.resolvePlacement(preferredDisplayID: preferredDisplayID, request: request)
             self.targetDisplayID = placement.displayID
             self.currentPlacement = placement
 
@@ -589,7 +735,7 @@ public final class NotchPromptWindowController: NSObject {
         }
     }
 
-    private func dismissActivePromptIfNeeded() {
+    private func dismissActivePromptIfNeeded(drainQueue: Bool = true) {
         hideWorkItem?.cancel()
         hideWorkItem = nil
         removeFocusObservers()
@@ -606,6 +752,19 @@ public final class NotchPromptWindowController: NSObject {
             activeContinuation = nil
             continuation.resume(returning: .denied)
         }
+        if let decisionContinuation = activeDecisionContinuation {
+            activeDecisionContinuation = nil
+            decisionContinuation.resume(returning: .denied)
+        }
+        // Explicit dismissal denies every queued approval as well; nothing is silently approved.
+        // Queue-driven presentations keep the queue intact (`drainQueue: false`).
+        if drainQueue {
+            let queued = approvalQueue
+            approvalQueue.removeAll()
+            for entry in queued {
+                entry.continuation.resume(returning: .denied)
+            }
+        }
         panel?.orderOut(nil)
     }
 
@@ -614,11 +773,17 @@ public final class NotchPromptWindowController: NSObject {
         removeFocusObservers()
         removeScreenParametersObserver()
         activeViewModel?.cancelEmbeddedBiometricListening()
+        let decision = activeViewModel?.approvalDecision ?? .denied
         panel?.makeFirstResponder(nil)
         activeRequestID = nil
         if let continuation = activeContinuation {
             activeContinuation = nil
             continuation.resume(returning: result)
+        }
+        // Deliver the D-36 decision immediately; the panel itself keeps the splash until the hide delay.
+        if let decisionContinuation = activeDecisionContinuation {
+            activeDecisionContinuation = nil
+            decisionContinuation.resume(returning: decision)
         }
         if ClavisEnvironment.isTesting {
             panel?.orderOut(nil)
@@ -626,6 +791,7 @@ public final class NotchPromptWindowController: NSObject {
             hostedViewModel = nil
             targetDisplayID = nil
             currentPlacement = nil
+            processApprovalQueue()
         } else {
             hideWorkItem?.cancel()
             let work = DispatchWorkItem { [weak self] in
@@ -635,6 +801,7 @@ public final class NotchPromptWindowController: NSObject {
                     self?.hostedViewModel = nil
                     self?.targetDisplayID = nil
                     self?.currentPlacement = nil
+                    self?.processApprovalQueue()
                 }
             }
             hideWorkItem = work

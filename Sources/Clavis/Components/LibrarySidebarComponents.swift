@@ -19,7 +19,8 @@ struct LibraryKeyPresentation: Equatable {
 
     init(profile: KeyAccessProfile) {
         keyType = profile.type
-        typeTitle = profile.type.title
+        // D-32 glossary: Personal / Agent (never "Bot"), independent of the legacy model title.
+        typeTitle = profile.type == .bot ? "Agent" : "Personal"
         symbol = profile.type == .bot ? "desktopcomputer" : "person"
         tileSymbol = profile.type == .bot ? "cpu" : "person.fill"
         capabilities = profile.capabilities.titles
@@ -41,6 +42,8 @@ struct LibraryKeyPresentation: Equatable {
     }
 }
 
+/// One icon button inside the sidebar toolbar pill (S02.toolbar-pill): 36×30 hit area,
+/// 16.5pt glyph, hover/active tint only — the surrounding capsule supplies the glass.
 struct SidebarHeaderPillButton: View {
     let icon: String
     var isActive: Bool = false
@@ -53,14 +56,14 @@ struct SidebarHeaderPillButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(isActive ? DesignTokens.accentBlue : .primary)
-                .frame(width: 30, height: 24)
+                .font(.system(size: 16.5, weight: .regular))
+                .foregroundStyle(isActive ? Color.accentColor : .primary)
+                .frame(width: 36, height: 30)
                 .background(
                     Capsule()
                         .fill(
                             isActive
-                                ? DesignTokens.accentBlue.opacity(0.16)
+                                ? Color.accentColor.opacity(0.16)
                                 : (isHovered ? Color.primary.opacity(0.07) : Color.clear)
                         )
                 )
@@ -69,12 +72,54 @@ struct SidebarHeaderPillButton: View {
         .buttonStyle(.plain)
         .help(helpText)
         .accessibilityLabel(accessibilityLabelText ?? helpText)
+        .accessibilityAddTraits(isActive ? [.isSelected] : [])
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.10)) {
                 isHovered = hovering
             }
         }
     }
+}
+
+/// S02.toolbar-pill: one 36pt Liquid Glass capsule cluster (New Key · History · Lock) on the
+/// shared traffic-light midline, mirroring the prototype's `#hdb` pill.
+struct SidebarToolbarPill: View {
+    var isHistoryActive: Bool = false
+    var isCreateSheetActive: Bool = false
+    let onNewKey: () -> Void
+    let onToggleHistory: () -> Void
+    let onLock: () -> Void
+
+    var body: some View {
+        HStack(spacing: 2) {
+            SidebarHeaderPillButton(
+                icon: "plus",
+                isActive: isCreateSheetActive,
+                helpText: "New Key (⌘N)",
+                accessibilityLabelText: ClavisUIStrings.Accessibility.addKey,
+                action: onNewKey
+            )
+            SidebarHeaderPillButton(
+                icon: "clock.arrow.circlepath",
+                isActive: isHistoryActive,
+                helpText: "History (⇧⌘H)",
+                accessibilityLabelText: "History",
+                action: onToggleHistory
+            )
+            SidebarHeaderPillButton(
+                icon: "lock",
+                helpText: "Lock Now (⌘L)",
+                accessibilityLabelText: "Lock Clavis",
+                action: onLock
+            )
+        }
+        .padding(3)
+        .frame(height: KeyListView.actionControlHeight)
+        .modifier(CapsuleGlassBackground(isActive: false, isHovered: false, reduceTransparency: reduceTransparency))
+        .fixedSize()
+    }
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 }
 
 struct LibraryMetadataBadge: View {
@@ -100,7 +145,7 @@ struct LibrarySearchField: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSSearchField {
         let field = NSSearchField()
-        field.placeholderString = "Search keys"
+        field.placeholderString = "Search keys, apps…"
         field.setAccessibilityLabel("Search keys")
         field.controlSize = .regular
         // The SwiftUI host supplies the single Liquid Glass capsule; the native field must not
@@ -168,12 +213,11 @@ struct LibrarySearchField: NSViewRepresentable {
     }
 }
 
+/// Sidebar bottom-bar status: passive dot + label (D-38). The request-pause state model is
+/// still reflected in the label, but pause/resume controls are gone.
 struct LibraryAgentStatus: View {
     let active: Bool
     var requestState: RequestPauseModel.State = .accepting
-    var isBusy: Bool = false
-    var onTogglePause: (() -> Void)? = nil
-    var onLock: (() -> Void)? = nil
     var onOpenSettings: (() -> Void)? = nil
 
     var statusLabel: String {
@@ -202,127 +246,41 @@ struct LibraryAgentStatus: View {
         }
     }
 
-    @State private var isStatusHovered = false
-    @State private var isSettingsHovered = false
-
+    /// S02.footer-status: passive plain text (dot + label). No button, no chevron, no menu,
+    /// no hover capsule (D-38 removed the pause/resume surface; the state model stays).
     var body: some View {
         HStack(spacing: 8) {
-            if onTogglePause != nil || onLock != nil {
-                Menu {
-                    if let onTogglePause {
-                        Button(role: requestState == .paused ? nil : .destructive, action: onTogglePause) {
-                            Label(
-                                requestState == .paused ? "Resume Requests…" : "Pause Requests…",
-                                systemImage: requestState == .paused ? "play.circle" : "pause.circle"
-                            )
-                        }
-                        .disabled(isBusy)
-                    }
-                    if let onLock {
-                        Divider()
-                        Button(action: onLock) {
-                            Label("Lock Clavis", systemImage: "lock")
-                        }
-                    }
-                } label: {
-                    statusPillContent
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(isStatusHovered ? Color.primary.opacity(0.06) : Color.clear)
-                )
-                .onHover { isStatusHovered = $0 }
-                .help(statusLabel)
-                .accessibilityLabel("Clavis status: \(statusLabel)")
-            } else {
-                statusPillContent
-                    .accessibilityElement(children: .combine)
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 7, height: 7)
+                    .accessibilityHidden(true)
+                Text(statusLabel)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(DesignTokens.textSecondary)
+                    .lineLimit(1)
             }
+            .padding(.horizontal, 4)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Clavis status: \(statusLabel)")
 
             Spacer(minLength: 4)
 
             if let onOpenSettings {
-                Button(action: onOpenSettings) {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 13.5, weight: .medium))
-                        .foregroundStyle(isSettingsHovered ? .primary : DesignTokens.textSecondary)
-                        .frame(width: 28, height: 28)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(isSettingsHovered ? Color.primary.opacity(0.07) : Color.clear)
-                        )
-                        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .onHover { isSettingsHovered = $0 }
-                .help("Settings (⌘,)")
-                .accessibilityLabel("Settings")
+                // S02.footer-settings: 36pt circular glass button, same sizing as toolbar controls.
+                CircularGlassIconButton(
+                    icon: "gearshape",
+                    size: DesignTokens.footerGearSize,
+                    iconSize: 16.5,
+                    helpText: "Settings (⌘,)",
+                    accessibilityLabel: ClavisUIStrings.Accessibility.settings,
+                    action: onOpenSettings
+                )
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-    }
-
-    private var statusPillContent: some View {
-        HStack(spacing: 7) {
-            Circle()
-                .fill(dotColor)
-                .frame(width: 7, height: 7)
-                .accessibilityHidden(true)
-            Text(statusLabel)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(DesignTokens.textSecondary)
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 8)
-        .frame(height: 26)
     }
 }
 
-/// A standard menu provides native selection, dismissal, and keyboard behavior.
-struct LibraryMoreMenu: View {
-    let history: () -> Void
-    let settings: () -> Void
-    let lock: () -> Void
-    let revoke: () -> Void
-    var paused = false
-    var busy = false
 
-    var body: some View {
-        Menu {
-            Button(action: history) {
-                Label("Signing History", systemImage: "clock.arrow.circlepath")
-            }
-            Button(action: settings) {
-                Label("Settings…", systemImage: "gearshape")
-            }
-            Divider()
-            Button(action: lock) {
-                Label("Lock Clavis", systemImage: "lock")
-            }
-            Button(role: .destructive, action: revoke) {
-                Label(paused ? "Resume Requests…" : "Activate Kill Switch…", systemImage: paused ? "play.circle" : "stop.circle")
-            }
-            .disabled(busy)
-            Divider()
-            Link(destination: URL(string: "https://github.com/GDR/clavis#readme")!) {
-                Label("Help & Documentation", systemImage: "questionmark.circle")
-            }
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 15, weight: .medium))
-                .frame(width: 33, height: 33)
-                .contentShape(Circle())
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .liquidGlassCapsuleControl()
-        .help("More")
-        .accessibilityLabel("More")
-    }
-}

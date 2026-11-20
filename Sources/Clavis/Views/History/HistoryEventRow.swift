@@ -170,15 +170,37 @@ struct HistoryEventRow: View {
             "Record hash: SHA256:\(digest)"
         ].joined(separator: "\n")
 
-        return Text(lines)
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundColor(DesignTokens.textSecondary)
-            .lineSpacing(4)
-            .textSelection(.enabled)
-            .padding(.leading, 24)
-            .padding(.top, 1)
-            .padding(.bottom, 9)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        return VStack(alignment: .leading, spacing: 8) {
+            // S-10 compact inspector header: ✓/✕ mark + 15pt semibold result title +
+            // right-aligned timestamp. No large hero heading.
+            HStack(spacing: 8) {
+                Image(systemName: statusSymbol.name)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(statusSymbol.color)
+                    .accessibilityHidden(true)
+                Text(result.title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.primary)
+                Spacer(minLength: 12)
+                Text("\(dateText) · \(timeText)")
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundColor(DesignTokens.textSecondary)
+                    .help(Self.isoFormatter.string(from: event.time))
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
+
+            Text(lines)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(DesignTokens.textSecondary)
+                .lineSpacing(4)
+                .textSelection(.enabled)
+        }
+        .padding(.leading, 24)
+        .padding(.trailing, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Context menu

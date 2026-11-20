@@ -13,7 +13,6 @@ struct KeyListView: View {
     @State private var kindFilter: KeyKindFilter = .all
     @State private var searchText: String = ""
     @State private var keyPendingDeletion: SSHKeyInfo? = nil
-    @State private var confirmingRevokeAll = false
     @FocusState private var isSearchFieldFocused: Bool
     @State private var headerCenterOffset: CGFloat = 0
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -21,17 +20,25 @@ struct KeyListView: View {
     public static let sidebarWidth: CGFloat = 260
     /// First level shared by both panes: the 36pt controls/tile centered on the native traffic-light line
     /// with equal 8pt padding above and below (52 = 8 + 36 + 8).
-    public static let toolbarHeight: CGFloat = 52
+    public static let toolbarHeight: CGFloat = DesignTokens.toolbarBandHeight
     public static let actionControlHeight: CGFloat = 36
-    /// Sidebar only: second level (search) below the shared first level.
-    static let headerLevelGap: CGFloat = 0
-    static let headerBottomPadding: CGFloat = 14
+    /// Sidebar only: second level (search) sits 6pt below the shared 52pt toolbar band.
+    static let headerLevelGap: CGFloat = 6
+    static let headerBottomPadding: CGFloat = 10
     /// Stable footer height across agent states; also the scroll inset that clears the last key.
     public static let sidebarFooterHeight: CGFloat = 48
-    public static let searchCapsuleHeight: CGFloat = 32
-    public static let emptyStateTitle = "A key that stays on your Mac."
-    public static let emptyStateSubtitle = "Create a hardware-backed identity for SSH and Git. Your private key stays in the Secure Enclave."
-    public static let emptyStateCreateButtonTitle = "Create your first key"
+    public static let searchCapsuleHeight: CGFloat = 34
+    /// S-02 empty state: AppIcon emblem (72pt, 16pt corner radius) above "Welcome to Clavis".
+    public static let emptyStateEmblemSize: CGFloat = 72
+    public static let emptyStateEmblemCornerRadius: CGFloat = 16
+    public static let emptyStateTitle = "Welcome to Clavis"
+    public static let emptyStateSubtitle = "Clavis creates keys that never leave this Mac and signs SSH and Git requests for you and your agents."
+    public static let emptyStateSteps = [
+        "Create a key, protected by Touch ID",
+        "Add it to GitHub",
+        "Test it (about 2 minutes)"
+    ]
+    public static let emptyStateCreateButtonTitle = "Create Key…"
     public static let historyVerifiedTooltip = "The signing history's linked hashes have been checked for changes or missing records."
 
     static func filterKeys(_ keys: [SSHKeyInfo], query: String, kind: KeyKindFilter = .all) -> [SSHKeyInfo] {
@@ -210,6 +217,11 @@ struct KeyListView: View {
                         .dismissOnOutsideClick {
                             appState.activeSheet = nil
                         }
+                case .connect:
+                    ConnectTestSheet(appState: appState)
+                        .dismissOnOutsideClick {
+                            appState.activeSheet = nil
+                        }
                 }
             }
             .alert(ClavisUIStrings.Common.error, isPresented: isErrorAlertPresented) {
@@ -328,29 +340,17 @@ struct KeyListView: View {
 
     private var sidebarHeader: some View {
         VStack(spacing: Self.headerLevelGap) {
-            // Lock, then New Key: separate circular glass controls (36pt) at the trailing edge
-            // of the sidebar, on the same center line as the native traffic lights.
+            // S02.toolbar-pill: one 36pt glass capsule cluster (New Key · History · Lock) at the
+            // trailing edge of the sidebar, on the same center line as the native traffic lights.
             HStack(spacing: 10) {
                 Spacer(minLength: 0)
-                CircularGlassIconButton(
-                    icon: "lock",
-                    size: Self.actionControlHeight,
-                    iconSize: 18,
-                    helpText: "Lock Clavis (⌘L)",
-                    accessibilityLabel: "Lock Clavis"
-                ) {
-                    PanelLockController.shared.lock(reason: .lockNow)
-                }
-                CircularGlassIconButton(
-                    icon: "plus",
-                    size: Self.actionControlHeight,
-                    iconSize: 18,
-                    isActive: appState.activeSheet == .create,
-                    helpText: "New key (⌘N)",
-                    accessibilityLabel: ClavisUIStrings.Accessibility.addKey
-                ) {
-                    appState.activeSheet = .create
-                }
+                SidebarToolbarPill(
+                    isHistoryActive: isHistoryActive,
+                    isCreateSheetActive: false,
+                    onNewKey: { appState.activeSheet = .create },
+                    onToggleHistory: { toggleHistoryPane() },
+                    onLock: { PanelLockController.shared.lock(reason: .lockNow) }
+                )
             }
             .padding(.horizontal, 12)
             .frame(height: Self.toolbarHeight)
@@ -380,15 +380,6 @@ struct KeyListView: View {
         .task { await appState.requestPolicy.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await appState.requestPolicy.refresh() }
-        }
-        .confirmationDialog(appState.requestPolicy.isPaused ? "Resume requests?" : "Activate kill switch?", isPresented: $confirmingRevokeAll) {
-            Button(appState.requestPolicy.isPaused ? "Resume Requests" : "Activate Kill Switch", role: .destructive) {
-                Task { await appState.setRequestsPaused(!appState.requestPolicy.isPaused) }
-            }
-        } message: {
-            Text(appState.requestPolicy.isPaused
-                ? "Resuming requires authentication. Revoked approvals will not be restored."
-                : "Revoke all approvals and pause new requests. Existing SSH connections may remain open.")
         }
     }
 
@@ -452,9 +443,6 @@ struct KeyListView: View {
                 LibraryAgentStatus(
                     active: appState.isSocketActive,
                     requestState: appState.requestPolicy.state,
-                    isBusy: appState.requestPolicy.isBusy,
-                    onTogglePause: { confirmingRevokeAll = true },
-                    onLock: { PanelLockController.shared.lock(reason: .lockNow) },
                     onOpenSettings: { appState.activeSheet = .settings }
                 )
                 .frame(height: Self.sidebarFooterHeight)
@@ -480,6 +468,27 @@ struct KeyListView: View {
                 if appState.activeMainPane == .history {
                     HistoryView(viewModel: historyViewModel, ui: historyUI, keys: appState.keys)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .topLiquidGlassBar {
+                            VStack(spacing: 0) {
+                                // S09.toolbar: one unified 52pt band — "History" title with the filter
+                                // controls live on the same line, never a separate row below.
+                                HStack(alignment: .center, spacing: 12) {
+                                    Text("History")
+                                        .font(.system(size: 18, weight: .semibold))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                        .fixedSize()
+                                        .accessibilityAddTraits(.isHeader)
+                                    HistoryFilterHeader(viewModel: historyViewModel, ui: historyUI)
+                                    ProminentHistoryButton(isActive: true) { toggleHistoryPane() }
+                                }
+                                .padding(.horizontal, 28)
+                                .frame(height: Self.toolbarHeight)
+                                .offset(y: headerCenterOffset)
+                                // Applied badges, diagnostics and the matching count stay pinned too.
+                                HistoryFilterSummary(viewModel: historyViewModel)
+                            }
+                        }
                 } else if appState.keys.isEmpty {
                     emptyVaultFirstLaunchView
                 } else if let key = selectedKey {
@@ -506,21 +515,6 @@ struct KeyListView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .topLiquidGlassBar {
-                VStack(spacing: 0) {
-                    if isHistoryActive {
-                        HStack(spacing: 0) {
-                            Spacer(minLength: 0)
-                            ProminentHistoryButton(isActive: true) { toggleHistoryPane() }
-                        }
-                        .padding(.horizontal, 28)
-                        .frame(height: Self.toolbarHeight)
-                        .offset(y: headerCenterOffset)
-                        // One fixed region: search, badges and count never enter the scroll area.
-                        HistoryFilterHeader(viewModel: historyViewModel, ui: historyUI)
-                    }
-                }
-            }
 
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -531,43 +525,62 @@ struct KeyListView: View {
             Spacer()
 
             VStack(spacing: 0) {
-                ZStack {
-                    Image(systemName: "key.fill")
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundColor(DesignTokens.accentBlue)
+                // AppIcon emblem (72pt, 16pt continuous radius) above the welcome title.
+                Group {
+                    if let icon = LockedPlaceholderView.loadAppIcon() {
+                        Image(nsImage: icon)
+                            .resizable()
+                            .interpolation(.high)
+                            .aspectRatio(contentMode: .fit)
+                    } else {
+                        Image(systemName: "key.fill")
+                            .font(.system(size: 34, weight: .medium))
+                            .foregroundColor(DesignTokens.accentBlue)
+                    }
                 }
-                .frame(width: 41, height: 43)
-                .glassCard(cornerRadius: 11, tint: DesignTokens.accentBlue.opacity(0.09))
-                .padding(.bottom, 18)
+                .frame(width: Self.emptyStateEmblemSize, height: Self.emptyStateEmblemSize)
+                .clipShape(RoundedRectangle(cornerRadius: Self.emptyStateEmblemCornerRadius, style: .continuous))
+                .shadow(color: Color.black.opacity(0.30), radius: 14, x: 0, y: 10)
+                .accessibilityHidden(true)
+                .padding(.bottom, 12)
 
                 Text(Self.emptyStateTitle)
-                    .font(.system(size: 23, weight: .semibold))
+                    .font(.system(size: 20, weight: .semibold))
                     .foregroundColor(.primary)
                     .multilineTextAlignment(.center)
-                    .padding(.bottom, 14)
+                    .padding(.bottom, 6)
 
                 Text(Self.emptyStateSubtitle)
-                    .font(.system(size: 13))
+                    .font(.system(size: 12))
                     .foregroundColor(DesignTokens.textSecondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(3)
-                    .frame(maxWidth: 320)
-                    .padding(.bottom, 22)
+                    .frame(maxWidth: 380)
+                    .padding(.bottom, 12)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(Self.emptyStateSteps.enumerated()), id: \.offset) { index, step in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("\(index + 1).")
+                                .font(.system(size: 12).monospacedDigit())
+                                .foregroundColor(DesignTokens.textSecondary)
+                            Text(step)
+                                .font(.system(size: 12))
+                                .foregroundColor(DesignTokens.textSecondary)
+                        }
+                    }
+                }
+                .padding(.bottom, 16)
 
                 Button(action: {
                     appState.activeSheet = .create
                 }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 12, weight: .semibold))
-                        Text(Self.emptyStateCreateButtonTitle)
-                            .font(.system(size: 13, weight: .medium))
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
+                    Text(Self.emptyStateCreateButtonTitle)
+                        .font(.system(size: 13, weight: .medium))
+                        .padding(.horizontal, 18)
+                        .frame(height: 32)
                 }
                 .liquidGlassButton(prominent: true)
-                .controlSize(.large)
             }
             .padding(.horizontal, 24)
 
@@ -615,15 +628,24 @@ struct KeySidebarRowView: View {
 
     @State private var isHovered = false
 
+    /// Translucent neutral row selection matching `.ux/style.css` (`--row-sel`) so KeyBadge never
+    /// clashes against a solid accent block.
+    private static let selectedRowPlatter = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.isDarkMode
+            ? NSColor(calibratedWhite: 1.0, alpha: 0.13)
+            : NSColor(calibratedWhite: 0.0, alpha: 0.075)
+    })
+
+    /// S02.key-row subtitle: the capability summary only (lock state is not a row badge).
     var subtitleText: String {
-        "\(key.purpose.sidebarLabel) · \(isUnlocked ? "Unlocked" : "Locked")"
+        LibraryKeyPresentation(profile: key.effectiveAccessProfile).purposeSummary
     }
 
     var body: some View {
         let profile = key.effectiveAccessProfile
         let presentation = LibraryKeyPresentation(profile: profile)
-        let isBot = profile.type == .bot
-        let squircleColors: [Color] = isBot
+        let isAgentKey = profile.type == .bot
+        let squircleColors: [Color] = isAgentKey
             ? [Color(red: 0.69, green: 0.35, blue: 0.94), Color(red: 0.54, green: 0.22, blue: 0.82)]
             : [Color(red: 0.12, green: 0.58, blue: 1.0), Color(red: 0.0, green: 0.45, blue: 0.96)]
 
@@ -650,16 +672,12 @@ struct KeySidebarRowView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(key.label)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(
-                        isSelected
-                            ? Color.white
-                            : (presentation.isDisabled ? DesignTokens.textSecondary : .primary)
-                    )
-                    .strikethrough(presentation.isDisabled, color: isSelected ? Color.white.opacity(0.75) : DesignTokens.textSecondary)
+                    .foregroundStyle(presentation.isDisabled ? DesignTokens.textSecondary : .primary)
+                    .strikethrough(presentation.isDisabled, color: DesignTokens.textSecondary)
                     .lineLimit(1)
                 Text(presentation.purposeSummary)
                     .font(.system(size: 11))
-                    .foregroundStyle(isSelected ? Color.white.opacity(0.78) : DesignTokens.textSecondary)
+                    .foregroundStyle(DesignTokens.textSecondary)
                     .lineLimit(1)
             }
 
@@ -668,7 +686,7 @@ struct KeySidebarRowView: View {
             if presentation.isDisabled {
                 Image(systemName: "pause.fill")
                     .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(isSelected ? Color.white.opacity(0.85) : DesignTokens.textSecondary)
+                    .foregroundStyle(DesignTokens.textSecondary)
                     .help("Disabled")
                     .accessibilityHidden(true)
             }
@@ -678,14 +696,14 @@ struct KeySidebarRowView: View {
         .frame(minHeight: 53)
         .background(FirstMouseView())
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(
                     isSelected
-                        ? Color(nsColor: .controlAccentColor)
+                        ? Self.selectedRowPlatter
                         : (isHovered ? Color.primary.opacity(0.06) : Color.clear)
                 )
         )
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(key.label)
         .accessibilityValue(presentation.accessibilitySummary)

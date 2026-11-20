@@ -93,6 +93,8 @@ public class WindowManager: NSObject, NSWindowDelegate {
         window.titlebarSeparatorStyle = .none
         let toolbar = NSToolbar(identifier: "ClavisMainWindowToolbar")
         toolbar.allowsUserCustomization = false
+        toolbar.displayMode = .iconOnly
+        toolbar.showsBaselineSeparator = false
         window.toolbar = toolbar
         window.toolbarStyle = .unified
         window.isOpaque = false

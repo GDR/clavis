@@ -167,6 +167,23 @@ final class PanelLockTests {
         _ = placeholder.body
     }
 
+    // MARK: - INV-21 / D-40: Lock Session & Status Copy
+
+    @Test func test_lockedPlaceholderView_inv21SessionNoticeAndStatusLine() {
+        // Lock banner/toast copy: Personal sessions clear; Agent sessions survive until timeout.
+        #expect(LockedPlaceholderView.sessionLockNotice
+            == "Personal sessions cleared; agent sessions continue until their timeout.")
+        // Locked status line never claims signing availability is confirmed.
+        #expect(LockedPlaceholderView.lockedStatusTitle == "Agent status unavailable")
+        #expect(LockedPlaceholderView.lockedStatusDetail == "Signing availability could not be confirmed")
+        // Glossary: Personal / Agent, never Bot.
+        #expect(!LockedPlaceholderView.sessionLockNotice.contains("Bot"))
+
+        let controller = PanelLockController(defaults: testDefaults, vaultKeyCount: { 1 })
+        let placeholder = LockedPlaceholderView(lock: controller)
+        _ = placeholder.body
+    }
+
     // MARK: - #99: PIN Masking & Default Action
 
     @Test func test_pinEntryView_masksDigitsWithBullets() {
