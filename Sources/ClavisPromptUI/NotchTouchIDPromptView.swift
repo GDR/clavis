@@ -956,6 +956,8 @@ public final class NotchPromptViewModel: ObservableObject {
 
     /// Live `LAContext` driving the embedded `LAAuthenticationView` glyph after `Continue` is pressed.
     @Published public private(set) var embeddedAuthContext: LAContext? = nil
+    /// Already-evaluated `LAContext` ready for ownership transfer to a real signing caller.
+    public private(set) var authenticatedContext: LAContext? = nil
     private var embeddedBiometricTask: Task<Void, Never>? = nil
 
     private let verifyingDelayNanoseconds: UInt64
@@ -963,12 +965,17 @@ public final class NotchPromptViewModel: ObservableObject {
     private let autoCollapseAfterSigned: Bool
     private let biometricAuthenticator: @MainActor () async -> Bool
     private let passwordVerifier: @MainActor (String) async -> Bool
+    private let hardwarePasswordAuthenticator: (@MainActor () async -> LAContext?)?
+    private let onApprovalReady: (@MainActor (NotchSessionScope, NotchApprovalMethod, LAContext?) -> Void)?
     private var onComplete: (@MainActor (NotchPromptResult) -> Void)?
     private var isCompleted: Bool = false
     private var attemptGeneration: UInt64 = 0
 
-    /// Returns true when the current machine can render a live Touch ID sensor inside `LAAuthenticationView`.
-    public static var isEmbeddedBiometricAvailable: Bool {
+    /// Whether password fallback uses a system LocalAuthentication sheet rather than the local OpenDirectory field.
+    public var usesSystemPasswordSheet: Bool { hardwarePasswordAuthenticator != nil }
+
+    /// Returns true when the current machine can render a live Touch ID / companion sensor inside `LAAuthenticationView`.
+    public static func isEmbeddedBiometricAvailable(allowsCompanion: Bool) -> Bool {
         #if DEBUG
         if ClavisEnvironment.isTesting {
             return false
@@ -976,7 +983,17 @@ public final class NotchPromptViewModel: ObservableObject {
         #endif
         let context = LAContext()
         var error: NSError?
+        if #available(macOS 15.0, *), allowsCompanion {
+            if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometricsOrCompanion, error: &error) {
+                return true
+            }
+        }
         return context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+    }
+
+    /// Returns true when the current machine can render a live Touch ID sensor inside `LAAuthenticationView`.
+    public static var isEmbeddedBiometricAvailable: Bool {
+        isEmbeddedBiometricAvailable(allowsCompanion: false)
     }
 
     public init(
@@ -988,6 +1005,8 @@ public final class NotchPromptViewModel: ObservableObject {
         autoCollapseAfterSigned: Bool = true,
         biometricAuthenticator: @escaping @MainActor () async -> Bool = NotchPromptWindowController.defaultBiometricAuthenticator,
         passwordVerifier: @escaping @MainActor (String) async -> Bool = NotchPromptWindowController.defaultPasswordVerifier,
+        hardwarePasswordAuthenticator: (@MainActor () async -> LAContext?)? = nil,
+        onApprovalReady: (@MainActor (NotchSessionScope, NotchApprovalMethod, LAContext?) -> Void)? = nil,
         onComplete: (@MainActor (NotchPromptResult) -> Void)? = nil
     ) {
         self.request = request
@@ -1000,11 +1019,26 @@ public final class NotchPromptViewModel: ObservableObject {
         self.autoCollapseAfterSigned = autoCollapseAfterSigned
         self.biometricAuthenticator = biometricAuthenticator
         self.passwordVerifier = passwordVerifier
+        self.hardwarePasswordAuthenticator = hardwarePasswordAuthenticator
+        self.onApprovalReady = onApprovalReady
         self.onComplete = onComplete
 
         if initialPhase == .awaitingAuthentication && request.confirmationMode.allowsBiometrics {
             startEmbeddedBiometricListeningIfNeeded()
         }
+    }
+
+    /// Transfers ownership of the evaluated `LAContext` to the caller without invalidating it.
+    public func takeAuthenticatedContext() -> LAContext? {
+        let context = authenticatedContext
+        authenticatedContext = nil
+        return context
+    }
+
+    private func invalidateAuthenticatedContext() {
+        let context = authenticatedContext
+        authenticatedContext = nil
+        context?.invalidate()
     }
 
     public func setCompletionHandler(_ handler: @escaping @MainActor (NotchPromptResult) -> Void) {
@@ -1014,6 +1048,10 @@ public final class NotchPromptViewModel: ObservableObject {
     /// Allows tests to attach an `LAContext` so they can assert it is preserved across display geometry updates.
     public func injectEmbeddedAuthContextForTesting(_ context: LAContext) {
         self.embeddedAuthContext = context
+    }
+
+    internal func injectAuthenticatedContextForTesting(_ context: LAContext) {
+        self.authenticatedContext = context
     }
 
     /// Transitions from `.idle` into the initial active stage (`request.initialExpandedPhase`),
@@ -1040,6 +1078,7 @@ public final class NotchPromptViewModel: ObservableObject {
               request.permittedScopes.contains(scope), scope != selectedScope else { return }
         attemptGeneration &+= 1
         cancelEmbeddedBiometricListening()
+        invalidateAuthenticatedContext()
         passwordText = ""
         passwordError = nil
         biometricFailure = nil
@@ -1108,6 +1147,7 @@ public final class NotchPromptViewModel: ObservableObject {
     private func collapseAndFinish(decision: NotchApprovalDecision) {
         attemptGeneration &+= 1
         cancelEmbeddedBiometricListening()
+        invalidateAuthenticatedContext()
         withAnimation(Self.runtimeCollapseAnimation) {
             passwordText = ""
             passwordError = nil
@@ -1128,7 +1168,7 @@ public final class NotchPromptViewModel: ObservableObject {
 
         withAnimation(Self.runtimeTransitionAnimation) {
             isPromptFocused = focused
-            if !focused && phase == .passwordEntry {
+            if !focused && phase == .passwordEntry && !usesSystemPasswordSheet {
                 // Hide and clear the password input when unfocused so it is not keyboard-accessible.
                 passwordText = ""
                 passwordError = nil
@@ -1139,15 +1179,57 @@ public final class NotchPromptViewModel: ObservableObject {
         }
     }
 
-    /// Opens the inline password fallback drawer below the Touch ID row without moving top elements.
+    /// Opens the inline password fallback drawer or launches macOS password authentication for live SEP signing.
     public func openPasswordDrawer() {
         guard !isCompleted, request.allowsPasswordFallback else { return }
         guard phase == .awaitingAuthentication || phase == .reviewing else { return }
+        if hardwarePasswordAuthenticator != nil {
+            Task { @MainActor [weak self] in
+                await self?.authenticateWithSystemPassword()
+            }
+            return
+        }
         cancelEmbeddedBiometricListening()
         withAnimation(Self.runtimeTransitionAnimation) {
             isPromptFocused = true
             passwordError = nil
             phase = .passwordEntry
+        }
+    }
+
+    /// Evaluates `.deviceOwnerAuthentication` for keys unlocked via macOS login password (`hardwarePasswordAuthenticator`).
+    public func authenticateWithSystemPassword() async {
+        guard let hardwarePasswordAuthenticator, !isCompleted, request.allowsPasswordFallback else { return }
+        guard phase == .awaitingAuthentication || phase == .reviewing || phase == .passwordEntry else { return }
+        let priorPhase: NotchPromptPhase = request.confirmationMode == .passwordOnly ? .passwordEntry : .awaitingAuthentication
+        attemptGeneration &+= 1
+        let generation = attemptGeneration
+        cancelEmbeddedBiometricListening()
+        invalidateAuthenticatedContext()
+
+        withAnimation(Self.runtimeTransitionAnimation) {
+            isPromptFocused = true
+            passwordError = nil
+            biometricFailure = nil
+            phase = .verifying
+        }
+
+        let ctx = await hardwarePasswordAuthenticator()
+        guard !isCompleted, attemptGeneration == generation else {
+            ctx?.invalidate()
+            return
+        }
+
+        if let ctx {
+            self.authenticatedContext = ctx
+            await completeApproval(method: .password, generation: generation)
+        } else {
+            withAnimation(Self.runtimeTransitionAnimation) {
+                phase = priorPhase
+            }
+            if priorPhase == .awaitingAuthentication {
+                startEmbeddedBiometricListeningIfNeeded()
+            }
         }
     }
 
@@ -1197,7 +1279,7 @@ public final class NotchPromptViewModel: ObservableObject {
             isPromptFocused = true
             biometricFailure = nil
         }
-        if Self.isEmbeddedBiometricAvailable {
+        if Self.isEmbeddedBiometricAvailable(allowsCompanion: request.confirmationMode.allowsCompanionWatch) {
             startEmbeddedBiometricListeningIfNeeded()
         } else {
             Task { @MainActor in
@@ -1206,57 +1288,91 @@ public final class NotchPromptViewModel: ObservableObject {
         }
     }
 
+    private static func isSystemCancelError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == LAErrorDomain && LAError.Code(rawValue: nsError.code) == .systemCancel
+    }
+
     /// Arms a live `LAContext` and evaluates biometrics in the background so the user can sign
     /// immediately once presented.
     public func startEmbeddedBiometricListeningIfNeeded() {
         guard !isCompleted, phase == .awaitingAuthentication, request.confirmationMode.allowsBiometrics else { return }
-        guard Self.isEmbeddedBiometricAvailable else { return }
+        let allowsCompanion = request.confirmationMode.allowsCompanionWatch
+        guard Self.isEmbeddedBiometricAvailable(allowsCompanion: allowsCompanion) else {
+            if !ClavisEnvironment.isTesting && request.allowsPasswordFallback {
+                recordBiometricFailure(.unavailable("Touch ID unavailable"))
+            }
+            return
+        }
         guard embeddedBiometricTask == nil else { return }
 
-        let context = LAContext()
-        context.localizedFallbackTitle = ""
-        context.localizedCancelTitle = "Cancel"
-        self.embeddedAuthContext = context
         let generation = self.attemptGeneration
         let reason = "approve \(request.displayOperation.lowercased()) for \(request.keyLabel)"
-        let allowsCompanion = request.confirmationMode.allowsCompanionWatch
+
+        let initialContext = LAContext()
+        initialContext.localizedFallbackTitle = ""
+        initialContext.localizedCancelTitle = "Cancel"
+        self.embeddedAuthContext = initialContext
 
         embeddedBiometricTask = Task { @MainActor [weak self] in
-            // Allow `LAAuthenticationView(context:)` to mount in the view hierarchy before starting sensor evaluation.
-            try? await Task.sleep(nanoseconds: 90_000_000)
-            guard let self, !Task.isCancelled, !self.isCompleted, self.attemptGeneration == generation, self.phase == .awaitingAuthentication else {
-                context.invalidate()
-                return
-            }
-
-            do {
-                let policy: LAPolicy
-                if #available(macOS 15.0, *), allowsCompanion {
-                    policy = .deviceOwnerAuthenticationWithBiometricsOrCompanion
-                } else {
-                    policy = .deviceOwnerAuthenticationWithBiometrics
-                }
-                let ok = try await context.evaluatePolicy(policy, localizedReason: reason)
-                guard !Task.isCancelled, !self.isCompleted, self.attemptGeneration == generation, self.phase == .awaitingAuthentication else {
+            var context = initialContext
+            for attempt in 0..<2 {
+                // Allow `LAAuthenticationView(context:)` to mount in the view hierarchy before starting sensor evaluation.
+                let mountDelay: UInt64 = attempt == 0 ? 120_000_000 : 250_000_000
+                try? await Task.sleep(nanoseconds: mountDelay)
+                guard let self, !Task.isCancelled, !self.isCompleted, self.attemptGeneration == generation, self.phase == .awaitingAuthentication else {
                     context.invalidate()
                     return
                 }
-                if ok {
-                    self.embeddedBiometricTask = nil
-                    await self.completeApproval(method: .biometrics, generation: generation)
-                } else {
+
+                do {
+                    let policy: LAPolicy
+                    if #available(macOS 15.0, *), allowsCompanion {
+                        policy = .deviceOwnerAuthenticationWithBiometricsOrCompanion
+                    } else {
+                        policy = .deviceOwnerAuthenticationWithBiometrics
+                    }
+                    let ok = try await context.evaluatePolicy(policy, localizedReason: reason)
+                    guard !Task.isCancelled, !self.isCompleted, self.attemptGeneration == generation, self.phase == .awaitingAuthentication else {
+                        context.invalidate()
+                        return
+                    }
+                    if ok {
+                        self.embeddedBiometricTask = nil
+                        self.embeddedAuthContext = nil
+                        self.authenticatedContext = context
+                        await self.completeApproval(method: .biometrics, generation: generation)
+                    } else {
+                        self.embeddedBiometricTask = nil
+                        self.embeddedAuthContext = nil
+                        self.recordBiometricFailure(.notRecognized)
+                    }
+                    return
+                } catch {
+                    ClavisLogger.promptDebug("clavis-code", "NotchPromptViewModel: embedded LA error: \(error)")
+                    context.invalidate()
+                    guard !Task.isCancelled, !self.isCompleted, self.attemptGeneration == generation else { return }
+
+                    if attempt == 0 && Self.isSystemCancelError(error) && self.phase == .awaitingAuthentication {
+                        let retryContext = LAContext()
+                        retryContext.localizedFallbackTitle = ""
+                        retryContext.localizedCancelTitle = "Cancel"
+                        self.embeddedAuthContext = retryContext
+                        context = retryContext
+                        continue
+                    }
+
                     self.embeddedBiometricTask = nil
                     self.embeddedAuthContext = nil
-                    self.recordBiometricFailure(.notRecognized)
-                }
-            } catch {
-                context.invalidate()
-                guard !Task.isCancelled, !self.isCompleted, self.attemptGeneration == generation else { return }
-                self.embeddedBiometricTask = nil
-                self.embeddedAuthContext = nil
-                let mapped = NotchBiometricFailure.from(error: error)
-                if mapped != .cancelled {
-                    self.recordBiometricFailure(mapped)
+                    if Self.isSystemCancelError(error) {
+                        self.recordBiometricFailure(.unavailable("Click Touch ID to try again"))
+                    } else {
+                        let mapped = NotchBiometricFailure.from(error: error)
+                        if mapped != .cancelled {
+                            self.recordBiometricFailure(mapped)
+                        }
+                    }
+                    return
                 }
             }
         }
@@ -1355,6 +1471,7 @@ public final class NotchPromptViewModel: ObservableObject {
         guard !isCompleted else { return }
         attemptGeneration &+= 1
         cancelEmbeddedBiometricListening()
+        invalidateAuthenticatedContext()
         withAnimation(Self.runtimeCollapseAnimation) {
             passwordText = ""
             passwordError = nil
@@ -1371,6 +1488,7 @@ public final class NotchPromptViewModel: ObservableObject {
         guard !isCompleted else { return }
         attemptGeneration &+= 1
         cancelEmbeddedBiometricListening()
+        invalidateAuthenticatedContext()
         passwordText = ""
         passwordError = nil
         approvalDecision = .denied
@@ -1380,7 +1498,7 @@ public final class NotchPromptViewModel: ObservableObject {
     /// Handles the `Return` / `Enter` key according to the current stage:
     /// - In `.reviewing`: advances to authentication (`continueToAuthentication()`).
     /// - For signature-changed prompts Deny keeps the default focus, so Return denies.
-    /// - In `.passwordEntry`: submits the password (`submitPassword()`).
+    /// - In `.passwordEntry`: submits the password or triggers the system password sheet.
     /// - Never directly approves a request without authentication.
     public func handleReturnKey() {
         guard !isCompleted, isPromptFocused else { return }
@@ -1397,7 +1515,11 @@ public final class NotchPromptViewModel: ObservableObject {
             }
         case .passwordEntry:
             Task { @MainActor in
-                _ = await submitPassword()
+                if usesSystemPasswordSheet {
+                    await authenticateWithSystemPassword()
+                } else {
+                    _ = await submitPassword()
+                }
             }
         default:
             break
@@ -1490,6 +1612,10 @@ public final class NotchPromptViewModel: ObservableObject {
             isPromptFocused = true
             phase = .approved
         }
+
+        // Release the authenticated LAContext immediately so live signing finishes without
+        // waiting for the visual confirmation splash to collapse.
+        onApprovalReady?(approvedScope, method, takeAuthenticatedContext())
 
         if signedDisplayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: signedDisplayNanoseconds)
@@ -1709,10 +1835,10 @@ public struct NotchTouchIDPromptView: View {
         max(0, viewModel.screenGeometry.effectiveTopClearance - 32.0)
     }
 
-    /// Base open height (`214pt` standard, `+64pt` with an optional warning banner, `+80pt` with an
-    /// approval info strip, plus any extra hardware top clearance).
+    /// Base open height (`214pt` standard, `166pt` compact for single-shot signing without scope picker,
+    /// `+64pt` with an optional warning banner, `+80pt` with an approval info strip, plus extra hardware top clearance).
     public var openHeight: CGFloat {
-        var height: CGFloat = 214
+        var height: CGFloat = (viewModel.request.kind == .signing && !viewModel.request.showsScopeSelector) ? 166 : 214
         if viewModel.request.effectiveWarning != nil { height += 64 }
         if viewModel.request.hasInfoStrip { height += 80 }
         return height + extraTopClearanceOffset
@@ -2120,7 +2246,8 @@ public struct NotchTouchIDPromptView: View {
         let scopeTop: CGFloat = (warning != nil ? (hasInfo ? 248 : 168) : (hasInfo ? 184 : 104)) + topExtra
         // Three-button agent-on-Personal footer moves the step hint above the actions (`tri` in Direction 11).
         let stepHintTop: CGFloat = baseOpenHeight - (viewModel.request.kind == .agentOnPersonal ? 74 : 45)
-        let authRowTop: CGFloat = (!isFocused && isArmed) ? (baseOpenHeight - 108) : (baseOpenHeight - 60)
+        let collapsedArmedHeight: CGFloat = 112 + (warning != nil ? 64 : 0) + (hasInfo ? 80 : 0) + 54
+        let authRowTop: CGFloat = (!isFocused && isArmed) ? (collapsedArmedHeight + topExtra - 60) : (baseOpenHeight - 60)
         let actionsTop: CGFloat = baseOpenHeight - 54
         let passwordDrawerTop: CGFloat = baseOpenHeight + 12
 
@@ -2708,51 +2835,69 @@ public struct NotchTouchIDPromptView: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Color.white.opacity(0.68))
 
-                SecureField("Mac login password", text: $viewModel.passwordText)
-                    .textFieldStyle(.plain)
-                    .controlSize(.large)
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundStyle(.primary)
-                    .focused($isPasswordFieldFocused)
-                    .padding(.horizontal, 12)
-                    .frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32)
-                    .background {
-                        Capsule()
-                            .fill(reduceTransparency ? Color(nsColor: .textBackgroundColor) : Color.primary.opacity(0.08))
+                if viewModel.usesSystemPasswordSheet {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Mac login password")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.white)
+                            .lineLimit(1)
+                        Text(viewModel.selectedScope.approvalSummaryText)
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundStyle(Self.subtitleGray)
+                            .lineLimit(1)
                     }
-                    .overlay {
-                        Capsule()
-                            .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
-                    }
-                    .overlay {
-                        if isPasswordFieldFocused {
+                    Spacer(minLength: 8)
+                } else {
+                    SecureField("Mac login password", text: $viewModel.passwordText)
+                        .textFieldStyle(.plain)
+                        .controlSize(.large)
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundStyle(.primary)
+                        .focused($isPasswordFieldFocused)
+                        .padding(.horizontal, 12)
+                        .frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32)
+                        .background {
                             Capsule()
-                                .stroke(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 2)
-                                .padding(-3)
+                                .fill(reduceTransparency ? Color(nsColor: .textBackgroundColor) : Color.primary.opacity(0.08))
                         }
-                    }
-                    .onSubmit {
-                        Task { @MainActor in
-                            _ = await viewModel.submitPassword()
+                        .overlay {
+                            Capsule()
+                                .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
                         }
-                    }
-                    .accessibilityLabel("Mac login password")
+                        .overlay {
+                            if isPasswordFieldFocused {
+                                Capsule()
+                                    .stroke(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 2)
+                                    .padding(-3)
+                            }
+                        }
+                        .onSubmit {
+                            Task { @MainActor in
+                                _ = await viewModel.submitPassword()
+                            }
+                        }
+                        .accessibilityLabel("Mac login password")
+                }
 
                 denyButton
                     .font(.system(size: 11, weight: .medium))
 
                 Button {
                     Task { @MainActor in
-                        _ = await viewModel.submitPassword()
+                        if viewModel.usesSystemPasswordSheet {
+                            await viewModel.authenticateWithSystemPassword()
+                        } else {
+                            _ = await viewModel.submitPassword()
+                        }
                     }
                 } label: {
-                    Text("Sign")
+                    Text(viewModel.usesSystemPasswordSheet ? "Use Password…" : "Sign")
                         .font(.system(size: 12, weight: .medium))
                 }
                 .foregroundStyle(Color.white)
                 .modifier(NotchActionButtonStyle(isProminent: true))
                 .controlSize(.large)
-                .accessibilityLabel("Sign with password")
+                .accessibilityLabel(viewModel.usesSystemPasswordSheet ? "Use macOS password" : "Sign with password")
             }
             .frame(height: 32)
 
@@ -2892,12 +3037,17 @@ public struct NotchTouchIDPromptView: View {
 
 /// Hosts Apple's native `LAAuthenticationView` bound to the active `LAContext` so the system renders its real
 /// animated Touch ID fingerprint glyph inside the MacBook Notch prompt after `Continue` is pressed.
-struct NotchEmbeddedTouchIDView: NSViewRepresentable {
-    let context: LAContext
+public struct NotchEmbeddedTouchIDView: NSViewRepresentable {
+    public let context: LAContext
 
-    var iconSize: CGFloat = 32
+    public var iconSize: CGFloat = 32
 
-    func makeNSView(context representableContext: Context) -> LAAuthenticationView {
+    public init(context: LAContext, iconSize: CGFloat = 32) {
+        self.context = context
+        self.iconSize = iconSize
+    }
+
+    public func makeNSView(context representableContext: Context) -> LAAuthenticationView {
         let view = LAAuthenticationView(context: self.context, controlSize: .small)
         view.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -2907,7 +3057,7 @@ struct NotchEmbeddedTouchIDView: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ nsView: LAAuthenticationView, context representableContext: Context) {
+    public func updateNSView(_ nsView: LAAuthenticationView, context representableContext: Context) {
     }
 }
 

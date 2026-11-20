@@ -32,6 +32,10 @@ let package = Package(
             name: "ClavisCore",
             targets: ["ClavisCore"]
         ),
+        .library(
+            name: "ClavisPromptUI",
+            targets: ["ClavisPromptUI"]
+        ),
         .executable(
             name: "Clavis",
             targets: ["Clavis"]
@@ -53,6 +57,11 @@ let package = Package(
                 .process("Resources")
             ]
         ),
+        .target(
+            name: "ClavisPromptUI",
+            dependencies: ["ClavisCore"],
+            path: "Sources/ClavisPromptUI"
+        ),
         .executableTarget(
             name: "ClavisCLI",
             dependencies: ["ClavisCore"],
@@ -61,13 +70,13 @@ let package = Package(
         ),
         .executableTarget(
             name: "ClavisAgent",
-            dependencies: ["ClavisCore"],
+            dependencies: ["ClavisCore", "ClavisPromptUI"],
             path: "Sources/ClavisAgent",
             linkerSettings: executableLinkerSettings
         ),
         .executableTarget(
             name: "Clavis",
-            dependencies: ["ClavisCore"],
+            dependencies: ["ClavisCore", "ClavisPromptUI"],
             path: "Sources/Clavis",
             linkerSettings: executableLinkerSettings
         ),
@@ -88,6 +97,7 @@ let package = Package(
             name: "ClavisAppTests",
             dependencies: [
                 "Clavis",
+                "ClavisPromptUI",
                 "ClavisCore",
                 "ClavisTestSupport"
             ],

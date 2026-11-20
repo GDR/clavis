@@ -114,14 +114,14 @@ public struct AppKitGitSigningGracePresenter: GitSigningGracePresenter {
 
     // MARK: - Caller & Agent Metadata Resolution
 
-    private struct ResolvedCallerMetadata {
+    internal struct ResolvedCallerMetadata {
         let callerName: String
         let callerPath: String?
         let processChain: String
         let agentWarning: NotchAgentWarning?
     }
 
-    private static func resolveCallerMetadata(
+    internal static func resolveCallerMetadata(
         from clientDesc: String,
         keyType: KeyType
     ) -> ResolvedCallerMetadata {
@@ -147,11 +147,32 @@ public struct AppKitGitSigningGracePresenter: GitSigningGracePresenter {
             rawPathOrName = String(trimmed[..<pidRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        var chainNames: [String] = []
-        var candidateAppPath: String? = enclosingAppBundlePath(for: rawPathOrName) ?? (rawPathOrName.hasPrefix("/") ? rawPathOrName : nil)
+        return resolveCallerMetadata(
+            rawDescription: trimmed,
+            pid: parsedPID,
+            executablePath: rawPathOrName,
+            overrideCallerName: nil,
+            keyType: keyType,
+            fallbackProcessChain: "git → ssh-keygen"
+        )
+    }
 
-        if let pid = parsedPID, pid > 1 {
-            let execPath = rawPathOrName.hasPrefix("/") ? rawPathOrName : (SSHAgentServer.getProcessPath(pid: pid) ?? rawPathOrName)
+    internal static func resolveCallerMetadata(
+        rawDescription: String,
+        pid: pid_t?,
+        executablePath: String,
+        overrideCallerName: String?,
+        keyType: KeyType,
+        fallbackProcessChain: String? = nil
+    ) -> ResolvedCallerMetadata {
+        var chainNames: [String] = []
+        var candidateAppPath: String? = enclosingAppBundlePath(for: executablePath)
+            ?? (executablePath.hasPrefix("/") ? executablePath : nil)
+
+        if let pid, pid > 1 {
+            let execPath = executablePath.hasPrefix("/")
+                ? executablePath
+                : (SSHAgentServer.getProcessPath(pid: pid) ?? executablePath)
             let auditChain = AuditProcessChain.build(pid: pid, executablePath: execPath, maxDepth: 8)
             for proc in auditChain {
                 let name = URL(fileURLWithPath: proc.executablePath).lastPathComponent
@@ -167,17 +188,19 @@ public struct AppKitGitSigningGracePresenter: GitSigningGracePresenter {
         }
 
         // Detect known AI coding agents in caller description or process ancestry (`US-72` / `US-73`)
-        let detectedAgent = detectAgent(in: trimmed, chainNames: chainNames)
+        let detectedAgent = detectAgent(in: rawDescription, chainNames: chainNames)
 
         let callerName: String
-        if let agent = detectedAgent {
+        if let overrideCallerName, !overrideCallerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            callerName = overrideCallerName
+        } else if let agent = detectedAgent {
             callerName = agent.displayName
         } else if let bundlePath = candidateAppPath, bundlePath.hasSuffix(".app") {
             callerName = URL(fileURLWithPath: bundlePath).deletingPathExtension().lastPathComponent
-        } else if rawPathOrName.hasPrefix("/") {
-            callerName = URL(fileURLWithPath: rawPathOrName).lastPathComponent
+        } else if executablePath.hasPrefix("/") {
+            callerName = URL(fileURLWithPath: executablePath).lastPathComponent
         } else {
-            callerName = rawPathOrName
+            callerName = executablePath
         }
 
         if candidateAppPath == nil && callerName == "Terminal" {
@@ -186,11 +209,14 @@ public struct AppKitGitSigningGracePresenter: GitSigningGracePresenter {
 
         let processChain: String
         if chainNames.count >= 2 {
-            // Order from parent toward leaf tool (e.g. `git → ssh-keygen`)
+            // Order from parent toward leaf tool (e.g. `Ghostty → zsh → ssh`)
             let displayChain = Array(chainNames.prefix(3).reversed())
             processChain = displayChain.joined(separator: " → ")
+        } else if let fallbackProcessChain {
+            processChain = fallbackProcessChain
         } else {
-            processChain = "git → ssh-keygen"
+            let leafName = chainNames.first ?? (executablePath.hasPrefix("/") ? URL(fileURLWithPath: executablePath).lastPathComponent : executablePath)
+            processChain = leafName.isEmpty ? "unknown" : leafName
         }
 
         let warning: NotchAgentWarning?
