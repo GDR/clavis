@@ -624,7 +624,9 @@ public final class HistoryViewModel: ObservableObject {
         wantTotal: Bool
     ) throws -> (Page, Int64, Int?) {
         let store = try factory()
-        let unsealer = AuditUnsealer(keyring: keyring, store: store, context: context)
+        // Never invoke hardware keyring agreement without an already-authenticated LAContext;
+        // background/locked refreshes must degrade to plaintext metadata without prompting.
+        let unsealer = AuditUnsealer(keyring: context != nil ? keyring : nil, store: store, context: context)
         // `base` carries scope that is not a badge (session, types, kind) plus any raw store
         // constraints; badge-derived criteria are layered on top and only ever narrow it.
         var template = filter.auditQuery(limit: pageSize, calendar: calendar, sessionID: base.sessionID)
@@ -802,7 +804,7 @@ public final class HistoryViewModel: ObservableObject {
             var hostCounts: [String: Int] = [:]
             var processCounts: [String: Int] = [:]
             if let store = try? factory() {
-                let unsealer = AuditUnsealer(keyring: keyring, store: store, context: context)
+                let unsealer = AuditUnsealer(keyring: context != nil ? keyring : nil, store: store, context: context)
                 var q = AuditQuery(limit: Self.scanBatchSize)
                 q.orderByTime = true
                 var scanned = 0

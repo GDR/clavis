@@ -764,4 +764,34 @@ final class HistoryViewModelTests {
         #expect(viewModel.filter.dateBounds.isEmpty)
         #expect(viewModel.records.count == 3)
     }
+
+    @Test func test_lockedReloadSkipsKeyringAgreementWithoutContext() async throws {
+        let store = try createTestStore()
+        let keyring = SoftwareAuditKeyring(requireContext: false)
+        let sealer = AuditSealer(keyring: keyring)
+
+        let event = AuditEvent(
+            type: .signature,
+            result: .allowed,
+            reason: .viaPrompt,
+            keyFingerprint: "SHA256:locked",
+            sensitive: AuditSensitive(keyLabel: "Github.com", callerName: "Ghostty")
+        )
+        let (fmt, blob) = sealer.seal(event, store: store)
+        let seq = try store.insert(event, sensitiveFormat: fmt, sensitiveBlob: blob)
+
+        let viewModel = HistoryViewModel(
+            store: { store },
+            keyring: keyring,
+            contextProvider: { nil },
+            notificationCenter: notificationCenter
+        )
+
+        await viewModel.reload().value
+        await viewModel.ensureSuggestionIndex().value
+
+        #expect(viewModel.records.count == 1)
+        #expect(keyring.agreeCalls == 0)
+        #expect(viewModel.sensitive[seq] == .unreadable)
+    }
 }
