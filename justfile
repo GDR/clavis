@@ -103,7 +103,6 @@ bundle config=config: (build config)
 
     cp "$build_dir/Clavis" "$contents/MacOS/Clavis"
     cp "$build_dir/clavis-agent" "$agent_bundle/Contents/MacOS/clavis-agent"
-    cp "$build_dir/clavis-cli" "$contents/Helpers/clavis-cli"
 
     cp packaging/macos/Info.plist "$contents/Info.plist"
     cp packaging/macos/AgentInfo.plist "$agent_bundle/Contents/Info.plist"
@@ -328,11 +327,9 @@ sign config=config: (bundle config)
         sign_resource_bundle "$resource_bundle"
     done
 
-    # Sign standalone CLIs and nested bundle helpers (always unprovisioned)
+    # Sign standalone binaries (always unprovisioned)
     for binary in "$build_dir/Clavis" \
-                  "$build_dir/clavis-agent" \
-                  "$build_dir/clavis-cli" \
-                  "$app_bundle/Contents/Helpers/clavis-cli"; do
+                  "$build_dir/clavis-agent"; do
         sign_and_verify "$binary" 0 "$entitlements" "0"
     done
 
@@ -471,7 +468,7 @@ package config=config: (dmg config)
         standalone_stage="$(mktemp -d -t clavis-standalone)"
         standalone_zip="$(mktemp -u -t clavis-standalone).zip"
         trap 'rm -rf "$standalone_stage" "$standalone_zip"' EXIT
-        cp "$build_dir/Clavis" "$build_dir/clavis-agent" "$build_dir/clavis-cli" "$standalone_stage/"
+        cp "$build_dir/Clavis" "$build_dir/clavis-agent" "$standalone_stage/"
         /usr/bin/ditto -c -k --keepParent "$standalone_stage" "$standalone_zip"
         just --justfile "{{ justfile() }}" notarize "$standalone_zip"
     fi
@@ -480,7 +477,6 @@ package config=config: (dmg config)
     tar -czf "$archive" -C "$build_dir" \
         Clavis \
         clavis-agent \
-        clavis-cli \
         Clavis_ClavisCore.bundle \
         Clavis.app
     shasum -a 256 "$archive" > "$archive.sha256"

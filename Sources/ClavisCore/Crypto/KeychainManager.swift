@@ -44,7 +44,6 @@ public class KeychainManager {
     }
 
     private let vaultStore: EncryptedVaultStore
-    internal var configuredVaultStore: EncryptedVaultStore { vaultStore }
 
     public init(
         authenticator: UserAuthenticating = LocalUserAuthenticator(),

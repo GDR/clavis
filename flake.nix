@@ -98,11 +98,6 @@
 
               # Wrap executables into Clavis.app so Bundle.main.executableURL resolves
               # inside the bundle for AgentLifecycleManager and Bundle.clavisCore.
-              cat > $out/bin/clavis-cli <<EOF
-              #!/bin/sh
-              exec "$out/Applications/Clavis.app/Contents/Helpers/clavis-cli" "\$@"
-              EOF
-
               cat > $out/bin/clavis <<EOF
               #!/bin/sh
               exec "$out/Applications/Clavis.app/Contents/MacOS/Clavis" "\$@"
@@ -113,7 +108,7 @@
               exec "$out/Applications/Clavis.app/Contents/Helpers/Clavis Agent.app/Contents/MacOS/clavis-agent" "\$@"
               EOF
 
-              chmod +x $out/bin/clavis $out/bin/clavis-agent $out/bin/clavis-cli
+              chmod +x $out/bin/clavis $out/bin/clavis-agent
             '';
 
             meta = with pkgs.lib; {
@@ -141,13 +136,6 @@
               exec "${packages.clavis}/bin/clavis-agent" "$@"
             '';
             name = "clavis-agent";
-          };
-
-          cli = flake-utils.lib.mkApp {
-            drv = pkgs.writeShellScriptBin "clavis-cli" ''
-              exec "${packages.clavis}/bin/clavis-cli" "$@"
-            '';
-            name = "clavis-cli";
           };
 
           default = apps.clavis;

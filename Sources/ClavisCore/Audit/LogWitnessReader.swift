@@ -18,7 +18,6 @@ public struct LogWitnessReader {
 
     public static let allowedBasenames: Set<String> = [
         "clavis-agent",
-        "clavis-cli",
         "Clavis"
     ]
 

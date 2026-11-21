@@ -523,50 +523,6 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         return reader.readWireString()
     }
 
-    /// Sends a typed CLI control request (opcode 252) to the running agent daemon and decodes the response.
-    public func sendCLIControl(
-        _ request: CLIControlRequest,
-        timeout: TimeInterval? = nil
-    ) throws -> CLIControlResponse {
-        let requestData: Data
-        do {
-            requestData = try JSONEncoder().encode(request)
-        } catch {
-            throw AgentLifecycleError.agentControlFailed("failed to encode CLI control request: \(error.localizedDescription)")
-        }
-
-        var payload = Data([SSHAgentServer.cliControlRequest])
-        payload.appendWireData(requestData)
-
-        let effectiveTimeout: TimeInterval
-        if let timeout {
-            effectiveTimeout = timeout
-        } else {
-            switch request {
-            case .listKeys:
-                effectiveTimeout = controlTimeout
-            default:
-                effectiveTimeout = 75
-            }
-        }
-
-        let response = try sendControlRequest(payload, timeout: effectiveTimeout)
-        guard response.first == 6 else {
-            throw AgentLifecycleError.agentControlFailed("agent rejected CLI control request")
-        }
-
-        var reader = DataReader(data: Data(response.dropFirst()))
-        guard let jsonData = reader.readWireData(), reader.isEOF else {
-            throw AgentLifecycleError.agentControlFailed("malformed CLI control response")
-        }
-
-        do {
-            return try JSONDecoder().decode(CLIControlResponse.self, from: jsonData)
-        } catch {
-            throw AgentLifecycleError.agentControlFailed("failed to decode CLI control response: \(error.localizedDescription)")
-        }
-    }
-
     private func writeAll(_ data: Data, to fd: Int32) -> Bool {
         data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return false }
