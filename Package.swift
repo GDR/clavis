@@ -41,10 +41,6 @@ let package = Package(
             targets: ["Clavis"]
         ),
         .executable(
-            name: "clavis-cli",
-            targets: ["ClavisCLI"]
-        ),
-        .executable(
             name: "clavis-agent",
             targets: ["ClavisAgent"]
         )
@@ -61,12 +57,6 @@ let package = Package(
             name: "ClavisPromptUI",
             dependencies: ["ClavisCore"],
             path: "Sources/ClavisPromptUI"
-        ),
-        .executableTarget(
-            name: "ClavisCLI",
-            dependencies: ["ClavisCore"],
-            path: "Sources/ClavisCLI",
-            linkerSettings: executableLinkerSettings
         ),
         .executableTarget(
             name: "ClavisAgent",

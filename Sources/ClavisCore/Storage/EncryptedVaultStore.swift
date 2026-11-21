@@ -257,11 +257,11 @@ public final class EncryptedVaultStore: @unchecked Sendable {
             case .secureEnclaveRequired:
                 return "Secure Enclave is required to protect the Clavis recovery vault."
             case .incompleteMasterKey:
-                return "The recovery vault master key is incomplete or invalid. Its files were preserved. Run 'clavis vault repair' if files are intact."
+                return "The recovery vault master key is incomplete or invalid. Its files were preserved. Use Repair Vault in Clavis Settings if files are intact."
             case .masterKeyTampered:
-                return "The recovery vault master key has been tampered with or its Keychain pin is invalid. If this was intentional or the pin was modified, run 'clavis vault repair --replace-pin'."
+                return "The recovery vault master key has been tampered with or its Keychain pin is invalid. If this was intentional or the pin was modified, use Repair Vault in Clavis Settings to replace the pin."
             case .masterKeyPinMissing:
-                return "The recovery vault master key pin is missing from Keychain. Run 'clavis vault repair' to restore it."
+                return "The recovery vault master key pin is missing from Keychain. Use Repair Vault in Clavis Settings to restore it."
             case .softwareKeyStorageProhibited:
                 return "Software private keys cannot be stored in the recovery vault."
             }

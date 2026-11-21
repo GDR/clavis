@@ -487,21 +487,21 @@ import Testing
         )
         #expect(resolvedFromApp?.bundleURL.standardizedFileURL == expectedAppBundleURL.standardizedFileURL)
 
-        // 2. Nested helper executable layout (Clavis.app/Contents/Helpers/clavis-cli -> ../Resources/)
+        // 2. Nested helper executable layout (Clavis.app/Contents/Helpers/clavis-helper -> ../Resources/)
         let resolvedFromHelper = Bundle.resolveClavisResourceBundle(
             bundleName: bundleName,
             resourceURL: nil,
             bundleURL: appHelpers,
-            executableURL: appHelpers.appendingPathComponent("clavis-cli")
+            executableURL: appHelpers.appendingPathComponent("clavis-helper")
         )
         #expect(resolvedFromHelper?.bundleURL.standardizedFileURL == expectedAppBundleURL.standardizedFileURL)
 
-        // 3. Symlinked helper executable (e.g. /opt/bin/clavis-cli -> ../Clavis.app/Contents/Helpers/clavis-cli)
-        let helperBinURL = appHelpers.appendingPathComponent("clavis-cli")
+        // 3. Symlinked helper executable (e.g. /opt/bin/clavis-helper -> ../Clavis.app/Contents/Helpers/clavis-helper)
+        let helperBinURL = appHelpers.appendingPathComponent("clavis-helper")
         try Data().write(to: helperBinURL)
         let symlinkDir = tempRoot.appendingPathComponent("symlink-bin", isDirectory: true)
         try FileManager.default.createDirectory(at: symlinkDir, withIntermediateDirectories: true)
-        let symlinkURL = symlinkDir.appendingPathComponent("clavis-cli")
+        let symlinkURL = symlinkDir.appendingPathComponent("clavis-helper")
         try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: helperBinURL)
         let resolvedFromSymlink = Bundle.resolveClavisResourceBundle(
             bundleName: bundleName,

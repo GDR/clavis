@@ -701,12 +701,6 @@ struct AgentKeyPolicyTests {
         #expect(policyReason.contains("mode=notify"))
         #expect(policyReason.contains("lease=120m"))
         #expect(policyReason.contains("PID 999"))
-
-        // Resolve executable path helper preserves full paths and resolves bare commands in PATH
-        let resolvedEcho = AgentRunner.resolveExecutablePath("sh", environment: ["PATH": "/bin:/usr/bin"])
-        #expect(resolvedEcho.hasSuffix("/sh") && resolvedEcho.contains("/"))
-        let resolvedRelative = AgentRunner.resolveExecutablePath("/tmp/../usr/bin/git")
-        #expect(resolvedRelative.hasSuffix("/usr/bin/git"))
     }
 
     @Test

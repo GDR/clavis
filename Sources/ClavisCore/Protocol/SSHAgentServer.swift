@@ -60,7 +60,6 @@ public class SSHAgentServer {
     internal static let getAgentPolicyRequest: UInt8 = 249
     internal static let applicationRegistryRequest: UInt8 = 250
     internal static let applicationPolicyChangeRequest: UInt8 = 251
-    internal static let cliControlRequest: UInt8 = 252
     public static let defaultSocketPath = NSString(string: "~/.ssh/clavis.sock").expandingTildeInPath
     public static let defaultAgentSocketPath = NSString(string: "~/.ssh/clavis-agent.sock").expandingTildeInPath
     public static let shared = SSHAgentServer(promptGate: .shared)
@@ -106,7 +105,6 @@ public class SSHAgentServer {
         maxConnectionLifetime: TimeInterval = SSHAgentServer.defaultMaxConnectionLifetime,
         maxRequestsPerConnection: Int = SSHAgentServer.defaultMaxRequestsPerConnection,
         keyManager: KeychainManager = .shared,
-        vaultStore: EncryptedVaultStore = .shared,
         promptGate: SigningPromptGate = SigningPromptGate(),
         gitSigningGraceManager: GitSigningGraceManager = .shared,
         controlPeerValidator: ((Int32) -> Bool)? = nil,
@@ -139,9 +137,6 @@ public class SSHAgentServer {
         let resolvedPeerValidator = peerProcessValidator ?? { SSHAgentServer.peerProcessUnchanged(pid: $0, path: $1, startTime: $2) }
 
         let applicationAccess = applicationAccess ?? ApplicationRequestAuthorization(store: applicationRegistry, generations: keyPolicyGenerations)
-        // If callers pass a custom keyManager (e.g. a test fixture) without an explicit vaultStore,
-        // keep control-plane vault operations aligned with that keyManager's vault.
-        let resolvedVaultStore = (vaultStore === EncryptedVaultStore.shared) ? keyManager.configuredVaultStore : vaultStore
         self.controlDispatcher = AgentControlDispatcher(
             keyManager: keyManager,
             auditRecorder: auditRecorder,
@@ -152,8 +147,7 @@ public class SSHAgentServer {
             peerProcessValidator: resolvedPeerValidator,
             gitSigningGraceManager: gitSigningGraceManager,
             applicationRegistry: applicationRegistry,
-            keyPolicyGenerations: keyPolicyGenerations,
-            vaultStore: resolvedVaultStore
+            keyPolicyGenerations: keyPolicyGenerations
         )
 
         self.applicationAccess = applicationAccess

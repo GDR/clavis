@@ -43,14 +43,14 @@ struct ClavisLoggerTests {
 
             ClavisLogger.promptDebug("clavis-code", "UserAuthenticator: prompting system authentication")
             ClavisLogger.promptDebug("calvis-ui", "KeyDetailInspectorView: displaying delete alert")
-            ClavisLogger.promptDebug("clavis-cli", "CLIService: displaying terminal seed prompt")
+            ClavisLogger.promptDebug("clavis-agent", "AgentService: displaying terminal seed prompt")
             ClavisLogger.promptDebug("generic prompt debug message")
             ClavisLogger.flush()
 
             let content = try String(contentsOf: customLogURL, encoding: .utf8)
             #expect(content.contains("[PROMPT_DEBUG] [clavis-code] UserAuthenticator: prompting system authentication"))
             #expect(content.contains("[PROMPT_DEBUG] [calvis-ui] KeyDetailInspectorView: displaying delete alert"))
-            #expect(content.contains("[PROMPT_DEBUG] [clavis-cli] CLIService: displaying terminal seed prompt"))
+            #expect(content.contains("[PROMPT_DEBUG] [clavis-agent] AgentService: displaying terminal seed prompt"))
             #expect(content.contains("[PROMPT_DEBUG] generic prompt debug message"))
         }
     }

@@ -224,31 +224,6 @@ final class LockAllFailClosedTests {
         #expect(elapsed < 1.5, "Should timeout without hanging indefinitely")
     }
 
-    @Test func testCLIServiceLockFailsClosedWhenAgentRejects() throws {
-        let sockPath = testRootURL.appendingPathComponent("stub-cli-fail.sock").path
-        let stub = try StubAgentServer(socketPath: sockPath, behavior: .replyFailure)
-        defer { stub.stop() }
-
-        let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
-        let result = CLIService.handle(args: ["clavis", "lock"], agentLifecycle: manager)
-        #expect(result?.exitCode == 1)
-        #expect(result?.error != nil)
-        #expect(result?.error?.contains("Lock failed:") == true)
-        #expect(result?.error?.contains("Failed to revoke the SSH agent grant") == false)
-        #expect(result?.error?.contains("Failed to control SSH agent: agent rejected lock-all") == true)
-    }
-
-    @Test func testCLIServiceLockSucceedsWhenAgentConfirms() throws {
-        let sockPath = testRootURL.appendingPathComponent("stub-cli-ok.sock").path
-        let stub = try StubAgentServer(socketPath: sockPath, behavior: .replySuccess)
-        defer { stub.stop() }
-
-        let manager = AgentLifecycleManager(socketPath: sockPath, isTrustedServerPeer: { _ in true })
-        let result = CLIService.handle(args: ["clavis", "lock"], agentLifecycle: manager)
-        #expect(result?.exitCode == 0)
-        #expect(result?.output == CLIMessages.lockedAll)
-    }
-
     @MainActor
     @Test func testAppStateEndGitSigningSessionFailsClosedWhenAgentRejects() throws {
         let sockPath = testRootURL.appendingPathComponent("stub-appstate-fail.sock").path

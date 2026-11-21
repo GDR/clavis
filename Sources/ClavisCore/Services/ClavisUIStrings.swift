@@ -35,7 +35,7 @@ extension Bundle {
             bundleURL?.appendingPathComponent(bundleName),
             execDir?.appendingPathComponent(bundleName),
             resolvedExecDir?.appendingPathComponent(bundleName),
-            // 3. Nested helper executable inside .app (e.g. Contents/Helpers/clavis-cli -> ../Resources/)
+            // 3. Nested helper executable inside .app (e.g. Contents/Helpers/<helper> -> ../Resources/)
             execDir?.deletingLastPathComponent().appendingPathComponent("Resources/\(bundleName)"),
             resolvedExecDir?.deletingLastPathComponent().appendingPathComponent("Resources/\(bundleName)"),
             // 4. Sibling to enclosing test/framework bundle (.build/.../ClavisCoreTests.xctest)

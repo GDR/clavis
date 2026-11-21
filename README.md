@@ -50,7 +50,6 @@ P-256 private keys are generated inside and never leave the Secure Enclave. The 
 
 - **Data Protection Keychain (provisioned builds)**: When matching macOS provisioning profiles for `com.clavis.app` and `com.clavis.agent` (granting `<TEAM_ID>.com.clavis.shared` or `<TEAM_ID>.*`) are available—passed via `CLAVIS_APP_PROVISION_PROFILE` and `CLAVIS_AGENT_PROVISION_PROFILE` or auto-discovered in `packaging/macos/`, `~/Library/Developer/Xcode/UserData/Provisioning Profiles`, or `~/Library/MobileDevice/Provisioning Profiles`—`just sign` embeds `Contents/embedded.provisionprofile` and signs `Clavis.app` and `Clavis Agent.app` with `keychain-access-groups` = `["<TEAM_ID>.com.clavis.shared"]` (pass `CLAVIS_REQUIRE_PROVISIONING=1` to fail closed if missing). At runtime `KeychainScope.processDefault` inspects the process entitlements and stores Clavis items in the macOS Data Protection Keychain (`kSecUseDataProtectionKeychain` + `<TEAM_ID>.com.clavis.shared`), sharing them between `Clavis.app` and `Clavis Agent.app` without legacy `SecAccess` ACL prompts. Legacy Login Keychain private key items are migrated once on authenticated read and removed from the legacy partition after the Data Protection copy succeeds.
 - **Login Keychain fallback (unprovisioned builds)**: When the provisioning profile pair is absent, `just sign` omits provisioning entitlements (`Entitlements.plist`) and signs `Apple Development` / `Developer ID Application` binaries with a Team-OU designated requirement (`identifier "Clavis"` anchored to Apple with `certificate leaf[subject.OU] = "<TEAM_ID>"`). At runtime `KeychainScope.processDefault` automatically falls back to the Login Keychain, where items rely on the shared `Clavis` identifier and Team-OU designated requirement. Independently signed or plain `swift run` executables are not equivalent Keychain clients.
-- **Socket-only `clavis-cli`**: Standalone binaries (`Clavis`, `clavis-agent`, and `Contents/Helpers/clavis-cli`) are always signed without provisioning entitlements. `clavis-cli` does not access Keychain or the recovery vault directly: all key and vault commands (`list`, `export-pub`, `generate`, `kind`, `delete`, `lock`, `vault repair`, `run`) are routed over the `LOCAL_PEERTOKEN`-authenticated personal daemon control socket (`~/.ssh/clavis.sock`), auto-starting `Clavis Agent.app` if needed. Both client and daemon mutually verify peer code identity (`ClavisCodeTrust`, requiring the shared `Clavis` identifier and Team ID in release builds), validate peer process continuity, and serialize mutating/interactive requests through `SigningPromptGate`; the dedicated agent socket (`~/.ssh/clavis-agent.sock`) rejects all control requests.
 
 For an explicitly local, non-distributable build without a certificate, opt in
 to ad-hoc signing with `CLAVIS_ALLOW_ADHOC_SIGNING=1 just`. Helper launch is
@@ -94,7 +93,7 @@ certificate, an explicit Team ID, and Apple notarization:
   Apple timestamps (`CLAVIS_TIMESTAMP=secure`).
 - `just package` with `CLAVIS_NOTARIZE=1` notarizes and staples both `clavis-macos-arm64.dmg` and
   `Clavis.app`, validates them with `stapler` and `spctl`, and also submits the standalone
-  `Clavis`, `clavis-agent`, and `clavis-cli` binaries for notarization before packing
+  `Clavis` and `clavis-agent` binaries for notarization before packing
   `clavis-macos-arm64.tar.gz`. Locally, use
   `CLAVIS_NOTARIZE=1 CLAVIS_NOTARY_PROFILE=<notarytool keychain profile> just package`.
 - Each release publishes a GitHub build-provenance attestation for the DMG and archive
@@ -139,8 +138,7 @@ git commit -S -m "signed commit"
 
 ## 🛠 Project Structure
 
-- `Sources/ClavisCore`: Shared engine containing `KeychainManager`, `KeychainScope`, `EncryptedVaultStore`, `CLIService`, and `SSHAgentServer`.
+- `Sources/ClavisCore`: Shared engine containing `KeychainManager`, `KeychainScope`, `EncryptedVaultStore`, and `SSHAgentServer`.
 - `Sources/Clavis`: Menu Bar status item (`MenuBarExtra`) and SwiftUI Key Management dashboard.
 - `Sources/ClavisAgent`: Background SSH agent daemon (`Clavis Agent.app`).
-- `Sources/ClavisCLI`: Socket-only `clavis-cli` executable delegating key and vault operations over `~/.ssh/clavis.sock`.
 - `Tests/ClavisCoreTests`, `Tests/ClavisAppTests`, `Tests/ClavisTestSupport`: Swift Testing unit and integration suites.

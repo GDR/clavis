@@ -32,14 +32,6 @@ public struct SSHKeyInfo: Identifiable, Codable, Equatable {
         publicKeyOpenSSH
     }
 
-    public var cliSummary: String {
-        """
-        Purpose:     \(purpose.title)
-        Fingerprint: \(fingerprint)
-        Public Key:  \(publicKeyOpenSSH)
-        """
-    }
-
     public var algorithm: String {
         algorithmName ?? "ECDSA P-256"
     }
