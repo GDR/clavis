@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public enum KnownHosts {
     public typealias ProcessRunner = (_ executableURL: URL, _ arguments: [String]) throws -> (exitCode: Int32, stdout: String)
@@ -67,5 +68,120 @@ public enum KnownHosts {
         }
 
         return hosts
+    }
+
+    private static let maxReverseLookupFileBytes = 8 * 1024 * 1024
+
+    /// Resolves a human-readable host name for `hostKeyBlob` by scanning local OpenSSH `known_hosts` files.
+    public static func reverseLookup(hostKeyBlob: Data, knownHostsURLs: [URL]? = nil) -> String? {
+        let urls = knownHostsURLs ?? [
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/known_hosts"),
+            URL(fileURLWithPath: "/etc/ssh/ssh_known_hosts")
+        ]
+
+        var contents: [String] = []
+        contents.reserveCapacity(urls.count)
+        for url in urls {
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                  values.isRegularFile == true,
+                  let fileSize = values.fileSize,
+                  fileSize > 0,
+                  fileSize <= maxReverseLookupFileBytes,
+                  let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
+                  data.count <= maxReverseLookupFileBytes,
+                  let text = String(data: data, encoding: .utf8) else {
+                continue
+            }
+            contents.append(text)
+        }
+        return reverseLookup(hostKeyBlob: hostKeyBlob, knownHostsContents: contents)
+    }
+
+    internal static func reverseLookup(hostKeyBlob: Data, knownHostsContents: [String]) -> String? {
+        var reader = DataReader(data: hostKeyBlob)
+        guard let expectedKeyType = reader.readWireString(), !expectedKeyType.isEmpty else {
+            return nil
+        }
+
+        var firstIPLiteral: String?
+
+        for content in knownHostsContents {
+            for rawLine in content.components(separatedBy: .newlines) {
+                let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+                if line.isEmpty || line.hasPrefix("#") || line.hasPrefix("@") {
+                    continue
+                }
+
+                let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+                guard fields.count >= 3 else { continue }
+
+                let keyType = String(fields[1])
+                guard keyType == expectedKeyType else { continue }
+
+                guard let entryBlob = Data(base64Encoded: String(fields[2])),
+                      entryBlob == hostKeyBlob else {
+                    continue
+                }
+
+                for rawPattern in fields[0].split(separator: ",", omittingEmptySubsequences: false) {
+                    let pattern = String(rawPattern)
+                    guard !pattern.isEmpty,
+                          !pattern.hasPrefix("|"),
+                          !pattern.hasPrefix("!"),
+                          !pattern.contains("*"),
+                          !pattern.contains("?") else {
+                        continue
+                    }
+
+                    guard let parsed = normalizeKnownHostPattern(pattern) else { continue }
+                    if !isIPLiteral(parsed.bareHost) {
+                        return parsed.display
+                    }
+                    if firstIPLiteral == nil {
+                        firstIPLiteral = parsed.display
+                    }
+                }
+            }
+        }
+
+        return firstIPLiteral
+    }
+
+    private static func normalizeKnownHostPattern(_ pattern: String) -> (bareHost: String, display: String)? {
+        if pattern.hasPrefix("[") {
+            if let bracketPort = pattern.range(of: "]:") {
+                let innerHost = String(pattern[pattern.index(after: pattern.startIndex)..<bracketPort.lowerBound])
+                let port = String(pattern[bracketPort.upperBound...])
+                guard !innerHost.isEmpty, !port.isEmpty, port.allSatisfy(\.isNumber) else {
+                    return nil
+                }
+                if port == "22" {
+                    return (innerHost, innerHost)
+                }
+                let display = innerHost.contains(":") ? "[\(innerHost)]:\(port)" : "\(innerHost):\(port)"
+                return (innerHost, display)
+            }
+            if pattern.hasSuffix("]") {
+                let innerHost = String(pattern.dropFirst().dropLast())
+                guard !innerHost.isEmpty else { return nil }
+                return (innerHost, innerHost)
+            }
+            return nil
+        }
+
+        return (pattern, pattern)
+    }
+
+    private static func isIPLiteral(_ host: String) -> Bool {
+        let candidate = host.split(separator: "%", maxSplits: 1).first.map(String.init) ?? host
+        var addr4 = in_addr()
+        if candidate.withCString({ inet_pton(AF_INET, $0, &addr4) }) == 1 {
+            return true
+        }
+        var addr6 = in6_addr()
+        if candidate.withCString({ inet_pton(AF_INET6, $0, &addr6) }) == 1 {
+            return true
+        }
+        return false
     }
 }

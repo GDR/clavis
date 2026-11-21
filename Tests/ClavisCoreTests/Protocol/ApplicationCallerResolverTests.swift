@@ -151,4 +151,131 @@ import Testing
         #expect(ProcessInspector.sysctlParentSnapshot(pid: -1) == nil)
         #expect(ProcessInspector.sysctlParentSnapshot(pid: 0) == nil)
     }
+
+    @Test func parseProcArgs2BufferAndLiveProcessInspectionWork() throws {
+        // Construct KERN_PROCARGS2 buffer: Int32 argc, exec_path\0, NUL padding, argv[0]\0, argv[1]\0...
+        func makeProcArgs2(argc: Int32, execPath: String, padNuls: Int, args: [String], truncateLastNul: Bool = false) -> [UInt8] {
+            var bytes = [UInt8]()
+            withUnsafeBytes(of: argc) { bytes.append(contentsOf: $0) }
+            bytes.append(contentsOf: execPath.utf8)
+            bytes.append(0)
+            bytes.append(contentsOf: [UInt8](repeating: 0, count: padNuls))
+            for arg in args {
+                bytes.append(contentsOf: arg.utf8)
+                bytes.append(0)
+            }
+            if truncateLastNul && !bytes.isEmpty {
+                bytes.removeLast()
+            }
+            return bytes
+        }
+
+        let buf = makeProcArgs2(argc: 4, execPath: "/usr/bin/ssh", padNuls: 5, args: ["ssh", "", "-p2222", "git@github.com"])
+        #expect(ProcessInspector.parseProcArgs2Buffer(buf) == ["ssh", "", "-p2222", "git@github.com"])
+
+        // Reject invalid argc / truncated buffer
+        #expect(ProcessInspector.parseProcArgs2Buffer([0, 0]) == nil)
+        #expect(ProcessInspector.parseProcArgs2Buffer(makeProcArgs2(argc: 0, execPath: "/usr/bin/ssh", padNuls: 1, args: [])) == nil)
+        #expect(ProcessInspector.parseProcArgs2Buffer(makeProcArgs2(argc: -1, execPath: "/usr/bin/ssh", padNuls: 1, args: [])) == nil)
+        #expect(ProcessInspector.parseProcArgs2Buffer(makeProcArgs2(argc: 4097, execPath: "/usr/bin/ssh", padNuls: 1, args: [])) == nil)
+        #expect(ProcessInspector.parseProcArgs2Buffer(makeProcArgs2(argc: 2, execPath: "/usr/bin/ssh", padNuls: 1, args: ["ssh", "host"], truncateLastNul: true)) == nil)
+
+        // Live process inspection on current process
+        let pid = getpid()
+        let liveArgs = try #require(ProcessInspector.processArguments(pid: pid))
+        #expect(!liveArgs.isEmpty)
+        let liveCwd = try #require(ProcessInspector.processWorkingDirectory(pid: pid))
+        #expect(liveCwd.hasPrefix("/"))
+        #expect(ProcessInspector.processArguments(pid: -1) == nil)
+        #expect(ProcessInspector.processWorkingDirectory(pid: -1) == nil)
+    }
+
+    @Test func extractSSHDestinationHandlesFlagsURIsAndRejectsUnsafeInputs() {
+        #expect(
+            ProcessInspector.extractSSHDestination(fromArguments: ["/usr/bin/ssh", "git@github.com"])
+                == SSHCommandDestination(username: "git", host: "github.com")
+        )
+        #expect(
+            ProcessInspector.extractSSHDestination(fromArguments: [
+                "ssh", "-o", "SendEnv=GIT_PROTOCOL", "--", "git@github.com", "git-receive-pack 'GDR/clavis.git'"
+            ]) == SSHCommandDestination(username: "git", host: "github.com")
+        )
+        #expect(
+            ProcessInspector.extractSSHDestination(fromArguments: [
+                "/opt/homebrew/bin/ssh", "-vT", "-p", "2222", "-l", "deploy", "prod.internal"
+            ]) == SSHCommandDestination(username: "deploy", host: "prod.internal:2222")
+        )
+        #expect(
+            ProcessInspector.extractSSHDestination(fromArguments: [
+                "-ssh", "-p22", "-ladmin", "-oUser=ignored", "box.local"
+            ]) == SSHCommandDestination(username: "admin", host: "box.local")
+        )
+        #expect(
+            ProcessInspector.extractSSHDestination(fromArguments: [
+                "ssh", "-oUser=ops", "box.local"
+            ]) == SSHCommandDestination(username: "ops", host: "box.local")
+        )
+        #expect(
+            ProcessInspector.extractSSHDestination(fromArguments: [
+                "ssh", "ssh://alice@example.com:2222"
+            ]) == SSHCommandDestination(username: "alice", host: "example.com:2222")
+        )
+        #expect(
+            ProcessInspector.extractSSHDestination(fromArguments: [
+                "ssh", "ssh://bob@example.com:22"
+            ]) == SSHCommandDestination(username: "bob", host: "example.com")
+        )
+        #expect(
+            ProcessInspector.extractSSHDestination(fromArguments: [
+                "ssh", "-p", "2222", "[::1]"
+            ]) == SSHCommandDestination(username: nil, host: "[::1]:2222")
+        )
+
+        // Reject non-ssh argv0, file paths, and option-like hosts
+        #expect(ProcessInspector.extractSSHDestination(fromArguments: ["swiftpm-testing-helper", "github.com"]) == nil)
+        #expect(ProcessInspector.extractSSHDestination(fromArguments: ["/usr/bin/git", "github.com"]) == nil)
+        #expect(ProcessInspector.extractSSHDestination(fromArguments: ["ssh", "/tmp/socket"]) == nil)
+        #expect(ProcessInspector.extractSSHDestination(fromArguments: ["ssh", "./localfile"]) == nil)
+        #expect(ProcessInspector.extractSSHDestination(fromArguments: ["ssh", "--", "-evil"]) == nil)
+        #expect(ProcessInspector.extractSSHDestination(fromArguments: ["ssh", "-l"]) == nil)
+    }
+
+    @Test func gitRepositoryNameResolvesStandardWorktreeBareAndDotGitDirs() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        // 1. Standard repo + nested subdir + inside .git/
+        let repo = root.appendingPathComponent("clavis")
+        let sub = repo.appendingPathComponent("Sources/ClavisCore")
+        let dotGit = repo.appendingPathComponent(".git")
+        let dotGitObjects = dotGit.appendingPathComponent("objects")
+        let dotGitRefs = dotGit.appendingPathComponent("refs")
+        try fm.createDirectory(at: sub, withIntermediateDirectories: true)
+        try fm.createDirectory(at: dotGitObjects, withIntermediateDirectories: true)
+        try fm.createDirectory(at: dotGitRefs, withIntermediateDirectories: true)
+        try Data("ref: refs/heads/main\n".utf8).write(to: dotGit.appendingPathComponent("HEAD"))
+
+        #expect(ProcessInspector.gitRepositoryName(forWorkingDirectory: repo.path) == "clavis")
+        #expect(ProcessInspector.gitRepositoryName(forWorkingDirectory: sub.path) == "clavis")
+        #expect(ProcessInspector.gitRepositoryName(forWorkingDirectory: dotGitRefs.path) == "clavis")
+
+        // 2. Worktree (.git file)
+        let worktree = root.appendingPathComponent("clavis-wt")
+        try fm.createDirectory(at: worktree, withIntermediateDirectories: true)
+        try Data("gitdir: ../clavis/.git/worktrees/wt\n".utf8).write(to: worktree.appendingPathComponent(".git"))
+        #expect(ProcessInspector.gitRepositoryName(forWorkingDirectory: worktree.path) == "clavis-wt")
+
+        // 3. Bare repo with .git suffix
+        let bare = root.appendingPathComponent("upstream.git")
+        try fm.createDirectory(at: bare.appendingPathComponent("objects"), withIntermediateDirectories: true)
+        try Data("ref: refs/heads/main\n".utf8).write(to: bare.appendingPathComponent("HEAD"))
+        #expect(ProcessInspector.gitRepositoryName(forWorkingDirectory: bare.path) == "upstream")
+
+        // 4. Non-repo directory
+        let plain = root.appendingPathComponent("plain")
+        try fm.createDirectory(at: plain, withIntermediateDirectories: true)
+        #expect(ProcessInspector.gitRepositoryName(forWorkingDirectory: plain.path) == nil)
+    }
 }

@@ -12,6 +12,17 @@ public struct ProcessParentSnapshot: Equatable, Sendable {
     }
 }
 
+/// Destination parsed from an interactive `ssh` command's argv.
+public struct SSHCommandDestination: Equatable, Sendable {
+    public let username: String?
+    public let host: String
+
+    public init(username: String?, host: String) {
+        self.username = username
+        self.host = host
+    }
+}
+
 public enum ProcessInspector {
     public static func getProcessName(pid: pid_t) -> String? {
         guard let fullPath = getProcessPath(pid: pid) else { return nil }
@@ -588,5 +599,293 @@ public enum ProcessInspector {
         }
 
         return "\(stdPath)|self:\(pid):\(startTime)|pgid:\(pgid)"
+    }
+
+    // MARK: - Process Arguments, Working Directory & Destination Helpers
+
+    private static let maxProcArgsBytes = 1_048_576
+    private static let maxProcArgCount: Int32 = 4096
+
+    /// Reads `argv` for `pid` via `sysctl(KERN_PROCARGS2)`. Returns `nil` if unavailable or outside bounds.
+    public static func processArguments(pid: pid_t) -> [String]? {
+        guard pid > 0 else { return nil }
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size: Int = 0
+        guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0,
+              size >= MemoryLayout<Int32>.size,
+              size <= maxProcArgsBytes else {
+            return nil
+        }
+
+        var buffer = [UInt8](repeating: 0, count: size)
+        var actualSize = size
+        guard sysctl(&mib, UInt32(mib.count), &buffer, &actualSize, nil, 0) == 0,
+              actualSize >= MemoryLayout<Int32>.size,
+              actualSize <= buffer.count else {
+            return nil
+        }
+        return parseProcArgs2Buffer(Array(buffer.prefix(actualSize)))
+    }
+
+    internal static func parseProcArgs2Buffer(_ buffer: [UInt8]) -> [String]? {
+        guard buffer.count >= MemoryLayout<Int32>.size else { return nil }
+        let argc = buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+        guard argc > 0, argc <= maxProcArgCount else { return nil }
+
+        var offset = MemoryLayout<Int32>.size
+        // Skip exec_path up to its terminating NUL.
+        while offset < buffer.count && buffer[offset] != 0 {
+            offset += 1
+        }
+        guard offset < buffer.count else { return nil }
+        // Skip trailing NUL alignment padding between exec_path and argv[0].
+        while offset < buffer.count && buffer[offset] == 0 {
+            offset += 1
+        }
+
+        var args: [String] = []
+        args.reserveCapacity(Int(argc))
+        for _ in 0..<Int(argc) {
+            guard offset < buffer.count else { return nil }
+            let start = offset
+            while offset < buffer.count && buffer[offset] != 0 {
+                offset += 1
+            }
+            guard offset < buffer.count,
+                  let arg = String(bytes: buffer[start..<offset], encoding: .utf8) else {
+                return nil
+            }
+            args.append(arg)
+            offset += 1
+        }
+        return args
+    }
+
+    /// Extracts `(username, host)` from an `ssh` command's `argv` without trusting non-`ssh` executables.
+    public static func extractSSHDestination(fromArguments args: [String]) -> SSHCommandDestination? {
+        guard let rawArgv0 = args.first, !rawArgv0.isEmpty else { return nil }
+        var argv0Base = URL(fileURLWithPath: rawArgv0).lastPathComponent
+        if argv0Base.hasPrefix("-") {
+            argv0Base.removeFirst()
+        }
+        guard argv0Base == "ssh" else { return nil }
+
+        let optionsTakingArg: Set<Character> = [
+            "B", "b", "c", "D", "E", "e", "F", "I", "i", "J", "L", "l",
+            "m", "O", "o", "P", "p", "Q", "R", "S", "W", "w"
+        ]
+
+        var explicitLoginUser: String?
+        var explicitPort: String?
+        var optionConfigUser: String?
+        var destinationToken: String?
+
+        func recordSSHOption(_ optionValue: String) {
+            let trimmed = optionValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lower = trimmed.lowercased()
+            let rawValue: String
+            if lower.hasPrefix("user=") {
+                rawValue = String(trimmed.dropFirst(5))
+            } else if lower.hasPrefix("user ") || lower.hasPrefix("user\t") {
+                rawValue = String(trimmed.dropFirst(4))
+            } else {
+                return
+            }
+            var val = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if (val.hasPrefix("\"") && val.hasSuffix("\"")) || (val.hasPrefix("'") && val.hasSuffix("'")), val.count >= 2 {
+                val = String(val.dropFirst().dropLast())
+            }
+            if !val.isEmpty && optionConfigUser == nil {
+                optionConfigUser = val
+            }
+        }
+
+        var index = 1
+        while index < args.count {
+            let arg = args[index]
+            if arg == "--" {
+                index += 1
+                if index < args.count {
+                    destinationToken = args[index]
+                }
+                break
+            }
+            if arg.hasPrefix("-") && arg.count > 1 {
+                var charIdx = arg.index(after: arg.startIndex)
+                while charIdx < arg.endIndex {
+                    let flag = arg[charIdx]
+                    let nextIdx = arg.index(after: charIdx)
+                    if optionsTakingArg.contains(flag) {
+                        let optionValue: String
+                        if nextIdx < arg.endIndex {
+                            optionValue = String(arg[nextIdx...])
+                        } else if index + 1 < args.count {
+                            index += 1
+                            optionValue = args[index]
+                        } else {
+                            return nil
+                        }
+                        switch flag {
+                        case "l":
+                            if !optionValue.isEmpty {
+                                explicitLoginUser = optionValue
+                            }
+                        case "p":
+                            if !optionValue.isEmpty {
+                                explicitPort = optionValue
+                            }
+                        case "o":
+                            recordSSHOption(optionValue)
+                        default:
+                            break
+                        }
+                        break
+                    }
+                    charIdx = nextIdx
+                }
+                index += 1
+                continue
+            }
+
+            destinationToken = arg
+            break
+        }
+
+        guard let token = destinationToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty else {
+            return nil
+        }
+
+        let argUser: String?
+        let rawHost: String
+        let uriPort: String?
+
+        if token.lowercased().hasPrefix("ssh://") {
+            guard let url = URL(string: token),
+                  let host = url.host,
+                  !host.isEmpty else {
+                return nil
+            }
+            let path = url.path
+            guard path.isEmpty || path == "/" else { return nil }
+            argUser = (url.user?.isEmpty == false) ? url.user : nil
+            rawHost = host
+            uriPort = url.port.map(String.init)
+        } else {
+            uriPort = nil
+            if let atIndex = token.lastIndex(of: "@") {
+                let userPart = String(token[..<atIndex])
+                let hostPart = String(token[token.index(after: atIndex)...])
+                guard !userPart.isEmpty, !hostPart.isEmpty else { return nil }
+                argUser = userPart
+                rawHost = hostPart
+            } else {
+                argUser = nil
+                rawHost = token
+            }
+        }
+
+        var bareHost = rawHost
+        if bareHost.hasPrefix("[") && bareHost.hasSuffix("]") {
+            bareHost = String(bareHost.dropFirst().dropLast())
+        }
+        guard isValidDestinationHost(bareHost) else { return nil }
+
+        let resolvedUser = argUser ?? explicitLoginUser ?? optionConfigUser
+        if let resolvedUser, containsUnsafeControlOrWhitespace(resolvedUser) {
+            return nil
+        }
+
+        let effectivePort = uriPort ?? explicitPort
+        let formattedHost: String
+        if let port = effectivePort,
+           let portNumber = UInt16(port),
+           portNumber > 0,
+           portNumber != 22 {
+            formattedHost = bareHost.contains(":") ? "[\(bareHost)]:\(portNumber)" : "\(bareHost):\(portNumber)"
+        } else {
+            formattedHost = bareHost
+        }
+
+        return SSHCommandDestination(username: resolvedUser, host: formattedHost)
+    }
+
+    private static func isValidDestinationHost(_ host: String) -> Bool {
+        guard !host.isEmpty,
+              !host.hasPrefix("-"),
+              !host.hasPrefix("/"),
+              !host.hasPrefix("."),
+              !host.contains("/"),
+              !containsUnsafeControlOrWhitespace(host) else {
+            return false
+        }
+        return true
+    }
+
+    private static func containsUnsafeControlOrWhitespace(_ value: String) -> Bool {
+        value.unicodeScalars.contains {
+            CharacterSet.whitespacesAndNewlines.contains($0) || CharacterSet.controlCharacters.contains($0)
+        }
+    }
+
+    /// Reads the current working directory of `pid` via `proc_pidinfo(PROC_PIDVNODEPATHINFO)`.
+    public static func processWorkingDirectory(pid: pid_t) -> String? {
+        guard pid > 0 else { return nil }
+        var vpi = proc_vnodepathinfo()
+        let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &vpi, size) == size else {
+            return nil
+        }
+        return withUnsafeBytes(of: vpi.pvi_cdir.vip_path) { raw -> String? in
+            let limit = min(raw.count, Int(MAXPATHLEN))
+            let slice = raw.prefix(limit)
+            let endIndex = slice.firstIndex(of: 0) ?? limit
+            guard let path = String(bytes: slice.prefix(endIndex), encoding: .utf8),
+                  !path.isEmpty else {
+                return nil
+            }
+            return path
+        }
+    }
+
+    /// Walks up at most 16 directories from `cwd` to locate a Git repository and return its directory name.
+    public static func gitRepositoryName(forWorkingDirectory cwd: String) -> String? {
+        guard cwd.hasPrefix("/") else { return nil }
+        let fm = FileManager.default
+        var dirURL = URL(fileURLWithPath: cwd).standardizedFileURL
+
+        for _ in 0..<16 {
+            let dotGitPath = dirURL.appendingPathComponent(".git").path
+            if fm.fileExists(atPath: dotGitPath) {
+                let name = dirURL.lastPathComponent
+                return (name.isEmpty || name == "/") ? nil : name
+            }
+
+            let headPath = dirURL.appendingPathComponent("HEAD").path
+            let objectsPath = dirURL.appendingPathComponent("objects").path
+            var headIsDir: ObjCBool = false
+            var objectsIsDir: ObjCBool = false
+            if fm.fileExists(atPath: headPath, isDirectory: &headIsDir),
+               !headIsDir.boolValue,
+               fm.fileExists(atPath: objectsPath, isDirectory: &objectsIsDir),
+               objectsIsDir.boolValue {
+                if dirURL.lastPathComponent == ".git" {
+                    let parentName = dirURL.deletingLastPathComponent().lastPathComponent
+                    return (parentName.isEmpty || parentName == "/") ? nil : parentName
+                }
+                var name = dirURL.lastPathComponent
+                if name.hasSuffix(".git") && name.count > 4 {
+                    name = String(name.dropLast(4))
+                }
+                return (name.isEmpty || name == "/") ? nil : name
+            }
+
+            let parent = dirURL.deletingLastPathComponent()
+            if parent.path == dirURL.path || dirURL.path == "/" {
+                break
+            }
+            dirURL = parent
+        }
+        return nil
     }
 }

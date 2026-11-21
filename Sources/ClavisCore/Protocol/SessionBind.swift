@@ -250,34 +250,60 @@ public enum SSHHostKeyVerifier {
     }
 }
 
+public struct SSHUserAuthInfo: Equatable, Sendable {
+    public let username: String
+    public let hostKeyBlob: Data?
+
+    public init(username: String, hostKeyBlob: Data?) {
+        self.username = username
+        self.hostKeyBlob = hostKeyBlob
+    }
+}
+
 public enum SessionBind {
+    public static func parseUserAuthRequest(
+        _ data: Data,
+        expectedSessionID: Data? = nil,
+        expectedKeyBlob: Data? = nil,
+        expectedHostKeyBlob: Data? = nil
+    ) -> SSHUserAuthInfo? {
+        var reader = DataReader(data: data)
+        guard let sessionID = reader.readWireData() else { return nil }
+        if let expectedSessionID, sessionID != expectedSessionID { return nil }
+        guard let msgType = reader.readUInt8(), msgType == 50 else { return nil }
+        guard let username = reader.readWireString() else { return nil }
+        guard let service = reader.readWireString(), service == "ssh-connection" else { return nil }
+        guard let method = reader.readWireString() else { return nil }
+        guard let hasSig = reader.readBool(), hasSig == true else { return nil }
+        guard let _ = reader.readWireString() else { return nil }
+        guard let keyBlob = reader.readWireData() else { return nil }
+        if let expectedKeyBlob, keyBlob != expectedKeyBlob { return nil }
+        switch method {
+        case "publickey":
+            guard reader.isEOF else { return nil }
+            return SSHUserAuthInfo(username: username, hostKeyBlob: nil)
+        case "publickey-hostbound-v00@openssh.com":
+            guard let hostKeyBlob = reader.readWireData(), !hostKeyBlob.isEmpty else { return nil }
+            if let expectedHostKeyBlob, hostKeyBlob != expectedHostKeyBlob { return nil }
+            guard reader.isEOF else { return nil }
+            return SSHUserAuthInfo(username: username, hostKeyBlob: hostKeyBlob)
+        default:
+            return nil
+        }
+    }
+
     public static func isValidSSH2UserAuthRequest(
         _ data: Data,
         expectedSessionID: Data? = nil,
         expectedKeyBlob: Data? = nil,
         expectedHostKeyBlob: Data? = nil
     ) -> Bool {
-        var reader = DataReader(data: data)
-        guard let sessionID = reader.readWireData() else { return false }
-        if let expectedSessionID, sessionID != expectedSessionID { return false }
-        guard let msgType = reader.readUInt8(), msgType == 50 else { return false }
-        guard let _ = reader.readWireString() else { return false }
-        guard let service = reader.readWireString(), service == "ssh-connection" else { return false }
-        guard let method = reader.readWireString() else { return false }
-        guard let hasSig = reader.readBool(), hasSig == true else { return false }
-        guard let _ = reader.readWireString() else { return false }
-        guard let keyBlob = reader.readWireData() else { return false }
-        if let expectedKeyBlob, keyBlob != expectedKeyBlob { return false }
-        switch method {
-        case "publickey":
-            return reader.isEOF
-        case "publickey-hostbound-v00@openssh.com":
-            guard let hostKeyBlob = reader.readWireData(), !hostKeyBlob.isEmpty else { return false }
-            if let expectedHostKeyBlob, hostKeyBlob != expectedHostKeyBlob { return false }
-            return reader.isEOF
-        default:
-            return false
-        }
+        parseUserAuthRequest(
+            data,
+            expectedSessionID: expectedSessionID,
+            expectedKeyBlob: expectedKeyBlob,
+            expectedHostKeyBlob: expectedHostKeyBlob
+        ) != nil
     }
 
     public static func extractHostKeyFromUserAuthRequest(_ data: Data) -> Data? {

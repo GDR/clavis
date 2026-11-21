@@ -202,6 +202,15 @@ public final class SigningPolicyEvaluator {
                         requester: .init(executablePath: path, pid: clientPid), clientSocket: clientSocket
                     ) {
                         if let presenter = self.currentSigningPromptPresenter {
+                            let destination = Self.resolveSigningDestination(
+                                operation: operation,
+                                dataToSign: dataToSign,
+                                keyBlob: key.publicKeyBlob,
+                                connection: connection,
+                                isForwardedAgent: isForwarded,
+                                peerPid: clientPid,
+                                peerPath: path
+                            )
                             let authRequest = SigningAuthenticationRequest(
                                 key: key,
                                 operation: operation,
@@ -213,7 +222,8 @@ public final class SigningPolicyEvaluator {
                                 defaultScope: canUsePersonalUnlockGrant ? configuredTimeout : .always,
                                 reason: reason,
                                 isUncertainCaller: true,
-                                isForwardedAgent: isForwarded
+                                isForwardedAgent: isForwarded,
+                                destination: destination
                             )
                             let outcome = try presenter.authenticateSigningRequest(authRequest)
                             if canUsePersonalUnlockGrant,
@@ -478,6 +488,16 @@ public final class SigningPolicyEvaluator {
                     do {
                         let sigBlob = try promptGate.run(requester: requester, clientSocket: clientSocket) {
                             if let presenter = self.currentSigningPromptPresenter {
+                                let destination = Self.resolveSigningDestination(
+                                    operation: .ssh,
+                                    dataToSign: dataToSign,
+                                    keyBlob: matchingKey.publicKeyBlob,
+                                    connection: connection,
+                                    isForwardedAgent: false,
+                                    peerPid: pid,
+                                    peerPath: processPath,
+                                    knownHostName: audit.host
+                                )
                                 let authRequest = SigningAuthenticationRequest(
                                     key: matchingKey,
                                     operation: .ssh,
@@ -489,7 +509,8 @@ public final class SigningPolicyEvaluator {
                                     defaultScope: .always,
                                     reason: prompt,
                                     isUncertainCaller: false,
-                                    isForwardedAgent: false
+                                    isForwardedAgent: false,
+                                    destination: destination
                                 )
                                 let outcome = try presenter.authenticateSigningRequest(authRequest)
                                 defer { outcome.context.invalidate() }
@@ -670,6 +691,16 @@ public final class SigningPolicyEvaluator {
 
                     if let presenter = self.currentSigningPromptPresenter {
                         let authPrompt = Self.gitSigningSessionReason(keyLabel: matchingKey.label) + " Requested by \(requester)."
+                        let destination = Self.resolveSigningDestination(
+                            operation: .signature,
+                            dataToSign: dataToSign,
+                            keyBlob: matchingKey.publicKeyBlob,
+                            connection: connection,
+                            isForwardedAgent: isForwarded,
+                            peerPid: pid,
+                            peerPath: processPath,
+                            fallbackPid: anchorPid
+                        )
                         let authRequest = SigningAuthenticationRequest(
                             key: matchingKey,
                             operation: .signature,
@@ -681,7 +712,8 @@ public final class SigningPolicyEvaluator {
                             defaultScope: configuredTimeout,
                             reason: authPrompt,
                             isUncertainCaller: false,
-                            isForwardedAgent: isForwarded
+                            isForwardedAgent: isForwarded,
+                            destination: destination
                         )
                         let outcome = try promptGate.run(requester: requesterIdentity, clientSocket: clientSocket) {
                             try presenter.authenticateSigningRequest(authRequest)
@@ -742,7 +774,8 @@ public final class SigningPolicyEvaluator {
                                 clientSocket: clientSocket,
                                 operation: .signature,
                                 callerName: callerName,
-                                isForwardedAgent: isForwarded
+                                isForwardedAgent: isForwarded,
+                                connection: connection
                             )
                             self.gitSigningGraceManager.recordGitSignature(for: matchingKey.label, clientIdentity: clientIdentity)
                         }
@@ -761,7 +794,8 @@ public final class SigningPolicyEvaluator {
                         clientSocket: clientSocket,
                         operation: .signature,
                         callerName: callerName,
-                        isForwardedAgent: (connection?.hasForwarding == true) || (connection?.hasFailedBind == true)
+                        isForwardedAgent: (connection?.hasForwarding == true) || (connection?.hasFailedBind == true),
+                        connection: connection
                     )
                     self.gitSigningGraceManager.recordGitSignature(for: matchingKey.label, clientIdentity: clientIdentity)
                 }
@@ -788,6 +822,15 @@ public final class SigningPolicyEvaluator {
                         sigBlob = grantedSignature
                         isFromGitGrant = true
                     } else if let presenter = self.currentSigningPromptPresenter {
+                        let destination = Self.resolveSigningDestination(
+                            operation: .ssh,
+                            dataToSign: dataToSign,
+                            keyBlob: matchingKey.publicKeyBlob,
+                            connection: connection,
+                            isForwardedAgent: false,
+                            peerPid: pid,
+                            peerPath: processPath
+                        )
                         let authRequest = SigningAuthenticationRequest(
                             key: matchingKey,
                             operation: .ssh,
@@ -799,7 +842,8 @@ public final class SigningPolicyEvaluator {
                             defaultScope: configuredTimeout,
                             reason: prompt,
                             isUncertainCaller: false,
-                            isForwardedAgent: false
+                            isForwardedAgent: false,
+                            destination: destination
                         )
                         let outcome = try promptGate.run(requester: requesterIdentity, clientSocket: clientSocket) {
                             try presenter.authenticateSigningRequest(authRequest)
@@ -857,7 +901,8 @@ public final class SigningPolicyEvaluator {
                             clientSocket: clientSocket,
                             operation: .ssh,
                             callerName: callerName,
-                            isForwardedAgent: isForwarded
+                            isForwardedAgent: isForwarded,
+                            connection: connection
                         )
                     }
                 } else {
@@ -870,7 +915,8 @@ public final class SigningPolicyEvaluator {
                         clientSocket: clientSocket,
                         operation: .ssh,
                         callerName: callerName,
-                        isForwardedAgent: isForwarded
+                        isForwardedAgent: isForwarded,
+                        connection: connection
                     )
                 }
             }
@@ -1039,11 +1085,21 @@ public final class SigningPolicyEvaluator {
         clientSocket: Int32? = nil,
         operation: KeyOperation? = nil,
         callerName: String? = nil,
-        isForwardedAgent: Bool = false
+        isForwardedAgent: Bool = false,
+        connection: ClientConnectionContext? = nil
     ) throws -> Data {
         try promptGate.run(requester: requester, clientSocket: clientSocket) {
             if let presenter = self.currentSigningPromptPresenter, let requester {
                 let resolvedOp: KeyOperation = operation ?? (data.starts(with: SSHSIGPayload.magic) ? .signature : .ssh)
+                let destination = Self.resolveSigningDestination(
+                    operation: resolvedOp,
+                    dataToSign: data,
+                    keyBlob: key.publicKeyBlob,
+                    connection: connection,
+                    isForwardedAgent: isForwardedAgent,
+                    peerPid: requester.pid,
+                    peerPath: requester.executablePath
+                )
                 let authRequest = SigningAuthenticationRequest(
                     key: key,
                     operation: resolvedOp,
@@ -1055,7 +1111,8 @@ public final class SigningPolicyEvaluator {
                     defaultScope: .always,
                     reason: prompt,
                     isUncertainCaller: false,
-                    isForwardedAgent: isForwardedAgent
+                    isForwardedAgent: isForwardedAgent,
+                    destination: destination
                 )
                 let outcome = try presenter.authenticateSigningRequest(authRequest)
                 defer { outcome.context.invalidate() }
@@ -1160,5 +1217,85 @@ public final class SigningPolicyEvaluator {
             CharacterSet.controlCharacters.contains(scalar) ? "?" : Character(String(scalar))
         }
         return String(sanitized.prefix(512))
+    }
+
+    private static let maxDestinationLength = 120
+
+    private static func sanitizeDestination(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let cleaned = raw.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
+        let trimmed = String(String.UnicodeScalarView(cleaned)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.count <= maxDestinationLength {
+            return trimmed
+        }
+        return String(trimmed.prefix(maxDestinationLength))
+    }
+
+    /// Resolves a concise signing destination (e.g. `git@github.com` for SSH, repository name for Git commits).
+    /// When `isForwardedAgent` is true, never inspects local `connection.authBinding` or local `ssh` argv.
+    internal static func resolveSigningDestination(
+        operation: KeyOperation,
+        dataToSign: Data,
+        keyBlob: Data,
+        connection: ClientConnectionContext?,
+        isForwardedAgent: Bool,
+        peerPid: pid_t,
+        peerPath: String,
+        fallbackPid: pid_t? = nil,
+        knownHostName: String? = nil,
+        knownHostsReverseLookup: (Data) -> String? = { KnownHosts.reverseLookup(hostKeyBlob: $0) },
+        processArgumentsLookup: (pid_t) -> [String]? = { ProcessInspector.processArguments(pid: $0) },
+        processWorkingDirectoryLookup: (pid_t) -> String? = { ProcessInspector.processWorkingDirectory(pid: $0) }
+    ) -> String? {
+        switch operation {
+        case .ssh:
+            let userAuth = SessionBind.parseUserAuthRequest(dataToSign, expectedKeyBlob: keyBlob)
+            var username = sanitizeDestination(userAuth?.username)
+            let resolvedHost: String?
+
+            if let knownHost = sanitizeDestination(knownHostName) {
+                resolvedHost = knownHost
+            } else {
+                let hostKeyBlob = isForwardedAgent
+                    ? userAuth?.hostKeyBlob
+                    : (userAuth?.hostKeyBlob ?? connection?.authBinding?.hostKeyBlob)
+                if let blob = hostKeyBlob,
+                   let lookedUpHost = sanitizeDestination(knownHostsReverseLookup(blob)) {
+                    resolvedHost = lookedUpHost
+                } else if !isForwardedAgent,
+                          ProcessInspector.isTrustedSshBinary(path: peerPath),
+                          let args = processArgumentsLookup(peerPid),
+                          let commandDestination = ProcessInspector.extractSSHDestination(fromArguments: args),
+                          let commandHost = sanitizeDestination(commandDestination.host) {
+                    resolvedHost = commandHost
+                    if username == nil {
+                        username = sanitizeDestination(commandDestination.username)
+                    }
+                } else {
+                    resolvedHost = nil
+                }
+            }
+
+            guard let host = resolvedHost else { return nil }
+            let combined = username.map { "\($0)@\(host)" } ?? host
+            return sanitizeDestination(combined)
+
+        case .signature:
+            guard SSHSIGPayload.parse(from: dataToSign) != nil,
+                  ProcessInspector.isTrustedGitExecutable(path: peerPath) || ProcessInspector.isSignerHelper(path: peerPath) else {
+                return nil
+            }
+            if let cwd = processWorkingDirectoryLookup(peerPid),
+               let repo = sanitizeDestination(ProcessInspector.gitRepositoryName(forWorkingDirectory: cwd)) {
+                return repo
+            }
+            if let fallbackPid,
+               let cwd = processWorkingDirectoryLookup(fallbackPid),
+               let repo = sanitizeDestination(ProcessInspector.gitRepositoryName(forWorkingDirectory: cwd)) {
+                return repo
+            }
+            return nil
+        }
     }
 }
