@@ -775,36 +775,35 @@ public struct KeyDetailInspectorView: View {
                     label: "Confirmation policy",
                     sublabel: "How you prove presence when a prompt fires"
                 ) {
-                    settingsPopupLabel(policy.title)
-                        .overlay {
-                            Menu {
-                                ForEach(Self.confirmationPolicies, id: \.self) { option in
-                                    Button {
-                                        selectConfirmationPolicy(option)
-                                    } label: {
-                                        if policy == option {
-                                            Label(option.title, systemImage: "checkmark")
-                                        } else {
-                                            Text(option.title)
-                                        }
-                                    }
-                                    // INV-08: biometric-bound keys can never become password-only.
-                                    .disabled(option == .devicePasscode && Self.isBiometricBound(policy))
-                                }
-                                Divider()
-                                // Legacy policy is read-only; moving off it requires a new key.
-                                Button {} label: {
-                                    Text("\(BiometricPolicy.biometryCurrentSet.title) — Requires new key → Rotate")
-                                }
-                                .disabled(true)
+                    Menu {
+                        ForEach(Self.confirmationPolicies, id: \.self) { option in
+                            Button {
+                                selectConfirmationPolicy(option)
                             } label: {
-                                Color.clear
+                                if policy == option {
+                                    Label(option.title, systemImage: "checkmark")
+                                } else {
+                                    Text(option.title)
+                                }
                             }
-                            .menuStyle(.borderlessButton)
-                            .menuIndicator(.hidden)
+                            // INV-08: biometric-bound keys can never become password-only.
+                            .disabled(option == .devicePasscode && Self.isBiometricBound(policy))
                         }
-                        .help("The confirmation policy is fixed at creation; changing it requires Rotate.")
-                        .accessibilityLabel("Confirmation policy")
+                        Divider()
+                        // Legacy policy is read-only; moving off it requires a new key.
+                        Button {} label: {
+                            Text("\(BiometricPolicy.biometryCurrentSet.title) — Requires new key → Rotate")
+                        }
+                        .disabled(true)
+                    } label: {
+                        settingsPopupLabel(policy.title)
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("The confirmation policy is fixed at creation; changing it requires Rotate.")
+                    .accessibilityLabel("Confirmation policy")
                 }
 
                 insetDivider
@@ -814,27 +813,27 @@ public struct KeyDetailInspectorView: View {
                     label: "Unlocked timeout",
                     sublabel: "How long one confirmation is reused (key + requesting app)"
                 ) {
-                    settingsPopupLabel(period.title)
-                        .overlay {
-                            Menu {
-                                ForEach(KeyGracePeriod.allCases, id: \.self) { option in
-                                    Button {
-                                        appState.setGracePeriod(option, for: key)
-                                    } label: {
-                                        if period == option {
-                                            Label(option.title, systemImage: "checkmark")
-                                        } else {
-                                            Text(option.title)
-                                        }
-                                    }
-                                }
+                    Menu {
+                        ForEach(KeyGracePeriod.allCases, id: \.self) { option in
+                            Button {
+                                changeUnlockedTimeout(option)
                             } label: {
-                                Color.clear
+                                if period == option {
+                                    Label(option.title, systemImage: "checkmark")
+                                } else {
+                                    Text(option.title)
+                                }
                             }
-                            .menuStyle(.borderlessButton)
-                            .menuIndicator(.hidden)
                         }
-                        .accessibilityLabel("Unlocked timeout")
+                    } label: {
+                        settingsPopupLabel(period.title)
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .disabled(appState.policyMutations.isPending)
+                    .accessibilityLabel("Unlocked timeout")
                 }
             }
             .modifier(SettingsGroupCardModifier())
@@ -940,28 +939,27 @@ public struct KeyDetailInspectorView: View {
                                     Spacer(minLength: 8)
 
                                     if isAgentKey {
-                                        settingsPopupLabel(app.classification.title)
-                                            .overlay {
-                                                Menu {
-                                                    ForEach(ApplicationClassification.allCases, id: \.self) { classification in
-                                                        Button {
-                                                            Task { await applicationsModel.classify(app, as: classification) }
-                                                        } label: {
-                                                            if app.classification == classification {
-                                                                Label(classification.title, systemImage: "checkmark")
-                                                            } else {
-                                                                Text(classification.title)
-                                                            }
-                                                        }
-                                                    }
+                                        Menu {
+                                            ForEach(ApplicationClassification.allCases, id: \.self) { classification in
+                                                Button {
+                                                    Task { await applicationsModel.classify(app, as: classification) }
                                                 } label: {
-                                                    Color.clear
+                                                    if app.classification == classification {
+                                                        Label(classification.title, systemImage: "checkmark")
+                                                    } else {
+                                                        Text(classification.title)
+                                                    }
                                                 }
-                                                .menuStyle(.borderlessButton)
-                                                .menuIndicator(.hidden)
                                             }
-                                            .disabled(isRemoveMode || applicationsModel.isBusy)
-                                            .accessibilityLabel("Access for \(app.name)")
+                                        } label: {
+                                            settingsPopupLabel(app.classification.title)
+                                        }
+                                        .menuStyle(.button)
+                                        .buttonStyle(.plain)
+                                        .menuIndicator(.hidden)
+                                        .fixedSize()
+                                        .disabled(isRemoveMode || applicationsModel.isBusy)
+                                        .accessibilityLabel("Access for \(app.name)")
                                     } else {
                                         Text("Blocked")
                                             .font(.system(size: 13))
@@ -1406,6 +1404,20 @@ public struct KeyDetailInspectorView: View {
             guard let error else { return }
             changePurposeError = error.localizedDescription
             showingChangePurposeError = true
+        }
+    }
+
+    private func changeUnlockedTimeout(_ option: KeyGracePeriod) {
+        guard option != appState.gracePeriod(for: key) else { return }
+        appState.policyMutations.submit(
+            key: key, unlockedTimeout: option, appState: appState
+        ) { error in
+            if let error {
+                changePurposeError = error.localizedDescription
+                showingChangePurposeError = true
+            } else {
+                onShowToast?("Unlocked timeout set to \(option.title). Active sessions locked.")
+            }
         }
     }
 

@@ -472,4 +472,145 @@ final class SigningPolicyEvaluatorTests {
             #expect(fallbackAuth.authenticationCount == 0)
         }
     }
+
+    private final class VerifiedCallerAccess: ApplicationRequestAuthorizing, @unchecked Sendable {
+        private let revision = UUID()
+        func authorize(key: SSHKeyInfo, operation: KeyOperation, role: AgentSocketRole, pid: pid_t, path: String, start: UInt64) throws -> ApplicationRequestLease {
+            guard key.effectiveAccessProfile.capabilities.permits(operation),
+                  role == .personal || key.effectiveAccessProfile.type == .bot else {
+                return .init(eligibility: .denied, revision: revision, caller: nil)
+            }
+            let identity = try ApplicationIdentity(kind: .designatedRequirement, value: "identifier \"\(path)\"")
+            let app = RegisteredApplication(identity: identity, name: path, path: path, classification: .personal)
+            let caller = VerifiedApplicationCaller(identity: identity, application: app, pid: pid, startTime: start, path: path)
+            return .init(eligibility: .eligible(.personal), revision: revision, caller: caller)
+        }
+        func validate(_ lease: ApplicationRequestLease, pid: pid_t, path: String, start: UInt64) throws -> Bool { true }
+    }
+
+    @Test
+    func test_unlockedTimeoutOnceNeverEscalatesGitOrCachesSSH() async throws {
+        try await fixture.run {
+            let fallbackAuth = CountingAuthenticator()
+            let keyMgr = fixture.makeKeyManager(authenticator: fallbackAuth, gitSigningGraceManager: graceManager)
+            let presenter = MockSigningPromptPresenter()
+            presenter.nextScope = .fifteenMinutes
+            let eval = SigningPolicyEvaluator(
+                applicationAccess: VerifiedCallerAccess(),
+                keyManager: keyMgr,
+                gitSigningGraceManager: graceManager,
+                auditRecorder: recorder,
+                authenticator: fallbackAuth,
+                signingPromptPresenter: presenter,
+                peerProcessValidator: { _, _, _ in true }
+            )
+            let key = try keyMgr.generateKey(label: "once-key", unlockedTimeout: .always)
+            let pid = getpid()
+            let realPath = ProcessInspector.getProcessPath(pid: pid) ?? "/usr/bin/git"
+            let start = ProcessInspector.processStartTime(pid: pid) ?? 0
+            let gitPayload = SSHSIGPayload(
+                namespace: "git", hashAlgorithm: "sha256", messageHash: Data(repeating: 0x33, count: 32)
+            ).serialize()
+
+            for _ in 0..<2 {
+                let gitDecision = try eval.evaluateSigningRequest(
+                    keyBlob: key.publicKeyBlob, dataToSign: gitPayload, flags: 0,
+                    role: .personal, clientPid: pid, clientExecutablePath: realPath, clientStartTime: start
+                )
+                guard case .approved = gitDecision else { Issue.record("Expected Git approval"); return }
+            }
+            #expect(presenter.requests.count == 2)
+            #expect(presenter.requests.allSatisfy { $0.allowsSessionScope == false && $0.defaultScope == .always })
+            #expect(graceManager.getValidGrant(for: key.label) == nil)
+
+            for _ in 0..<2 {
+                let sshDecision = try eval.evaluateSigningRequest(
+                    keyBlob: key.publicKeyBlob, dataToSign: Data("ssh".utf8), flags: 0,
+                    role: .personal, clientPid: pid, clientExecutablePath: "/Applications/TermA.app/ssh", clientStartTime: start
+                )
+                guard case .approved = sshDecision else { Issue.record("Expected SSH approval"); return }
+            }
+            #expect(presenter.requests.count == 4)
+            #expect(graceManager.allActivePersonalGrants().isEmpty)
+        }
+    }
+
+    @Test
+    func test_unlockedTimeoutCachesPerAppSSHAndPropagatesGitDefaultScopeAndRevokesOnLock() async throws {
+        try await fixture.run {
+            let fallbackAuth = CountingAuthenticator()
+            let keyMgr = fixture.makeKeyManager(authenticator: fallbackAuth, gitSigningGraceManager: graceManager)
+            let presenter = MockSigningPromptPresenter()
+            presenter.nextScope = .untilLock
+            let eval = SigningPolicyEvaluator(
+                applicationAccess: VerifiedCallerAccess(),
+                keyManager: keyMgr,
+                gitSigningGraceManager: graceManager,
+                auditRecorder: recorder,
+                authenticator: fallbackAuth,
+                signingPromptPresenter: presenter,
+                peerProcessValidator: { _, _, _ in true }
+            )
+            let key = try keyMgr.generateKey(label: "scoped-key", unlockedTimeout: .untilLock)
+            let pid = getpid()
+            let realPath = ProcessInspector.getProcessPath(pid: pid) ?? "/usr/bin/git"
+            let start = ProcessInspector.processStartTime(pid: pid) ?? 0
+
+            // 1. Git Commit #1 (single-shot) -> Commit #2 receives defaultScope == .untilLock and creates ~24h grant
+            let gitPayload = SSHSIGPayload(
+                namespace: "git", hashAlgorithm: "sha256", messageHash: Data(repeating: 0x44, count: 32)
+            ).serialize()
+            _ = try eval.evaluateSigningRequest(
+                keyBlob: key.publicKeyBlob, dataToSign: gitPayload, flags: 0,
+                role: .personal, clientPid: pid, clientExecutablePath: realPath, clientStartTime: start
+            )
+            _ = try eval.evaluateSigningRequest(
+                keyBlob: key.publicKeyBlob, dataToSign: gitPayload, flags: 0,
+                role: .personal, clientPid: pid, clientExecutablePath: realPath, clientStartTime: start
+            )
+            #expect(presenter.requests.last?.allowsSessionScope == true)
+            #expect(presenter.requests.last?.defaultScope == .untilLock)
+            let gitGrant = try #require(graceManager.getValidGrant(for: key.label))
+            #expect(gitGrant.remainingSeconds > 23 * 3600)
+
+            // 2. Verified app A SSH request #1 -> prompts with defaultScope == .untilLock and caches grant
+            presenter.nextScope = .session
+            let promptsBeforeSSH = presenter.requests.count
+            let sshA1 = try eval.evaluateSigningRequest(
+                keyBlob: key.publicKeyBlob, dataToSign: Data("ssh-a1".utf8), flags: 0,
+                role: .personal, clientPid: pid, clientExecutablePath: "/Applications/TermA.app/ssh", clientStartTime: start
+            )
+            guard case .approved = sshA1 else { Issue.record("Expected SSH A1 approval"); return }
+            #expect(presenter.requests.count == promptsBeforeSSH + 1)
+            #expect(presenter.requests.last?.allowsSessionScope == true)
+            #expect(presenter.requests.last?.defaultScope == .untilLock)
+
+            // 3. Verified app A SSH request #2 -> reuses active grant with 0 extra prompts
+            let sshA2 = try eval.evaluateSigningRequest(
+                keyBlob: key.publicKeyBlob, dataToSign: Data("ssh-a2".utf8), flags: 0,
+                role: .personal, clientPid: pid, clientExecutablePath: "/Applications/TermA.app/ssh", clientStartTime: start
+            )
+            guard case .approved = sshA2 else { Issue.record("Expected SSH A2 cached approval"); return }
+            #expect(presenter.requests.count == promptsBeforeSSH + 1)
+            #expect(recorder.events.last?.reason == .viaGitGrant)
+
+            // 4. Different verified app B cannot reuse app A's session (D-28)
+            let sshB1 = try eval.evaluateSigningRequest(
+                keyBlob: key.publicKeyBlob, dataToSign: Data("ssh-b1".utf8), flags: 0,
+                role: .personal, clientPid: pid, clientExecutablePath: "/Applications/TermB.app/ssh", clientStartTime: start
+            )
+            guard case .approved = sshB1 else { Issue.record("Expected SSH B1 approval"); return }
+            #expect(presenter.requests.count == promptsBeforeSSH + 2)
+
+            // 5. Locking the key / changing timeout revokes grants immediately so app A prompts again
+            try keyMgr.lockKey(label: key.label)
+            #expect(graceManager.allActivePersonalGrants().isEmpty)
+            let sshA3 = try eval.evaluateSigningRequest(
+                keyBlob: key.publicKeyBlob, dataToSign: Data("ssh-a3".utf8), flags: 0,
+                role: .personal, clientPid: pid, clientExecutablePath: "/Applications/TermA.app/ssh", clientStartTime: start
+            )
+            guard case .approved = sshA3 else { Issue.record("Expected SSH A3 approval after lock"); return }
+            #expect(presenter.requests.count == promptsBeforeSSH + 3)
+        }
+    }
 }

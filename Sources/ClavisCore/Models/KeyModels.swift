@@ -14,9 +14,14 @@ public struct SSHKeyInfo: Identifiable, Codable, Equatable {
     public let biometricPolicy: BiometricPolicy?
     public let keyPurpose: KeyPurpose?
     public let accessProfile: KeyAccessProfile?
+    public let unlockedTimeout: KeyGracePeriod?
 
     public var effectiveAccessProfile: KeyAccessProfile {
         accessProfile ?? KeyAccessProfile(legacyPurpose: purpose)
+    }
+
+    public var effectiveUnlockedTimeout: KeyGracePeriod {
+        unlockedTimeout ?? KeyGracePeriod.defaultPeriod(for: purpose)
     }
 
     public var purpose: KeyPurpose {
@@ -65,7 +70,8 @@ public struct SSHKeyInfo: Identifiable, Codable, Equatable {
         storage: KeyStorageType? = nil,
         biometricPolicy: BiometricPolicy? = nil,
         keyPurpose: KeyPurpose? = nil,
-        accessProfile: KeyAccessProfile? = nil
+        accessProfile: KeyAccessProfile? = nil,
+        unlockedTimeout: KeyGracePeriod? = nil
     ) {
         self.label = label
         self.publicKeyOpenSSH = publicKeyOpenSSH
@@ -77,6 +83,7 @@ public struct SSHKeyInfo: Identifiable, Codable, Equatable {
         self.biometricPolicy = biometricPolicy
         self.keyPurpose = keyPurpose
         self.accessProfile = accessProfile
+        self.unlockedTimeout = unlockedTimeout
     }
 }
 
@@ -262,6 +269,16 @@ public enum KeyGracePeriod: String, CaseIterable, Identifiable, Codable, Equatab
         case .twoHours: return 7200
         case .untilLock: return nil
         case .oneDay: return 86400
+        }
+    }
+
+    /// Grant TTL in seconds for active session caches (`nil` for single-shot `.always`;
+    /// `.untilLock` uses a 24h upper bound alongside lock/sleep invalidation).
+    public var grantDurationSeconds: TimeInterval? {
+        switch self {
+        case .always: return nil
+        case .untilLock: return 24 * 3600
+        default: return durationSeconds
         }
     }
 

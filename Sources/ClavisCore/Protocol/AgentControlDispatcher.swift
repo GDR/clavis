@@ -140,10 +140,10 @@ internal struct AgentControlDispatcher {
     func handleQueryGitGrace(payload: Data) -> Data {
         guard payload.count == 1 else { return Data([5]) }
         var response = Data([6])
-        if let grant = gitSigningGraceManager.currentActiveGrant {
-            response.appendWireString(grant.keyLabel)
-            response.appendWireUInt32(UInt32(grant.remainingSeconds))
-            response.appendWireUInt32(UInt32(grant.remainingOperations))
+        if let summary = gitSigningGraceManager.activeGrantSummary() {
+            response.appendWireString(summary.keyLabel)
+            response.appendWireUInt32(UInt32(summary.remainingSeconds))
+            response.appendWireUInt32(UInt32(summary.remainingOperations))
         } else {
             response.appendWireString("")
             response.appendWireUInt32(0)

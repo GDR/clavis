@@ -8,7 +8,7 @@ import Security
 /// biometric policy, and private key payload. The public index (`PublicKeyStore`, an in-memory
 /// copy of unauthenticated Keychain metadata items) is treated strictly as a display cache.
 public struct StoredPrivateKeyRecord: Codable, Equatable {
-    public static let currentVersion: Int = 3
+    public static let currentVersion: Int = 4
     private static let binaryMagic = Data("CLVPKR02".utf8)
     private static let maximumLabelBytes = 1_024
     private static let maximumKeyBytes = 65_536
@@ -20,6 +20,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
     public let biometricPolicy: BiometricPolicy?
     public let accessProfile: KeyAccessProfile
     public let keyPurpose: KeyPurpose
+    public let unlockedTimeout: KeyGracePeriod?
     public var keyData: Data
     public let createdAt: Date
 
@@ -27,8 +28,12 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         keyPurpose
     }
 
+    public var effectiveUnlockedTimeout: KeyGracePeriod {
+        unlockedTimeout ?? KeyGracePeriod.defaultPeriod(for: purpose)
+    }
+
     private enum CodingKeys: String, CodingKey {
-        case version, label, algorithm, storageType, biometricPolicy, keyPurpose, accessProfile, keyData, createdAt
+        case version, label, algorithm, storageType, biometricPolicy, keyPurpose, accessProfile, unlockedTimeout, keyData, createdAt
     }
 
     public init(
@@ -39,6 +44,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         biometricPolicy: BiometricPolicy? = nil,
         keyPurpose: KeyPurpose,
         accessProfile: KeyAccessProfile? = nil,
+        unlockedTimeout: KeyGracePeriod? = nil,
         keyData: Data,
         createdAt: Date = Date()
     ) {
@@ -49,6 +55,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         self.biometricPolicy = biometricPolicy
         self.keyPurpose = keyPurpose
         self.accessProfile = accessProfile ?? KeyAccessProfile(legacyPurpose: keyPurpose)
+        self.unlockedTimeout = unlockedTimeout
         self.keyData = keyData
         self.createdAt = createdAt
     }
@@ -66,6 +73,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         } else {
             self.accessProfile = KeyAccessProfile(legacyPurpose: keyPurpose)
         }
+        self.unlockedTimeout = try container.decodeIfPresent(KeyGracePeriod.self, forKey: .unlockedTimeout)
         self.keyData = try container.decode(Data.self, forKey: .keyData)
         self.createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
     }
@@ -79,6 +87,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         try container.encodeIfPresent(biometricPolicy, forKey: .biometricPolicy)
         try container.encode(keyPurpose, forKey: .keyPurpose)
         try container.encode(accessProfile, forKey: .accessProfile)
+        try container.encodeIfPresent(unlockedTimeout, forKey: .unlockedTimeout)
         try container.encode(keyData, forKey: .keyData)
         try container.encode(createdAt, forKey: .createdAt)
     }
@@ -93,11 +102,28 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         keyData.removeAll(keepingCapacity: false)
     }
 
+    private static let unlockedTimeoutByteTable: [(byte: UInt8, period: KeyGracePeriod)] = [
+        (1, .always),
+        (2, .session),
+        (3, .oneMinute),
+        (4, .twoMinutes),
+        (5, .fiveMinutes),
+        (6, .tenMinutes),
+        (7, .fifteenMinutes),
+        (8, .oneHour),
+        (9, .twoHours),
+        (10, .untilLock),
+        (11, .oneDay),
+    ]
+
     public func encode() throws -> Data {
-        guard version == 2 || version == Self.currentVersion else {
+        guard (2...Self.currentVersion).contains(version) else {
             throw PrivateKeyRecordError.unsupportedVersion(version)
         }
         if version == 2 && accessProfile != KeyAccessProfile(legacyPurpose: purpose) {
+            throw KeyAccessError.legacyEncodingWouldLosePolicy
+        }
+        if version < 4 && unlockedTimeout != nil {
             throw KeyAccessError.legacyEncodingWouldLosePolicy
         }
         guard algorithm == .ecdsaP256 else {
@@ -136,6 +162,12 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
             output.append(accessProfile.type == .personal ? 1 : 2)
             output.append((accessProfile.capabilities.ssh ? 1 : 0) | (accessProfile.capabilities.signature ? 2 : 0))
         }
+        if version >= 4 {
+            let timeoutByte = unlockedTimeout.flatMap { period in
+                Self.unlockedTimeoutByteTable.first(where: { $0.period == period })?.byte
+            } ?? 0
+            output.append(timeoutByte)
+        }
         var timestamp = createdAt.timeIntervalSince1970.bitPattern.bigEndian
         Swift.withUnsafeBytes(of: &timestamp) { output.append(contentsOf: $0) }
         var labelLength = UInt16(labelData.count).bigEndian
@@ -159,7 +191,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
         guard let version = reader.readUInt8() else {
             throw PrivateKeyRecordError.corruptedRecord("Malformed binary private-key record")
         }
-        guard version == 2 || Int(version) == currentVersion else {
+        guard (2...currentVersion).contains(Int(version)) else {
             throw PrivateKeyRecordError.unsupportedVersion(Int(version))
         }
         guard let algorithmByte = reader.readUInt8(),
@@ -180,6 +212,21 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
             )
         } else {
             profile = nil
+        }
+        let unlockedTimeout: KeyGracePeriod?
+        if version >= 4 {
+            guard let timeoutByte = reader.readUInt8() else {
+                throw PrivateKeyRecordError.corruptedRecord("Malformed binary private-key record")
+            }
+            if timeoutByte == 0 {
+                unlockedTimeout = nil
+            } else if let entry = unlockedTimeoutByteTable.first(where: { $0.byte == timeoutByte }) {
+                unlockedTimeout = entry.period
+            } else {
+                throw PrivateKeyRecordError.corruptedRecord("Unknown unlocked timeout identifier")
+            }
+        } else {
+            unlockedTimeout = nil
         }
         guard let timestampBits = reader.readUInt64(),
               let labelLength = reader.readUInt16(),
@@ -229,6 +276,7 @@ public struct StoredPrivateKeyRecord: Codable, Equatable {
             biometricPolicy: biometric,
             keyPurpose: purpose,
             accessProfile: profile,
+            unlockedTimeout: unlockedTimeout,
             keyData: keyData,
             createdAt: Date(timeIntervalSince1970: TimeInterval(bitPattern: timestampBits))
         )

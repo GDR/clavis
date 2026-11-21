@@ -506,7 +506,9 @@ public final class SigningPolicyEvaluator {
 
             if let _ = gitSSHSIG {
                 // Git signing request
-                if let grantedSignature = try self.gitSigningGraceManager.withGrant(
+                let configuredTimeout = matchingKey.effectiveUnlockedTimeout
+                if configuredTimeout != .always,
+                   let grantedSignature = try self.gitSigningGraceManager.withGrant(
                     for: matchingKey.label,
                     clientIdentity: clientIdentity,
                     peerProcess: peerProcess,
@@ -514,11 +516,11 @@ public final class SigningPolicyEvaluator {
                         try grant.sign(dataToSign, using: keyManager, role: role)
                     }
                 ) {
-                    // Fast-path: Active 5-minute grant
+                    // Fast-path: Active Git signing grant
                     ClavisLogger.log("GIT_GRACE", "Using active client-bound Git signing grant for '\(matchingKey.label)'. 0 Touch ID prompts.")
                     sigBlob = grantedSignature
                     isFromGitGrant = true
-                } else if self.gitSigningGraceManager.hasRecentGitSignature(
+                } else if configuredTimeout != .always && self.gitSigningGraceManager.hasRecentGitSignature(
                     for: matchingKey.label,
                     clientIdentity: clientIdentity,
                     windowSeconds: 30.0
@@ -607,7 +609,7 @@ public final class SigningPolicyEvaluator {
                             peerPid: anchorPid ?? pid,
                             peerPath: anchorPath ?? processPath,
                             allowsSessionScope: true,
-                            defaultScope: .untilLock,
+                            defaultScope: configuredTimeout,
                             reason: authPrompt,
                             isUncertainCaller: false,
                             isForwardedAgent: isForwarded
@@ -628,7 +630,7 @@ public final class SigningPolicyEvaluator {
                             self.gitSigningGraceManager.recordGitSignature(for: matchingKey.label, clientIdentity: clientIdentity)
                         } else {
                             guard let grantedSignature = try performGrantAndSign(
-                                duration: outcome.selectedScope.durationSeconds ?? 300.0,
+                                duration: outcome.selectedScope.grantDurationSeconds ?? 300.0,
                                 existingContext: outcome.context
                             ) else {
                                 return .denied
@@ -696,6 +698,7 @@ public final class SigningPolicyEvaluator {
                 }
             } else {
                 let isForwarded = (connection?.hasForwarding == true) || (connection?.hasFailedBind == true)
+                let configuredTimeout = matchingKey.effectiveUnlockedTimeout
                 let prompt = Self.signatureReason(
                     keyLabel: matchingKey.label,
                     requester: requester,
@@ -705,17 +708,101 @@ public final class SigningPolicyEvaluator {
                     hasForwarding: isForwarded
                 )
                 ClavisLogger.log("SSH_AGENT_SIGN", "Initiating signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
-                sigBlob = try promptedSign(
-                    key: matchingKey,
-                    data: dataToSign,
-                    prompt: prompt,
-                    role: role,
-                    requester: requesterIdentity,
-                    clientSocket: clientSocket,
-                    operation: .ssh,
-                    callerName: callerName,
-                    isForwardedAgent: isForwarded
-                )
+                if configuredTimeout != .always && !isForwarded, let approvalIdentity {
+                    if let grantedSignature = try self.gitSigningGraceManager.withPersonalSSHGrant(
+                        for: matchingKey.label,
+                        approvalIdentity: approvalIdentity,
+                        operation: { try $0.sign(dataToSign) }
+                    ) {
+                        ClavisLogger.log("SSH_AGENT_SIGN", "Using active app-bound Personal SSH grant for '\(matchingKey.label)'. 0 Touch ID prompts.")
+                        sigBlob = grantedSignature
+                        isFromGitGrant = true
+                    } else if let presenter = self.currentSigningPromptPresenter {
+                        let authRequest = SigningAuthenticationRequest(
+                            key: matchingKey,
+                            operation: .ssh,
+                            operationLabel: Self.operationLabel(for: dataToSign, operation: .ssh),
+                            callerName: callerName,
+                            peerPid: pid,
+                            peerPath: processPath,
+                            allowsSessionScope: true,
+                            defaultScope: configuredTimeout,
+                            reason: prompt,
+                            isUncertainCaller: false,
+                            isForwardedAgent: false
+                        )
+                        let outcome = try promptGate.run(requester: requesterIdentity, clientSocket: clientSocket) {
+                            try presenter.authenticateSigningRequest(authRequest)
+                        }
+                        if outcome.selectedScope == .always || outcome.selectedScope.grantDurationSeconds == nil {
+                            defer { outcome.context.invalidate() }
+                            sigBlob = try keyManager.signSSH(
+                                key: matchingKey,
+                                data: dataToSign,
+                                prompt: "",
+                                useCache: false,
+                                existingContext: outcome.context,
+                                allowedPurposes: role.allowedPurposes
+                            )
+                        } else {
+                            let duration = outcome.selectedScope.grantDurationSeconds ?? 900.0
+                            let grant: PersonalUnlockGrant
+                            do {
+                                grant = try keyManager.authorizePersonalSSHGrant(
+                                    key: matchingKey,
+                                    prompt: "",
+                                    approvalIdentity: approvalIdentity,
+                                    duration: duration,
+                                    existingContext: outcome.context
+                                )
+                            } catch {
+                                outcome.context.invalidate()
+                                throw error
+                            }
+                            do {
+                                guard let grantedSignature = try self.gitSigningGraceManager.withPersonalSSHGrant(
+                                    for: matchingKey.label,
+                                    approvalIdentity: approvalIdentity,
+                                    operation: { try $0.sign(dataToSign) }
+                                ) else {
+                                    grant.invalidate()
+                                    audit.result = .failed
+                                    audit.reason = .signingError
+                                    return .denied
+                                }
+                                sigBlob = grantedSignature
+                                isFromGitGrant = true
+                            } catch {
+                                grant.invalidate()
+                                throw error
+                            }
+                        }
+                    } else {
+                        sigBlob = try promptedSign(
+                            key: matchingKey,
+                            data: dataToSign,
+                            prompt: prompt,
+                            role: role,
+                            requester: requesterIdentity,
+                            clientSocket: clientSocket,
+                            operation: .ssh,
+                            callerName: callerName,
+                            isForwardedAgent: isForwarded
+                        )
+                    }
+                } else {
+                    sigBlob = try promptedSign(
+                        key: matchingKey,
+                        data: dataToSign,
+                        prompt: prompt,
+                        role: role,
+                        requester: requesterIdentity,
+                        clientSocket: clientSocket,
+                        operation: .ssh,
+                        callerName: callerName,
+                        isForwardedAgent: isForwarded
+                    )
+                }
             }
 
             // TOCTOU check: re-run peerProcessUnchanged after signing prompt returns and before sending signature

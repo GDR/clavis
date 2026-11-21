@@ -20,8 +20,11 @@ public final class PolicyMutationCoordinator: ObservableObject, AsyncUserAuthent
         public let keyID: String
         public let label: String
         public let original: KeyAccessProfile
+        public let originalTimeout: KeyGracePeriod
+        public let originalStoredTimeout: KeyGracePeriod?
         public let type: KeyType?
         public let capabilities: KeyCapabilities?
+        public let unlockedTimeout: KeyGracePeriod?
     }
 
     enum Intent { case retry, password, cancel }
@@ -52,13 +55,17 @@ public final class PolicyMutationCoordinator: ObservableObject, AsyncUserAuthent
         key: SSHKeyInfo,
         type: KeyType? = nil,
         capabilities: KeyCapabilities? = nil,
+        unlockedTimeout: KeyGracePeriod? = nil,
         appState: AppState,
         completion: @escaping (Error?) -> Void
     ) {
         guard request == nil else { return }
         let staged = Request(
             id: UUID(), keyID: key.id, label: key.label,
-            original: key.effectiveAccessProfile, type: type, capabilities: capabilities
+            original: key.effectiveAccessProfile,
+            originalTimeout: key.effectiveUnlockedTimeout,
+            originalStoredTimeout: key.unlockedTimeout,
+            type: type, capabilities: capabilities, unlockedTimeout: unlockedTimeout
         )
         request = staged
         phase = .waiting
@@ -78,7 +85,10 @@ public final class PolicyMutationCoordinator: ObservableObject, AsyncUserAuthent
             do {
                 try await appState.changeAccessProfile(
                     label: staged.label, type: staged.type, capabilities: staged.capabilities,
-                    expectedCurrent: staged.original, authenticator: self
+                    unlockedTimeout: staged.unlockedTimeout,
+                    expectedCurrent: staged.original,
+                    expectedTimeout: staged.originalTimeout,
+                    authenticator: self
                 )
                 guard isCurrent(staged), !Task.isCancelled else { return }
                 finish()
@@ -137,7 +147,8 @@ public final class PolicyMutationCoordinator: ObservableObject, AsyncUserAuthent
     func cancelIfTargetChanged(keys: [SSHKeyInfo]) {
         guard let request else { return }
         guard let current = keys.first(where: { $0.id == request.keyID }),
-              current.effectiveAccessProfile == request.original else {
+              current.effectiveAccessProfile == request.original,
+              current.unlockedTimeout == request.originalStoredTimeout else {
             cancel()
             return
         }

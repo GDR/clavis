@@ -81,6 +81,7 @@ public class KeychainManager {
         biometricPolicy: BiometricPolicy? = nil,
         keyPurpose: KeyPurpose = .general,
         accessProfile: KeyAccessProfile? = nil,
+        unlockedTimeout: KeyGracePeriod? = nil,
         beforeCommit: (() throws -> Void)? = nil
     ) throws -> SSHKeyInfo {
         #if DEBUG
@@ -93,6 +94,7 @@ public class KeychainManager {
                     biometricPolicy: biometricPolicy,
                     keyPurpose: keyPurpose,
                     accessProfile: accessProfile,
+                    unlockedTimeout: unlockedTimeout,
                     beforeCommit: beforeCommit
                 )
             }
@@ -125,6 +127,7 @@ public class KeychainManager {
             biometricPolicy: policy,
             keyPurpose: keyPurpose,
             accessProfile: accessProfile,
+            unlockedTimeout: unlockedTimeout,
             keyData: keyPair.keyData
         )
         defer { record.wipe() }
@@ -158,7 +161,8 @@ public class KeychainManager {
             storage: storageType,
             biometricPolicy: policy,
             keyPurpose: keyPurpose,
-            accessProfile: record.accessProfile
+            accessProfile: record.accessProfile,
+            unlockedTimeout: record.unlockedTimeout
         )
         do {
             try PublicKeyStore.saveChecked(keyInfo)
@@ -386,6 +390,15 @@ public class KeychainManager {
                 field: "biometricPolicy",
                 expected: key.effectiveBiometricPolicy.rawValue,
                 actual: recordPolicy.rawValue
+            )
+        }
+
+        guard record.effectiveUnlockedTimeout == key.effectiveUnlockedTimeout else {
+            ClavisLogger.log("SECURITY_ALERT", "Unlocked timeout mismatch for '\(key.label)': record='\(record.effectiveUnlockedTimeout.rawValue)', metadata='\(key.effectiveUnlockedTimeout.rawValue)'")
+            throw PrivateKeyRecordError.metadataMismatch(
+                field: "unlockedTimeout",
+                expected: key.effectiveUnlockedTimeout.rawValue,
+                actual: record.effectiveUnlockedTimeout.rawValue
             )
         }
 
@@ -774,6 +787,52 @@ public class KeychainManager {
         }
     }
 
+    /// Authorizes a Personal SSH unlock grant via Touch ID or an already-evaluated `LAContext`.
+    @discardableResult
+    internal func authorizePersonalSSHGrant(
+        key: SSHKeyInfo,
+        prompt: String,
+        approvalIdentity: String,
+        duration: TimeInterval,
+        maxOperations: Int = 200,
+        existingContext: LAContext? = nil
+    ) throws -> PersonalUnlockGrant {
+        guard key.effectiveAccessProfile.capabilities.ssh else {
+            throw KeyAccessError.operationDisabled(.ssh)
+        }
+
+        return try withVerifiedPrivateKeyRecord(
+            for: key,
+            prompt: prompt,
+            existingContext: existingContext,
+            auditOnAuthFailure: false
+        ) { context, record in
+            try record.accessProfile.require(.ssh)
+
+            context.interactionNotAllowed = true
+
+            guard record.storageType == .secureEnclave else {
+                context.invalidate()
+                throw PrivateKeyRecordError.storageMismatch(expected: KeyStorageType.secureEnclave.rawValue, actual: record.storageType.rawValue)
+            }
+
+            let provider = self.activeSigningProvider
+            let keyData = record.keyData
+            let signer = try self.signerRegistry.signer(for: record.algorithm)
+            let hardwareSigner: @Sendable (Data) throws -> Data = { dataToSign in
+                try signer.signSSH(data: dataToSign, keyData: keyData, context: context, provider: provider)
+            }
+            return self.gitSigningGraceManager.recordPersonalSSHGrant(
+                keyLabel: key.label,
+                approvalIdentity: approvalIdentity,
+                duration: duration,
+                maxOperations: maxOperations,
+                context: context,
+                hardwareSigner: hardwareSigner
+            )
+        }
+    }
+
     /// Authorizes an agent session via Touch ID, returning an active grant.
     internal func authorizeAgentSession(
         key: SSHKeyInfo,
@@ -906,6 +965,7 @@ public class KeychainManager {
         purpose newPurpose: KeyPurpose,
         key: SSHKeyInfo,
         record: StoredPrivateKeyRecord,
+        unlockedTimeout: KeyGracePeriod? = nil,
         customRevoker: ((String) throws -> Void)? = nil
     ) throws {
         let label = key.label
@@ -913,12 +973,14 @@ public class KeychainManager {
         // Revocation failure leaves all stored copies untouched.
         try revokeKeyCapabilities(label: label, customRevoker: customRevoker)
         var updatedRecord = StoredPrivateKeyRecord(
+            version: StoredPrivateKeyRecord.currentVersion,
             label: record.label,
             algorithm: record.algorithm,
             storageType: record.storageType,
             biometricPolicy: record.biometricPolicy,
             keyPurpose: newPurpose,
             accessProfile: profile,
+            unlockedTimeout: unlockedTimeout ?? record.unlockedTimeout,
             keyData: record.keyData,
             createdAt: record.createdAt
         )
@@ -951,7 +1013,8 @@ public class KeychainManager {
             storage: key.storageType,
             biometricPolicy: key.biometricPolicy,
             keyPurpose: newPurpose,
-            accessProfile: updatedRecord.accessProfile
+            accessProfile: updatedRecord.accessProfile,
+            unlockedTimeout: updatedRecord.unlockedTimeout
         )
 
         do {
@@ -972,21 +1035,32 @@ public class KeychainManager {
     /// A type-only change never changes operation capabilities or legacy Git restrictions.
     /// Authentication cannot be supplied by the caller or reused from a previous unlock.
     public func changeAccessProfile(label: String, type: KeyType? = nil,
-                                    capabilities: KeyCapabilities? = nil) throws {
+                                    capabilities: KeyCapabilities? = nil,
+                                    unlockedTimeout: KeyGracePeriod? = nil) throws {
         guard let key = try fetchKeyInfo(label: label) else {
             throw KeychainManagerError.keyNotFound(label: label)
         }
         let profile = KeyAccessProfile(type: type ?? key.effectiveAccessProfile.type,
             capabilities: capabilities ?? key.effectiveAccessProfile.capabilities)
-        guard profile != key.effectiveAccessProfile else { return }
-        try withPolicyMutationRecord(for: key, prompt: "Change access policy for '\(label)'",
-                                     auditKeyKind: profile.type == .bot ? .agent : .personal) { record in
+        let profileChanged = profile != key.effectiveAccessProfile
+        let timeoutChanged = unlockedTimeout != nil && unlockedTimeout != key.unlockedTimeout
+        guard profileChanged || timeoutChanged else { return }
+        let auditKind: AuditKeyKind = profile.type == .bot ? .agent : .personal
+        let auditType: AuditEventType = (!profileChanged && timeoutChanged) ? .policyChange : .keyKindChange
+        let prompt: String
+        if !profileChanged, let unlockedTimeout {
+            prompt = "Change unlocked timeout for '\(label)' to \(unlockedTimeout.title)"
+        } else {
+            prompt = "Change access policy for '\(label)'"
+        }
+        try withPolicyMutationRecord(for: key, prompt: prompt,
+                                     auditKeyKind: auditKind, auditEventType: auditType) { record in
             // Retain Git-only restrictions unless the user explicitly enables SSH.
             let purpose: KeyPurpose = record.purpose == .gitSigningOnly && !profile.capabilities.ssh
                 ? .gitSigningOnly : .general
-            try persistAccessProfile(profile, purpose: purpose, key: key, record: record)
-            auditRecorder.record(AuditEvent(type: .keyKindChange, result: .allowed,
-                keyFingerprint: key.fingerprint, keyKind: profile.type == .bot ? .agent : .personal,
+            try persistAccessProfile(profile, purpose: purpose, key: key, record: record, unlockedTimeout: unlockedTimeout)
+            auditRecorder.record(AuditEvent(type: auditType, result: .allowed,
+                keyFingerprint: key.fingerprint, keyKind: auditKind,
                 sensitive: .init(keyLabel: label, processChain: [], host: nil)))
         }
     }
@@ -997,7 +1071,9 @@ public class KeychainManager {
     /// - Parameter expectedCurrent: the profile the request was staged against; a mismatch is stale.
     public func changeAccessProfile(label: String, type: KeyType? = nil,
                                     capabilities: KeyCapabilities? = nil,
+                                    unlockedTimeout: KeyGracePeriod? = nil,
                                     expectedCurrent: KeyAccessProfile? = nil,
+                                    expectedTimeout: KeyGracePeriod? = nil,
                                     authenticator asyncAuthenticator: any AsyncUserAuthenticating) async throws {
         guard let key = try fetchKeyInfo(label: label) else {
             throw KeychainManagerError.keyNotFound(label: label)
@@ -1005,11 +1081,22 @@ public class KeychainManager {
         if let expectedCurrent, expectedCurrent != key.effectiveAccessProfile {
             throw PolicyMutationError.staleRequest
         }
+        if let expectedTimeout, expectedTimeout != key.effectiveUnlockedTimeout {
+            throw PolicyMutationError.staleRequest
+        }
         let profile = KeyAccessProfile(type: type ?? key.effectiveAccessProfile.type,
             capabilities: capabilities ?? key.effectiveAccessProfile.capabilities)
-        guard profile != key.effectiveAccessProfile else { return }
-        let prompt = "Change access policy for '\(label)'"
+        let profileChanged = profile != key.effectiveAccessProfile
+        let timeoutChanged = unlockedTimeout != nil && unlockedTimeout != key.unlockedTimeout
+        guard profileChanged || timeoutChanged else { return }
         let auditKind: AuditKeyKind = profile.type == .bot ? .agent : .personal
+        let auditType: AuditEventType = (!profileChanged && timeoutChanged) ? .policyChange : .keyKindChange
+        let prompt: String
+        if !profileChanged, let unlockedTimeout {
+            prompt = "Change unlocked timeout for '\(label)' to \(unlockedTimeout.title)"
+        } else {
+            prompt = "Change access policy for '\(label)'"
+        }
 
         let context: LAContext
         do {
@@ -1017,7 +1104,7 @@ public class KeychainManager {
             // including the supported system password fallback. Signing ACLs are not relaxed.
             context = try await asyncAuthenticator.authenticate(reason: prompt, policy: .deviceOwnerAuthentication)
         } catch {
-            auditRecorder.record(AuditEvent(type: .keyKindChange,
+            auditRecorder.record(AuditEvent(type: auditType,
                 result: AuditEvent.isUserCancellation(error) ? .cancelled : .denied,
                 reason: .authenticationFailed, keyFingerprint: key.fingerprint,
                 keyKind: auditKind,
@@ -1033,16 +1120,20 @@ public class KeychainManager {
         guard record.accessProfile == key.effectiveAccessProfile else {
             throw PolicyMutationError.staleRequest
         }
+        if let expectedTimeout, record.effectiveUnlockedTimeout != expectedTimeout {
+            throw PolicyMutationError.staleRequest
+        }
         try Task.checkCancellation()
         let purpose: KeyPurpose = record.purpose == .gitSigningOnly && !profile.capabilities.ssh
             ? .gitSigningOnly : .general
-        try persistAccessProfile(profile, purpose: purpose, key: key, record: record)
-        auditRecorder.record(AuditEvent(type: .keyKindChange, result: .allowed,
+        try persistAccessProfile(profile, purpose: purpose, key: key, record: record, unlockedTimeout: unlockedTimeout)
+        auditRecorder.record(AuditEvent(type: auditType, result: .allowed,
             keyFingerprint: key.fingerprint, keyKind: auditKind,
             sensitive: .init(keyLabel: label, processChain: [], host: nil)))
     }
 
     private func withPolicyMutationRecord<T>(for key: SSHKeyInfo, prompt: String, auditKeyKind: AuditKeyKind,
+                                             auditEventType: AuditEventType = .keyKindChange,
                                              beforeLoad: (() throws -> Void)? = nil,
                                              _ body: (StoredPrivateKeyRecord) throws -> T) throws -> T {
         let context: LAContext
@@ -1051,7 +1142,7 @@ public class KeychainManager {
             // This does not relax the Secure Enclave key's signing access control.
             context = try authenticator.authenticate(reason: prompt, policy: .deviceOwnerAuthentication)
         } catch {
-            auditRecorder.record(AuditEvent(type: .keyKindChange,
+            auditRecorder.record(AuditEvent(type: auditEventType,
                 result: AuditEvent.isUserCancellation(error) ? .cancelled : .denied,
                 reason: .authenticationFailed, keyFingerprint: key.fingerprint,
                 keyKind: auditKeyKind,
@@ -1123,6 +1214,7 @@ public class KeychainManager {
             biometricPolicy: record.biometricPolicy,
             keyPurpose: record.keyPurpose,
             accessProfile: record.accessProfile,
+            unlockedTimeout: record.unlockedTimeout,
             keyData: record.keyData,
             createdAt: record.createdAt
         )
@@ -1164,7 +1256,8 @@ public class KeychainManager {
             storage: key.storage,
             biometricPolicy: key.biometricPolicy,
             keyPurpose: key.keyPurpose,
-            accessProfile: key.accessProfile
+            accessProfile: key.accessProfile,
+            unlockedTimeout: record.unlockedTimeout
         )
 
         do {
@@ -1260,7 +1353,8 @@ public class KeychainManager {
                                 storage: rec.storageType,
                                 biometricPolicy: rec.biometricPolicy ?? .userPresence,
                                 keyPurpose: rec.keyPurpose,
-                                accessProfile: rec.accessProfile
+                                accessProfile: rec.accessProfile,
+                                unlockedTimeout: rec.unlockedTimeout
                             )
                             try PublicKeyStore.saveChecked(restoredInfo)
                             repaired.append(.missingPublicCache(label: privLabel))

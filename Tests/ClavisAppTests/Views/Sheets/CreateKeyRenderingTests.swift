@@ -63,4 +63,49 @@ import Testing
             try png.write(to: directory.appendingPathComponent("create-key-reference.png"))
         }
     }
+
+    @Test
+    func popupControlsSpanFullPillBounds() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let manager = fixture.makeKeyManager()
+            let state = AppState(keyManager: manager)
+            let root = CreateKeySheet(appState: state)
+            let view = NSHostingView(rootView: root)
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 460, height: 560),
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentView = view
+            window.orderFront(nil)
+            defer { window.orderOut(nil) }
+            try await Task.sleep(nanoseconds: 200_000_000)
+            view.layoutSubtreeIfNeeded()
+
+            @MainActor func descendants(of rootView: NSView) -> [NSView] {
+                var result = [rootView]
+                for subview in rootView.subviews {
+                    result.append(contentsOf: descendants(of: subview))
+                }
+                return result
+            }
+
+            let allViews = descendants(of: view)
+            let collapsedPopups = allViews.filter { subview in
+                String(describing: type(of: subview)).contains("SwiftUIPopupButton") && subview.frame.width < 20
+            }
+            #expect(collapsedPopups.isEmpty)
+
+            let pillProxies = allViews.filter { subview in
+                let className = String(describing: type(of: subview))
+                return (className.contains("KeyViewProxy") || className.contains("_FocusRingView"))
+                    && subview.frame.width >= 160
+                    && subview.frame.height >= 24
+            }
+            #expect(pillProxies.count >= 2)
+        }
+    }
 }

@@ -457,38 +457,37 @@ public struct CreateKeySheet: View {
         accessibilityLabel: String,
         @ViewBuilder items: @escaping () -> MenuItems
     ) -> some View {
-        HStack(spacing: 8) {
-            Text(label)
-                .font(.system(size: 12.5))
-                .foregroundStyle(.primary)
-            Spacer(minLength: 4)
-            Image(systemName: "chevron.up.chevron.down")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(DesignTokens.textSecondary)
-        }
-        .padding(.leading, 10)
-        .padding(.trailing, 8)
-        .frame(minWidth: 168)
-        .frame(height: 26)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Palette.controlFill)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(Palette.controlBorder, lineWidth: 1)
-        )
-        .overlay {
-            Menu {
-                items()
-            } label: {
-                Color.clear
+        Menu {
+            items()
+        } label: {
+            HStack(spacing: 8) {
+                Text(label)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(DesignTokens.textSecondary)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .accessibilityLabel(accessibilityLabel)
+            .padding(.leading, 10)
+            .padding(.trailing, 8)
+            .frame(minWidth: 168)
+            .frame(height: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Palette.controlFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(Palette.controlBorder, lineWidth: 1)
+            )
+            .contentShape(Rectangle())
         }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .fixedSize()
+        .accessibilityLabel(accessibilityLabel)
     }
 
     // MARK: - Creation plumbing (unchanged auth path)
@@ -508,10 +507,10 @@ public struct CreateKeySheet: View {
                 storageType: selectedPreset.storageType,
                 biometricPolicy: selectedPreset == .hardware ? selectedBiometricPolicy : nil,
                 accessProfile: KeyAccessProfile(type: selectedType,
-                    capabilities: KeyCapabilities(ssh: sshEnabled, signature: signatureEnabled))
+                    capabilities: KeyCapabilities(ssh: sshEnabled, signature: signatureEnabled)),
+                unlockedTimeout: selectedTimeout
             )
-            // D-40: persist the chosen unlocked timeout using the same per-key store
-            // the inspector reads (`keyGracePeriod.<fingerprint>`).
+            // Keep UserDefaults mirror aligned with the key's authoritative unlockedTimeout.
             appState.setGracePeriod(selectedTimeout, for: info)
             // F1: create → connect & test, one guided flow.
             appState.connectTarget = info

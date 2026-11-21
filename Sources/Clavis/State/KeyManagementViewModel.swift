@@ -38,7 +38,8 @@ public class KeyManagementViewModel: ObservableObject {
         storageType: KeyStorageType = .secureEnclave,
         biometricPolicy: BiometricPolicy? = nil,
         keyPurpose: KeyPurpose = .general,
-        accessProfile: KeyAccessProfile? = nil
+        accessProfile: KeyAccessProfile? = nil,
+        unlockedTimeout: KeyGracePeriod? = nil
     ) throws -> SSHKeyInfo {
         let info = try keyManager.generateKey(
             label: label,
@@ -46,7 +47,8 @@ public class KeyManagementViewModel: ObservableObject {
             storageType: storageType,
             biometricPolicy: biometricPolicy,
             keyPurpose: keyPurpose,
-            accessProfile: accessProfile
+            accessProfile: accessProfile,
+            unlockedTimeout: unlockedTimeout
         )
         refresh()
         return info
@@ -77,20 +79,28 @@ public class KeyManagementViewModel: ObservableObject {
         try keyManager.changeAccessProfile(label: label, type: type, capabilities: capabilities)
     }
 
-    /// Authenticated profile change driven by the embedded-authentication presenter: one fresh
+    /// Authenticated profile/timeout change driven by the embedded-authentication presenter: one fresh
     /// evaluation inside the mutation layer, one persistence, then refresh.
     public func changeAccessProfile(
         label: String,
         type: KeyType? = nil,
         capabilities: KeyCapabilities? = nil,
+        unlockedTimeout: KeyGracePeriod? = nil,
         expectedCurrent: KeyAccessProfile?,
+        expectedTimeout: KeyGracePeriod? = nil,
         authenticator: any AsyncUserAuthenticating
     ) async throws {
         defer { refresh() }
         try await keyManager.changeAccessProfile(
             label: label, type: type, capabilities: capabilities,
-            expectedCurrent: expectedCurrent, authenticator: authenticator
+            unlockedTimeout: unlockedTimeout,
+            expectedCurrent: expectedCurrent, expectedTimeout: expectedTimeout,
+            authenticator: authenticator
         )
+        if let unlockedTimeout,
+           let key = try? keyManager.fetchKeyInfo(label: label) {
+            defaults.set(unlockedTimeout.rawValue, forKey: "keyGracePeriod.\(key.fingerprint)")
+        }
     }
 
     public func lockKey(label: String) throws {
@@ -99,6 +109,9 @@ public class KeyManagementViewModel: ObservableObject {
     }
 
     public func gracePeriod(for key: SSHKeyInfo) -> KeyGracePeriod {
+        if let stored = key.unlockedTimeout {
+            return stored
+        }
         if let raw = defaults.string(forKey: "keyGracePeriod.\(key.fingerprint)"),
            let period = KeyGracePeriod(rawValue: raw) {
             return period
@@ -107,11 +120,9 @@ public class KeyManagementViewModel: ObservableObject {
     }
 
     public func setGracePeriod(_ period: KeyGracePeriod, for key: SSHKeyInfo) {
-        defaults.set(period.rawValue, forKey: "keyGracePeriod.\(key.fingerprint)")
-        if period == .always {
-            try? keyManager.lockKey(label: key.label)
-        }
         objectWillChange.send()
+        defaults.set(period.rawValue, forKey: "keyGracePeriod.\(key.fingerprint)")
+        try? keyManager.lockKey(label: key.label)
     }
 
     public func clearError() {
