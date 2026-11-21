@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "clavis",
+  "project_id": "d312f0c0-c9eb-492b-93d0-d4fdeb76c802"
+}

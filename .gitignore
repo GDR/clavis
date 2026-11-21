@@ -22,3 +22,8 @@ clavis-macos-*.dmg.sha256
 !BENCHMARK_REPORT.md
 .claude/settings.local.json
 
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
