@@ -502,7 +502,8 @@ public class AppState: ObservableObject {
         storageType: KeyStorageType = .secureEnclave,
         biometricPolicy: BiometricPolicy? = nil,
         keyPurpose: KeyPurpose = .general,
-        accessProfile: KeyAccessProfile? = nil
+        accessProfile: KeyAccessProfile? = nil,
+        unlockedTimeout: KeyGracePeriod? = nil
     ) throws -> SSHKeyInfo {
         defer {
             self.keys = keyManagementViewModel.keys
@@ -514,7 +515,8 @@ public class AppState: ObservableObject {
             storageType: storageType,
             biometricPolicy: biometricPolicy,
             keyPurpose: keyPurpose,
-            accessProfile: accessProfile
+            accessProfile: accessProfile,
+            unlockedTimeout: unlockedTimeout
         )
         // Generating a key already authenticates the user; transition the panel out
         // of its initial locked state so leaving empty-vault bypass does not lock the window.
@@ -567,18 +569,26 @@ public class AppState: ObservableObject {
         label: String,
         type: KeyType? = nil,
         capabilities: KeyCapabilities? = nil,
+        unlockedTimeout: KeyGracePeriod? = nil,
         expectedCurrent: KeyAccessProfile?,
+        expectedTimeout: KeyGracePeriod? = nil,
         authenticator: any AsyncUserAuthenticating
     ) async throws {
         defer {
             self.keys = keyManagementViewModel.keys
             self.errorMessage = keyManagementViewModel.errorMessage
+            settingsViewModel.activeGitGraces.removeAll { $0.keyLabel == label }
+            settingsViewModel.activeGitGrace = settingsViewModel.activeGitGraces.first
+            self.activeGitGraces.removeAll { $0.keyLabel == label }
+            self.activeGitGrace = self.activeGitGraces.first
             refreshAgentSessions()
             updateGitGraceState()
         }
         try await keyManagementViewModel.changeAccessProfile(
             label: label, type: type, capabilities: capabilities,
-            expectedCurrent: expectedCurrent, authenticator: authenticator
+            unlockedTimeout: unlockedTimeout,
+            expectedCurrent: expectedCurrent, expectedTimeout: expectedTimeout,
+            authenticator: authenticator
         )
     }
 
@@ -595,14 +605,12 @@ public class AppState: ObservableObject {
     }
 
     public func setGracePeriod(_ period: KeyGracePeriod, for key: SSHKeyInfo) {
-        keyManagementViewModel.setGracePeriod(period, for: key)
-        if period == .always {
-            revokeGitGrace(for: key.label)
-            for session in agentSessions where session.keyFingerprint == key.fingerprint {
-                endAgentSession(id: session.id)
-            }
-        }
         objectWillChange.send()
+        keyManagementViewModel.setGracePeriod(period, for: key)
+        revokeGitGrace(for: key.label)
+        for session in agentSessions where session.keyFingerprint == key.fingerprint {
+            endAgentSession(id: session.id)
+        }
     }
 
     public func isKeyUnlocked(_ key: SSHKeyInfo) -> Bool {

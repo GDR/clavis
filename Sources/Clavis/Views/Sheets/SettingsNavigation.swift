@@ -126,42 +126,41 @@ private struct ApplicationsAgentsSection: View {
             Spacer(minLength: 8)
 
             // Key-access badge + classification menu (Personal / Agent / Blocked).
-            HStack(spacing: 5) {
-                Text(Self.classificationTitle(app.classification))
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(DesignTokens.textSecondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(DesignTokens.cardBackground)
-                    )
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(DesignTokens.textSecondary)
-            }
-            .padding(.vertical, 3)
-            .padding(.horizontal, 4)
-            .contentShape(Rectangle())
-            .overlay {
-                Menu {
-                    ForEach(ApplicationClassification.allCases, id: \.self) { classification in
-                        Button {
-                            Task { await model.classify(app, as: classification) }
-                        } label: {
-                            if app.classification == classification {
-                                Label(Self.classificationTitle(classification), systemImage: "checkmark")
-                            } else {
-                                Text(Self.classificationTitle(classification))
-                            }
+            Menu {
+                ForEach(ApplicationClassification.allCases, id: \.self) { classification in
+                    Button {
+                        Task { await model.classify(app, as: classification) }
+                    } label: {
+                        if app.classification == classification {
+                            Label(Self.classificationTitle(classification), systemImage: "checkmark")
+                        } else {
+                            Text(Self.classificationTitle(classification))
                         }
                     }
-                } label: {
-                    Color.clear
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
+            } label: {
+                HStack(spacing: 5) {
+                    Text(Self.classificationTitle(app.classification))
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(DesignTokens.cardBackground)
+                        )
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                }
+                .padding(.vertical, 3)
+                .padding(.horizontal, 4)
+                .contentShape(Rectangle())
             }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
             .disabled(isRemoveMode || model.isBusy)
             .accessibilityLabel("Access for \(app.name)")
         }

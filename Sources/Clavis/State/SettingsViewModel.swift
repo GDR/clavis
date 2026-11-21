@@ -75,14 +75,21 @@ public class SettingsViewModel: ObservableObject {
     @MainActor
     public func updateGitGraceState() {
         if isDaemonMode || sshAgentServer.isSocketActive {
-            let grants = GitSigningGraceManager.shared.allActiveGrants()
-            self.activeGitGraces = grants.map {
+            let gitGrants = GitSigningGraceManager.shared.allActiveGrants().map {
                 ActiveGitGraceInfo(
                     keyLabel: $0.keyLabel,
                     remainingSeconds: $0.remainingSeconds,
                     remainingOperations: $0.remainingOperations
                 )
             }
+            let personalGrants = GitSigningGraceManager.shared.allActivePersonalGrants().map {
+                ActiveGitGraceInfo(
+                    keyLabel: $0.keyLabel,
+                    remainingSeconds: $0.remainingSeconds,
+                    remainingOperations: $0.remainingOperations
+                )
+            }
+            self.activeGitGraces = gitGrants + personalGrants
             self.activeGitGrace = self.activeGitGraces.first
             return
         }

@@ -227,7 +227,8 @@ public struct MenuBarView: View {
             .padding(.vertical, 7)
             .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .accessibilityLabel(Self.copyPublicKeyTitle)
     }

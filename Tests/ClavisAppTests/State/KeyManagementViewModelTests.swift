@@ -185,4 +185,39 @@ final class KeyManagementViewModelTests {
             #expect(viewModel.gracePeriod(for: renamed) == .fiveMinutes)
         }
     }
+
+    @Test @MainActor
+    func testAuthoritativeUnlockedTimeoutOverridesDefaultsSurvivesRenameAndLocksOnAnyChange() async throws {
+        let fixture = try ClavisTestFixture()
+        defer { fixture.cleanup() }
+        try await fixture.run {
+            let suite = "clavis.kmvm.timeout.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+
+            let grants = GitSigningGraceManager(observeSystemEvents: false)
+            var revokedLabels: [String] = []
+            let keyManager = fixture.makeKeyManager(
+                authenticator: AllowingAuthenticator(),
+                agentGrantRevoker: { revokedLabels.append($0) },
+                gitSigningGraceManager: grants
+            )
+            let vm = KeyManagementViewModel(keyManager: keyManager, agentLifecycle: mockAgent, defaults: defaults)
+
+            let key = try vm.generateKey(label: "auth-timeout", keyPurpose: .general, unlockedTimeout: .session)
+            defaults.set(KeyGracePeriod.oneMinute.rawValue, forKey: "keyGracePeriod.\(key.fingerprint)")
+            #expect(vm.gracePeriod(for: key) == .session, "Authoritative key record must win over stale UserDefaults")
+
+            let renamed = try vm.renameKey(from: "auth-timeout", to: "auth-timeout-renamed")
+            #expect(vm.gracePeriod(for: renamed) == .session)
+
+            _ = try keyManager.authorizePersonalSSHGrant(
+                key: renamed, prompt: "SSH", approvalIdentity: "app:A", duration: 300
+            )
+            #expect(!grants.allActivePersonalGrants().isEmpty)
+            vm.setGracePeriod(.fifteenMinutes, for: renamed)
+            #expect(grants.allActivePersonalGrants().isEmpty, "Changing timeout to non-.always must still revoke active grants")
+            #expect(revokedLabels.contains(renamed.label))
+        }
+    }
 }

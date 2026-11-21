@@ -197,6 +197,127 @@ public final class GitSigningGrant: @unchecked Sendable {
     }
 }
 
+/// Time-limited, app-bound unlock grant for Personal SSH key usage.
+/// Reuse is strictly keyed to `(keyLabel, approvalIdentity)` (D-28) and clears on lock/sleep (INV-21).
+public final class PersonalUnlockGrant: @unchecked Sendable {
+    public let keyLabel: String
+    public let approvalIdentity: String
+    public let grantedAt: Date
+    public let expiresAt: Date
+    public let deadline: DispatchTime
+    private let lock = NSLock()
+    private var _remainingOperations: Int
+    private var authorizedContext: LAContext?
+    private var hardwareSigner: (@Sendable (Data) throws -> Data)?
+
+    internal init(
+        keyLabel: String,
+        approvalIdentity: String,
+        duration: TimeInterval,
+        maxOperations: Int = 200,
+        authorizedContext: LAContext?,
+        hardwareSigner: (@Sendable (Data) throws -> Data)? = nil
+    ) {
+        self.keyLabel = keyLabel
+        self.approvalIdentity = approvalIdentity
+        self.grantedAt = Date()
+        self.expiresAt = Date().addingTimeInterval(duration)
+        self.deadline = DispatchTime.now() + duration
+        self._remainingOperations = maxOperations
+        self.authorizedContext = authorizedContext
+        self.hardwareSigner = hardwareSigner
+    }
+
+    public var remainingOperations: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _remainingOperations
+    }
+
+    public var remainingSeconds: Int {
+        let rem = expiresAt.timeIntervalSinceNow
+        return max(0, Int(rem))
+    }
+
+    public var isValid: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !SystemEventMonitor.isSessionLockedOrOffConsole() else { return false }
+        guard _remainingOperations > 0 else { return false }
+        return DispatchTime.now() < deadline
+    }
+
+    public func sign(_ data: Data, using keyManager: KeychainManager? = nil, role: AgentSocketRole? = nil) throws -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if SystemEventMonitor.isSessionLockedOrOffConsole() {
+            _remainingOperations = 0
+            let ctx = authorizedContext
+            authorizedContext = nil
+            hardwareSigner = nil
+            ctx?.invalidate()
+            throw AgentSessionGrantError.grantInvalidated
+        }
+
+        guard _remainingOperations > 0, DispatchTime.now() < deadline else {
+            throw AgentSessionGrantError.grantInvalidated
+        }
+
+        if let hardwareSigner {
+            return try hardwareSigner(data)
+        }
+
+        guard let ctx = authorizedContext, let keyManager else {
+            throw AgentSessionGrantError.grantInvalidated
+        }
+        guard let keyInfo = try keyManager.fetchKeyInfo(label: keyLabel) else {
+            throw AgentSessionGrantError.grantInvalidated
+        }
+        return try keyManager.signSSH(
+            key: keyInfo,
+            data: data,
+            prompt: "",
+            useCache: false,
+            existingContext: ctx,
+            allowedPurposes: role?.allowedPurposes ?? AgentSocketRole.personal.allowedPurposes
+        )
+    }
+
+    internal func consumeOperation(approvalIdentity: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if SystemEventMonitor.isSessionLockedOrOffConsole() {
+            _remainingOperations = 0
+            let ctx = authorizedContext
+            authorizedContext = nil
+            hardwareSigner = nil
+            ctx?.invalidate()
+            return false
+        }
+        guard self.approvalIdentity == approvalIdentity else { return false }
+        guard _remainingOperations > 0 else { return false }
+        guard DispatchTime.now() < deadline else { return false }
+        _remainingOperations -= 1
+        return true
+    }
+
+    public func invalidate() {
+        lock.lock()
+        _remainingOperations = 0
+        let ctx = authorizedContext
+        authorizedContext = nil
+        hardwareSigner = nil
+        lock.unlock()
+
+        ctx?.invalidate()
+    }
+
+    deinit {
+        invalidate()
+    }
+}
+
 public struct GitSigningPromptStrings {
     public var header: String
     public var messageTemplate: (String, String) -> String
@@ -369,6 +490,7 @@ public final class GitSigningGraceManager: @unchecked Sendable {
     private let lock = NSLock()
     private var presenter: GitSigningGracePresenter
     private var activeGrants: [String: GitSigningGrant] = [:]
+    private var personalGrants: [String: PersonalUnlockGrant] = [:]
     private var recentSignatures: [String: Date] = [:]
     private let timerQueue = DispatchQueue(label: "com.clavis.git-grace.timer", qos: .userInitiated)
     private var expirationTimer: DispatchSourceTimer?
@@ -435,6 +557,10 @@ public final class GitSigningGraceManager: @unchecked Sendable {
             grant.invalidate()
         }
         activeGrants.removeAll()
+        for grant in personalGrants.values {
+            grant.invalidate()
+        }
+        personalGrants.removeAll()
     }
 
     public func allActiveGrants() -> [GitSigningGrant] {
@@ -450,6 +576,31 @@ public final class GitSigningGraceManager: @unchecked Sendable {
             }
         }
         return valid.sorted(by: { $0.keyLabel < $1.keyLabel })
+    }
+
+    public func allActivePersonalGrants() -> [PersonalUnlockGrant] {
+        lock.lock()
+        defer { lock.unlock() }
+        var valid: [PersonalUnlockGrant] = []
+        for (compoundKey, grant) in personalGrants {
+            if grant.isValid {
+                valid.append(grant)
+            } else {
+                grant.invalidate()
+                personalGrants.removeValue(forKey: compoundKey)
+            }
+        }
+        return valid.sorted(by: { $0.keyLabel < $1.keyLabel })
+    }
+
+    public func activeGrantSummary() -> (keyLabel: String, remainingSeconds: Int, remainingOperations: Int)? {
+        if let gitGrant = allActiveGrants().first {
+            return (gitGrant.keyLabel, gitGrant.remainingSeconds, gitGrant.remainingOperations)
+        }
+        if let sshGrant = allActivePersonalGrants().first {
+            return (sshGrant.keyLabel, sshGrant.remainingSeconds, sshGrant.remainingOperations)
+        }
+        return nil
     }
 
     public var currentActiveGrant: GitSigningGrant? {
@@ -561,12 +712,74 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         return grant
     }
 
+    @discardableResult
+    internal func recordPersonalSSHGrant(
+        keyLabel: String,
+        approvalIdentity: String,
+        duration: TimeInterval,
+        maxOperations: Int = 200,
+        context: LAContext,
+        hardwareSigner: (@Sendable (Data) throws -> Data)? = nil
+    ) -> PersonalUnlockGrant {
+        lock.lock()
+        let compoundKey = personalGrantKey(label: keyLabel, approvalIdentity: approvalIdentity)
+        personalGrants[compoundKey]?.invalidate()
+        let grant = PersonalUnlockGrant(
+            keyLabel: keyLabel,
+            approvalIdentity: approvalIdentity,
+            duration: max(1.0, duration),
+            maxOperations: maxOperations,
+            authorizedContext: context,
+            hardwareSigner: hardwareSigner
+        )
+        personalGrants[compoundKey] = grant
+        scheduleNextExpirationTimerLocked()
+        let activeGit = activeGrants[keyLabel]
+        lock.unlock()
+        broadcastUpdate(grant: activeGit, summary: (keyLabel, grant.remainingSeconds, grant.remainingOperations))
+        return grant
+    }
+
+    internal func withPersonalSSHGrant<Result>(
+        for keyLabel: String,
+        approvalIdentity: String,
+        operation: (PersonalUnlockGrant) throws -> Result
+    ) rethrows -> Result? {
+        lock.lock()
+        let compoundKey = personalGrantKey(label: keyLabel, approvalIdentity: approvalIdentity)
+        guard let grant = personalGrants[compoundKey] else {
+            lock.unlock()
+            return nil
+        }
+        guard grant.consumeOperation(approvalIdentity: approvalIdentity) else {
+            if !grant.isValid {
+                grant.invalidate()
+                personalGrants.removeValue(forKey: compoundKey)
+                scheduleNextExpirationTimerLocked()
+                lock.unlock()
+                broadcastUpdate(grant: nil)
+                return nil
+            }
+            lock.unlock()
+            return nil
+        }
+        let summary = (grant.keyLabel, grant.remainingSeconds, grant.remainingOperations)
+        lock.unlock()
+        let result = try operation(grant)
+        broadcastUpdate(grant: nil, summary: summary)
+        return result
+    }
+
     public func invalidateAll(broadcast: Bool = true) {
         lock.lock()
         for grant in activeGrants.values {
             grant.invalidate()
         }
         activeGrants.removeAll()
+        for grant in personalGrants.values {
+            grant.invalidate()
+        }
+        personalGrants.removeAll()
         recentSignatures.removeAll()
         expirationTimer?.schedule(deadline: .distantFuture)
         lock.unlock()
@@ -588,6 +801,10 @@ public final class GitSigningGraceManager: @unchecked Sendable {
             grant.invalidate()
         }
         let prefix = "\(keyLabel)\u{0}"
+        for (compoundKey, grant) in personalGrants where compoundKey.hasPrefix(prefix) {
+            grant.invalidate()
+            personalGrants.removeValue(forKey: compoundKey)
+        }
         recentSignatures = recentSignatures.filter { !$0.key.hasPrefix(prefix) }
         scheduleNextExpirationTimerLocked()
         lock.unlock()
@@ -611,6 +828,13 @@ public final class GitSigningGraceManager: @unchecked Sendable {
                 expiredAny = true
             }
         }
+        for (compoundKey, grant) in personalGrants {
+            if !grant.isValid {
+                grant.invalidate()
+                personalGrants.removeValue(forKey: compoundKey)
+                expiredAny = true
+            }
+        }
         scheduleNextExpirationTimerLocked()
         lock.unlock()
         if expiredAny {
@@ -619,8 +843,9 @@ public final class GitSigningGraceManager: @unchecked Sendable {
     }
 
     private func scheduleNextExpirationTimerLocked() {
-        let validDeadlines = activeGrants.values.compactMap { $0.isValid ? $0.deadline : nil }
-        guard let earliest = validDeadlines.min() else {
+        let gitDeadlines = activeGrants.values.compactMap { $0.isValid ? $0.deadline : nil }
+        let sshDeadlines = personalGrants.values.compactMap { $0.isValid ? $0.deadline : nil }
+        guard let earliest = (gitDeadlines + sshDeadlines).min() else {
             expirationTimer?.schedule(deadline: .distantFuture)
             return
         }
@@ -631,13 +856,25 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         "\(label)\u{0}\(clientIdentity)"
     }
 
-    private func broadcastUpdate(grant: GitSigningGrant?) {
+    private func personalGrantKey(label: String, approvalIdentity: String) -> String {
+        "\(label)\u{0}\(approvalIdentity)"
+    }
+
+    private func broadcastUpdate(
+        grant: GitSigningGrant?,
+        summary: (keyLabel: String, remainingSeconds: Int, remainingOperations: Int)? = nil
+    ) {
         var userInfo: [AnyHashable: Any] = [:]
         if let grant = grant, grant.isValid {
             userInfo["active"] = true
             userInfo["keyLabel"] = grant.keyLabel
             userInfo["remainingSeconds"] = grant.remainingSeconds
             userInfo["remainingOperations"] = grant.remainingOperations
+        } else if let summary {
+            userInfo["active"] = true
+            userInfo["keyLabel"] = summary.keyLabel
+            userInfo["remainingSeconds"] = summary.remainingSeconds
+            userInfo["remainingOperations"] = summary.remainingOperations
         } else {
             userInfo["active"] = false
         }
