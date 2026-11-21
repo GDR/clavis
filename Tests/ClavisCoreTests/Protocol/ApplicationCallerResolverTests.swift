@@ -142,4 +142,13 @@ import Testing
         try Data("changed".utf8).write(to: file)
         #expect(try ApplicationIdentityVerifier.identity(forExecutable: file) != identity)
     }
+
+    @Test func sysctlParentSnapshotMatchesProcPidInfoAndRejectsInvalidPID() throws {
+        let pid = getpid()
+        let direct = try #require(ProcessInspector.processParentSnapshot(pid: pid))
+        let viaSysctl = try #require(ProcessInspector.sysctlParentSnapshot(pid: pid))
+        #expect(viaSysctl == direct)
+        #expect(ProcessInspector.sysctlParentSnapshot(pid: -1) == nil)
+        #expect(ProcessInspector.sysctlParentSnapshot(pid: 0) == nil)
+    }
 }

@@ -33,13 +33,36 @@ public enum ProcessInspector {
     }
 
     /// One `proc_pidinfo` snapshot: start time plus parent pid.
+    /// Falls back to `sysctl(KERN_PROC_PID)` when `proc_pidinfo` fails with `EPERM`
+    /// on setuid-root ancestors (e.g. `/usr/bin/login` spawned by Ghostty/Terminal).
     public static func processParentSnapshot(pid: pid_t) -> ProcessParentSnapshot? {
         var info = proc_bsdinfo()
         let size = Int32(MemoryLayout<proc_bsdinfo>.size)
-        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        if proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size {
+            return ProcessParentSnapshot(
+                startTime: info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec,
+                parentPid: pid_t(info.pbi_ppid)
+            )
+        }
+        return sysctlParentSnapshot(pid: pid)
+    }
+
+    internal static func sysctlParentSnapshot(pid: pid_t) -> ProcessParentSnapshot? {
+        guard pid > 0 else { return nil }
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        var kp = kinfo_proc()
+        var len = MemoryLayout<kinfo_proc>.size
+        guard sysctl(&mib, UInt32(mib.count), &kp, &len, nil, 0) == 0,
+              len == MemoryLayout<kinfo_proc>.size,
+              kp.kp_proc.p_pid == pid else {
+            return nil
+        }
+        let sec = kp.kp_proc.p_starttime.tv_sec
+        let usec = kp.kp_proc.p_starttime.tv_usec
+        guard sec >= 0, usec >= 0 else { return nil }
         return ProcessParentSnapshot(
-            startTime: info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec,
-            parentPid: pid_t(info.pbi_ppid)
+            startTime: UInt64(sec) * 1_000_000 + UInt64(usec),
+            parentPid: kp.kp_eproc.e_ppid
         )
     }
 
