@@ -795,10 +795,11 @@ public class KeychainManager {
         approvalIdentity: String,
         duration: TimeInterval,
         maxOperations: Int = 200,
+        operation: KeyOperation = .ssh,
         existingContext: LAContext? = nil
     ) throws -> PersonalUnlockGrant {
-        guard key.effectiveAccessProfile.capabilities.ssh else {
-            throw KeyAccessError.operationDisabled(.ssh)
+        guard key.effectiveAccessProfile.capabilities.permits(operation) else {
+            throw KeyAccessError.operationDisabled(operation)
         }
 
         return try withVerifiedPrivateKeyRecord(
@@ -807,7 +808,7 @@ public class KeychainManager {
             existingContext: existingContext,
             auditOnAuthFailure: false
         ) { context, record in
-            try record.accessProfile.require(.ssh)
+            try record.accessProfile.require(operation)
 
             context.interactionNotAllowed = true
 
@@ -827,6 +828,7 @@ public class KeychainManager {
                 approvalIdentity: approvalIdentity,
                 duration: duration,
                 maxOperations: maxOperations,
+                allowedCapabilities: record.accessProfile.capabilities,
                 context: context,
                 hardwareSigner: hardwareSigner
             )
