@@ -1744,4 +1744,102 @@ struct NotchTouchIDPromptTests {
         vm.deny()
         #expect(unconsumedCtx.isInvalidated == true)
     }
+
+    @Test
+    func enclosingAppBundlePathSkipsDeveloperToolchainsAndNonBundleComponents() {
+        #expect(
+            AppKitGitSigningGracePresenter.enclosingAppBundlePath(
+                for: "/Applications/Xcode.app/Contents/Developer/usr/bin/git"
+            ) == nil
+        )
+        #expect(
+            AppKitGitSigningGracePresenter.enclosingAppBundlePath(
+                for: "/Applications/Xcode.app/Contents/MacOS/Xcode"
+            ) == "/Applications/Xcode.app"
+        )
+        #expect(
+            AppKitGitSigningGracePresenter.enclosingAppBundlePath(
+                for: "/Applications/Ghostty.app/Contents/MacOS/ghostty"
+            ) == "/Applications/Ghostty.app"
+        )
+        #expect(
+            AppKitGitSigningGracePresenter.enclosingAppBundlePath(
+                for: "/Applications/Ghostty.app"
+            ) == "/Applications/Ghostty.app"
+        )
+        #expect(
+            AppKitGitSigningGracePresenter.enclosingAppBundlePath(
+                for: "/opt/my.apple/bin/ssh"
+            ) == nil
+        )
+        #expect(
+            AppKitGitSigningGracePresenter.enclosingAppBundlePath(
+                for: "/Applications/Foo.app/Contents/Frameworks/Helper.app/Contents/MacOS/Helper"
+            ) == "/Applications/Foo.app"
+        )
+    }
+
+    @Test
+    func resolveCallerMetadataAttributesGhosttyOverXcrunGitAndKeepsXcodeGUI() {
+        let ghosttyChain = [
+            AuditProcess(executablePath: "/usr/bin/ssh", pid: 500),
+            AuditProcess(executablePath: "/Applications/Xcode.app/Contents/Developer/usr/bin/git", pid: 400),
+            AuditProcess(executablePath: "/bin/zsh", pid: 300),
+            AuditProcess(executablePath: "/usr/bin/login", pid: 200),
+            AuditProcess(executablePath: "/Applications/Ghostty.app/Contents/MacOS/ghostty", pid: 100)
+        ]
+        let ghosttyResolved = AppKitGitSigningGracePresenter.resolveCallerMetadata(
+            rawDescription: "/usr/bin/ssh (PID 500)",
+            pid: 500,
+            executablePath: "/usr/bin/ssh",
+            overrideCallerName: nil,
+            keyType: .personal,
+            auditChainOverride: ghosttyChain
+        )
+        #expect(ghosttyResolved.callerName == "Ghostty")
+        #expect(ghosttyResolved.callerPath == "/Applications/Ghostty.app")
+        #expect(ghosttyResolved.processChain == "zsh → git → ssh")
+
+        let xcodeChain = [
+            AuditProcess(executablePath: "/usr/bin/ssh", pid: 501),
+            AuditProcess(executablePath: "/Applications/Xcode.app/Contents/Developer/usr/bin/git", pid: 401),
+            AuditProcess(executablePath: "/Applications/Xcode.app/Contents/MacOS/Xcode", pid: 101)
+        ]
+        let xcodeResolved = AppKitGitSigningGracePresenter.resolveCallerMetadata(
+            rawDescription: "/usr/bin/ssh (PID 501)",
+            pid: 501,
+            executablePath: "/usr/bin/ssh",
+            overrideCallerName: nil,
+            keyType: .personal,
+            auditChainOverride: xcodeChain
+        )
+        #expect(xcodeResolved.callerName == "Xcode")
+        #expect(xcodeResolved.callerPath == "/Applications/Xcode.app")
+        #expect(xcodeResolved.processChain == "Xcode → git → ssh")
+        #expect(xcodeResolved.agentWarning == nil)
+
+        // OpenCode launched inside Ghostty must attribute to OpenCode (nearest agent wins, not Ghostty).
+        let opencodeInGhosttyChain = [
+            AuditProcess(executablePath: "/usr/bin/ssh", pid: 700),
+            AuditProcess(executablePath: "/Applications/Xcode.app/Contents/Developer/usr/bin/git", pid: 600),
+            AuditProcess(executablePath: "/bin/zsh", pid: 500),
+            AuditProcess(executablePath: "/nix/store/hc5xwji89n9ir1cwx63mrvms89gw44mq-opencode-2.0.32/bin/opencode", pid: 400),
+            AuditProcess(executablePath: "/bin/zsh", pid: 300),
+            AuditProcess(executablePath: "/usr/bin/login", pid: 200),
+            AuditProcess(executablePath: "/Applications/Ghostty.app/Contents/MacOS/ghostty", pid: 100)
+        ]
+        let opencodeResolved = AppKitGitSigningGracePresenter.resolveCallerMetadata(
+            rawDescription: "/usr/bin/ssh (PID 700)",
+            pid: 700,
+            executablePath: "/usr/bin/ssh",
+            overrideCallerName: nil,
+            keyType: .personal,
+            auditChainOverride: opencodeInGhosttyChain
+        )
+        #expect(opencodeResolved.callerName == "OpenCode")
+        #expect(opencodeResolved.callerPath == "/nix/store/hc5xwji89n9ir1cwx63mrvms89gw44mq-opencode-2.0.32/bin/opencode")
+        #expect(opencodeResolved.agentWarning?.title == "Agent requests your Personal key")
+        #expect(opencodeResolved.agentWarning?.detail == "Detected by: process tree (opencode)")
+        #expect(ghosttyResolved.agentWarning == nil)
+    }
 }
