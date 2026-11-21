@@ -1225,4 +1225,76 @@ final class SessionBindTests {
             #expect(signAudit?.sensitive.host == "github.com")
         }
     }
+
+    @Test
+    func parseUserAuthRequestExtractsUsernameAndHostKeyAndRejectsMalformed() throws {
+        let sessionID = Data("session-parse-userauth".utf8)
+        let userKey = Curve25519.Signing.PrivateKey()
+        var userKeyBlob = Data()
+        userKeyBlob.appendWireString("ssh-ed25519")
+        userKeyBlob.appendWireData(userKey.publicKey.rawRepresentation)
+
+        let hostPriv = Curve25519.Signing.PrivateKey()
+        let (hostKeyBlob, _) = try makeHostKeyAndSig(priv: hostPriv, sessionID: sessionID)
+
+        // 1. Standard publickey method
+        let plainAuth = SSHAgentServerTests.makeSSH2UserAuthRequest(
+            sessionID: sessionID,
+            user: "deploy",
+            service: "ssh-connection",
+            method: "publickey",
+            hasSig: true,
+            algo: "ssh-ed25519",
+            keyBlob: userKeyBlob
+        )
+        let parsedPlain = SessionBind.parseUserAuthRequest(
+            plainAuth,
+            expectedSessionID: sessionID,
+            expectedKeyBlob: userKeyBlob
+        )
+        #expect(parsedPlain == SSHUserAuthInfo(username: "deploy", hostKeyBlob: nil))
+
+        // 2. Hostbound publickey method
+        var hostboundAuth = SSHAgentServerTests.makeSSH2UserAuthRequest(
+            sessionID: sessionID,
+            user: "git",
+            service: "ssh-connection",
+            method: "publickey-hostbound-v00@openssh.com",
+            hasSig: true,
+            algo: "ssh-ed25519",
+            keyBlob: userKeyBlob
+        )
+        hostboundAuth.appendWireData(hostKeyBlob)
+        let parsedHostbound = SessionBind.parseUserAuthRequest(
+            hostboundAuth,
+            expectedSessionID: sessionID,
+            expectedKeyBlob: userKeyBlob,
+            expectedHostKeyBlob: hostKeyBlob
+        )
+        #expect(parsedHostbound == SSHUserAuthInfo(username: "git", hostKeyBlob: hostKeyBlob))
+
+        // 3. Reject malformed payloads
+        var trailingPlain = plainAuth
+        trailingPlain.append(contentsOf: [0x00])
+        #expect(SessionBind.parseUserAuthRequest(trailingPlain) == nil)
+
+        let badService = SSHAgentServerTests.makeSSH2UserAuthRequest(
+            sessionID: sessionID,
+            user: "git",
+            service: "ssh-userauth",
+            method: "publickey",
+            hasSig: true,
+            algo: "ssh-ed25519",
+            keyBlob: userKeyBlob
+        )
+        #expect(SessionBind.parseUserAuthRequest(badService) == nil)
+
+        var badMsgType = Data()
+        badMsgType.appendWireData(sessionID)
+        badMsgType.append(51)
+        #expect(SessionBind.parseUserAuthRequest(badMsgType) == nil)
+
+        #expect(SessionBind.parseUserAuthRequest(plainAuth, expectedKeyBlob: hostKeyBlob) == nil)
+        #expect(SessionBind.parseUserAuthRequest(hostboundAuth, expectedHostKeyBlob: userKeyBlob) == nil)
+    }
 }

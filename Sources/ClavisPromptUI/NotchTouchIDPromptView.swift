@@ -614,6 +614,7 @@ public struct NotchPromptRequest: Equatable, Sendable {
     public let keyLabel: String
     public let keyType: KeyType
     public let keyTypeSubtitle: String
+    public let destination: String?
     public let operation: String
     public let warningText: String?
     public let agentWarning: NotchAgentWarning?
@@ -638,6 +639,7 @@ public struct NotchPromptRequest: Equatable, Sendable {
         keyLabel: String,
         keyType: KeyType,
         keyTypeSubtitle: String? = nil,
+        destination: String? = nil,
         operation: String,
         warningText: String? = nil,
         agentWarning: NotchAgentWarning? = nil,
@@ -659,6 +661,7 @@ public struct NotchPromptRequest: Equatable, Sendable {
         self.keyLabel = keyLabel
         self.keyType = keyType
         self.keyTypeSubtitle = keyTypeSubtitle ?? (keyType == .personal ? "Personal key" : "Agent key")
+        self.destination = destination
         self.operation = operation
         self.warningText = warningText
         self.agentWarning = agentWarning
@@ -696,6 +699,26 @@ public struct NotchPromptRequest: Equatable, Sendable {
     public var initialExpandedPhase: NotchPromptPhase {
         guard opensDirectlyToAuthentication else { return .reviewing }
         return confirmationMode == .passwordOnly ? .passwordEntry : .awaitingAuthentication
+    }
+
+    /// Trimmed signing destination (e.g. `git@github.com` or repository name), or `nil` when unavailable or blank.
+    public var normalizedDestination: String? {
+        guard let destination else { return nil }
+        let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Primary headline on the right side of the identity row (`Destination` when known, otherwise `keyLabel`).
+    public var trailingPrimaryText: String {
+        normalizedDestination ?? keyLabel
+    }
+
+    /// Secondary subtitle below `trailingPrimaryText` (`keyLabel`, or `keyTypeSubtitle` when destination matches key name).
+    public var trailingSecondaryText: String {
+        if let dest = normalizedDestination, dest.caseInsensitiveCompare(keyLabel) != .orderedSame {
+            return keyLabel
+        }
+        return keyTypeSubtitle
     }
 
     /// Human-readable operation title displayed in the right shoulder of the notch panel.
@@ -781,6 +804,7 @@ public struct NotchPromptRequest: Equatable, Sendable {
             keyLabel: keyLabel,
             keyType: keyType,
             keyTypeSubtitle: keyTypeSubtitle,
+            destination: destination,
             operation: operation,
             warningText: warningText,
             agentWarning: agentWarning,
@@ -813,6 +837,7 @@ public struct NotchPromptRequest: Equatable, Sendable {
             keyLabel: keyLabel,
             keyType: keyType,
             keyTypeSubtitle: keyTypeSubtitle,
+            destination: destination,
             operation: operation,
             initialScope: initialScope,
             showsScopeSelector: false,
@@ -2407,16 +2432,16 @@ public struct NotchTouchIDPromptView: View {
                 .frame(width: 18, height: 40, alignment: .center)
                 .accessibilityHidden(true)
 
-            // Trailing side: [Key name / keyTypeSubtitle + key icon] bound as one single element
+            // Trailing side: [Destination (or Key name) / Key name (or keyTypeSubtitle) + key icon] bound as one single element
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .trailing, spacing: 1) {
-                    Text(viewModel.request.keyLabel)
+                    Text(viewModel.request.trailingPrimaryText)
                         .font(.system(size: 17, weight: .bold))
                         .foregroundStyle(Color.white)
                         .lineLimit(1)
-                        .truncationMode(.tail)
+                        .truncationMode(viewModel.request.normalizedDestination != nil ? .middle : .tail)
                         .multilineTextAlignment(.trailing)
-                    Text(viewModel.request.keyTypeSubtitle)
+                    Text(viewModel.request.trailingSecondaryText)
                         .font(.system(size: 11, weight: .regular))
                         .foregroundStyle(Self.subtitleGray)
                         .lineLimit(1)
@@ -2428,9 +2453,17 @@ public struct NotchTouchIDPromptView: View {
             }
             .compositingGroup()
             .frame(maxWidth: .infinity, maxHeight: 40, alignment: .trailing)
-            .help("\(viewModel.request.keyLabel) (\(viewModel.request.keyTypeSubtitle))")
+            .help(
+                viewModel.request.normalizedDestination.map {
+                    "\($0) · \(viewModel.request.keyLabel) (\(viewModel.request.keyTypeSubtitle))"
+                } ?? "\(viewModel.request.keyLabel) (\(viewModel.request.keyTypeSubtitle))"
+            )
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Target key: \(viewModel.request.keyLabel), \(viewModel.request.keyTypeSubtitle)")
+            .accessibilityLabel(
+                viewModel.request.normalizedDestination.map {
+                    "Destination: \($0), key: \(viewModel.request.keyLabel), \(viewModel.request.keyTypeSubtitle)"
+                } ?? "Target key: \(viewModel.request.keyLabel), \(viewModel.request.keyTypeSubtitle)"
+            )
         }
         .frame(height: 40)
     }

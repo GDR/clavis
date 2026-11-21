@@ -56,6 +56,7 @@ public struct AppKitGitSigningGracePresenter: GitSigningGracePresenter {
         keyLabel: String,
         clientDesc: String,
         keyType: KeyType? = nil,
+        destination: String? = nil,
         operation: String = "Sign a Git commit",
         initialScope: NotchSessionScope = .untilLock
     ) -> NotchPromptRequest {
@@ -74,6 +75,7 @@ public struct AppKitGitSigningGracePresenter: GitSigningGracePresenter {
             keyLabel: keyLabel,
             keyType: resolvedKeyType,
             keyTypeSubtitle: resolvedKeyType == .bot ? "Agent key" : "Personal key",
+            destination: destination,
             operation: operation,
             agentWarning: callerInfo.agentWarning,
             initialScope: initialScope,
@@ -98,6 +100,7 @@ public struct AppKitGitSigningGracePresenter: GitSigningGracePresenter {
         keyLabel: String,
         clientDesc: String,
         keyType: KeyType? = nil,
+        destination: String? = nil,
         operation: String = "Sign a Git commit",
         initialScope: NotchSessionScope = .untilLock
     ) async -> GitSigningPromptChoice {
@@ -105,6 +108,7 @@ public struct AppKitGitSigningGracePresenter: GitSigningGracePresenter {
             keyLabel: keyLabel,
             clientDesc: clientDesc,
             keyType: keyType,
+            destination: destination,
             operation: operation,
             initialScope: initialScope
         )

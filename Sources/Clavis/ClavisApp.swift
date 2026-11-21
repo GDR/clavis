@@ -176,6 +176,7 @@ struct ClavisApp: App {
                         keyLabel: key?.label ?? "Personal MacBook",
                         keyType: keyType,
                         keyTypeSubtitle: keyType == .bot ? "Agent key" : "Personal key",
+                        destination: "clavis",
                         operation: "Sign a Git commit",
                         initialScope: key?.effectiveAccessProfile.type == .bot ? .fifteenMinutes : .untilLock,
                         showsScopeSelector: true,

@@ -1842,4 +1842,76 @@ struct NotchTouchIDPromptTests {
         #expect(opencodeResolved.agentWarning?.detail == "Detected by: process tree (opencode)")
         #expect(ghosttyResolved.agentWarning == nil)
     }
+
+    @Test
+    func destinationAndKeyLabelTrailingDisplayFormattingAndForwarding() {
+        let distinct = NotchPromptRequest(
+            callerName: "Ghostty",
+            processChain: "zsh → ssh",
+            keyLabel: "Personal MacBook",
+            keyType: .personal,
+            destination: "git@github.com",
+            operation: "Authenticate with SSH"
+        )
+        #expect(distinct.normalizedDestination == "git@github.com")
+        #expect(distinct.trailingPrimaryText == "git@github.com")
+        #expect(distinct.trailingSecondaryText == "Personal MacBook")
+
+        let duplicate = NotchPromptRequest(
+            callerName: "Ghostty",
+            processChain: "zsh → ssh",
+            keyLabel: "Github.com",
+            keyType: .personal,
+            destination: "github.com",
+            operation: "Authenticate with SSH"
+        )
+        #expect(duplicate.trailingPrimaryText == "github.com")
+        #expect(duplicate.trailingSecondaryText == "Personal key")
+
+        let blank = NotchPromptRequest(
+            callerName: "Terminal",
+            processChain: "git → ssh-keygen",
+            keyLabel: "Work Key",
+            keyType: .bot,
+            destination: "   \n ",
+            operation: "Sign a Git commit"
+        )
+        #expect(blank.normalizedDestination == nil)
+        #expect(blank.trailingPrimaryText == "Work Key")
+        #expect(blank.trailingSecondaryText == "Agent key")
+
+        let queued = distinct.withQueue(position: 2, count: 3)
+        #expect(queued.destination == "git@github.com")
+        #expect(queued.trailingPrimaryText == "git@github.com")
+        #expect(queued.trailingSecondaryText == "Personal MacBook")
+
+        let converted = distinct.convertedToFirstUse(via: "zsh → ssh")
+        #expect(converted.destination == "git@github.com")
+
+        let sshKey = SSHKeyInfo(
+            label: "Personal MacBook",
+            publicKeyOpenSSH: "ecdsa-sha2-nistp256 AAAA Personal",
+            publicKeyBlob: Data([1, 2, 3]),
+            fingerprint: "SHA256:dest",
+            biometricPolicy: .userPresence
+        )
+        let authRequest = SigningAuthenticationRequest(
+            key: sshKey,
+            operation: .ssh,
+            operationLabel: "Authenticate with SSH",
+            callerName: "Ghostty",
+            peerPid: 1,
+            peerPath: "/usr/bin/ssh",
+            allowsSessionScope: false,
+            defaultScope: .always,
+            reason: "Allow SSH",
+            isUncertainCaller: false,
+            isForwardedAgent: false,
+            destination: "git@github.com"
+        )
+        let mapped = NotchSigningPromptAuthenticator.makeNotchRequest(from: authRequest)
+        #expect(mapped.destination == "git@github.com")
+        #expect(mapped.trailingPrimaryText == "git@github.com")
+        #expect(mapped.trailingSecondaryText == "Personal MacBook")
+    }
 }

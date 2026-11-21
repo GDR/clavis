@@ -109,4 +109,89 @@ final class KnownHostsTests {
             #expect(!runnerCalled)
         }
     }
+
+    @Test func reverseLookupPrefersHostnamesNormalizesPortsAndSkipsUnsafePatterns() throws {
+        let (edBlob, edBase64) = makeEd25519KeyBase64()
+        let (p256Blob, p256Base64) = makeP256KeyBase64()
+        let (otherBlob, _) = makeEd25519KeyBase64()
+
+        // 1. Plain match
+        #expect(
+            KnownHosts.reverseLookup(
+                hostKeyBlob: edBlob,
+                knownHostsContents: ["github.com ssh-ed25519 \(edBase64)"]
+            ) == "github.com"
+        )
+
+        // 2. Hostname preferred over IP in comma list and across lines
+        #expect(
+            KnownHosts.reverseLookup(
+                hostKeyBlob: edBlob,
+                knownHostsContents: ["140.82.121.3,github.com ssh-ed25519 \(edBase64)"]
+            ) == "github.com"
+        )
+        #expect(
+            KnownHosts.reverseLookup(
+                hostKeyBlob: edBlob,
+                knownHostsContents: [
+                    "140.82.121.3 ssh-ed25519 \(edBase64)",
+                    "git.example.org ssh-ed25519 \(edBase64)"
+                ]
+            ) == "git.example.org"
+        )
+        // Falls back to IP literal when no DNS name exists
+        #expect(
+            KnownHosts.reverseLookup(
+                hostKeyBlob: edBlob,
+                knownHostsContents: ["192.0.2.10 ssh-ed25519 \(edBase64)"]
+            ) == "192.0.2.10"
+        )
+
+        // 3. Port normalization ([host]:2222 -> host:2222, [host]:22 -> host, IPv6 non-22 keeps brackets)
+        #expect(
+            KnownHosts.reverseLookup(
+                hostKeyBlob: edBlob,
+                knownHostsContents: ["[git.internal]:2222 ssh-ed25519 \(edBase64)"]
+            ) == "git.internal:2222"
+        )
+        #expect(
+            KnownHosts.reverseLookup(
+                hostKeyBlob: edBlob,
+                knownHostsContents: ["[git.internal]:22 ssh-ed25519 \(edBase64)"]
+            ) == "git.internal"
+        )
+        #expect(
+            KnownHosts.reverseLookup(
+                hostKeyBlob: edBlob,
+                knownHostsContents: ["[2001:db8::1]:2222 ssh-ed25519 \(edBase64)"]
+            ) == "[2001:db8::1]:2222"
+        )
+        #expect(
+            KnownHosts.reverseLookup(
+                hostKeyBlob: edBlob,
+                knownHostsContents: ["[2001:db8::1]:22 ssh-ed25519 \(edBase64)"]
+            ) == "2001:db8::1"
+        )
+
+        // 4. Skips hashed, wildcard, negated, @revoked, @cert-authority, and mismatched keyType/blob
+        let filteredContent = """
+        # Comment line
+        @revoked revoked.example.com ssh-ed25519 \(edBase64)
+        @cert-authority *.example.com ssh-ed25519 \(edBase64)
+        |1|salt|hash ssh-ed25519 \(edBase64)
+        *.wildcard.example.com ssh-ed25519 \(edBase64)
+        !negated.example.com ssh-ed25519 \(edBase64)
+        wrongtype.example.com ecdsa-sha2-nistp256 \(edBase64)
+        other.example.com ecdsa-sha2-nistp256 \(p256Base64)
+        """
+        #expect(KnownHosts.reverseLookup(hostKeyBlob: edBlob, knownHostsContents: [filteredContent]) == nil)
+        #expect(KnownHosts.reverseLookup(hostKeyBlob: p256Blob, knownHostsContents: [filteredContent]) == "other.example.com")
+        #expect(KnownHosts.reverseLookup(hostKeyBlob: otherBlob, knownHostsContents: ["github.com ssh-ed25519 \(edBase64)"]) == nil)
+
+        // 5. File URL lookup
+        let knownHostsFile = testRootURL.appendingPathComponent("known_hosts")
+        try "codeberg.org ssh-ed25519 \(edBase64)\n".write(to: knownHostsFile, atomically: true, encoding: .utf8)
+        let missingFile = testRootURL.appendingPathComponent("missing_known_hosts")
+        #expect(KnownHosts.reverseLookup(hostKeyBlob: edBlob, knownHostsURLs: [missingFile, knownHostsFile]) == "codeberg.org")
+    }
 }

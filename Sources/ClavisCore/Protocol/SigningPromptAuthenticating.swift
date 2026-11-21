@@ -16,6 +16,7 @@ public struct SigningAuthenticationRequest: @unchecked Sendable {
     public let reason: String
     public let isUncertainCaller: Bool
     public let isForwardedAgent: Bool
+    public let destination: String?
 
     public init(
         key: SSHKeyInfo,
@@ -28,7 +29,8 @@ public struct SigningAuthenticationRequest: @unchecked Sendable {
         defaultScope: KeyGracePeriod,
         reason: String,
         isUncertainCaller: Bool,
-        isForwardedAgent: Bool
+        isForwardedAgent: Bool,
+        destination: String? = nil
     ) {
         self.key = key
         self.operation = operation
@@ -41,6 +43,7 @@ public struct SigningAuthenticationRequest: @unchecked Sendable {
         self.reason = reason
         self.isUncertainCaller = isUncertainCaller
         self.isForwardedAgent = isForwardedAgent
+        self.destination = destination
     }
 }
 

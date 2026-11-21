@@ -617,6 +617,144 @@ final class SigningPolicyEvaluatorTests {
     }
 
     @Test
+    func resolveSigningDestinationUsesVerifiedProtocolFirstAndFailsClosedOnForwarding() throws {
+        let userPriv = Curve25519.Signing.PrivateKey()
+        var userKeyBlob = Data()
+        userKeyBlob.appendWireString("ssh-ed25519")
+        userKeyBlob.appendWireData(userPriv.publicKey.rawRepresentation)
+
+        let hostPriv = Curve25519.Signing.PrivateKey()
+        var hostKeyBlob = Data()
+        hostKeyBlob.appendWireString("ssh-ed25519")
+        hostKeyBlob.appendWireData(hostPriv.publicKey.rawRepresentation)
+        let sessionID = Data("dest-session".utf8)
+        let hostSigRaw = try hostPriv.signature(for: sessionID)
+        var hostSigBlob = Data()
+        hostSigBlob.appendWireString("ssh-ed25519")
+        hostSigBlob.appendWireData(hostSigRaw)
+
+        let connection = AgentConnectionState()
+        #expect(connection.bind(SessionBinding(hostKeyBlob: hostKeyBlob, sessionID: sessionID, isForwarding: false), signature: hostSigBlob))
+
+        func makeUserAuth(user: String, method: String, includeHostKey: Bool) -> Data {
+            var d = Data()
+            d.appendWireData(sessionID)
+            d.append(50) // SSH2_MSG_USERAUTH_REQUEST
+            d.appendWireString(user)
+            d.appendWireString("ssh-connection")
+            d.appendWireString(method)
+            d.append(1) // TRUE
+            d.appendWireString("ssh-ed25519")
+            d.appendWireData(userKeyBlob)
+            if includeHostKey {
+                d.appendWireData(hostKeyBlob)
+            }
+            return d
+        }
+
+        let plainUserAuth = makeUserAuth(user: "git", method: "publickey", includeHostKey: false)
+        let hostboundUserAuth = makeUserAuth(user: "git", method: "publickey-hostbound-v00@openssh.com", includeHostKey: true)
+
+        // 1. Verified hostKey + userauth username -> git@github.com
+        let verified = SigningPolicyEvaluator.resolveSigningDestination(
+            operation: .ssh,
+            dataToSign: plainUserAuth,
+            keyBlob: userKeyBlob,
+            connection: connection,
+            isForwardedAgent: false,
+            peerPid: 123,
+            peerPath: "/usr/bin/ssh",
+            knownHostsReverseLookup: { $0 == hostKeyBlob ? "github.com" : nil },
+            processArgumentsLookup: { _ in Issue.record("Should not fall back to argv when known_hosts matched"); return nil },
+            processWorkingDirectoryLookup: { _ in nil }
+        )
+        #expect(verified == "git@github.com")
+
+        // 2. Hashed known_hosts (reverse lookup nil) falls back to ssh argv
+        let fallback = SigningPolicyEvaluator.resolveSigningDestination(
+            operation: .ssh,
+            dataToSign: plainUserAuth,
+            keyBlob: userKeyBlob,
+            connection: connection,
+            isForwardedAgent: false,
+            peerPid: 123,
+            peerPath: "/usr/bin/ssh",
+            knownHostsReverseLookup: { _ in nil },
+            processArgumentsLookup: { _ in ["/usr/bin/ssh", "deploy@prod.example.com"] },
+            processWorkingDirectoryLookup: { _ in nil }
+        )
+        #expect(fallback == "git@prod.example.com")
+
+        // 3. Forwarded agent MUST ignore connection.authBinding and local ssh argv
+        let forwardedNoUserAuthHostKey = SigningPolicyEvaluator.resolveSigningDestination(
+            operation: .ssh,
+            dataToSign: plainUserAuth,
+            keyBlob: userKeyBlob,
+            connection: connection,
+            isForwardedAgent: true,
+            peerPid: 123,
+            peerPath: "/usr/bin/ssh",
+            knownHostsReverseLookup: { $0 == hostKeyBlob ? "github.com" : nil },
+            processArgumentsLookup: { _ in Issue.record("Forwarded agent must never inspect local ssh argv"); return ["/usr/bin/ssh", "local.example"] },
+            processWorkingDirectoryLookup: { _ in nil }
+        )
+        #expect(forwardedNoUserAuthHostKey == nil)
+
+        let forwardedWithHostbound = SigningPolicyEvaluator.resolveSigningDestination(
+            operation: .ssh,
+            dataToSign: hostboundUserAuth,
+            keyBlob: userKeyBlob,
+            connection: connection,
+            isForwardedAgent: true,
+            peerPid: 123,
+            peerPath: "/usr/bin/ssh",
+            knownHostsReverseLookup: { $0 == hostKeyBlob ? "remote.example.com" : nil },
+            processArgumentsLookup: { _ in Issue.record("Forwarded agent must never inspect local ssh argv"); return nil },
+            processWorkingDirectoryLookup: { _ in nil }
+        )
+        #expect(forwardedWithHostbound == "git@remote.example.com")
+
+        // 4. Git SSHSIG resolves repo name (with fallbackPid)
+        let repoRoot = fixture.testRootURL.appendingPathComponent("clavis-repo")
+        try FileManager.default.createDirectory(at: repoRoot.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        let gitPayload = SSHSIGPayload(
+            namespace: "git",
+            hashAlgorithm: "sha256",
+            messageHash: Data(repeating: 0x55, count: 32)
+        ).serialize()
+
+        let gitRepo = SigningPolicyEvaluator.resolveSigningDestination(
+            operation: .signature,
+            dataToSign: gitPayload,
+            keyBlob: userKeyBlob,
+            connection: nil,
+            isForwardedAgent: false,
+            peerPid: 200,
+            peerPath: "/usr/bin/ssh-keygen",
+            fallbackPid: 199,
+            knownHostsReverseLookup: { _ in nil },
+            processArgumentsLookup: { _ in nil },
+            processWorkingDirectoryLookup: { pid in pid == 199 ? repoRoot.path : nil }
+        )
+        #expect(gitRepo == "clavis-repo")
+
+        // 5. Non-Git raw data on .signature returns nil
+        let rawSign = SigningPolicyEvaluator.resolveSigningDestination(
+            operation: .signature,
+            dataToSign: Data("arbitrary-payload".utf8),
+            keyBlob: userKeyBlob,
+            connection: nil,
+            isForwardedAgent: false,
+            peerPid: 200,
+            peerPath: "/usr/bin/ssh-keygen",
+            knownHostsReverseLookup: { _ in nil },
+            processArgumentsLookup: { _ in nil },
+            processWorkingDirectoryLookup: { _ in repoRoot.path }
+        )
+        #expect(rawSign == nil)
+    }
+
+    @Test
     func test_personalUnlockTimeoutWorksAcrossTerminalAndAgentOnUncertainPath() async throws {
         try await fixture.run {
             let fallbackAuth = CountingAuthenticator()
