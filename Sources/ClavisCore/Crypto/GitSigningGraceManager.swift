@@ -205,6 +205,7 @@ public final class PersonalUnlockGrant: @unchecked Sendable {
     public let grantedAt: Date
     public let expiresAt: Date
     public let deadline: DispatchTime
+    public let allowedCapabilities: KeyCapabilities
     private let lock = NSLock()
     private var _remainingOperations: Int
     private var authorizedContext: LAContext?
@@ -215,6 +216,7 @@ public final class PersonalUnlockGrant: @unchecked Sendable {
         approvalIdentity: String,
         duration: TimeInterval,
         maxOperations: Int = 200,
+        allowedCapabilities: KeyCapabilities = KeyCapabilities(ssh: true, signature: false),
         authorizedContext: LAContext?,
         hardwareSigner: (@Sendable (Data) throws -> Data)? = nil
     ) {
@@ -224,6 +226,7 @@ public final class PersonalUnlockGrant: @unchecked Sendable {
         self.expiresAt = Date().addingTimeInterval(duration)
         self.deadline = DispatchTime.now() + duration
         self._remainingOperations = maxOperations
+        self.allowedCapabilities = allowedCapabilities
         self.authorizedContext = authorizedContext
         self.hardwareSigner = hardwareSigner
     }
@@ -284,7 +287,7 @@ public final class PersonalUnlockGrant: @unchecked Sendable {
         )
     }
 
-    internal func consumeOperation(approvalIdentity: String) -> Bool {
+    internal func consumeOperation(approvalIdentity: String, operation: KeyOperation = .ssh) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         if SystemEventMonitor.isSessionLockedOrOffConsole() {
@@ -296,6 +299,7 @@ public final class PersonalUnlockGrant: @unchecked Sendable {
             return false
         }
         guard self.approvalIdentity == approvalIdentity else { return false }
+        guard allowedCapabilities.permits(operation) else { return false }
         guard _remainingOperations > 0 else { return false }
         guard DispatchTime.now() < deadline else { return false }
         _remainingOperations -= 1
@@ -718,6 +722,7 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         approvalIdentity: String,
         duration: TimeInterval,
         maxOperations: Int = 200,
+        allowedCapabilities: KeyCapabilities = KeyCapabilities(ssh: true, signature: false),
         context: LAContext,
         hardwareSigner: (@Sendable (Data) throws -> Data)? = nil
     ) -> PersonalUnlockGrant {
@@ -729,6 +734,7 @@ public final class GitSigningGraceManager: @unchecked Sendable {
             approvalIdentity: approvalIdentity,
             duration: max(1.0, duration),
             maxOperations: maxOperations,
+            allowedCapabilities: allowedCapabilities,
             authorizedContext: context,
             hardwareSigner: hardwareSigner
         )
@@ -743,6 +749,7 @@ public final class GitSigningGraceManager: @unchecked Sendable {
     internal func withPersonalSSHGrant<Result>(
         for keyLabel: String,
         approvalIdentity: String,
+        operationType: KeyOperation = .ssh,
         operation: (PersonalUnlockGrant) throws -> Result
     ) rethrows -> Result? {
         lock.lock()
@@ -751,7 +758,7 @@ public final class GitSigningGraceManager: @unchecked Sendable {
             lock.unlock()
             return nil
         }
-        guard grant.consumeOperation(approvalIdentity: approvalIdentity) else {
+        guard grant.consumeOperation(approvalIdentity: approvalIdentity, operation: operationType) else {
             if !grant.isValid {
                 grant.invalidate()
                 personalGrants.removeValue(forKey: compoundKey)
@@ -768,6 +775,19 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         let result = try operation(grant)
         broadcastUpdate(grant: nil, summary: summary)
         return result
+    }
+
+    internal func invalidatePersonalSSHGrant(keyLabel: String, approvalIdentity: String, broadcast: Bool = true) {
+        lock.lock()
+        let compoundKey = personalGrantKey(label: keyLabel, approvalIdentity: approvalIdentity)
+        let removed = personalGrants.removeValue(forKey: compoundKey)
+        removed?.invalidate()
+        scheduleNextExpirationTimerLocked()
+        lock.unlock()
+
+        if broadcast {
+            broadcastUpdate(grant: nil)
+        }
     }
 
     public func invalidateAll(broadcast: Bool = true) {

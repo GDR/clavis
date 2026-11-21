@@ -168,49 +168,109 @@ public final class SigningPolicyEvaluator {
         }
         let decision: SigningDecision
         var pendingAudit: AuditEvent?
+        var authenticatedOnceUsedCachedGrant = false
         switch lease.eligibility {
         case .denied:
             recordApplicationDecision(key: key, result: .denied, reason: .wrongKeyKind, pid: clientPid, path: path, operation: operation, lease: lease)
             return .denied
         case .authenticatedOnceOnly:
-            // No cache lookup, history heuristic, or remembered classification.
             guard !(role == .agent && (connection?.hasForwarding == true || connection?.hasFailedBind == true)) else { return .denied }
             let reason = "Allow one \(operation == .ssh ? "SSH" : "Signature") request for '\(key.label)'? Caller identity is uncertain (\(Self.safeProcessPath(path)))."
             let isForwarded = (connection?.hasForwarding == true) || (connection?.hasFailedBind == true)
-            do {
-                let signature = try promptGate.run(
-                    requester: .init(executablePath: path, pid: clientPid), clientSocket: clientSocket
-                ) {
-                    if let presenter = self.currentSigningPromptPresenter {
-                        let authRequest = SigningAuthenticationRequest(
-                            key: key,
-                            operation: operation,
-                            operationLabel: Self.operationLabel(for: dataToSign, operation: operation),
-                            callerName: nil,
-                            peerPid: clientPid,
-                            peerPath: path,
-                            allowsSessionScope: false,
-                            defaultScope: .always,
-                            reason: reason,
-                            isUncertainCaller: true,
-                            isForwardedAgent: isForwarded
-                        )
-                        let outcome = try presenter.authenticateSigningRequest(authRequest)
-                        defer { outcome.context.invalidate() }
-                        return try keyManager.signSSH(key: key, data: dataToSign, prompt: "", useCache: false, existingContext: outcome.context, allowedPurposes: role.allowedPurposes)
-                    } else {
-                        let context = try authenticator.authenticate(
-                            reason: reason,
-                            policy: .deviceOwnerAuthentication
-                        )
-                        defer { context.invalidate() }
-                        return try keyManager.signSSH(key: key, data: dataToSign, prompt: "", useCache: false, existingContext: context, allowedPurposes: role.allowedPurposes)
+            let configuredTimeout = key.effectiveUnlockedTimeout
+            let isCacheableOperation = (operation == .ssh) || (operation == .signature && SSHSIGPayload.parse(from: dataToSign) != nil)
+            let canUsePersonalUnlockGrant = (self.currentSigningPromptPresenter != nil)
+                && (key.effectiveAccessProfile.type == .personal)
+                && !isForwarded
+                && (configuredTimeout != .always)
+                && isCacheableOperation
+            let sharedIdentity = Self.sharedPersonalUnlockIdentity(for: key)
+
+            if canUsePersonalUnlockGrant,
+               let grantedSignature = trySigningWithPersonalGrant(
+                   keyLabel: key.label,
+                   approvalIdentity: sharedIdentity,
+                   operation: operation,
+                   dataToSign: dataToSign
+               ) {
+                ClavisLogger.log("SSH_AGENT_SIGN", "Using active Personal unlock grant for '\(key.label)'. 0 Touch ID prompts.")
+                authenticatedOnceUsedCachedGrant = true
+                decision = .approved(signature: grantedSignature)
+            } else {
+                do {
+                    let signature = try promptGate.run(
+                        requester: .init(executablePath: path, pid: clientPid), clientSocket: clientSocket
+                    ) {
+                        if let presenter = self.currentSigningPromptPresenter {
+                            let authRequest = SigningAuthenticationRequest(
+                                key: key,
+                                operation: operation,
+                                operationLabel: Self.operationLabel(for: dataToSign, operation: operation),
+                                callerName: nil,
+                                peerPid: clientPid,
+                                peerPath: path,
+                                allowsSessionScope: canUsePersonalUnlockGrant,
+                                defaultScope: canUsePersonalUnlockGrant ? configuredTimeout : .always,
+                                reason: reason,
+                                isUncertainCaller: true,
+                                isForwardedAgent: isForwarded
+                            )
+                            let outcome = try presenter.authenticateSigningRequest(authRequest)
+                            if canUsePersonalUnlockGrant,
+                               outcome.selectedScope != .always,
+                               let duration = outcome.selectedScope.grantDurationSeconds {
+                                let grant: PersonalUnlockGrant
+                                do {
+                                    grant = try keyManager.authorizePersonalSSHGrant(
+                                        key: key,
+                                        prompt: "",
+                                        approvalIdentity: sharedIdentity,
+                                        duration: duration,
+                                        operation: operation,
+                                        existingContext: outcome.context
+                                    )
+                                } catch {
+                                    outcome.context.invalidate()
+                                    throw error
+                                }
+                                do {
+                                    guard let grantedSignature = try self.gitSigningGraceManager.withPersonalSSHGrant(
+                                        for: key.label,
+                                        approvalIdentity: sharedIdentity,
+                                        operationType: operation,
+                                        operation: { try $0.sign(dataToSign) }
+                                    ) else {
+                                        grant.invalidate()
+                                        throw AgentSessionGrantError.grantInvalidated
+                                    }
+                                    return grantedSignature
+                                } catch {
+                                    grant.invalidate()
+                                    self.gitSigningGraceManager.invalidatePersonalSSHGrant(
+                                        keyLabel: key.label,
+                                        approvalIdentity: sharedIdentity,
+                                        broadcast: true
+                                    )
+                                    throw error
+                                }
+                            } else {
+                                defer { outcome.context.invalidate() }
+                                return try keyManager.signSSH(key: key, data: dataToSign, prompt: "", useCache: false, existingContext: outcome.context, allowedPurposes: role.allowedPurposes)
+                            }
+                        } else {
+                            let context = try authenticator.authenticate(
+                                reason: reason,
+                                policy: .deviceOwnerAuthentication
+                            )
+                            defer { context.invalidate() }
+                            return try keyManager.signSSH(key: key, data: dataToSign, prompt: "", useCache: false, existingContext: context, allowedPurposes: role.allowedPurposes)
+                        }
                     }
+                    decision = .approved(signature: signature)
+                } catch {
+                    recordApplicationDecision(key: key, result: AuditEvent.isUserCancellation(error) ? .cancelled : .denied, reason: .authenticationFailed, pid: clientPid, path: path, operation: operation, lease: lease)
+                    return .denied
                 }
-                decision = .approved(signature: signature)
-            } catch {
-                recordApplicationDecision(key: key, result: AuditEvent.isUserCancellation(error) ? .cancelled : .denied, reason: .authenticationFailed, pid: clientPid, path: path, operation: operation, lease: lease)
-                return .denied
             }
         case .eligible:
             decision = try evaluateAuthorizedSigningRequest(
@@ -223,6 +283,7 @@ public final class SigningPolicyEvaluator {
         if case .approved = decision {
             guard let currentKey = try? keyManager.listKeys().first(where: { $0.fingerprint == key.fingerprint }),
                   currentKey.effectiveAccessProfile == key.effectiveAccessProfile,
+                  currentKey.effectiveUnlockedTimeout == key.effectiveUnlockedTimeout,
                   peerProcessValidator(clientPid, path, start),
                   (try? applicationAccess.validate(lease, pid: clientPid, path: path, start: start)) == true else {
                 gitSigningGraceManager.invalidateAll(broadcast: false)
@@ -231,7 +292,15 @@ public final class SigningPolicyEvaluator {
                 return .dropConnection
             }
             if lease.eligibility == .authenticatedOnceOnly {
-                recordApplicationDecision(key: key, result: .allowed, reason: .viaPrompt, pid: clientPid, path: path, operation: operation, lease: lease)
+                recordApplicationDecision(
+                    key: key,
+                    result: .allowed,
+                    reason: authenticatedOnceUsedCachedGrant ? .viaGitGrant : .viaPrompt,
+                    pid: clientPid,
+                    path: path,
+                    operation: operation,
+                    lease: lease
+                )
             }
         }
         if let pendingAudit {
@@ -709,10 +778,11 @@ public final class SigningPolicyEvaluator {
                 )
                 ClavisLogger.log("SSH_AGENT_SIGN", "Initiating signature for key '\(matchingKey.label)' requested by \(clientDesc)...")
                 if configuredTimeout != .always && !isForwarded, let approvalIdentity {
-                    if let grantedSignature = try self.gitSigningGraceManager.withPersonalSSHGrant(
-                        for: matchingKey.label,
+                    if let grantedSignature = trySigningWithPersonalGrant(
+                        keyLabel: matchingKey.label,
                         approvalIdentity: approvalIdentity,
-                        operation: { try $0.sign(dataToSign) }
+                        operation: .ssh,
+                        dataToSign: dataToSign
                     ) {
                         ClavisLogger.log("SSH_AGENT_SIGN", "Using active app-bound Personal SSH grant for '\(matchingKey.label)'. 0 Touch ID prompts.")
                         sigBlob = grantedSignature
@@ -926,6 +996,37 @@ public final class SigningPolicyEvaluator {
                 "com.clavis.agentRateLimited",
                 ["sessionID": session.id, "fingerprint": session.keyFingerprint]
             )
+        }
+    }
+
+    internal static func sharedPersonalUnlockIdentity(for key: SSHKeyInfo) -> String {
+        "personal-unlock:\(key.fingerprint)"
+    }
+
+    private func trySigningWithPersonalGrant(
+        keyLabel: String,
+        approvalIdentity: String,
+        operation: KeyOperation,
+        dataToSign: Data
+    ) -> Data? {
+        do {
+            return try self.gitSigningGraceManager.withPersonalSSHGrant(
+                for: keyLabel,
+                approvalIdentity: approvalIdentity,
+                operationType: operation,
+                operation: { try $0.sign(dataToSign) }
+            )
+        } catch {
+            ClavisLogger.log(
+                "SSH_AGENT_SIGN",
+                "Cached Personal unlock grant failed for '\(keyLabel)' (\(error.localizedDescription)); invalidating and re-prompting."
+            )
+            self.gitSigningGraceManager.invalidatePersonalSSHGrant(
+                keyLabel: keyLabel,
+                approvalIdentity: approvalIdentity,
+                broadcast: true
+            )
+            return nil
         }
     }
 

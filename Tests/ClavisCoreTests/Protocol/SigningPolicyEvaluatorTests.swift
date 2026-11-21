@@ -350,11 +350,13 @@ final class SigningPolicyEvaluatorTests {
             #expect(fallbackAuth.authenticationCount == 0, "Fallback system modal must not run when presenter is wired")
             #expect(presenter.requests.count == 1)
             #expect(presenter.requests.first?.isUncertainCaller == true)
-            #expect(presenter.requests.first?.allowsSessionScope == false)
+            #expect(presenter.requests.first?.allowsSessionScope == true)
+            #expect(presenter.requests.first?.defaultScope == .fifteenMinutes)
             #expect(presenter.requests.first?.operation == .ssh)
             #expect(presenter.requests.first?.operationLabel == "Authenticate with SSH")
             #expect(presenter.requests.first?.peerPath == "/usr/bin/ssh")
             #expect(presenter.issuedContexts.first?.isInvalidated == true)
+            #expect(graceManager.allActivePersonalGrants().isEmpty)
         }
     }
 
@@ -611,6 +613,191 @@ final class SigningPolicyEvaluatorTests {
             )
             guard case .approved = sshA3 else { Issue.record("Expected SSH A3 approval after lock"); return }
             #expect(presenter.requests.count == promptsBeforeSSH + 3)
+        }
+    }
+
+    @Test
+    func test_personalUnlockTimeoutWorksAcrossTerminalAndAgentOnUncertainPath() async throws {
+        try await fixture.run {
+            let fallbackAuth = CountingAuthenticator()
+            let keyMgr = fixture.makeKeyManager(authenticator: fallbackAuth, gitSigningGraceManager: graceManager)
+            let presenter = MockSigningPromptPresenter()
+            presenter.nextScope = .untilLock
+            let eval = SigningPolicyEvaluator(
+                applicationAccess: UncertainApplicationAccess(),
+                keyManager: keyMgr,
+                gitSigningGraceManager: graceManager,
+                auditRecorder: recorder,
+                authenticator: fallbackAuth,
+                signingPromptPresenter: presenter,
+                peerProcessValidator: { _, _, _ in true }
+            )
+
+            let pid = getpid()
+            let start = ProcessInspector.processStartTime(pid: pid) ?? 0
+            let realPath = ProcessInspector.getProcessPath(pid: pid) ?? "/usr/bin/git"
+            let gitPayload = SSHSIGPayload(
+                namespace: "git", hashAlgorithm: "sha256", messageHash: Data(repeating: 0x66, count: 32)
+            ).serialize()
+
+            // 1. Personal key with unlockedTimeout: .untilLock shares cached grant across terminal SSH, agent path, and Git SSHSIG
+            let untilLockKey = try keyMgr.generateKey(label: "github-until-lock", unlockedTimeout: .untilLock)
+            let ssh1 = try eval.evaluateSigningRequest(
+                keyBlob: untilLockKey.publicKeyBlob,
+                dataToSign: Data("ssh-1".utf8),
+                flags: 0,
+                role: .personal,
+                clientPid: pid,
+                clientExecutablePath: "/usr/bin/ssh",
+                clientStartTime: start
+            )
+            guard case .approved = ssh1 else { Issue.record("Expected SSH #1 approval"); return }
+            #expect(presenter.requests.count == 1)
+            #expect(presenter.requests.last?.allowsSessionScope == true)
+            #expect(presenter.requests.last?.defaultScope == .untilLock)
+            #expect(graceManager.allActivePersonalGrants().count == 1)
+            #expect(recorder.events.last?.reason == .viaPrompt)
+
+            // Request #2 from another executable simulating an agent process reuses grant with 0 extra prompts
+            let sshAgent = try eval.evaluateSigningRequest(
+                keyBlob: untilLockKey.publicKeyBlob,
+                dataToSign: Data("ssh-agent-2".utf8),
+                flags: 0,
+                role: .personal,
+                clientPid: pid,
+                clientExecutablePath: "/usr/local/bin/claude",
+                clientStartTime: start
+            )
+            guard case .approved = sshAgent else { Issue.record("Expected agent SSH reuse approval"); return }
+            #expect(presenter.requests.count == 1)
+            #expect(recorder.events.last?.reason == .viaGitGrant)
+
+            // Request #3 Git SSHSIG commit reuses same Personal unlock grant with 0 extra prompts
+            let gitCommit = try eval.evaluateSigningRequest(
+                keyBlob: untilLockKey.publicKeyBlob,
+                dataToSign: gitPayload,
+                flags: 0,
+                role: .personal,
+                clientPid: pid,
+                clientExecutablePath: realPath,
+                clientStartTime: start
+            )
+            guard case .approved = gitCommit else { Issue.record("Expected Git SSHSIG reuse approval"); return }
+            #expect(presenter.requests.count == 1)
+            #expect(recorder.events.last?.reason == .viaGitGrant)
+
+            // Forwarded SSH must NEVER reuse the cached grant and must force single-shot prompt
+            let hostPriv = Curve25519.Signing.PrivateKey()
+            var hostKeyBlob = Data()
+            hostKeyBlob.appendWireString("ssh-ed25519")
+            hostKeyBlob.appendWireData(hostPriv.publicKey.rawRepresentation)
+            let sessionID = Data("fwd-session".utf8)
+            let hostSigRaw = try hostPriv.signature(for: sessionID)
+            var hostSigBlob = Data()
+            hostSigBlob.appendWireString("ssh-ed25519")
+            hostSigBlob.appendWireData(hostSigRaw)
+            let fwdConnection = AgentConnectionState()
+            #expect(fwdConnection.bind(SessionBinding(hostKeyBlob: hostKeyBlob, sessionID: sessionID, isForwarding: true), signature: hostSigBlob))
+
+            let forwardedSSH = try eval.evaluateSigningRequest(
+                keyBlob: untilLockKey.publicKeyBlob,
+                dataToSign: Data("ssh-forwarded".utf8),
+                flags: 0,
+                role: .personal,
+                clientPid: pid,
+                connection: fwdConnection,
+                clientExecutablePath: "/usr/bin/ssh",
+                clientStartTime: start
+            )
+            guard case .approved = forwardedSSH else { Issue.record("Expected forwarded SSH one-shot approval"); return }
+            #expect(presenter.requests.count == 2)
+            #expect(presenter.requests.last?.allowsSessionScope == false)
+            #expect(presenter.requests.last?.defaultScope == .always)
+            #expect(presenter.requests.last?.isForwardedAgent == true)
+
+            // Locking the key revokes the cached grant so the next request prompts again
+            try keyMgr.lockKey(label: untilLockKey.label)
+            #expect(graceManager.allActivePersonalGrants().isEmpty)
+
+            let sshAfterLock = try eval.evaluateSigningRequest(
+                keyBlob: untilLockKey.publicKeyBlob,
+                dataToSign: Data("ssh-after-lock".utf8),
+                flags: 0,
+                role: .personal,
+                clientPid: pid,
+                clientExecutablePath: "/usr/bin/ssh",
+                clientStartTime: start
+            )
+            guard case .approved = sshAfterLock else { Issue.record("Expected SSH approval after lock"); return }
+            #expect(presenter.requests.count == 3)
+            #expect(presenter.requests.last?.allowsSessionScope == true)
+
+            // 2. Personal key with unlockedTimeout: .always (Once) always prompts single-shot and creates no grant
+            let countBeforeOnce = presenter.requests.count
+            let onceKey = try keyMgr.generateKey(label: "github-once", unlockedTimeout: .always)
+            for idx in 0..<2 {
+                let res = try eval.evaluateSigningRequest(
+                    keyBlob: onceKey.publicKeyBlob,
+                    dataToSign: Data("ssh-once-\(idx)".utf8),
+                    flags: 0,
+                    role: .personal,
+                    clientPid: pid,
+                    clientExecutablePath: "/usr/bin/ssh",
+                    clientStartTime: start
+                )
+                guard case .approved = res else { Issue.record("Expected Once SSH approval"); return }
+            }
+            #expect(presenter.requests.count == countBeforeOnce + 2)
+            #expect(presenter.requests.suffix(2).allSatisfy { !$0.allowsSessionScope && $0.defaultScope == .always })
+
+            // 3. Bot key with unlockedTimeout: .untilLock on uncertain path stays single-shot without PersonalUnlockGrant
+            try keyMgr.lockKey(label: untilLockKey.label)
+            let countBeforeBot = presenter.requests.count
+            let botKey = try keyMgr.generateKey(
+                label: "bot-until-lock",
+                accessProfile: KeyAccessProfile(type: .bot, capabilities: KeyCapabilities(ssh: true, signature: true)),
+                unlockedTimeout: .untilLock
+            )
+            for idx in 0..<2 {
+                let res = try eval.evaluateSigningRequest(
+                    keyBlob: botKey.publicKeyBlob,
+                    dataToSign: Data("ssh-bot-\(idx)".utf8),
+                    flags: 0,
+                    role: .personal,
+                    clientPid: pid,
+                    clientExecutablePath: "/usr/bin/ssh",
+                    clientStartTime: start
+                )
+                guard case .approved = res else { Issue.record("Expected Bot SSH approval"); return }
+            }
+            #expect(presenter.requests.count == countBeforeBot + 2)
+            #expect(presenter.requests.suffix(2).allSatisfy { !$0.allowsSessionScope && $0.defaultScope == .always })
+            #expect(graceManager.allActivePersonalGrants().isEmpty)
+
+            // 4. Stale/failing cached PersonalUnlockGrant is invalidated and falls through to re-prompt
+            let sharedIdentity = SigningPolicyEvaluator.sharedPersonalUnlockIdentity(for: untilLockKey)
+            graceManager.recordPersonalSSHGrant(
+                keyLabel: untilLockKey.label,
+                approvalIdentity: sharedIdentity,
+                duration: 300,
+                allowedCapabilities: untilLockKey.effectiveAccessProfile.capabilities,
+                context: TrackableLAContext(),
+                hardwareSigner: { _ in throw AgentSessionGrantError.grantInvalidated }
+            )
+            let countBeforeStale = presenter.requests.count
+            let recovered = try eval.evaluateSigningRequest(
+                keyBlob: untilLockKey.publicKeyBlob,
+                dataToSign: Data("ssh-stale-recovery".utf8),
+                flags: 0,
+                role: .personal,
+                clientPid: pid,
+                clientExecutablePath: "/usr/bin/ssh",
+                clientStartTime: start
+            )
+            guard case .approved = recovered else { Issue.record("Expected stale grant recovery via re-prompt"); return }
+            #expect(presenter.requests.count == countBeforeStale + 1)
+            #expect(graceManager.allActivePersonalGrants().count == 1)
+            #expect(fallbackAuth.authenticationCount == 0)
         }
     }
 }
