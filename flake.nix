@@ -15,6 +15,63 @@
         };
         isDarwin = pkgs.stdenv.isDarwin;
         appleSdk = if isDarwin then (pkgs.apple-sdk_27 or pkgs.apple-sdk_26 or pkgs.apple-sdk_15) else null;
+
+        perlesSources = {
+          "aarch64-darwin" = {
+            suffix = "darwin_arm64";
+            hash = "sha256-/RJc8TQI/e6TFXKcwhxwdwYFbUmEZwPGCqNDEMjPlKM=";
+          };
+          "x86_64-darwin" = {
+            suffix = "darwin_amd64";
+            hash = "sha256-SLfwYqbKCLSFbjJue1XQ+eUUHQuntg/j0t7/sP80IfY=";
+          };
+          "aarch64-linux" = {
+            suffix = "linux_arm64";
+            hash = "sha256-UoIqFM28Y8/qYsbxLr9ogUW5N2Pw4l/WgiJx+BS4iyI=";
+          };
+          "x86_64-linux" = {
+            suffix = "linux_amd64";
+            hash = "sha256-sRGhQ8955towf1slR3fMXtkw7FDDgP0pEnZVhJqO+W0=";
+          };
+        };
+
+        perles =
+          let
+            version = "0.9.0";
+            srcInfo = perlesSources.${system} or null;
+          in
+          if srcInfo != null then
+            pkgs.stdenvNoCC.mkDerivation {
+              pname = "perles";
+              inherit version;
+
+              src = pkgs.fetchurl {
+                url = "https://github.com/zjrosen/perles/releases/download/v${version}/perles_${version}_${srcInfo.suffix}.tar.gz";
+                hash = srcInfo.hash;
+              };
+
+              sourceRoot = ".";
+
+              dontConfigure = true;
+              dontBuild = true;
+              dontFixup = true;
+
+              installPhase = ''
+                runHook preInstall
+                install -Dm755 perles "$out/bin/perles"
+                runHook postInstall
+              '';
+
+              meta = with pkgs.lib; {
+                description = "Terminal UI for beads issue tracking";
+                homepage = "https://github.com/zjrosen/perles";
+                license = licenses.mit;
+                platforms = builtins.attrNames perlesSources;
+                mainProgram = "perles";
+              };
+            }
+          else
+            null;
       in
       rec {
         packages = {
@@ -110,7 +167,7 @@
             sops
             age
             beads
-          ];
+          ] ++ pkgs.lib.optional (perles != null) perles;
 
           shellHook = ''
             export DEVELOPER_DIR="${builtins.getEnv "APPLE_XCODE_DEVELOPER_DIR"}"

@@ -824,6 +824,18 @@ auth-exp app="embedded": (auth-exp-build app)
     killall "$name" 2>/dev/null || true
     open "ui/auth-exp/.build/apps/$name.app"
 
+# Launch perles TUI for beads issue tracking
+beads *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -d ".planning/.beads" ]; then
+        cd .planning
+    elif [ ! -d ".beads" ]; then
+        echo "❌ No .beads directory found in repo root or .planning/." >&2
+        exit 1
+    fi
+    exec perles {{ args }}
+
 # Clean build artifacts
 clean:
     swift package clean
