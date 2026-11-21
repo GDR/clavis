@@ -576,12 +576,13 @@ public struct KeyDetailInspectorView: View {
         var query = AuditQuery()
         query.keyFingerprint = key.fingerprint
         query.limit = 1
-        guard let store = try? AuditStore(),
+        guard let unlockContext = PanelLockController.shared.unlockContext,
+              let store = try? AuditStore(),
               let record = (try? store.query(query))?.first else { return }
         let unsealer = AuditUnsealer(
             keyring: HistoryViewModel.makeDefaultKeyring(),
             store: store,
-            context: PanelLockController.shared.unlockContext
+            context: unlockContext
         )
         if case .plaintext(let sens) = unsealer.open(record),
            let caller = sens.callerName, !caller.isEmpty {

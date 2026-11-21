@@ -9,7 +9,7 @@ import ClavisCore
 public struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject var lock: PanelLockController
-    @StateObject private var history = HistoryViewModel()
+    @StateObject private var history = HistoryViewModel(keyring: nil, contextProvider: { nil })
     @State private var pendingApprovals = NotchPromptWindowController.shared.pendingApprovalCount
 
     /// Recent signing decisions shown in the menu (prototype: the five latest non-config events).
