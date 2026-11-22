@@ -114,7 +114,7 @@ public struct SettingsView: View {
         }
         .frame(width: 580, height: 680)
         .onExitCommand { dismiss() }
-        .onChange(of: lock.state) { _ in
+        .onChange(of: lock.state) {
             isSettingsAuthenticated = !lock.isEffectivelyLocked
         }
     }

@@ -42,10 +42,10 @@ struct HistorySearchBar: View {
         .controlSize(.large)
         .frame(height: HistorySearchTextField.height)
         .background(HistoryCompletionPresenter(viewModel: viewModel, ui: ui))
-        .onChange(of: viewModel.filter) { _ in
+        .onChange(of: viewModel.filter) {
             if ui.surface == .suggestions { ui.dismiss() }
         }
-        .onChange(of: viewModel.suggestions.map(\.id)) { ids in
+        .onChange(of: viewModel.suggestions.map(\.id)) { _, ids in
             if let selected = ui.highlightedSuggestionID, !ids.contains(selected) {
                 ui.highlightedSuggestionID = nil
             }

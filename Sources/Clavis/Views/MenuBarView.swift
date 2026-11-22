@@ -109,7 +109,7 @@ public struct MenuBarView: View {
             history.updateKeys(appState.keys)
             if history.records.isEmpty && !history.isLoading { history.reload() }
         }
-        .onChange(of: appState.keys) { history.updateKeys($0) }
+        .onChange(of: appState.keys) { _, newKeys in history.updateKeys(newKeys) }
         .task { await appState.requestPolicy.refresh() }
     }
 

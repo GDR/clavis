@@ -353,7 +353,7 @@ public struct KeyDetailInspectorView: View {
             .frame(maxWidth: .infinity)
         }
         // A newly selected key always opens at its top, not at the previous key's scroll offset.
-        .onChange(of: key.id) { _ in
+        .onChange(of: key.id) {
             scrollProxy.scrollTo("inspectorTop", anchor: .top)
         }
         // One persistent header; form content scrolls underneath it (safe-area bar).
@@ -369,7 +369,7 @@ public struct KeyDetailInspectorView: View {
         .onAppear {
             refreshLastActivity()
         }
-        .onChange(of: key.id) { _ in
+        .onChange(of: key.id) {
             isRenaming = false
             isRemoveMode = false
             expandedAppIds.removeAll()

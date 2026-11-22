@@ -118,7 +118,7 @@ extension View {
             GeometryReader { proxy in
                 Color.clear
                     .onAppear { onChange(proxy.frame(in: .global)) }
-                    .onChange(of: proxy.frame(in: .global)) { onChange($0) }
+                    .onChange(of: proxy.frame(in: .global)) { _, frame in onChange(frame) }
             }
         )
     }

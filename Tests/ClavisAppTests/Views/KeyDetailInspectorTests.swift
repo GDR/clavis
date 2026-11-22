@@ -995,7 +995,6 @@ struct KeyDetailInspectorTests {
             let tb = NSToolbar(identifier: "ClavisMainWindowToolbarReview")
             tb.allowsUserCustomization = false
             tb.displayMode = .iconOnly
-            tb.showsBaselineSeparator = false
             rw.toolbar = tb
             rw.toolbarStyle = .unified
             let rhc = NSHostingController(
@@ -1050,7 +1049,7 @@ struct KeyDetailInspectorTests {
         #expect(window.toolbar != nil)
         #expect(window.toolbarStyle == .unified)
         #expect(window.toolbar?.displayMode == .iconOnly)
-        #expect(window.toolbar?.showsBaselineSeparator == false)
+        #expect(window.titlebarSeparatorStyle == .none)
         #expect(window.toolbar?.allowsUserCustomization == false)
         // AppKit clamps setContentSize height to screen.visibleFrame.height on small CI virtual displays (e.g. 1024x768 -> 674pt visible height).
         #expect(window.frame.width == WindowManager.defaultWindowSize.width)

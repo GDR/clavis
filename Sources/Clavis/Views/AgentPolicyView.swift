@@ -573,10 +573,10 @@ public struct AgentPolicyView: View {
             loadPolicy()
             checkNotificationStatus()
         }
-        .onChange(of: key.fingerprint) { _ in
+        .onChange(of: key.fingerprint) {
             loadPolicy()
         }
-        .onChange(of: mode) { newMode in
+        .onChange(of: mode) { _, newMode in
             if newMode == .notify {
                 checkNotificationStatus()
             }

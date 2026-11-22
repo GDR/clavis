@@ -257,7 +257,7 @@ public struct LockedPlaceholderView: View {
                                 Color.primary.opacity(contrast == .increased ? 0.65 : 0.16),
                               lineWidth: isPasswordFocused ? 2 : 1)
         }
-        .onChange(of: password) { _ in passwordError = nil }
+        .onChange(of: password) { passwordError = nil }
     }
 
     private var statusFooter: some View {

@@ -57,7 +57,7 @@ public struct HistoryView: View {
                 }
             }
             // Changing sort restarts the viewport at the beginning of the new order.
-            .onChange(of: viewModel.filter.sortOrder) { _ in
+            .onChange(of: viewModel.filter.sortOrder) {
                 proxy.scrollTo("history-top", anchor: .top)
             }
         }
@@ -72,7 +72,7 @@ public struct HistoryView: View {
             viewModel.updateKeys(keys)
             if viewModel.records.isEmpty && !viewModel.isLoading { viewModel.reload() }
         }
-        .onChange(of: keys) { viewModel.updateKeys($0) }
+        .onChange(of: keys) { _, newKeys in viewModel.updateKeys(newKeys) }
         .sheet(isPresented: $showingIntegritySheet) {
             HistoryIntegritySheet(viewModel: viewModel, isPresented: $showingIntegritySheet)
                 .dismissOnOutsideClick {

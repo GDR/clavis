@@ -2054,7 +2054,7 @@ public struct NotchTouchIDPromptView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .clipped()
-        .onChange(of: CGSize(width: islandWidth, height: islandHeight)) { size in
+        .onChange(of: CGSize(width: islandWidth, height: islandHeight)) { _, size in
             if !isCollapsedState { lastOpenSize = size }
         }
         // A nonactivating overlay can be focused while the application itself is inactive.
@@ -2070,7 +2070,7 @@ public struct NotchTouchIDPromptView: View {
                 isDenyButtonFocused = true
             }
         }
-        .onChange(of: viewModel.phase.isAuthenticationArmed) { armed in
+        .onChange(of: viewModel.phase.isAuthenticationArmed) { _, armed in
             if armed {
                 if reduceMotion || ClavisEnvironment.isTesting {
                     isAuthCopyRevealed = true
@@ -2085,7 +2085,7 @@ public struct NotchTouchIDPromptView: View {
                 }
             }
         }
-        .onChange(of: viewModel.phase) { newPhase in
+        .onChange(of: viewModel.phase) { _, newPhase in
             if newPhase == .passwordEntry && viewModel.isPromptFocused {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                     NotchPromptWindowController.shared.panel?.makeKey()
@@ -2099,7 +2099,7 @@ public struct NotchTouchIDPromptView: View {
                 isDenyButtonFocused = true
             }
         }
-        .onChange(of: viewModel.isPromptFocused) { focused in
+        .onChange(of: viewModel.isPromptFocused) { _, focused in
             if focused && viewModel.phase == .passwordEntry {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                     NotchPromptWindowController.shared.panel?.makeKey()

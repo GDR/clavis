@@ -270,13 +270,13 @@ struct KeyListView: View {
                 if isHistoryActive { openHistoryFromRequest() }
             }
             .onDisappear { appState.policyMutations.cancel() }
-            .onChange(of: appState.keys) { newKeys in
+            .onChange(of: appState.keys) { _, newKeys in
                 appState.policyMutations.cancelIfTargetChanged(keys: newKeys)
                 if selectedKeyId == nil || !newKeys.contains(where: { $0.id == selectedKeyId }) {
                     selectedKeyId = newKeys.first?.id
                 }
             }
-            .onChange(of: appState.activeMainPane) { newPane in
+            .onChange(of: appState.activeMainPane) { _, newPane in
                 if newPane == .history,
                    historyViewModel.integrityReport == nil && !historyViewModel.isCheckingIntegrity {
                     historyViewModel.checkIntegrity()
@@ -284,10 +284,10 @@ struct KeyListView: View {
                 if newPane != .history { historyUI.dismiss() }
             }
             // Each open request resets the committed filter to exactly the requested key.
-            .onChange(of: appState.historyOpenRequestID) { _ in
+            .onChange(of: appState.historyOpenRequestID) {
                 openHistoryFromRequest()
             }
-            .onChange(of: statusMessage) { newMessage in
+            .onChange(of: statusMessage) { _, newMessage in
                 guard let msg = newMessage, !msg.isEmpty else { return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) {
                     if statusMessage == msg {
