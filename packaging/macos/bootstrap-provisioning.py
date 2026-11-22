@@ -135,7 +135,7 @@ def build_minimal_pbxproj(team_id: str) -> str:
 \t\t\t\tALWAYS_SEARCH_USER_PATHS = NO;
 \t\t\t\tCLANG_ENABLE_MODULES = YES;
 \t\t\t\tCODE_SIGN_STYLE = Automatic;
-\t\t\t\tMACOSX_DEPLOYMENT_TARGET = 13.0;
+\t\t\t\tMACOSX_DEPLOYMENT_TARGET = 15.0;
 \t\t\t\tONLY_ACTIVE_ARCH = YES;
 \t\t\t\tSDKROOT = macosx;
 \t\t\t}};
@@ -150,7 +150,7 @@ def build_minimal_pbxproj(team_id: str) -> str:
 \t\t\t\tDEVELOPMENT_TEAM = {team_id};
 \t\t\t\tGENERATE_INFOPLIST_FILE = YES;
 \t\t\t\tINFOPLIST_KEY_LSUIElement = YES;
-\t\t\t\tMACOSX_DEPLOYMENT_TARGET = 13.0;
+\t\t\t\tMACOSX_DEPLOYMENT_TARGET = 15.0;
 \t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.clavis.app;
 \t\t\t\tPRODUCT_NAME = Bootstrap;
 \t\t\t\tSDKROOT = macosx;

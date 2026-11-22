@@ -5,7 +5,7 @@ import PackageDescription
 // environment (removing SDKROOT) and swift-driver passes `--sysroot <sdk>` instead of
 // `-isysroot <sdk>` to clang. Clang's Darwin toolchain driver only inspects `-isysroot`
 // or `SDKROOT` when computing `-platform_version macos <minos> <sdk>`, falling back to
-// `sdk = minos` (13.0) otherwise — which forces AppKit/SwiftUI into macOS 13 Ventura
+// `sdk = minos` (15.0) otherwise — which forces AppKit/SwiftUI into macOS 15 Sequoia
 // UI compatibility mode instead of native macOS 26+ Liquid Glass controls.
 let macOSSDKRoot: String = {
     if let sdkRoot = Context.environment["SDKROOT"], !sdkRoot.isEmpty {
@@ -25,7 +25,7 @@ let package = Package(
     name: "Clavis",
     defaultLocalization: "en",
     platforms: [
-        .macOS(.v13)
+        .macOS("15.0")
     ],
     products: [
         .library(
