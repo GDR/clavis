@@ -5,8 +5,8 @@ import Darwin
 
 public struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject var appState: AppState
-    @ObservedObject var lock: PanelLockController
+    @Environment(AppState.self) var appState
+    var lock: PanelLockController
     private let modeChanger: PinModeChanger?
     private let applicationAgent: any AgentControlling
     @State private var unlockMethodError: String?
@@ -407,7 +407,7 @@ public struct SettingsView: View {
             do {
                 _ = try await modeChanger.changeMode(to: .passwordOrBiometry, newPIN: nil,
                     confirmPIN: nil, oldContext: lock.unlockContext, skipPasswordAuth: false)
-                lock.objectWillChange.send()
+                lock.notifyModeChanged()
             } catch {
                 unlockMethodError = "The unlock method was not changed. \(error.localizedDescription)"
             }
@@ -474,7 +474,7 @@ public struct SettingsView: View {
 
 // Backward-compatible wrapper for any sheet callers
 public struct SettingsSheet: View {
-    @ObservedObject var appState: AppState
+    var appState: AppState
 
     public init(appState: AppState) {
         self.appState = appState
@@ -482,7 +482,7 @@ public struct SettingsSheet: View {
 
     public var body: some View {
         SettingsView()
-            .environmentObject(appState)
+            .environment(appState)
     }
 }
 

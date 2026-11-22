@@ -935,7 +935,7 @@ struct KeyDetailInspectorTests {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
 
-        let hostingView = NSHostingView(rootView: KeyListView().environmentObject(appState))
+        let hostingView = NSHostingView(rootView: KeyListView().environment(appState))
         window.contentView = hostingView
         window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil) }
@@ -999,7 +999,7 @@ struct KeyDetailInspectorTests {
             rw.toolbarStyle = .unified
             let rhc = NSHostingController(
                 rootView: KeyListView()
-                    .environmentObject(reviewAppState)
+                    .environment(reviewAppState)
                     .environment(\.colorScheme, .dark)
             )
             rw.contentViewController = rhc

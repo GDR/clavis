@@ -4,8 +4,8 @@ import ClavisCore
 
 @MainActor
 public struct LockedPlaceholderView: View {
-    @ObservedObject var lock: PanelLockController
-    @ObservedObject private var appState: AppState = .shared
+    var lock: PanelLockController
+    private var appState: AppState = .shared
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
@@ -316,7 +316,7 @@ public struct LockedPlaceholderView: View {
 
 @MainActor
 public struct EmptyVaultOnboardingView: View {
-    @ObservedObject var lock: PanelLockController
+    var lock: PanelLockController
     var onDismiss: (() -> Void)?
 
     @State private var copiedSnippet: String? = nil
@@ -467,8 +467,8 @@ public struct EmptyVaultOnboardingView: View {
 
 @MainActor
 public struct PanelLockGate<Content: View>: View {
-    @ObservedObject var lock: PanelLockController
-    @ObservedObject private var appState: AppState = .shared
+    var lock: PanelLockController
+    private var appState: AppState = .shared
     var showsEmptyState: Bool
     private let content: () -> Content
     @State private var dismissedEmptyState: Bool = false

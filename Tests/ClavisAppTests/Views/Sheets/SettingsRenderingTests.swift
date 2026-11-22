@@ -28,7 +28,7 @@ import Testing
             let manager = fixture.makeKeyManager()
             let state = AppState(keyManager: manager, sshAgentServer: SSHAgentServer(applicationAccess: TestApplicationAccess(), keyManager: manager), agentLifecycle: agent)
             let root = SettingsView(lock: lock, isSettingsAuthenticated: true, applicationAgent: agent)
-                .environmentObject(state)
+                .environment(state)
                 .defaultAppStorage(defaults)
                 .environment(\.colorScheme, dark ? .dark : .light)
             let view = NSHostingView(rootView: root)

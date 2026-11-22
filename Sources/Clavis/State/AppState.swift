@@ -1,5 +1,5 @@
 import SwiftUI
-import Combine
+import Observation
 import ClavisCore
 import UserNotifications
 
@@ -37,119 +37,96 @@ public struct ActiveGitGraceInfo: Equatable, Identifiable, Sendable {
     }
 }
 
+@Observable
 @MainActor
-public class AppState: ObservableObject {
+public class AppState {
     public static let shared = AppState()
 
-    // MARK: - Stored @Published Properties for View & Test Compatibility
+    // MARK: - Child-Backed Forwarding Properties
 
-    @Published public var keys: [SSHKeyInfo] = [] {
-        didSet {
-            if keyManagementViewModel.keys != keys {
-                keyManagementViewModel.keys = keys
+    public var keys: [SSHKeyInfo] {
+        get { keyManagementViewModel.keys }
+        set { keyManagementViewModel.keys = newValue }
+    }
+
+    public var isSocketActive: Bool {
+        get { settingsViewModel.isSocketActive }
+        set { settingsViewModel.isSocketActive = newValue }
+    }
+
+    public var agentPID: pid_t? {
+        get { settingsViewModel.agentPID }
+        set { settingsViewModel.agentPID = newValue }
+    }
+
+    public var activeGitGraces: [ActiveGitGraceInfo] {
+        get { settingsViewModel.activeGitGraces }
+        set { settingsViewModel.activeGitGraces = newValue }
+    }
+
+    public var activeGitGrace: ActiveGitGraceInfo? {
+        get { settingsViewModel.activeGitGrace }
+        set { settingsViewModel.activeGitGrace = newValue }
+    }
+
+    public var vaultSyncReport: VaultSyncReport? {
+        get { keyManagementViewModel.vaultSyncReport }
+        set { keyManagementViewModel.vaultSyncReport = newValue }
+    }
+
+    public var agentSessions: [AgentSessionSummary] {
+        get { agentSessionViewModel.agentSessions }
+        set { agentSessionViewModel.agentSessions = newValue }
+    }
+
+    public var errorMessage: String? {
+        get {
+            directErrorMessage
+                ?? settingsViewModel.errorMessage
+                ?? keyManagementViewModel.errorMessage
+                ?? requestPolicy.errorMessage
+        }
+        set {
+            if let newValue {
+                directErrorMessage = newValue
+            } else {
+                directErrorMessage = nil
+                keyManagementViewModel.errorMessage = nil
+                settingsViewModel.errorMessage = nil
+                requestPolicy.clearError()
             }
         }
     }
 
-    @Published public var isSocketActive: Bool = false {
-        didSet {
-            if settingsViewModel.isSocketActive != isSocketActive {
-                settingsViewModel.isSocketActive = isSocketActive
-            }
-        }
+    public var isDaemonMode: Bool {
+        get { settingsViewModel.isDaemonMode }
+        set { settingsViewModel.isDaemonMode = newValue }
     }
 
-    @Published public var agentPID: pid_t? = nil {
-        didSet {
-            if settingsViewModel.agentPID != agentPID {
-                settingsViewModel.agentPID = agentPID
-            }
-        }
+    public var launchAtLogin: Bool {
+        get { settingsViewModel.launchAtLogin }
+        set { settingsViewModel.launchAtLogin = newValue }
     }
 
-    @Published public var activeGitGraces: [ActiveGitGraceInfo] = [] {
-        didSet {
-            if settingsViewModel.activeGitGraces != activeGitGraces {
-                settingsViewModel.activeGitGraces = activeGitGraces
-            }
-        }
-    }
-
-    @Published public var activeGitGrace: ActiveGitGraceInfo? = nil {
-        didSet {
-            if settingsViewModel.activeGitGrace != activeGitGrace {
-                settingsViewModel.activeGitGrace = activeGitGrace
-            }
-        }
-    }
-
-    @Published public var vaultSyncReport: VaultSyncReport? = nil {
-        didSet {
-            if keyManagementViewModel.vaultSyncReport != vaultSyncReport {
-                keyManagementViewModel.vaultSyncReport = vaultSyncReport
-            }
-        }
-    }
-
-    @Published public var agentSessions: [AgentSessionSummary] = [] {
-        didSet {
-            if agentSessionViewModel.agentSessions != agentSessions {
-                agentSessionViewModel.agentSessions = agentSessions
-            }
-        }
-    }
-
-    @Published public var errorMessage: String? = nil {
-        didSet {
-            if keyManagementViewModel.errorMessage != errorMessage {
-                keyManagementViewModel.errorMessage = errorMessage
-            }
-            if settingsViewModel.errorMessage != errorMessage {
-                settingsViewModel.errorMessage = errorMessage
-            }
-        }
-    }
-
-    @Published public var isDaemonMode: Bool = false {
-        didSet {
-            if settingsViewModel.isDaemonMode != isDaemonMode {
-                settingsViewModel.isDaemonMode = isDaemonMode
-            }
-        }
-    }
-
-    @Published public var launchAtLogin: Bool = false {
-        didSet {
-            if settingsViewModel.launchAtLogin != launchAtLogin {
-                settingsViewModel.launchAtLogin = launchAtLogin
-            }
-        }
-    }
-
-    @Published public var showingSettings: Bool = false {
-        didSet {
-            if settingsViewModel.showingSettings != showingSettings {
-                settingsViewModel.showingSettings = showingSettings
-            }
-        }
+    public var showingSettings: Bool {
+        get { settingsViewModel.showingSettings }
+        set { settingsViewModel.showingSettings = newValue }
     }
 
     /// Key targeted by the Connect & Test sheet (S-05), set by the ⋯ menu / post-create flow.
-    @Published public var connectTarget: SSHKeyInfo? = nil
-    @Published public var activeSheet: KeyManagerSheet? = nil {
-        didSet {
-            if settingsViewModel.activeSheet != activeSheet {
-                settingsViewModel.activeSheet = activeSheet
-            }
-        }
+    public var connectTarget: SSHKeyInfo? = nil
+    public var activeSheet: KeyManagerSheet? {
+        get { settingsViewModel.activeSheet }
+        set { settingsViewModel.activeSheet = newValue }
     }
 
-    @Published public var activeMainPane: MainWindowPane = .keys
+    public var activeMainPane: MainWindowPane = .keys
     /// One-shot request for the key History should open scoped to. The committed filter state
     /// (including the sidebar selection derived from it) lives in `HistoryViewModel`.
-    @Published public var historyFilterKeyFingerprint: String? = nil
+    public var historyFilterKeyFingerprint: String? = nil
     /// Bumped on every open request so re-opening for another key works while History is showing.
-    @Published public private(set) var historyOpenRequestID: Int = 0
+    public private(set) var historyOpenRequestID: Int = 0
+    private var directErrorMessage: String? = nil
 
     public func openHistoryPane(forKeyFingerprint fingerprint: String? = nil) {
         self.historyFilterKeyFingerprint = fingerprint
@@ -164,7 +141,6 @@ public class AppState: ObservableObject {
     public let settingsViewModel: SettingsViewModel
     public let requestPolicy: RequestPauseModel
 
-    private var cancellables = Set<AnyCancellable>()
     /// The single in-window authenticated settings request (variant 07 tile).
     public let policyMutations = PolicyMutationCoordinator()
 
@@ -188,7 +164,6 @@ public class AppState: ObservableObject {
         settingsViewModel: SettingsViewModel? = nil
     ) {
         let isDaemon = isDaemonMode ?? CommandLine.arguments.contains("--daemon")
-        self.isDaemonMode = isDaemon
 
         let keyVM = keyManagementViewModel ?? KeyManagementViewModel(
             keyManager: keyManager,
@@ -208,177 +183,15 @@ public class AppState: ObservableObject {
             isDaemonMode: isDaemon,
             terminationAgentStop: terminationAgentStop
         )
+        if isDaemonMode != nil && settingsViewModel != nil {
+            settingsVM.isDaemonMode = isDaemon
+        }
         self.settingsViewModel = settingsVM
         self.requestPolicy = RequestPauseModel(agent: agentLifecycle)
-
-        // Initialize stored properties from child viewmodels
-        self.keys = keyVM.keys
-        self.isSocketActive = settingsVM.isSocketActive
-        self.agentPID = settingsVM.agentPID
-        self.activeGitGraces = settingsVM.activeGitGraces
-        self.activeGitGrace = settingsVM.activeGitGrace
-        self.vaultSyncReport = keyVM.vaultSyncReport
-        self.agentSessions = sessionVM.agentSessions
-        self.errorMessage = settingsVM.errorMessage ?? keyVM.errorMessage
-        self.launchAtLogin = settingsVM.launchAtLogin
-        self.showingSettings = settingsVM.showingSettings
-        self.activeSheet = settingsVM.activeSheet
 
         if Self.isRealAppBundle {
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         }
-
-        requestPolicy.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }.store(in: &cancellables)
-
-        policyMutations.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }.store(in: &cancellables)
-
-        // Combine Upward Synchronization: Child -> AppState
-        keyVM.$keys
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newKeys in
-                guard let self else { return }
-                if self.keys != newKeys {
-                    self.keys = newKeys
-                }
-            }
-            .store(in: &cancellables)
-
-        keyVM.$errorMessage
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newErr in
-                guard let self else { return }
-                if self.errorMessage != newErr {
-                    self.errorMessage = newErr
-                }
-            }
-            .store(in: &cancellables)
-
-        keyVM.$vaultSyncReport
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newReport in
-                guard let self else { return }
-                if self.vaultSyncReport != newReport {
-                    self.vaultSyncReport = newReport
-                }
-            }
-            .store(in: &cancellables)
-
-        sessionVM.$agentSessions
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newSessions in
-                guard let self else { return }
-                if self.agentSessions != newSessions {
-                    self.agentSessions = newSessions
-                }
-            }
-            .store(in: &cancellables)
-
-        settingsVM.$isSocketActive
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newSocketActive in
-                guard let self else { return }
-                if self.isSocketActive != newSocketActive {
-                    self.isSocketActive = newSocketActive
-                }
-            }
-            .store(in: &cancellables)
-
-        settingsVM.$agentPID
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newPID in
-                guard let self else { return }
-                if self.agentPID != newPID {
-                    self.agentPID = newPID
-                }
-            }
-            .store(in: &cancellables)
-
-        settingsVM.$activeGitGrace
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newGrace in
-                guard let self else { return }
-                if self.activeGitGrace != newGrace {
-                    self.activeGitGrace = newGrace
-                }
-            }
-            .store(in: &cancellables)
-
-        settingsVM.$activeGitGraces
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newGraces in
-                guard let self else { return }
-                if self.activeGitGraces != newGraces {
-                    self.activeGitGraces = newGraces
-                }
-            }
-            .store(in: &cancellables)
-
-        settingsVM.$errorMessage
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newErr in
-                guard let self else { return }
-                if self.errorMessage != newErr {
-                    self.errorMessage = newErr
-                }
-            }
-            .store(in: &cancellables)
-
-        settingsVM.$isDaemonMode
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newDaemon in
-                guard let self else { return }
-                if self.isDaemonMode != newDaemon {
-                    self.isDaemonMode = newDaemon
-                }
-            }
-            .store(in: &cancellables)
-
-        settingsVM.$launchAtLogin
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newLaunch in
-                guard let self else { return }
-                if self.launchAtLogin != newLaunch {
-                    self.launchAtLogin = newLaunch
-                }
-            }
-            .store(in: &cancellables)
-
-        settingsVM.$showingSettings
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newShowing in
-                guard let self else { return }
-                if self.showingSettings != newShowing {
-                    self.showingSettings = newShowing
-                }
-            }
-            .store(in: &cancellables)
-
-        settingsVM.$activeSheet
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newSheet in
-                guard let self else { return }
-                if self.activeSheet != newSheet {
-                    self.activeSheet = newSheet
-                }
-            }
-            .store(in: &cancellables)
     }
 
     // MARK: - Forwarding Public Methods
@@ -386,23 +199,13 @@ public class AppState: ObservableObject {
     @MainActor
     public func updateGitGraceState() {
         settingsViewModel.updateGitGraceState()
-        self.activeGitGraces = settingsViewModel.activeGitGraces
-        self.activeGitGrace = settingsViewModel.activeGitGrace
     }
 
     public func refresh() {
+        directErrorMessage = nil
         keyManagementViewModel.refresh()
         settingsViewModel.refresh()
         agentSessionViewModel.refreshAgentSessions()
-
-        self.keys = keyManagementViewModel.keys
-        self.isSocketActive = settingsViewModel.isSocketActive
-        self.agentPID = settingsViewModel.agentPID
-        self.launchAtLogin = settingsViewModel.launchAtLogin
-        self.errorMessage = settingsViewModel.errorMessage ?? keyManagementViewModel.errorMessage
-        self.activeGitGraces = settingsViewModel.activeGitGraces
-        self.activeGitGrace = settingsViewModel.activeGitGrace
-        self.vaultSyncReport = keyManagementViewModel.vaultSyncReport
     }
 
     public func refreshAgentSessions() {
@@ -425,23 +228,16 @@ public class AppState: ObservableObject {
 
     public func setRequestsPaused(_ paused: Bool) async {
         _ = await requestPolicy.setPaused(paused)
-        errorMessage = requestPolicy.errorMessage
         refreshAgentSessions()
         updateGitGraceState()
     }
 
     public func endGitSigningSession() {
         settingsViewModel.endGitSigningSession()
-        self.errorMessage = settingsViewModel.errorMessage
-        self.activeGitGraces = settingsViewModel.activeGitGraces
-        self.activeGitGrace = settingsViewModel.activeGitGrace
     }
 
     public func revokeGitGrace(for keyLabel: String) {
         settingsViewModel.revokeGitGrace(for: keyLabel)
-        self.errorMessage = settingsViewModel.errorMessage
-        self.activeGitGraces = settingsViewModel.activeGitGraces
-        self.activeGitGrace = settingsViewModel.activeGitGrace
     }
 
     public func revokeGitGrace(keyLabel: String) {
@@ -450,50 +246,31 @@ public class AppState: ObservableObject {
 
     @discardableResult
     public func syncVault(repair: Bool = false) throws -> VaultSyncReport {
-        let report = try keyManagementViewModel.syncVault(repair: repair)
-        self.vaultSyncReport = report
-        self.keys = keyManagementViewModel.keys
-        return report
+        try keyManagementViewModel.syncVault(repair: repair)
     }
 
     public func startAgent() {
         settingsViewModel.startAgent()
-        self.errorMessage = settingsViewModel.errorMessage
-        self.isSocketActive = settingsViewModel.isSocketActive
-        self.agentPID = settingsViewModel.agentPID
     }
 
     public func stopAgent() {
         settingsViewModel.stopAgent()
-        self.isSocketActive = settingsViewModel.isSocketActive
-        self.agentPID = settingsViewModel.agentPID
     }
 
     public func shutdownForTermination() {
         settingsViewModel.shutdownForTermination()
-        self.activeGitGraces = settingsViewModel.activeGitGraces
-        self.activeGitGrace = settingsViewModel.activeGitGrace
-        self.isSocketActive = settingsViewModel.isSocketActive
-        self.agentPID = settingsViewModel.agentPID
     }
 
     public func restartAgent() {
         settingsViewModel.restartAgent()
-        self.errorMessage = settingsViewModel.errorMessage
-        self.isSocketActive = settingsViewModel.isSocketActive
-        self.agentPID = settingsViewModel.agentPID
     }
 
     public func setLaunchAtLogin(_ enabled: Bool) {
         settingsViewModel.setLaunchAtLogin(enabled)
-        self.launchAtLogin = settingsViewModel.launchAtLogin
     }
 
     public func lockNow() {
         settingsViewModel.lockNow()
-        self.errorMessage = settingsViewModel.errorMessage
-        self.activeGitGraces = settingsViewModel.activeGitGraces
-        self.activeGitGrace = settingsViewModel.activeGitGrace
     }
 
     public func generateKey(
@@ -505,10 +282,6 @@ public class AppState: ObservableObject {
         accessProfile: KeyAccessProfile? = nil,
         unlockedTimeout: KeyGracePeriod? = nil
     ) throws -> SSHKeyInfo {
-        defer {
-            self.keys = keyManagementViewModel.keys
-            self.errorMessage = keyManagementViewModel.errorMessage
-        }
         let info = try keyManagementViewModel.generateKey(
             label: label,
             algorithm: algorithm,
@@ -527,27 +300,15 @@ public class AppState: ObservableObject {
     }
 
     public func deleteKey(label: String) throws {
-        defer {
-            self.keys = keyManagementViewModel.keys
-            self.errorMessage = keyManagementViewModel.errorMessage
-        }
         try keyManagementViewModel.deleteKey(label: label)
     }
 
     @discardableResult
     public func renameKey(from oldLabel: String, to newLabel: String) throws -> SSHKeyInfo {
-        defer {
-            self.keys = keyManagementViewModel.keys
-            self.errorMessage = keyManagementViewModel.errorMessage
-        }
-        return try keyManagementViewModel.renameKey(from: oldLabel, to: newLabel)
+        try keyManagementViewModel.renameKey(from: oldLabel, to: newLabel)
     }
 
     public func changeKeyKind(label: String, to newPurpose: KeyPurpose) throws {
-        defer {
-            self.keys = keyManagementViewModel.keys
-            self.errorMessage = keyManagementViewModel.errorMessage
-        }
         try keyManagementViewModel.changeKeyKind(label: label, to: newPurpose)
     }
 
@@ -557,8 +318,6 @@ public class AppState: ObservableObject {
 
     public func changeAccessProfile(label: String, type: KeyType? = nil, capabilities: KeyCapabilities? = nil) throws {
         defer {
-            self.keys = keyManagementViewModel.keys
-            self.errorMessage = keyManagementViewModel.errorMessage
             refreshAgentSessions()
             updateGitGraceState()
         }
@@ -575,12 +334,8 @@ public class AppState: ObservableObject {
         authenticator: any AsyncUserAuthenticating
     ) async throws {
         defer {
-            self.keys = keyManagementViewModel.keys
-            self.errorMessage = keyManagementViewModel.errorMessage
             settingsViewModel.activeGitGraces.removeAll { $0.keyLabel == label }
             settingsViewModel.activeGitGrace = settingsViewModel.activeGitGraces.first
-            self.activeGitGraces.removeAll { $0.keyLabel == label }
-            self.activeGitGrace = self.activeGitGraces.first
             refreshAgentSessions()
             updateGitGraceState()
         }
@@ -593,10 +348,6 @@ public class AppState: ObservableObject {
     }
 
     public func lockKey(label: String) throws {
-        defer {
-            self.keys = keyManagementViewModel.keys
-            self.errorMessage = keyManagementViewModel.errorMessage
-        }
         try keyManagementViewModel.lockKey(label: label)
     }
 
@@ -605,7 +356,6 @@ public class AppState: ObservableObject {
     }
 
     public func setGracePeriod(_ period: KeyGracePeriod, for key: SSHKeyInfo) {
-        objectWillChange.send()
         keyManagementViewModel.setGracePeriod(period, for: key)
         revokeGitGrace(for: key.label)
         for session in agentSessions where session.keyFingerprint == key.fingerprint {
@@ -628,9 +378,7 @@ public class AppState: ObservableObject {
     }
 
     public func clearError() {
-        keyManagementViewModel.clearError()
-        settingsViewModel.clearError()
-        self.errorMessage = nil
+        errorMessage = nil
     }
 
     public func getAgentPolicy(fingerprint: String) -> AgentKeyPolicy? {

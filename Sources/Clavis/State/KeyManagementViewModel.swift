@@ -1,16 +1,18 @@
 import SwiftUI
-import Combine
+import Observation
 import ClavisCore
 
+@Observable
 @MainActor
-public class KeyManagementViewModel: ObservableObject {
-    @Published public var keys: [SSHKeyInfo] = []
-    @Published public var errorMessage: String? = nil
-    @Published public var vaultSyncReport: VaultSyncReport? = nil
+public class KeyManagementViewModel {
+    public var keys: [SSHKeyInfo] = []
+    public var errorMessage: String? = nil
+    public var vaultSyncReport: VaultSyncReport? = nil
+    private var gracePeriodRevision: Int = 0
 
-    private let keyManager: KeychainManager
-    private let agentLifecycle: any AgentControlling
-    private let defaults: UserDefaults
+    @ObservationIgnored private let keyManager: KeychainManager
+    @ObservationIgnored private let agentLifecycle: any AgentControlling
+    @ObservationIgnored private let defaults: UserDefaults
 
     public init(
         keyManager: KeychainManager = .shared,
@@ -109,6 +111,7 @@ public class KeyManagementViewModel: ObservableObject {
     }
 
     public func gracePeriod(for key: SSHKeyInfo) -> KeyGracePeriod {
+        _ = gracePeriodRevision
         if let stored = key.unlockedTimeout {
             return stored
         }
@@ -120,8 +123,8 @@ public class KeyManagementViewModel: ObservableObject {
     }
 
     public func setGracePeriod(_ period: KeyGracePeriod, for key: SSHKeyInfo) {
-        objectWillChange.send()
         defaults.set(period.rawValue, forKey: "keyGracePeriod.\(key.fingerprint)")
+        gracePeriodRevision &+= 1
         try? keyManager.lockKey(label: key.label)
     }
 

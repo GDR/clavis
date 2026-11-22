@@ -1,15 +1,16 @@
 import Foundation
-import Combine
+import Observation
 import ClavisCore
 
 /// Presentation follows acknowledged daemon policy, never a local pause preference.
+@Observable
 @MainActor
-public final class RequestPauseModel: ObservableObject {
+public final class RequestPauseModel {
     public enum State: Equatable { case unknown, accepting, paused }
-    @Published public private(set) var state: State = .unknown
-    @Published public private(set) var isBusy = false
-    @Published public private(set) var errorMessage: String?
-    private let agent: any AgentControlling
+    public private(set) var state: State = .unknown
+    public private(set) var isBusy = false
+    public private(set) var errorMessage: String?
+    @ObservationIgnored private let agent: any AgentControlling
 
     public init(agent: any AgentControlling) { self.agent = agent }
     public var isPaused: Bool { state == .paused }
@@ -54,6 +55,10 @@ public final class RequestPauseModel: ObservableObject {
             return false
         }
         return true
+    }
+
+    internal func clearError() {
+        errorMessage = nil
     }
 
     private func apply(_ snapshot: ApplicationRegistrySnapshot?) {

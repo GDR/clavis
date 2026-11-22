@@ -8,12 +8,12 @@ import UniformTypeIdentifiers
 /// `general` carries the General-area groups built by `SettingsView`.
 struct SettingsNavigation<General: View>: View {
     let general: General
-    @EnvironmentObject private var appState: AppState
-    @StateObject private var applications: ApplicationSettingsModel
+    @Environment(AppState.self) private var appState
+    @State private var applications: ApplicationSettingsModel
 
     init(general: General, agent: any AgentControlling) {
         self.general = general
-        _applications = StateObject(wrappedValue: ApplicationSettingsModel(agent: agent))
+        _applications = State(initialValue: ApplicationSettingsModel(agent: agent))
     }
 
     var body: some View {
@@ -33,7 +33,7 @@ struct SettingsNavigation<General: View>: View {
 // MARK: - Applications & Agents (one unified registered-applications outline)
 
 private struct ApplicationsAgentsSection: View {
-    @ObservedObject var model: ApplicationSettingsModel
+    var model: ApplicationSettingsModel
     @State private var expandedAppIds: Set<UUID> = []
     @State private var isRemoveMode: Bool = false
     @State private var selectedForRemoval: Set<UUID> = []
@@ -591,7 +591,7 @@ private struct SecurityDefaultsSection: View {
 // MARK: - Advanced (public inventory export — no private material)
 
 private struct AdvancedSettingsSection: View {
-    @EnvironmentObject private var appState: AppState
+    @Environment(AppState.self) private var appState
     @State private var exportMessage: String?
 
     private static let inventorySubtitle = "Names, public keys and fingerprints. No private material."

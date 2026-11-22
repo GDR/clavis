@@ -39,8 +39,8 @@ enum HistoryText {
 /// the sticky 52pt History toolbar row, beside the "History" title (one line, never a row below).
 /// Applied badges, diagnostics and the matching count live in `HistoryFilterSummary` underneath.
 struct HistoryFilterHeader: View {
-    @ObservedObject var viewModel: HistoryViewModel
-    @ObservedObject var ui: HistoryUIState
+    var viewModel: HistoryViewModel
+    var ui: HistoryUIState
 
     static let horizontalInset: CGFloat = 20
 
@@ -104,7 +104,7 @@ struct HistoryFilterHeader: View {
 /// Pinned companion to the toolbar row: draft diagnostics, applied filter badges and the matching
 /// count. Still part of the safe-area bar; only the results scroll beneath it.
 struct HistoryFilterSummary: View {
-    @ObservedObject var viewModel: HistoryViewModel
+    var viewModel: HistoryViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -149,7 +149,7 @@ struct HistoryFilterSummary: View {
 // MARK: - Badges
 
 struct HistoryBadgeRow: View {
-    @ObservedObject var viewModel: HistoryViewModel
+    var viewModel: HistoryViewModel
 
     private var timeLabel: String? {
         let b = viewModel.filter.dateBounds
@@ -255,7 +255,7 @@ struct HistoryBadge: View {
 // MARK: - Sort popover (highlight-only selection, no checkmark)
 
 struct HistorySortPopover: View {
-    @ObservedObject var viewModel: HistoryViewModel
+    var viewModel: HistoryViewModel
     let onChosen: () -> Void
 
     var body: some View {
@@ -295,7 +295,7 @@ struct HistorySortPopover: View {
 // MARK: - Date popover: two optional, independent bounds
 
 struct HistoryDatePopover: View {
-    @ObservedObject var viewModel: HistoryViewModel
+    var viewModel: HistoryViewModel
     enum Bound { case from, to }
     @State private var editing: Bound?
 

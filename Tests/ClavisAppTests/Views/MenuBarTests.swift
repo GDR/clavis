@@ -244,7 +244,7 @@ final class MenuBarTests {
         defer { defaults.removePersistentDomain(forName: suite) }
         let controller = PanelLockController(defaults: defaults, vaultKeyCount: { 0 })
         appState.activeGitGraces = [ActiveGitGraceInfo(keyLabel: "A long key name for alignment", remainingSeconds: 300, remainingOperations: 10)]
-        let hosting = NSHostingView(rootView: MenuBarView(lock: controller).environmentObject(appState))
+        let hosting = NSHostingView(rootView: MenuBarView(lock: controller).environment(appState))
         hosting.appearance = NSAppearance(named: appearance)
         hosting.frame = NSRect(x: 0, y: 0, width: 306, height: 400)
         hosting.layoutSubtreeIfNeeded()

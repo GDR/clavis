@@ -2,7 +2,7 @@ import SwiftUI
 import ClavisCore
 
 public struct HistoryIntegritySheet: View {
-    @ObservedObject public var viewModel: HistoryViewModel
+    public var viewModel: HistoryViewModel
     @Binding public var isPresented: Bool
     @State private var showLearnMore: Bool = false
 

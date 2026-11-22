@@ -160,7 +160,7 @@ struct InlineKeyRenameField: NSViewRepresentable {
 
 public struct KeyDetailInspectorView: View {
     public let key: SSHKeyInfo
-    @ObservedObject var appState: AppState
+    var appState: AppState
     public let onDelete: () -> Void
     public var onShowToast: ((String) -> Void)?
     /// Opens/toggles key-scoped History from the persistent header.
@@ -168,7 +168,7 @@ public struct KeyDetailInspectorView: View {
 
     @Environment(\.headerCenterOffset) private var headerCenterOffset
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @StateObject private var applicationsModel: ApplicationSettingsModel
+    @State private var applicationsModel: ApplicationSettingsModel
 
     @State private var isRenaming: Bool = false
     @State private var draftKeyName: String = ""
@@ -201,7 +201,7 @@ public struct KeyDetailInspectorView: View {
         self.onDelete = onDelete
         self.onShowToast = onShowToast
         self.onToggleHistory = onToggleHistory
-        self._applicationsModel = StateObject(wrappedValue: ApplicationSettingsModel(agent: applicationAgent))
+        self._applicationsModel = State(initialValue: ApplicationSettingsModel(agent: applicationAgent))
     }
 
     public static func trimIdentity(_ value: String) -> String {

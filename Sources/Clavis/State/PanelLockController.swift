@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 @preconcurrency import LocalAuthentication
+import Observation
 import OpenDirectory
 import ClavisCore
 
@@ -43,8 +44,9 @@ public final class LAPanelAuthenticator: PanelAuthenticating {
     }
 }
 
+@Observable
 @MainActor
-public final class PanelLockController: ObservableObject {
+public final class PanelLockController {
     public static let shared = PanelLockController()
 
     public enum State: Equatable {
@@ -52,44 +54,50 @@ public final class PanelLockController: ObservableObject {
         case unlocked(since: Date)
     }
 
-    @Published public private(set) var state: State = .locked
-    @Published public private(set) var isUnlocking: Bool = false
-    public private(set) var unlockContext: LAContext?
-    @Published public private(set) var embeddedUnlockContext: LAContext?
-    @Published public private(set) var embeddedUnlockError: String?
-    private var mountedEmbeddedContext: LAContext?
-    @Published public private(set) var isVerifyingPassword = false
+    public private(set) var state: State = .locked
+    public private(set) var isUnlocking: Bool = false
+    @ObservationIgnored public private(set) var unlockContext: LAContext?
+    public private(set) var embeddedUnlockContext: LAContext?
+    public private(set) var embeddedUnlockError: String?
+    @ObservationIgnored private var mountedEmbeddedContext: LAContext?
+    public private(set) var isVerifyingPassword = false
     public enum BiometricStatus: Equatable { case ready, unavailable, locked }
-    @Published public private(set) var biometricStatus: BiometricStatus = .ready
-    public private(set) var lastLockReason: PanelLockReason?
+    public private(set) var biometricStatus: BiometricStatus = .ready
+    @ObservationIgnored public private(set) var lastLockReason: PanelLockReason?
+    private var modeRevision: Int = 0
 
     public static let didLockNotification = NSNotification.Name("com.clavis.panelDidLock")
     public static let enabledKey = "panelLock.enabled"
     public static let idleMinutesKey = "panelLock.idleMinutes"
     public static let idleOptions = [1, 5, 15, 30, 60]
 
-    private let defaults: UserDefaults
-    private let authenticator: PanelAuthenticating
-    private let keyring: AuditKeyring?
-    public private(set) var pinUnlockService: PinUnlockService?
-    private let recorder: AuditRecording
-    private let now: () -> Date
-    private var lastActivity: Date
-    private var vaultKeyCountProvider: (() -> Int)?
-    private let embeddedContextFactory: (@MainActor () -> LAContext)?
-    private let loginPasswordVerifier: @Sendable (String) -> Bool
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let authenticator: PanelAuthenticating
+    @ObservationIgnored private let keyring: AuditKeyring?
+    @ObservationIgnored public private(set) var pinUnlockService: PinUnlockService?
+    @ObservationIgnored private let recorder: AuditRecording
+    @ObservationIgnored private let now: () -> Date
+    @ObservationIgnored private var lastActivity: Date
+    @ObservationIgnored private var vaultKeyCountProvider: (() -> Int)?
+    @ObservationIgnored private let embeddedContextFactory: (@MainActor () -> LAContext)?
+    @ObservationIgnored private let loginPasswordVerifier: @Sendable (String) -> Bool
 
     public var currentMode: AuditReadMode {
-        (try? keyring?.currentMode()) ?? .passwordOrBiometry
+        _ = modeRevision
+        return (try? keyring?.currentMode()) ?? .passwordOrBiometry
     }
 
-    @Published public private(set) var isEnabled: Bool {
+    public func notifyModeChanged() {
+        modeRevision &+= 1
+    }
+
+    public private(set) var isEnabled: Bool = true {
         didSet {
             defaults.set(isEnabled, forKey: Self.enabledKey)
         }
     }
 
-    @Published public var idleMinutes: Int {
+    public var idleMinutes: Int = 5 {
         didSet {
             let clamped = Self.clampIdleMinutes(idleMinutes)
             if idleMinutes != clamped {
@@ -184,13 +192,13 @@ public final class PanelLockController: ObservableObject {
         }
 
         if let storedEnabled = defaults.object(forKey: Self.enabledKey) as? Bool {
-            self.isEnabled = storedEnabled
+            self._isEnabled = storedEnabled
         } else {
-            self.isEnabled = true
+            self._isEnabled = true
         }
 
         let storedMinutes = defaults.object(forKey: Self.idleMinutesKey) as? Int ?? 5
-        self.idleMinutes = Self.clampIdleMinutes(storedMinutes)
+        self._idleMinutes = Self.clampIdleMinutes(storedMinutes)
     }
 
     public static func clampIdleMinutes(_ minutes: Int) -> Int {
@@ -323,7 +331,7 @@ public final class PanelLockController: ObservableObject {
         embeddedUnlockContext = nil
     }
 
-    private var promptLifecycle = PanelUnlockPromptLifecycle()
+    @ObservationIgnored private var promptLifecycle = PanelUnlockPromptLifecycle()
 
     private var canStartEmbeddedAuthentication: Bool {
         if !(authenticator is LAPanelAuthenticator) || embeddedContextFactory != nil { return true }

@@ -84,7 +84,7 @@ public final class DevicePasswordAuthenticator: PasswordAuthenticating, @uncheck
 }
 
 @MainActor
-public final class PinUnlockService: ObservableObject {
+public final class PinUnlockService {
     public enum Outcome: Equatable, Sendable {
         case unlocked
         case wrongPIN

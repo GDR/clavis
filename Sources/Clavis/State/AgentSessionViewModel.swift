@@ -1,37 +1,38 @@
 import SwiftUI
-import Combine
+import Observation
 import ClavisCore
 import UserNotifications
 
+@Observable
 @MainActor
-public class AgentSessionViewModel: ObservableObject {
-    @Published public var agentSessions: [AgentSessionSummary] = []
-    @Published public var notificationAuthorizationStatus: UNAuthorizationStatus = .notDetermined
-    @Published public var isNotificationPermissionDenied: Bool = false
+public class AgentSessionViewModel {
+    public var agentSessions: [AgentSessionSummary] = []
+    public var notificationAuthorizationStatus: UNAuthorizationStatus = .notDetermined
+    public var isNotificationPermissionDenied: Bool = false
 
     nonisolated public static let defaultSignedCooldownInterval: TimeInterval = 10.0
     nonisolated public static let defaultRateLimitedCooldownInterval: TimeInterval = 5.0
 
-    public var signedCooldownInterval: TimeInterval
-    public var rateLimitedCooldownInterval: TimeInterval
+    @ObservationIgnored public var signedCooldownInterval: TimeInterval
+    @ObservationIgnored public var rateLimitedCooldownInterval: TimeInterval
 
-    private var lastSignedNotificationTimeBySession: [String: Date] = [:]
-    private var lastRateLimitedNotificationTimeBySession: [String: Date] = [:]
-    internal var dateProvider: () -> Date = { Date() }
+    @ObservationIgnored private var lastSignedNotificationTimeBySession: [String: Date] = [:]
+    @ObservationIgnored private var lastRateLimitedNotificationTimeBySession: [String: Date] = [:]
+    @ObservationIgnored internal var dateProvider: () -> Date = { Date() }
 
     /// Global test override for notification authorization status.
     nonisolated(unsafe) public static var testAuthorizationStatusOverride: UNAuthorizationStatus? = nil
     /// Instance-specific test override for notification authorization status.
-    public var authorizationStatusOverride: UNAuthorizationStatus? = nil
-    private let customAuthorizationStatusProvider: (@Sendable () async -> UNAuthorizationStatus)?
+    @ObservationIgnored public var authorizationStatusOverride: UNAuthorizationStatus? = nil
+    @ObservationIgnored private let customAuthorizationStatusProvider: (@Sendable () async -> UNAuthorizationStatus)?
 
-    internal var onAgentNotificationPosted: ((_ title: String, _ body: String) -> Void)?
-    private var notificationObservers: [NSObjectProtocol] = []
+    @ObservationIgnored internal var onAgentNotificationPosted: ((_ title: String, _ body: String) -> Void)?
+    @ObservationIgnored private var notificationObservers: [NSObjectProtocol] = []
 
-    private let agentLifecycle: any AgentControlling
-    private let keysProvider: () -> [SSHKeyInfo]
-    private let notificationCenter: UNUserNotificationCenter?
-    public private(set) var registeredNotificationCenterDelegate: (any UNUserNotificationCenterDelegate)?
+    @ObservationIgnored private let agentLifecycle: any AgentControlling
+    @ObservationIgnored private let keysProvider: () -> [SSHKeyInfo]
+    @ObservationIgnored private let notificationCenter: UNUserNotificationCenter?
+    @ObservationIgnored public private(set) var registeredNotificationCenterDelegate: (any UNUserNotificationCenterDelegate)?
 
     public init(
         agentLifecycle: any AgentControlling = AgentLifecycleManager.shared,

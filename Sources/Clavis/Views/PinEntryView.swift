@@ -4,7 +4,7 @@ import ClavisCore
 
 @MainActor
 public struct PinEntryView: View {
-    @ObservedObject var lock: PanelLockController
+    var lock: PanelLockController
     var isInlineBanner: Bool
     var onUnlockSuccess: ((LAContext?) -> Void)?
 

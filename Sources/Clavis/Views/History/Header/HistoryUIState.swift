@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Observation
 import ClavisCore
 
 /// The one transient surface History may have open at a time.
@@ -10,19 +11,20 @@ public enum HistorySurface: Equatable {
 /// View-layer state for the History header: transient presentation, native field anchor,
 /// and focus/highlight bookkeeping. Committed filters and the
 /// draft text live in `HistoryViewModel`.
+@Observable
 @MainActor
-public final class HistoryUIState: ObservableObject {
-    @Published public var surface: HistorySurface = .none
-    weak var searchField: NSSearchField?
-    @Published public var isSearchFocused = false
-    @Published public var highlightedSuggestionID: String?
-    @Published public var searchSelection = NSRange(location: 0, length: 0)
-    @Published public private(set) var focusToken = 0
+public final class HistoryUIState {
+    public var surface: HistorySurface = .none
+    @ObservationIgnored weak var searchField: NSSearchField?
+    public var isSearchFocused = false
+    public var highlightedSuggestionID: String?
+    public var searchSelection = NSRange(location: 0, length: 0)
+    public private(set) var focusToken = 0
 
     /// Shared spacing between the field and its dropdown (both entry points use it).
     public static let dropdownGap: CGFloat = 6
 
-    private var suppressFocusOpen = false
+    @ObservationIgnored private var suppressFocusOpen = false
 
     public init() {}
 

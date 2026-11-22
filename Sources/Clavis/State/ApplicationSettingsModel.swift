@@ -1,13 +1,15 @@
 import AppKit
 import ClavisCore
+import Observation
 
+@Observable
 @MainActor
-final class ApplicationSettingsModel: ObservableObject {
-    @Published private(set) var snapshot: ApplicationRegistrySnapshot?
-    @Published private(set) var isBusy = false
-    @Published private(set) var message: String?
-    @Published var selection: UUID?
-    private let agent: AgentControlling
+final class ApplicationSettingsModel {
+    private(set) var snapshot: ApplicationRegistrySnapshot?
+    private(set) var isBusy = false
+    private(set) var message: String?
+    var selection: UUID?
+    @ObservationIgnored private let agent: AgentControlling
 
     init(agent: AgentControlling = AgentLifecycleManager.shared) { self.agent = agent }
     var applications: [RegisteredApplication] { snapshot?.applications.filter { !$0.removed } ?? [] }

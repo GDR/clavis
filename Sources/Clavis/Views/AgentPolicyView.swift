@@ -201,7 +201,7 @@ public struct AgentPolicyUnsavedBadge: View {
 
 public struct AgentPolicyView: View {
     public let key: SSHKeyInfo
-    @ObservedObject var appState: AppState
+    var appState: AppState
 
     public static let leaseOptions = [15, 60, 240, 480, 1440]
 

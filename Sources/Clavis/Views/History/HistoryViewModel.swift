@@ -1,5 +1,6 @@
 import Foundation
 import LocalAuthentication
+import Observation
 import ClavisCore
 
 public enum HistoryItem: Identifiable, Equatable, Sendable {
@@ -51,61 +52,62 @@ extension AuditQuery {
     }
 }
 
+@Observable
 @MainActor
-public final class HistoryViewModel: ObservableObject {
+public final class HistoryViewModel {
     // MARK: Results
     /// Matching events loaded so far, in the active sort order.
-    @Published public private(set) var records: [AuditRecord] = []
-    @Published public private(set) var items: [HistoryItem] = []
-    @Published public var sensitive: [Int64: AuditUnsealResult] = [:]
-    @Published public var errorMessage: String?
-    @Published public var isLoading: Bool = false
-    @Published public var hasMore: Bool = false
-    @Published public var isLoadingMore: Bool = false
+    public private(set) var records: [AuditRecord] = []
+    public private(set) var items: [HistoryItem] = []
+    public var sensitive: [Int64: AuditUnsealResult] = [:]
+    public var errorMessage: String?
+    public var isLoading: Bool = false
+    public var hasMore: Bool = false
+    public var isLoadingMore: Bool = false
     /// Exact total when the store can answer it (no decrypt-time criteria); otherwise nil.
-    @Published public private(set) var totalMatching: Int?
+    public private(set) var totalMatching: Int?
     /// Scanned rows whose sealed fields could not be read (they cannot match host/process/text).
-    @Published public private(set) var unreadableScanned: Int = 0
+    public private(set) var unreadableScanned: Int = 0
 
-    @Published public var integrityReport: AuditIntegrityReport?
-    @Published public var isCheckingIntegrity: Bool = false
-    @Published public var integrityCheckError: String?
-    @Published public var needsKeyContext: Bool = false
+    public var integrityReport: AuditIntegrityReport?
+    public var isCheckingIntegrity: Bool = false
+    public var integrityCheckError: String?
+    public var needsKeyContext: Bool = false
 
     // MARK: Committed query (single source of truth)
     /// Base scope that is not a badge: page size and the optional session scope.
-    @Published public var query: AuditQuery = AuditQuery()
-    @Published public private(set) var filter = HistoryFilter()
+    public var query: AuditQuery = AuditQuery()
+    public private(set) var filter = HistoryFilter()
 
     // MARK: Draft (never affects results until committed)
-    @Published public private(set) var draftText: String = ""
-    @Published public private(set) var draftCaret: Int = 0
-    public private(set) var draftSelection = NSRange(location: 0, length: 0)
-    @Published public private(set) var suggestions: [HistorySuggestion] = []
-    @Published public private(set) var draftError: HistoryDraftDiagnostic?
+    public private(set) var draftText: String = ""
+    public private(set) var draftCaret: Int = 0
+    @ObservationIgnored public private(set) var draftSelection = NSRange(location: 0, length: 0)
+    public private(set) var suggestions: [HistorySuggestion] = []
+    public private(set) var draftError: HistoryDraftDiagnostic?
 
     // MARK: Suggestion catalog
-    @Published public private(set) var keyChoices: [HistoryKeyChoice] = []
-    @Published public private(set) var indexedHosts: [String] = []
-    @Published public private(set) var indexedProcessPaths: [String] = []
+    public private(set) var keyChoices: [HistoryKeyChoice] = []
+    public private(set) var indexedHosts: [String] = []
+    public private(set) var indexedProcessPaths: [String] = []
 
     // #121: Live audit event notification
     public static let didRecordAuditNotification = NSNotification.Name("com.clavis.auditEventRecorded")
 
     public var calendar: Calendar
-    private let storeFactory: () throws -> AuditStore
-    private let keyring: AuditKeyring?
-    private let contextProvider: @MainActor () -> LAContext?
-    private var lockObserver: Any?
-    private var localObservers: [NSObjectProtocol] = []
-    private var distributedObservers: [NSObjectProtocol] = []
-    private var lastPrunedSeq: Int64 = 0
-    private var cursor: AuditCursor?
+    @ObservationIgnored private let storeFactory: () throws -> AuditStore
+    @ObservationIgnored private let keyring: AuditKeyring?
+    @ObservationIgnored private let contextProvider: @MainActor () -> LAContext?
+    @ObservationIgnored private var lockObserver: Any?
+    @ObservationIgnored private var localObservers: [NSObjectProtocol] = []
+    @ObservationIgnored private var distributedObservers: [NSObjectProtocol] = []
+    @ObservationIgnored private var lastPrunedSeq: Int64 = 0
+    @ObservationIgnored private var cursor: AuditCursor?
     /// Bumped by every committed query change; stale async results are discarded.
-    private var generation: Int = 0
-    private var loadTask: Task<Void, Never>?
-    private var suggestionIndexStale = true
-    private var isIndexingSuggestions = false
+    @ObservationIgnored private var generation: Int = 0
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private var suggestionIndexStale = true
+    @ObservationIgnored private var isIndexingSuggestions = false
 
     /// Upper bound of rows examined per suggestion-index build (newest first).
     nonisolated static let suggestionScanLimit = 5_000
@@ -121,7 +123,7 @@ public final class HistoryViewModel: ObservableObject {
         return KeychainAuditKeyring()
     }
 
-    private let notificationCenter: NotificationCenter
+    @ObservationIgnored private let notificationCenter: NotificationCenter
 
     public init(
         initialKeyFingerprint: String? = nil,

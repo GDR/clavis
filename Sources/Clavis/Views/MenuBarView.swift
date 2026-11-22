@@ -7,9 +7,9 @@ import ClavisCore
 /// and is still reflected in the passive status line.
 @MainActor
 public struct MenuBarView: View {
-    @EnvironmentObject var appState: AppState
-    @ObservedObject var lock: PanelLockController
-    @StateObject private var history = HistoryViewModel(keyring: nil, contextProvider: { nil })
+    @Environment(AppState.self) var appState
+    var lock: PanelLockController
+    @State private var history = HistoryViewModel(keyring: nil, contextProvider: { nil })
     @State private var pendingApprovals = NotchPromptWindowController.shared.pendingApprovalCount
 
     /// Recent signing decisions shown in the menu (prototype: the five latest non-config events).
@@ -258,7 +258,7 @@ public struct MenuBarView: View {
 /// scoped to the event's key.
 struct MenuBarEventRow: View {
     let record: AuditRecord
-    @ObservedObject var viewModel: HistoryViewModel
+    var viewModel: HistoryViewModel
     let keys: [SSHKeyInfo]
     let onOpen: () -> Void
 

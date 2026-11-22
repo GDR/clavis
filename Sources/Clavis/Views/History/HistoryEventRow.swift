@@ -5,7 +5,7 @@ import ClavisCore
 /// One event: **key → destination** on top, "operation · result" below, time on the right.
 struct HistoryEventRow: View {
     let record: AuditRecord
-    @ObservedObject var viewModel: HistoryViewModel
+    var viewModel: HistoryViewModel
     let isExpanded: Bool
     let toggle: () -> Void
     let onFilterHost: (String) -> Void

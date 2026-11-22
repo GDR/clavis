@@ -1,25 +1,26 @@
 import SwiftUI
-import Combine
+import Observation
 import ClavisCore
 
+@Observable
 @MainActor
-public class SettingsViewModel: ObservableObject {
-    @Published public var isSocketActive: Bool = false
-    @Published public var agentPID: pid_t? = nil
-    @Published public var activeGitGraces: [ActiveGitGraceInfo] = []
-    @Published public var activeGitGrace: ActiveGitGraceInfo? = nil
-    @Published public var isDaemonMode: Bool = false
-    @Published public var launchAtLogin: Bool = false
-    @Published public var showingSettings: Bool = false
-    @Published public var activeSheet: KeyManagerSheet? = nil
-    @Published public var errorMessage: String? = nil
+public class SettingsViewModel {
+    public var isSocketActive: Bool = false
+    public var agentPID: pid_t? = nil
+    public var activeGitGraces: [ActiveGitGraceInfo] = []
+    public var activeGitGrace: ActiveGitGraceInfo? = nil
+    public var isDaemonMode: Bool = false
+    public var launchAtLogin: Bool = false
+    public var showingSettings: Bool = false
+    public var activeSheet: KeyManagerSheet? = nil
+    public var errorMessage: String? = nil
 
-    private var lockCancellable: AnyCancellable?
-    private var notificationObservers: [NSObjectProtocol] = []
+    @ObservationIgnored private var lockObserver: NSObjectProtocol?
+    @ObservationIgnored private var notificationObservers: [NSObjectProtocol] = []
 
-    private let agentLifecycle: any AgentControlling
-    private let sshAgentServer: SSHAgentServer
-    private let terminationAgentStop: () -> Bool
+    @ObservationIgnored private let agentLifecycle: any AgentControlling
+    @ObservationIgnored private let sshAgentServer: SSHAgentServer
+    @ObservationIgnored private let terminationAgentStop: () -> Bool
 
     public init(
         agentLifecycle: any AgentControlling = AgentLifecycleManager.shared,
@@ -45,19 +46,24 @@ public class SettingsViewModel: ObservableObject {
         }
         self.notificationObservers = [obsGrace]
 
-        self.lockCancellable = PanelLockController.shared.$state
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
-                if state == .locked {
-                    self?.activeSheet = nil
-                    self?.showingSettings = false
-                }
+        self.lockObserver = NotificationCenter.default.addObserver(
+            forName: PanelLockController.didLockNotification,
+            object: PanelLockController.shared,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.activeSheet = nil
+                self?.showingSettings = false
             }
+        }
 
         refresh()
     }
 
     deinit {
+        if let lockObserver {
+            NotificationCenter.default.removeObserver(lockObserver)
+        }
         let center = DistributedNotificationCenter.default()
         for observer in notificationObservers {
             center.removeObserver(observer)

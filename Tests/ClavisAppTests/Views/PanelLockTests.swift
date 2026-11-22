@@ -361,7 +361,7 @@ final class PanelLockTests {
         // 3. Opening Settings when Clavis is already unlocked must be unlocked immediately with 0 extra Touch ID prompts
         let unlockedSettings = SettingsView(lock: controller)
         #expect(unlockedSettings.isUnlocked)
-        let hosting = NSHostingView(rootView: unlockedSettings.environmentObject(appState))
+        let hosting = NSHostingView(rootView: unlockedSettings.environment(appState))
         hosting.frame = NSRect(x: 0, y: 0, width: 480, height: 600)
         hosting.layout()
         try? await Task.sleep(nanoseconds: 20_000_000)

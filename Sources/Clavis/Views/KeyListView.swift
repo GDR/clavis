@@ -4,9 +4,9 @@ import ClavisCore
 
 @MainActor
 struct KeyListView: View {
-    @EnvironmentObject var appState: AppState
-    @StateObject private var historyViewModel = HistoryViewModel()
-    @StateObject private var historyUI = HistoryUIState()
+    @Environment(AppState.self) var appState
+    @State private var historyViewModel = HistoryViewModel()
+    @State private var historyUI = HistoryUIState()
 
     @State private var selectedKeyId: String? = nil
     @State private var statusMessage: String? = nil
@@ -204,7 +204,7 @@ struct KeyListView: View {
 
     private var sheetsAndAlertsView: some View {
         rootSplitView
-            .sheet(item: $appState.activeSheet) { sheet in
+            .sheet(item: Bindable(appState).activeSheet) { sheet in
                 switch sheet {
                 case .create:
                     CreateKeySheet(appState: appState)
@@ -213,7 +213,7 @@ struct KeyListView: View {
                         }
                 case .settings:
                     SettingsView()
-                        .environmentObject(appState)
+                        .environment(appState)
                         .dismissOnOutsideClick {
                             appState.activeSheet = nil
                         }
@@ -746,7 +746,7 @@ struct KeySidebarRowView: View {
 // MARK: - Legacy Toolbar Helpers Preserved for Test Compatibility
 
 struct UnifiedGlassToolbarPill: View {
-    @ObservedObject var appState: AppState
+    var appState: AppState
     @Binding var statusMessage: String?
 
     var body: some View {
@@ -789,7 +789,7 @@ struct ToolbarCapsuleButton: View {
 /// Observes the coordinator and presents the authentication tile with host-owned insertion animation
 /// (disabled under Reduce Motion).
 private struct AuthenticationTileHost: View {
-    @ObservedObject var coordinator: PolicyMutationCoordinator
+    var coordinator: PolicyMutationCoordinator
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {

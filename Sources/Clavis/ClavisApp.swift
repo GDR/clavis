@@ -78,7 +78,7 @@ final class ClavisApplicationDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 struct ClavisApp: App {
     @NSApplicationDelegateAdaptor(ClavisApplicationDelegate.self) private var appDelegate
-    @StateObject private var appState = AppState.shared
+    @State private var appState = AppState.shared
 
     init() {
         // Wire AppKit adapters for ClavisCore decoupled hooks
@@ -147,7 +147,7 @@ struct ClavisApp: App {
     var body: some Scene {
         MenuBarExtra(ClavisUIStrings.Common.appName, systemImage: appState.isSocketActive ? "key.fill" : "key") {
             MenuBarView()
-                .environmentObject(appState)
+                .environment(appState)
         }
         .menuBarExtraStyle(.window)
         .commands {

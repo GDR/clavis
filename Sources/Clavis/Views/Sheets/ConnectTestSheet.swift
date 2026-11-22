@@ -7,9 +7,9 @@ import ClavisCore
 /// paths (`~/.ssh/clavis*.sock`), matching `EmptyVaultOnboardingView`.
 @MainActor
 struct ConnectTestSheet: View {
-    @ObservedObject var appState: AppState
+    var appState: AppState
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var history = HistoryViewModel()
+    @State private var history = HistoryViewModel()
     @State private var tab: String = "All SSH"
     @State private var routingAgent: String = "Claude Code"
     @State private var copiedSnippet: String? = nil

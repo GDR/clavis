@@ -3,8 +3,8 @@ import AppKit
 
 /// One native search field and one shared completion session for both entry points.
 struct HistorySearchBar: View {
-    @ObservedObject var viewModel: HistoryViewModel
-    @ObservedObject var ui: HistoryUIState
+    var viewModel: HistoryViewModel
+    var ui: HistoryUIState
 
     var body: some View {
         HistorySearchTextField(
@@ -41,7 +41,18 @@ struct HistorySearchBar: View {
         )
         .controlSize(.large)
         .frame(height: HistorySearchTextField.height)
-        .background(HistoryCompletionPresenter(viewModel: viewModel, ui: ui))
+        .background(
+            HistoryCompletionPresenter(
+                viewModel: viewModel,
+                ui: ui,
+                surface: ui.surface,
+                highlightedSuggestionID: ui.highlightedSuggestionID,
+                showsDropdown: viewModel.showsDropdown,
+                suggestions: viewModel.suggestions,
+                draftText: viewModel.draftText,
+                draftCaret: viewModel.draftCaret
+            )
+        )
         .onChange(of: viewModel.filter) {
             if ui.surface == .suggestions { ui.dismiss() }
         }

@@ -20,8 +20,8 @@ enum HistorySectionSplit {
 
 /// Scrolling results only. The filter header lives in the main toolbar's safe-area bar.
 public struct HistoryView: View {
-    @ObservedObject public var viewModel: HistoryViewModel
-    @ObservedObject public var ui: HistoryUIState
+    public var viewModel: HistoryViewModel
+    public var ui: HistoryUIState
     var keys: [SSHKeyInfo]
 
     @State private var expandedIDs: Set<UUID> = []

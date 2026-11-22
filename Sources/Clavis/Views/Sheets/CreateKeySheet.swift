@@ -54,7 +54,7 @@ enum CreateKeyReferenceContent {
 
 public struct CreateKeySheet: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var appState: AppState
+    var appState: AppState
 
     public static let defaultBiometricPolicy: BiometricPolicy = .userPresence
     public static let defaultPurpose: KeyPurpose = .general

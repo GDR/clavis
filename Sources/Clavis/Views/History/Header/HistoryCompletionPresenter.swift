@@ -3,8 +3,14 @@ import AppKit
 
 /// An AppKit anchor lives at the search field, not at a SwiftUI global-coordinate overlay.
 struct HistoryCompletionPresenter: NSViewRepresentable {
-    @ObservedObject var viewModel: HistoryViewModel
-    @ObservedObject var ui: HistoryUIState
+    var viewModel: HistoryViewModel
+    var ui: HistoryUIState
+    var surface: HistorySurface
+    var highlightedSuggestionID: String?
+    var showsDropdown: Bool
+    var suggestions: [HistorySuggestion]
+    var draftText: String
+    var draftCaret: Int
 
     func makeCoordinator() -> HistoryCompletionPanelController {
         HistoryCompletionPanelController(viewModel: viewModel, ui: ui)

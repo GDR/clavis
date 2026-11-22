@@ -76,7 +76,7 @@ public class WindowManager: NSObject, NSWindowDelegate {
         }
 
         let keyListView = PanelLockGate(showsEmptyState: false) {
-            KeyListView().environmentObject(AppState.shared)
+            KeyListView().environment(AppState.shared)
         }
         let hostingController = NSHostingController(rootView: keyListView)
         hostingController.sizingOptions = []

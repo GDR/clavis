@@ -2,6 +2,7 @@ import AppKit
 import ClavisCore
 import Foundation
 import LocalAuthentication
+import Observation
 
 /// Owns the single in-window authenticated settings request shown by `AuthenticationRequestView`.
 ///
@@ -12,8 +13,9 @@ import LocalAuthentication
 /// - return that context to the mutation layer (`KeychainManager`), which validates the authenticated
 ///   record and persists exactly once and owns the context lifetime;
 /// - cancel/invalidate on Escape, close, lifecycle or target change; late completions are rejected.
+@Observable
 @MainActor
-public final class PolicyMutationCoordinator: ObservableObject, AsyncUserAuthenticating {
+public final class PolicyMutationCoordinator: AsyncUserAuthenticating {
     /// Immutable staged request. `original` is the revision the request was staged against.
     public struct Request: Equatable, Sendable {
         public let id: UUID
@@ -29,21 +31,21 @@ public final class PolicyMutationCoordinator: ObservableObject, AsyncUserAuthent
 
     enum Intent { case retry, password, cancel }
 
-    @Published public private(set) var request: Request?
-    @Published private(set) var phase: AuthenticationRequestView.Phase = .waiting {
+    public private(set) var request: Request?
+    private(set) var phase: AuthenticationRequestView.Phase = .waiting {
         didSet { announceIfNeeded(oldValue) }
     }
     /// The exact context being evaluated; nil in password mode so the system shows its own dialog.
-    @Published private(set) var embeddedContext: LAContext?
+    private(set) var embeddedContext: LAContext?
 
     public var isPending: Bool { request != nil }
 
-    private var task: Task<Void, Never>?
-    private var intentContinuation: CheckedContinuation<Intent, Never>?
-    private var activeContext: LAContext?
-    private var cancelRequested = false
-    private var switchToPassword = false
-    private var authenticationSucceeded = false
+    @ObservationIgnored private var task: Task<Void, Never>?
+    @ObservationIgnored private var intentContinuation: CheckedContinuation<Intent, Never>?
+    @ObservationIgnored private var activeContext: LAContext?
+    @ObservationIgnored private var cancelRequested = false
+    @ObservationIgnored private var switchToPassword = false
+    @ObservationIgnored private var authenticationSucceeded = false
 
     public init() {}
 
