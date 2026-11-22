@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Observation
 import LocalAuthentication
 import LocalAuthenticationEmbeddedUI
 import ClavisCore
@@ -938,8 +939,9 @@ public enum NotchBiometricFailure: Equatable, Sendable {
 
 // MARK: - View Model
 
+@Observable
 @MainActor
-public final class NotchPromptViewModel: ObservableObject {
+public final class NotchPromptViewModel {
     /// easeOutBack: a short slide with a restrained overshoot at the end.
     public static let transitionAnimation = Animation.timingCurve(0.34, 1.384, 0.64, 1.0, duration: 0.36)
     public static let collapseAnimation = Animation.easeInOut(duration: 0.20)
@@ -962,28 +964,28 @@ public final class NotchPromptViewModel: ObservableObject {
 
     public let requestID = UUID()
     public let request: NotchPromptRequest
-    @Published public var screenGeometry: NotchScreenGeometry
-    @Published public var phase: NotchPromptPhase
-    @Published public private(set) var isPromptFocused: Bool = true
-    @Published public private(set) var selectedScope: NotchSessionScope
+    public var screenGeometry: NotchScreenGeometry
+    public var phase: NotchPromptPhase
+    public private(set) var isPromptFocused: Bool = true
+    public private(set) var selectedScope: NotchSessionScope
     /// Which first-use allow action armed the Touch ID step (D-36: Allow Once vs Always Allow…).
-    @Published public private(set) var allowMode: NotchAllowMode = .once
+    public private(set) var allowMode: NotchAllowMode = .once
     /// Full D-36 decision once the prompt finishes; `NotchPromptResult` remains the legacy signing channel.
-    public private(set) var approvalDecision: NotchApprovalDecision?
+    @ObservationIgnored public private(set) var approvalDecision: NotchApprovalDecision?
     public var isScopeLocked: Bool { phase == .verifying || phase == .approved || isCompleted }
-    @Published public private(set) var biometricFailure: NotchBiometricFailure? = nil
-    @Published public private(set) var failureShakeTrigger: Int = 0
-    @Published public var passwordText: String = ""
-    @Published public var passwordError: String? = nil
+    public private(set) var biometricFailure: NotchBiometricFailure? = nil
+    public private(set) var failureShakeTrigger: Int = 0
+    public var passwordText: String = ""
+    public var passwordError: String? = nil
     /// Tracks whether the last active layout before collapsing to `.idle` was the `.approved` result row
     /// so elements animate smoothly upward and inward during the final collapse instead of vanishing on frame 0.
-    @Published public private(set) var showsApprovedLayoutWhileCollapsed: Bool = false
+    public private(set) var showsApprovedLayoutWhileCollapsed: Bool = false
 
     /// Live `LAContext` driving the embedded `LAAuthenticationView` glyph after `Continue` is pressed.
-    @Published public private(set) var embeddedAuthContext: LAContext? = nil
+    public private(set) var embeddedAuthContext: LAContext? = nil
     /// Already-evaluated `LAContext` ready for ownership transfer to a real signing caller.
-    public private(set) var authenticatedContext: LAContext? = nil
-    private var embeddedBiometricTask: Task<Void, Never>? = nil
+    @ObservationIgnored public private(set) var authenticatedContext: LAContext? = nil
+    @ObservationIgnored private var embeddedBiometricTask: Task<Void, Never>? = nil
 
     private let verifyingDelayNanoseconds: UInt64
     private let signedDisplayNanoseconds: UInt64
@@ -992,9 +994,9 @@ public final class NotchPromptViewModel: ObservableObject {
     private let passwordVerifier: @MainActor (String) async -> Bool
     private let hardwarePasswordAuthenticator: (@MainActor () async -> LAContext?)?
     private let onApprovalReady: (@MainActor (NotchSessionScope, NotchApprovalMethod, LAContext?) -> Void)?
-    private var onComplete: (@MainActor (NotchPromptResult) -> Void)?
+    @ObservationIgnored private var onComplete: (@MainActor (NotchPromptResult) -> Void)?
     private var isCompleted: Bool = false
-    private var attemptGeneration: UInt64 = 0
+    @ObservationIgnored private var attemptGeneration: UInt64 = 0
 
     /// Whether password fallback uses a system LocalAuthentication sheet rather than the local OpenDirectory field.
     public var usesSystemPasswordSheet: Bool { hardwarePasswordAuthenticator != nil }
@@ -1824,7 +1826,7 @@ private struct HorizontalShakeEffect: GeometryEffect {
 // MARK: - Main Notch Authorization Panel View (Direction 11 · Heading A)
 
 public struct NotchTouchIDPromptView: View {
-    @ObservedObject public var viewModel: NotchPromptViewModel
+    public var viewModel: NotchPromptViewModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @FocusState private var isPasswordFieldFocused: Bool
@@ -2881,7 +2883,7 @@ public struct NotchTouchIDPromptView: View {
                     }
                     Spacer(minLength: 8)
                 } else {
-                    SecureField("Mac login password", text: $viewModel.passwordText)
+                    SecureField("Mac login password", text: Bindable(viewModel).passwordText)
                         .textFieldStyle(.plain)
                         .controlSize(.large)
                         .font(.system(size: 12, weight: .regular))
@@ -2948,7 +2950,7 @@ public struct NotchTouchIDPromptView: View {
     private var passwordDrawerRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
-                SecureField("Enter Mac login password…", text: $viewModel.passwordText)
+                SecureField("Enter Mac login password…", text: Bindable(viewModel).passwordText)
                     .textFieldStyle(.plain)
                     .controlSize(.large)
                     .font(.system(size: 12, weight: .regular))
