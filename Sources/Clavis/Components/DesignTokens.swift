@@ -121,7 +121,7 @@ public struct SettingsGroupCardModifier: ViewModifier {
 public extension View {
     @ViewBuilder
     func groupedEmbeddedForm(zeroMargins: Bool = false) -> some View {
-        if #available(macOS 14.0, *), zeroMargins {
+        if zeroMargins {
             self
                 .formStyle(.grouped)
                 .scrollDisabled(true)

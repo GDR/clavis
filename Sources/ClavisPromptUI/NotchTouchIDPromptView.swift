@@ -1008,7 +1008,7 @@ public final class NotchPromptViewModel: ObservableObject {
         #endif
         let context = LAContext()
         var error: NSError?
-        if #available(macOS 15.0, *), allowsCompanion {
+        if allowsCompanion {
             if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometricsOrCompanion, error: &error) {
                 return true
             }
@@ -1352,7 +1352,7 @@ public final class NotchPromptViewModel: ObservableObject {
 
                 do {
                     let policy: LAPolicy
-                    if #available(macOS 15.0, *), allowsCompanion {
+                    if allowsCompanion {
                         policy = .deviceOwnerAuthenticationWithBiometricsOrCompanion
                     } else {
                         policy = .deviceOwnerAuthenticationWithBiometrics

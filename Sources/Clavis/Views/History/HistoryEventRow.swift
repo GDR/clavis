@@ -293,19 +293,15 @@ struct HistoryHostLink: View {
     }
 }
 
-/// Space/Return disclose the focused row (macOS 14+ key handling; mouse and VoiceOver work everywhere).
+/// Space/Return disclose the focused row.
 private struct HistoryRowKeyboardDisclosure: ViewModifier {
     let toggle: () -> Void
 
     func body(content: Content) -> some View {
-        if #available(macOS 14.0, *) {
-            content
-                .focusable()
-                .focusEffectDisabled()
-                .onKeyPress(.space) { toggle(); return .handled }
-                .onKeyPress(.return) { toggle(); return .handled }
-        } else {
-            content
-        }
+        content
+            .focusable()
+            .focusEffectDisabled()
+            .onKeyPress(.space) { toggle(); return .handled }
+            .onKeyPress(.return) { toggle(); return .handled }
     }
 }

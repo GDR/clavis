@@ -221,7 +221,7 @@ public struct CreateKeySheet: View {
                         .textFieldStyle(.plain)
                         .font(.system(size: 13))
                         .focused($isLabelFocused)
-                        .modifier(CreateKeyFocusEffectDisabledModifier())
+                        .focusEffectDisabled()
                         .onSubmit {
                             if !isGenerateDisabled {
                                 createKey()
@@ -382,7 +382,7 @@ public struct CreateKeySheet: View {
                     dismiss()
                 }
                 .liquidGlassButton(prominent: false)
-                .modifier(CreateKeyCapsuleShapeModifier())
+                .buttonBorderShape(.capsule)
                 .controlSize(.large)
                 .keyboardShortcut(.cancelAction)
 
@@ -390,7 +390,7 @@ public struct CreateKeySheet: View {
                     createKey()
                 }
                 .liquidGlassButton(prominent: true)
-                .modifier(CreateKeyCapsuleShapeModifier())
+                .buttonBorderShape(.capsule)
                 .controlSize(.large)
                 .keyboardShortcut(.defaultAction)
                 .disabled(isGenerateDisabled)
@@ -580,28 +580,6 @@ private struct OwnerSegmentedControl: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-    }
-}
-
-private struct CreateKeyFocusEffectDisabledModifier: ViewModifier {
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(macOS 14.0, *) {
-            content.focusEffectDisabled()
-        } else {
-            content
-        }
-    }
-}
-
-private struct CreateKeyCapsuleShapeModifier: ViewModifier {
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(macOS 14.0, *) {
-            content.buttonBorderShape(.capsule)
-        } else {
-            content
-        }
     }
 }
 

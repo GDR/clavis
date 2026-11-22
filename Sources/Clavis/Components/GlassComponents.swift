@@ -616,7 +616,7 @@ public struct CircularGlassIconButton: View {
         .buttonBorderShape(.capsule)
         .tint(isDanger ? Color(nsColor: .systemRed) : (isActive ? Color.accentColor : nil))
         .focusable(false)
-        .modifier(FocusEffectDisabledModifier())
+        .focusEffectDisabled()
         .help(helpText)
         .accessibilityLabel(accessibilityLabelText ?? helpText)
     }
@@ -627,7 +627,7 @@ public struct CircularGlassIconButton: View {
         }
         .buttonStyle(.plain)
         .focusable(false)
-        .modifier(FocusEffectDisabledModifier())
+        .focusEffectDisabled()
         .help(helpText)
         .accessibilityLabel(accessibilityLabelText ?? helpText)
         .onHover { hovering in
@@ -725,17 +725,6 @@ public struct CircularGlassIconButton: View {
             return Color.accentColor.opacity(0.45)
         }
         return DesignTokens.cardBorder
-    }
-}
-
-private struct FocusEffectDisabledModifier: ViewModifier {
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(macOS 14.0, *) {
-            content.focusEffectDisabled()
-        } else {
-            content
-        }
     }
 }
 
@@ -851,16 +840,11 @@ public extension View {
     }
 
     /// Lets a custom header (including its text) drag the window, like a titlebar.
-    @ViewBuilder
     func windowDragHandle() -> some View {
-        if #available(macOS 15.0, *) {
-            self
-                .contentShape(Rectangle())
-                .gesture(WindowDragGesture())
-                .allowsWindowActivationEvents(true)
-        } else {
-            self
-        }
+        self
+            .contentShape(Rectangle())
+            .gesture(WindowDragGesture())
+            .allowsWindowActivationEvents(true)
     }
 
     /// Top bar registered with the scroll view through `safeAreaBar`; the system scroll-edge effect

@@ -334,7 +334,8 @@ struct HistoryDatePopover: View {
         }
         .padding(12)
         .frame(width: 272)
-        .modifier(NoFocusRing())
+        // Suppress the automatic focus ring drawn around "From" when the popover opens; keyboard activation still works.
+        .focusEffectDisabled()
     }
 
     private func formatted(_ day: CalendarDay) -> String {
@@ -569,18 +570,5 @@ struct HistoryMonthCalendar: View {
         .accessibilityLabel(day.startOfDay(in: calendar)
             .formatted(Date.FormatStyle(timeZone: calendar.timeZone).weekday(.wide).month(.wide).day().year()))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-}
-
-/// The popover makes the first control key on open, which drew a focus ring around "From" before
-/// the user did anything. Keyboard activation still works; only the ring is suppressed (macOS 14+).
-private struct NoFocusRing: ViewModifier {
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(macOS 14.0, *) {
-            content.focusEffectDisabled()
-        } else {
-            content
-        }
     }
 }
