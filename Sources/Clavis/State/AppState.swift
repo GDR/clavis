@@ -378,6 +378,28 @@ public class AppState {
         }
     }
 
+    public func allowPromptDurationChange(for key: SSHKeyInfo) -> Bool {
+        keyManagementViewModel.allowPromptDurationChange(for: key)
+    }
+
+    public func setAllowPromptDurationChange(_ allowed: Bool, for key: SSHKeyInfo) {
+        keyManagementViewModel.setAllowPromptDurationChange(allowed, for: key)
+    }
+
+    public func shareAcrossSSHHosts(for key: SSHKeyInfo) -> Bool {
+        keyManagementViewModel.shareAcrossSSHHosts(for: key)
+    }
+
+    public func setShareAcrossSSHHosts(_ shared: Bool, for key: SSHKeyInfo) {
+        keyManagementViewModel.setShareAcrossSSHHosts(shared, for: key)
+        revokeGitGrace(for: key.label)
+        let matchingIDs = agentSessions.filter { $0.keyFingerprint == key.fingerprint }.map(\.id)
+        agentSessions.removeAll { $0.keyFingerprint == key.fingerprint }
+        for sessionID in matchingIDs {
+            endAgentSession(id: sessionID)
+        }
+    }
+
     public func isKeyUnlocked(_ key: SSHKeyInfo) -> Bool {
         let now = Date()
         let hasActiveGrace = activeGitGraces.contains { $0.keyLabel == key.label && $0.remainingSeconds > 0 }

@@ -9,6 +9,7 @@ public class KeyManagementViewModel {
     public var errorMessage: String? = nil
     public var vaultSyncReport: VaultSyncReport? = nil
     private var gracePeriodRevision: Int = 0
+    private var sessionPolicyRevision: Int = 0
 
     @ObservationIgnored private let keyManager: KeychainManager
     @ObservationIgnored private let agentLifecycle: any AgentControlling
@@ -125,6 +126,30 @@ public class KeyManagementViewModel {
     public func setGracePeriod(_ period: KeyGracePeriod, for key: SSHKeyInfo) {
         defaults.set(period.rawValue, forKey: "keyGracePeriod.\(key.fingerprint)")
         gracePeriodRevision &+= 1
+        try? keyManager.lockKey(label: key.label)
+    }
+
+    public func allowPromptDurationChange(for key: SSHKeyInfo) -> Bool {
+        _ = sessionPolicyRevision
+        guard let stored = defaults.object(forKey: "keyAllowPromptDurationChange.\(key.fingerprint)") as? Bool else {
+            return true
+        }
+        return stored
+    }
+
+    public func setAllowPromptDurationChange(_ allowed: Bool, for key: SSHKeyInfo) {
+        defaults.set(allowed, forKey: "keyAllowPromptDurationChange.\(key.fingerprint)")
+        sessionPolicyRevision &+= 1
+    }
+
+    public func shareAcrossSSHHosts(for key: SSHKeyInfo) -> Bool {
+        _ = sessionPolicyRevision
+        return defaults.bool(forKey: "keyShareAcrossSSHHosts.\(key.fingerprint)")
+    }
+
+    public func setShareAcrossSSHHosts(_ shared: Bool, for key: SSHKeyInfo) {
+        defaults.set(shared, forKey: "keyShareAcrossSSHHosts.\(key.fingerprint)")
+        sessionPolicyRevision &+= 1
         try? keyManager.lockKey(label: key.label)
     }
 
