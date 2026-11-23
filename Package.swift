@@ -70,6 +70,12 @@ let package = Package(
             path: "Sources/Clavis",
             linkerSettings: executableLinkerSettings
         ),
+        .executableTarget(
+            name: "NotchDebugHarness",
+            dependencies: ["ClavisCore", "ClavisPromptUI"],
+            path: "Sources/NotchDebugHarness",
+            linkerSettings: executableLinkerSettings
+        ),
         .target(
             name: "ClavisTestSupport",
             dependencies: ["ClavisCore"],
