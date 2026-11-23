@@ -2071,7 +2071,7 @@ public struct NotchIslandShape: Shape {
     }
 }
 
-/// Top-anchored rounded cutout shape used to render the physical MacBook notch core and its radial feather shells.
+/// Top-anchored rounded cutout shape used for the Reduce Transparency notch cutout fallback.
 struct NotchCutoutRadialShape: Shape {
     var cutoutWidth: CGFloat
     var cutoutHeight: CGFloat
@@ -2121,16 +2121,30 @@ struct NotchCutoutRadialShape: Shape {
     }
 }
 
-/// Renders the solid black physical notch cutout core plus a smooth `15pt` radial black feather around the notch
-/// so the hardware camera housing blends into the Liquid Glass panel without making the rest of the panel opaque black.
+/// Renders a solid `#000000` hardware-matched notch core + border plus a cached exact-SDF radial black-to-transparent
+/// texture in a single pass on top of the Liquid Glass panel (or a crisp vector cutout when Reduce Transparency is enabled).
 struct NotchRadialHaloOverlay: View {
     let cutoutWidth: CGFloat
     let cutoutHeight: CGFloat
+    var solidBorderWidth: CGFloat = NotchTouchIDPromptView.notchSolidBorderWidth
     let featherRadius: CGFloat
     let panelBlack: Color
+    var reduceTransparency: Bool = false
+    var horizontalInset: CGFloat = NotchTouchIDPromptView.notchHorizontalInset
+    var bottomCornerRadius: CGFloat = NotchTouchIDPromptView.notchBottomCornerRadius
 
-    /// Number of concentric SDF shells used to approximate a continuous radial falloff over `featherRadius` (`15pt`).
-    private static let shellCount: Int = 20
+    @Environment(\.displayScale) private var displayScale
+
+    private struct TextureCacheKey: Hashable {
+        let widthCentis: Int
+        let heightCentis: Int
+        let borderCentis: Int
+        let featherCentis: Int
+        let radiusCentis: Int
+        let scaleCentis: Int
+    }
+
+    @MainActor private static var textureCache: [TextureCacheKey: CGImage] = [:]
 
     /// Computes the radial black opacity at a given distance (`0 ... featherRadius`) outside the physical notch boundary.
     static func radialOpacity(atDistance distance: CGFloat, featherRadius: CGFloat = 15.0) -> Double {
@@ -2142,32 +2156,115 @@ struct NotchRadialHaloOverlay: View {
         return falloff * falloff
     }
 
-    var body: some View {
-        ZStack(alignment: .top) {
-            // Concentric radial shells from outer (`15pt`) to inner (`0pt`) so alpha composites to `radialOpacity(atDistance:)`.
-            ForEach((1...Self.shellCount).reversed(), id: \.self) { index in
-                let prevDistance = featherRadius * CGFloat(index - 1) / CGFloat(Self.shellCount)
-                let currDistance = featherRadius * CGFloat(index) / CGFloat(Self.shellCount)
-                let targetInner = Self.radialOpacity(atDistance: prevDistance, featherRadius: featherRadius)
-                let targetOuter = Self.radialOpacity(atDistance: currDistance, featherRadius: featherRadius)
-                // Incremental alpha needed over `targetOuter` so cumulative opacity equals `targetInner`:
-                let shellAlpha = max(0.0, min(1.0, (targetInner - targetOuter) / max(1e-5, 1.0 - targetOuter)))
+    @MainActor
+    private static func makeHaloTexture(
+        effectiveWidth: CGFloat,
+        cutoutHeight: CGFloat,
+        solidBorderWidth: CGFloat,
+        featherRadius: CGFloat,
+        bottomCornerRadius: CGFloat,
+        scale: CGFloat
+    ) -> CGImage? {
+        let resolvedScale = max(1.0, scale)
+        let border = max(0.0, solidBorderWidth)
+        let feather = max(0.0, featherRadius)
+        let maxOutset = border + feather
+        let canvasWidth = effectiveWidth + maxOutset * 2.0
+        let canvasHeight = cutoutHeight + maxOutset
+        guard canvasWidth > 0, canvasHeight > 0 else { return nil }
 
-                NotchCutoutRadialShape(
-                    cutoutWidth: cutoutWidth,
-                    cutoutHeight: cutoutHeight,
-                    radialOffset: currDistance
-                )
-                .fill(panelBlack.opacity(shellAlpha))
+        let key = TextureCacheKey(
+            widthCentis: Int((effectiveWidth * 100).rounded()),
+            heightCentis: Int((cutoutHeight * 100).rounded()),
+            borderCentis: Int((border * 100).rounded()),
+            featherCentis: Int((feather * 100).rounded()),
+            radiusCentis: Int((bottomCornerRadius * 100).rounded()),
+            scaleCentis: Int((resolvedScale * 100).rounded())
+        )
+        if let cached = textureCache[key] {
+            return cached
+        }
+
+        let pixelWidth = max(1, Int(ceil(canvasWidth * resolvedScale)))
+        let pixelHeight = max(1, Int(ceil(canvasHeight * resolvedScale)))
+        let scaleDouble = Double(resolvedScale)
+        let centerX = Double(pixelWidth) * 0.5 / scaleDouble
+        let halfW = Double(effectiveWidth) * 0.5
+        let height = Double(cutoutHeight)
+        let coreR = min(Double(bottomCornerRadius), halfW, height)
+        let innerHalfW = halfW - coreR
+        let innerH = height - coreR
+        let borderD = Double(border)
+
+        var bytes = [UInt8](repeating: 0, count: pixelWidth * pixelHeight * 4)
+        for row in 0..<pixelHeight {
+            let py = (Double(row) + 0.5) / scaleDouble
+            let dy = max(0.0, py - innerH)
+            let rowOffset = row * pixelWidth * 4
+            for col in 0..<pixelWidth {
+                let ax = abs((Double(col) + 0.5) / scaleDouble - centerX)
+                let dx = max(0.0, ax - innerHalfW)
+                let distOutsideCore = (dx > 0 && dy > 0)
+                    ? (hypot(dx, dy) - coreR)
+                    : max(ax - halfW, py - height)
+                let gradientDistance = distOutsideCore - borderD
+
+                let alpha: Double = if feather > 0 {
+                    Self.radialOpacity(atDistance: CGFloat(gradientDistance), featherRadius: feather)
+                } else {
+                    max(0.0, min(1.0, 0.5 - gradientDistance * scaleDouble))
+                }
+                bytes[rowOffset + col * 4 + 3] = UInt8((alpha * 255.0).rounded())
             }
+        }
 
-            // Solid 100% opaque black core directly under the physical notch cutout (`cutoutWidth × cutoutHeight`).
-            NotchCutoutRadialShape(
-                cutoutWidth: cutoutWidth,
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData),
+              let image = CGImage(
+                  width: pixelWidth,
+                  height: pixelHeight,
+                  bitsPerComponent: 8,
+                  bitsPerPixel: 32,
+                  bytesPerRow: pixelWidth * 4,
+                  space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                  provider: provider,
+                  decode: nil,
+                  shouldInterpolate: true,
+                  intent: .defaultIntent
+              ) else {
+            return nil
+        }
+
+        if textureCache.count >= 8 {
+            textureCache.removeAll(keepingCapacity: true)
+        }
+        textureCache[key] = image
+        return image
+    }
+
+    var body: some View {
+        let effectiveWidth = max(0, cutoutWidth - horizontalInset)
+
+        Group {
+            if reduceTransparency {
+                NotchCutoutRadialShape(
+                    cutoutWidth: effectiveWidth,
+                    cutoutHeight: cutoutHeight,
+                    radialOffset: solidBorderWidth,
+                    baseBottomCornerRadius: bottomCornerRadius
+                )
+                .fill(panelBlack)
+            } else if let haloImage = Self.makeHaloTexture(
+                effectiveWidth: effectiveWidth,
                 cutoutHeight: cutoutHeight,
-                radialOffset: 0
-            )
-            .fill(panelBlack)
+                solidBorderWidth: solidBorderWidth,
+                featherRadius: featherRadius,
+                bottomCornerRadius: bottomCornerRadius,
+                scale: displayScale
+            ) {
+                Image(decorative: haloImage, scale: max(1.0, displayScale))
+                    .interpolation(.high)
+            }
         }
         .allowsHitTesting(false)
     }
@@ -2311,8 +2408,18 @@ public struct NotchTouchIDPromptView: View {
 
     private var bottomCornerRadius: CGFloat { 28 }
 
-    /// Radial black feather distance (`15pt`) around the physical MacBook notch cutout.
+    /// Total horizontal trim subtracted from `NSScreen`'s `cutoutWidth` (`~4pt` per side)
+    /// to match the physical MacBook notch width without macOS menu-bar auxiliary padding.
+    public static let notchHorizontalInset: CGFloat = 8.0
+
+    /// Solid `#000000` border extending outward around the physical notch before the gradient begins (`1.0` = 1pt; use `0.5` for 1 Retina px).
+    public static let notchSolidBorderWidth: CGFloat = 1.0
+
+    /// Radial black-to-transparent gradient distance (`15pt`) outside `notchSolidBorderWidth`.
     public static let notchRadialFeatherRadius: CGFloat = 15.0
+
+    /// Bottom corner radius of the hardware notch cutout core.
+    public static let notchBottomCornerRadius: CGFloat = 10.0
 
     /// Foreground content opacity: `1.0` when focused, dimmed (`0.52`) when unfocused.
     public var foregroundContentOpacity: Double {
@@ -2447,18 +2554,23 @@ public struct NotchTouchIDPromptView: View {
             .opacity(reduceMotion && isCollapsedState ? 0 : 1)
 
             if viewModel.screenGeometry.hasHardwareNotch {
+                let maxOutset = Self.notchSolidBorderWidth + Self.notchRadialFeatherRadius
                 NotchRadialHaloOverlay(
                     cutoutWidth: viewModel.screenGeometry.cutoutWidth,
                     cutoutHeight: viewModel.screenGeometry.cutoutHeight,
+                    solidBorderWidth: Self.notchSolidBorderWidth,
                     featherRadius: Self.notchRadialFeatherRadius,
-                    panelBlack: Color.black
+                    panelBlack: Color.black,
+                    reduceTransparency: reduceTransparency,
+                    horizontalInset: Self.notchHorizontalInset,
+                    bottomCornerRadius: Self.notchBottomCornerRadius
                 )
                 .frame(
-                    width: viewModel.screenGeometry.cutoutWidth + 30,
-                    height: viewModel.screenGeometry.cutoutHeight + 15
+                    width: viewModel.screenGeometry.cutoutWidth + maxOutset * 2,
+                    height: viewModel.screenGeometry.cutoutHeight + maxOutset,
+                    alignment: .top
                 )
-                // The halo stays aligned with the hardware notch; only the portion
-                // covered by the sliding panel is visible throughout opening/closing.
+                // Keep the notch border and radial gradient aligned on top of Liquid Glass and masked to the sliding panel.
                 .mask(alignment: .top) {
                     NotchIslandShape(bottomCornerRadius: bottomCornerRadius, topExtension: presentationTopExtension)
                         .frame(width: presentationWidth, height: presentationHeight)
