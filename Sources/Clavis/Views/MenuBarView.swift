@@ -2,75 +2,286 @@ import SwiftUI
 import AppKit
 import ClavisCore
 
-/// S01.menu: status, recent signing events, Copy public key, Lock Now, New Key…, Open Clavis.
-/// The pause/resume (kill switch) controls are gone (D-38); the request-pause state model stays
-/// and is still reflected in the passive status line.
+/// S-01 menu bar popover: key-only status item, active unlocked keys with rounded timeouts /
+/// Ends-on-lock state, animated inactive-keys disclosure, Crossfade Swap row actions, and
+/// Lock Now / New Key / Open Clavis / Quit Clavis controls.
 @MainActor
 public struct MenuBarView: View {
     @Environment(AppState.self) var appState
-    var lock: PanelLockController
-    @State private var history = HistoryViewModel(keyring: nil, contextProvider: { nil })
-    @State private var pendingApprovals = NotchPromptWindowController.shared.pendingApprovalCount
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Recent signing decisions shown in the menu (prototype: the five latest non-config events).
-    static let recentEventLimit = 5
-    static let lockNowTitle = "Lock Now"
-    static let copyPublicKeyTitle = "Copy public key"
-    static let showAllHistoryTitle = "Show All History"
-    static let noEventsTitle = "No signing events yet"
+    var lock: PanelLockController
+    @State private var isInactiveExpanded = false
+    @State private var pulseInactive = false
+    @State private var isAnimatingInactiveDrawer = false
+    @State private var drawerAnimationTask: Task<Void, Never>?
 
     public init(lock: PanelLockController? = nil) {
         self.lock = lock ?? .shared
     }
 
+    static func lockActionTitle(for sessions: [MenuBarSession]) -> String {
+        if !sessions.isEmpty && sessions.allSatisfy(\.isAgentKey) {
+            return ClavisUIStrings.MenuBar.lockAgentKeys
+        }
+        return ClavisUIStrings.MenuBar.lockNow
+    }
+
     public var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            header
-            separator
+        let initialSessions = MenuBarSession.active(
+            gitGraces: appState.activeGitGraces,
+            agentSessions: appState.agentSessions,
+            keys: appState.keys,
+            at: Date()
+        )
+        let tickInterval: TimeInterval = initialSessions.contains {
+            !$0.endsAtLock && $0.expiresAt.timeIntervalSinceNow <= 90
+        } ? 1.0 : 15.0
 
-            if let message = appState.errorMessage {
-                errorBanner(message)
-            }
+        TimelineView(.periodic(from: .now, by: tickInterval)) { timeline in
+            let now = timeline.date
+            let activeSessions = MenuBarSession.active(
+                gitGraces: appState.activeGitGraces,
+                agentSessions: appState.agentSessions,
+                keys: appState.keys,
+                at: now
+            )
+            let inactiveKeys = MenuBarSession.inactiveKeys(
+                from: appState.keys,
+                active: activeSessions
+            )
 
-            if pendingApprovals > 0 {
-                Button {
-                    NotchPromptWindowController.shared.presentNextApprovalIfIdle()
-                    NotchPromptWindowController.shared.focusPromptWindow()
-                    WindowManager.shared.dismissMenuBarExtra()
-                } label: {
-                    Text("Answer pending (\(pendingApprovals))")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.accentColor)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 4)
-                        .contentShape(Rectangle())
+            VStack(alignment: .leading, spacing: 2) {
+                header(activeCount: activeSessions.count)
+
+                if let message = appState.errorMessage {
+                    separator
+                    errorBanner(message)
                 }
-                .buttonStyle(.plain)
+
+                keysContent(
+                    activeSessions: activeSessions,
+                    inactiveKeys: inactiveKeys,
+                    at: now
+                )
+
+                separator
+                controls(activeSessions: activeSessions)
             }
-
-            recentEvents
-
-            Button(action: openAllHistory) {
-                Text(Self.showAllHistoryTitle)
-                    .font(.system(size: 12))
-                    .foregroundColor(.accentColor)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
+            .animation(
+                reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.88),
+                value: activeSessions.map(\.id)
+            )
+            .animation(
+                reduceMotion ? nil : .easeOut(duration: 0.24),
+                value: isInactiveExpanded
+            )
+        }
+        .padding(7)
+        .frame(width: 306)
+        .modifier(MenuBarBackgroundModifier())
+        .background(
+            WindowAccessor { window in
+                if #unavailable(macOS 26.0) {
+                    window.isOpaque = false
+                    window.backgroundColor = .clear
+                    window.hasShadow = false
+                }
+                WindowManager.shared.menuBarWindow = window
             }
-            .buttonStyle(.plain)
+        )
+        .onAppear {
+            appState.refresh()
+        }
+        .onDisappear {
+            drawerAnimationTask?.cancel()
+            drawerAnimationTask = nil
+            isAnimatingInactiveDrawer = false
+        }
+        .task {
+            await appState.requestPolicy.refresh()
+        }
+    }
 
-            separator
+    // MARK: - Header
 
-            copyPublicKeyMenu
+    private func header(activeCount: Int) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text(ClavisUIStrings.Common.appName)
+                .font(.system(size: 13, weight: .semibold))
+                .tracking(-0.15)
+            Spacer(minLength: 12)
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(statusDotColor(activeCount: activeCount))
+                    .frame(width: 6, height: 6)
+                    .accessibilityHidden(true)
+                Text(statusText(activeCount: activeCount))
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.numericText())
+            }
+            .accessibilityElement(children: .combine)
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 5)
+        .padding(.bottom, 6)
+    }
 
+    private func statusDotColor(activeCount: Int) -> Color {
+        if !appState.isSocketActive {
+            return .secondary
+        }
+        return activeCount > 0 ? DesignTokens.accentGreen : DesignTokens.textTertiary
+    }
+
+    private func statusText(activeCount: Int) -> String {
+        if !appState.isSocketActive {
+            return ClavisUIStrings.MenuBar.agentOffline
+        }
+        return activeCount > 0
+            ? ClavisUIStrings.MenuBar.unlockedCount(activeCount)
+            : ClavisUIStrings.MenuBar.allLocked
+    }
+
+    private var separator: some View {
+        Divider()
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+    }
+
+    // MARK: - Active & Inactive Key Sections
+
+    @ViewBuilder
+    private func keysContent(
+        activeSessions: [MenuBarSession],
+        inactiveKeys: [SSHKeyInfo],
+        at now: Date
+    ) -> some View {
+        let visibleRows = activeSessions.count + (isInactiveExpanded ? inactiveKeys.count : 0)
+        if visibleRows > 8 {
+            ScrollView {
+                keysStack(activeSessions: activeSessions, inactiveKeys: inactiveKeys, at: now)
+            }
+            .frame(maxHeight: 300)
+        } else {
+            keysStack(activeSessions: activeSessions, inactiveKeys: inactiveKeys, at: now)
+        }
+    }
+
+    @ViewBuilder
+    private func keysStack(
+        activeSessions: [MenuBarSession],
+        inactiveKeys: [SSHKeyInfo],
+        at now: Date
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            activeSection(activeSessions, at: now)
+
+            if !inactiveKeys.isEmpty {
+                separator
+                inactiveSection(inactiveKeys)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func activeSection(_ sessions: [MenuBarSession], at now: Date) -> some View {
+        if sessions.isEmpty {
+            Text(appState.keys.isEmpty
+                 ? ClavisUIStrings.MenuBar.noKeysAvailable
+                 : ClavisUIStrings.MenuBar.quietAllLocked)
+                .font(.system(size: 11.5))
+                .foregroundStyle(DesignTokens.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 10)
+        } else {
+            VStack(spacing: 1) {
+                ForEach(sessions) { session in
+                    MenuBarActiveKeyRow(
+                        session: session,
+                        now: now,
+                        reduceMotion: reduceMotion,
+                        suppressHover: isAnimatingInactiveDrawer,
+                        onLock: { lockSession(session) }
+                    )
+                    .transition(rowTransition)
+                }
+            }
+        }
+    }
+
+    private func inactiveSection(_ keys: [SSHKeyInfo]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            InactiveDisclosureButton(
+                count: keys.count,
+                isExpanded: isInactiveExpanded,
+                isPulsing: pulseInactive,
+                reduceMotion: reduceMotion,
+                action: toggleInactiveSection
+            )
+            .zIndex(1)
+
+            VStack(spacing: 0) {
+                if isInactiveExpanded {
+                    VStack(spacing: 1) {
+                        ForEach(keys) { key in
+                            MenuBarInactiveKeyRow(
+                                key: key,
+                                policyTitle: appState.gracePeriod(for: key).shortMenuTitle,
+                                reduceMotion: reduceMotion,
+                                suppressHover: isAnimatingInactiveDrawer
+                            )
+                        }
+                    }
+                    .padding(.top, 1)
+                    .padding(.bottom, 2)
+                    .transition(reduceMotion ? .identity : .opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            .clipped()
+            .allowsHitTesting(!isAnimatingInactiveDrawer)
+        }
+    }
+
+    private func toggleInactiveSection() {
+        if reduceMotion {
+            isInactiveExpanded.toggle()
+            return
+        }
+        isAnimatingInactiveDrawer = true
+        withAnimation(.easeOut(duration: 0.24)) {
+            isInactiveExpanded.toggle()
+        }
+        drawerAnimationTask?.cancel()
+        drawerAnimationTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 280_000_000)
+            guard !Task.isCancelled else { return }
+            isAnimatingInactiveDrawer = false
+        }
+    }
+
+    private var rowTransition: AnyTransition {
+        if reduceMotion {
+            return .identity
+        }
+        return .asymmetric(
+            insertion: .opacity.combined(with: .move(edge: .top)).combined(with: .scale(scale: 0.98)),
+            removal: .opacity.combined(with: .scale(scale: 0.96))
+        )
+    }
+
+    // MARK: - Footer Controls
+
+    private func controls(activeSessions: [MenuBarSession]) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
             MenuBarActionItem(
-                title: Self.lockNowTitle,
+                title: Self.lockActionTitle(for: activeSessions),
                 icon: "lock",
                 shortcut: "⌘L"
             ) {
-                WindowManager.shared.dismissMenuBarExtra()
-                PanelLockController.shared.lock(reason: .lockNow)
+                triggerLockNow(activeSessions: activeSessions)
             }
 
             MenuBarActionItem(
@@ -90,150 +301,81 @@ public struct MenuBarView: View {
                 WindowManager.shared.dismissMenuBarExtra()
                 WindowManager.shared.openKeyManager()
             }
-        }
-        .padding(6)
-        .frame(width: 306)
-        .modifier(MenuBarBackgroundModifier())
-        .onReceive(NotchPromptWindowController.shared.queueChanges) { pendingApprovals = $0 }
-        .background(
-            WindowAccessor { window in
-                window.isOpaque = false
-                window.backgroundColor = .clear
-                window.hasShadow = false
-                WindowManager.shared.menuBarWindow = window
+
+            separator
+
+            MenuBarActionItem(
+                title: ClavisUIStrings.MenuBar.quit,
+                icon: "power",
+                shortcut: "⌘Q"
+            ) {
+                WindowManager.shared.dismissMenuBarExtra()
+                NSApp?.terminate(nil)
             }
-        )
-        .onAppear {
-            appState.refresh()
-            history.query.limit = Self.recentEventLimit
-            history.updateKeys(appState.keys)
-            if history.records.isEmpty && !history.isLoading { history.reload() }
         }
-        .onChange(of: appState.keys) { _, newKeys in history.updateKeys(newKeys) }
-        .task { await appState.requestPolicy.refresh() }
     }
 
-    // MARK: - Status
+    // MARK: - Actions
 
-    private var header: some View {
-        HStack(alignment: .center) {
-            Text(ClavisUIStrings.Common.appName)
-                .font(.system(size: 13, weight: .semibold))
-            Spacer(minLength: 12)
-            if pendingApprovals > 0 {
-                Text("\(pendingApprovals)")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Capsule().fill(DesignTokens.accentOrange))
+    private func lockSession(_ session: MenuBarSession) {
+        let performLock = {
+            switch session.target {
+            case .git(let keyLabel):
+                appState.revokeGitGrace(for: keyLabel)
+            case .agent(let sessionID):
+                appState.endAgentSession(id: sessionID)
             }
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(appState.isSocketActive ? DesignTokens.accentGreen : Color.secondary)
-                    .frame(width: 6, height: 6)
-                    .accessibilityHidden(true)
-                Text(appState.isSocketActive
-                     ? appState.requestPolicy.status
-                     : ClavisUIStrings.MenuBar.agentOffline)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-            .accessibilityElement(children: .combine)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-    }
-
-    private var separator: some View {
-        Divider().padding(.horizontal, 9)
-    }
-
-    // MARK: - Recent events
-
-    /// Signing decisions only (config/lifecycle records are not signing events).
-    private var recentSigningRecords: [AuditRecord] {
-        Self.recentSigningRecords(from: history.records, limit: Self.recentEventLimit)
-    }
-
-    static func recentSigningRecords(from records: [AuditRecord], limit: Int) -> [AuditRecord] {
-        records
-            .filter { $0.event.type == .signature || $0.event.type == .suppressed }
-            .prefix(limit)
-            .map { $0 }
-    }
-
-    @ViewBuilder
-    private var recentEvents: some View {
-        let records = recentSigningRecords
-        if records.isEmpty {
-            Text(Self.noEventsTitle)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 8)
+        if reduceMotion {
+            performLock()
         } else {
-            VStack(spacing: 1) {
-                ForEach(records, id: \.seq) { record in
-                    MenuBarEventRow(record: record, viewModel: history, keys: appState.keys) {
-                        openHistory(for: record)
-                    }
+            withAnimation(.spring(response: 0.26, dampingFraction: 0.88)) {
+                performLock()
+            }
+        }
+        triggerInactivePulseIfCollapsed()
+    }
+
+    private func triggerLockNow(activeSessions: [MenuBarSession]) {
+        let lockAllAgentOnly = !activeSessions.isEmpty && activeSessions.allSatisfy(\.isAgentKey)
+        let performLock = {
+            if lockAllAgentOnly {
+                appState.revokeAllAgentSessionsAsync()
+                lock.lock(reason: .lockNow)
+            } else {
+                // INV-21 / D-40: Lock Now clears Personal & Git grants plus panel state while leaving Agent leases intact.
+                appState.lockNow()
+                if lock !== PanelLockController.shared {
+                    lock.lock(reason: .lockNow)
                 }
+            }
+        }
+        if reduceMotion {
+            performLock()
+        } else {
+            withAnimation(.spring(response: 0.26, dampingFraction: 0.88)) {
+                performLock()
+            }
+        }
+        if !activeSessions.isEmpty {
+            triggerInactivePulseIfCollapsed()
+        }
+    }
+
+    private func triggerInactivePulseIfCollapsed() {
+        guard !isInactiveExpanded, !reduceMotion else { return }
+        withAnimation(.easeOut(duration: 0.16)) {
+            pulseInactive = true
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 320_000_000)
+            withAnimation(.easeOut(duration: 0.22)) {
+                pulseInactive = false
             }
         }
     }
 
-    private func openHistory(for record: AuditRecord) {
-        WindowManager.shared.dismissMenuBarExtra()
-        WindowManager.shared.openKeyManager()
-        appState.openHistoryPane(forKeyFingerprint: record.event.keyFingerprint)
-    }
-
-    private func openAllHistory() {
-        WindowManager.shared.dismissMenuBarExtra()
-        WindowManager.shared.openKeyManager()
-        appState.openHistoryPane()
-    }
-
-    // MARK: - Copy public key
-
-    private var copyPublicKeyMenu: some View {
-        Menu {
-            if appState.keys.isEmpty {
-                Text(ClavisUIStrings.MenuBar.noKeysAvailable)
-            }
-            ForEach(appState.keys) { key in
-                Button(key.label) {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(key.publicKeyOpenSSH, forType: .string)
-                }
-            }
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: "doc.on.doc")
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
-                    .frame(width: 16)
-                Text(Self.copyPublicKeyTitle)
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundColor(.primary)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(.secondary)
-            }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 7)
-            .contentShape(Rectangle())
-        }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .accessibilityLabel(Self.copyPublicKeyTitle)
-    }
-
-    // MARK: - Error banner
+    // MARK: - Error Banner
 
     private func errorBanner(_ message: String) -> some View {
         HStack(alignment: .top, spacing: 9) {
@@ -250,82 +392,351 @@ public struct MenuBarView: View {
             .accessibilityLabel(ClavisUIStrings.Common.cancel)
         }
         .foregroundStyle(.red)
-        .padding(9)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
     }
 }
 
-/// One recent signing event: ✓/✕ mark + key · requesting app · time. Clicking opens History
-/// scoped to the event's key.
-struct MenuBarEventRow: View {
-    let record: AuditRecord
-    var viewModel: HistoryViewModel
-    let keys: [SSHKeyInfo]
-    let onOpen: () -> Void
+// MARK: - Active & Inactive Key Rows
+
+private struct MenuBarActiveKeyRow: View {
+    let session: MenuBarSession
+    let now: Date
+    let reduceMotion: Bool
+    let suppressHover: Bool
+    let onLock: () -> Void
 
     @State private var isHovered = false
 
-    private var event: AuditEvent { record.event }
-    private var result: HistoryResult { HistoryResult(event.result) }
-
-    private var keyName: String {
-        if let fp = event.keyFingerprint,
-           let current = keys.first(where: { $0.fingerprint == fp }) {
-            return current.label
-        }
-        let sens = viewModel.resolvedSensitive(for: record)
-        if let label = sens.keyLabel, !label.isEmpty { return label }
-        if let fp = event.keyFingerprint { return String(fp.prefix(16)) }
-        return "Unknown key"
+    private var effectiveHovered: Bool {
+        isHovered && !suppressHover
     }
 
-    private var callerName: String? {
-        let sens = viewModel.resolvedSensitive(for: record)
-        guard let name = sens.callerName, !name.isEmpty else { return nil }
-        return name
-    }
-
-    private var timeText: String {
-        event.time.formatted(Date.FormatStyle(date: .omitted, time: .shortened))
+    private var hasPublicKey: Bool {
+        guard let pub = session.publicKeyOpenSSH else { return false }
+        return !pub.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
-        Button(action: onOpen) {
-            HStack(spacing: 7) {
-                Image(systemName: result == .approved ? "checkmark" : "xmark")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(result == .approved ? DesignTokens.accentGreen : .red)
-                    .frame(width: 12)
-                    .accessibilityHidden(true)
-                Text(keyName)
-                    .font(.system(size: 12, weight: .medium))
+        HStack(spacing: 9) {
+            keyIconWell
+            VStack(alignment: .leading, spacing: 1) {
+                Text(session.keyLabel)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
-                    .truncationMode(.middle)
-                if let callerName {
-                    Text("· \(callerName)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 6)
-                Text(timeText)
-                    .font(.system(size: 11).monospacedDigit())
+                    .truncationMode(.tail)
+                Text(session.subtitle)
+                    .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
-                    .fixedSize()
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
-            .padding(.horizontal, 9)
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+            trailingSwap
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(effectiveHovered ? Color.primary.opacity(0.085) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = suppressHover ? false : hovering
+        }
+        .onChange(of: suppressHover) { _, suppressed in
+            if suppressed {
+                isHovered = false
+            }
+        }
+        .help(session.keyLabel)
+        .contextMenu {
+            if let pub = session.publicKeyOpenSSH, hasPublicKey {
+                Button(ClavisUIStrings.MenuBar.copyPublicKey) {
+                    copyToPasteboard(pub)
+                }
+            }
+            Button(ClavisUIStrings.MenuBar.lockKey(session.keyLabel), action: onLock)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(session.keyLabel), \(session.subtitle), \(session.remainingTime(at: now))")
+        .accessibilityAction(named: ClavisUIStrings.MenuBar.lockKey(session.keyLabel), onLock)
+        .accessibilityAction(named: ClavisUIStrings.MenuBar.copyPublicKey) {
+            if let pub = session.publicKeyOpenSSH, hasPublicKey {
+                copyToPasteboard(pub)
+            }
+        }
+    }
+
+    private var keyIconWell: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.primary.opacity(0.08))
+            Image(systemName: session.iconSystemName)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.primary)
+        }
+        .frame(width: 20, height: 20)
+        .accessibilityHidden(true)
+    }
+
+    private var trailingSwap: some View {
+        ZStack(alignment: .trailing) {
+            timeLabel
+                .opacity(effectiveHovered ? 0 : 1)
+                .offset(x: effectiveHovered ? -6 : 0)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.13), value: effectiveHovered)
+
+            HStack(spacing: 4) {
+                if let pub = session.publicKeyOpenSSH, hasPublicKey {
+                    MenuBarCopyButton(publicKey: pub, keyLabel: session.keyLabel)
+                }
+                MenuBarMiniIconButton(
+                    icon: "lock",
+                    help: ClavisUIStrings.MenuBar.lockKey(session.keyLabel),
+                    action: onLock
+                )
+            }
+            .opacity(effectiveHovered ? 1 : 0)
+            .offset(x: effectiveHovered ? 0 : 6)
+            .allowsHitTesting(effectiveHovered)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: effectiveHovered)
+        }
+        .frame(minWidth: 50, alignment: .trailing)
+    }
+
+    @ViewBuilder
+    private var timeLabel: some View {
+        if session.endsAtLock {
+            HStack(spacing: 3.5) {
+                Image(systemName: "lock.display")
+                    .font(.system(size: 10.5, weight: .medium))
+                Text(ClavisUIStrings.MenuBar.endsOnLock)
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(.secondary)
+        } else {
+            Text(session.remainingTime(at: now))
+                .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                .foregroundStyle(session.isExpiringSoon(at: now) ? DesignTokens.accentOrange : .primary)
+        }
+    }
+}
+
+private struct MenuBarInactiveKeyRow: View {
+    let key: SSHKeyInfo
+    let policyTitle: String
+    let reduceMotion: Bool
+    let suppressHover: Bool
+
+    @State private var isHovered = false
+
+    private var effectiveHovered: Bool {
+        isHovered && !suppressHover
+    }
+
+    private var presentation: LibraryKeyPresentation {
+        LibraryKeyPresentation(profile: key.effectiveAccessProfile)
+    }
+
+    private var hasPublicKey: Bool {
+        !key.publicKeyOpenSSH.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: presentation.tileSymbol)
+                .font(.system(size: 11))
+                .foregroundStyle(DesignTokens.textTertiary)
+                .frame(width: 20, height: 20)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(key.label)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(presentation.typeTitle)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+            ZStack(alignment: .trailing) {
+                Text(policyTitle)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(DesignTokens.textTertiary)
+                    .opacity(effectiveHovered && hasPublicKey ? 0 : 1)
+                    .offset(x: effectiveHovered && hasPublicKey ? -6 : 0)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.13), value: effectiveHovered)
+
+                if hasPublicKey {
+                    MenuBarCopyButton(publicKey: key.publicKeyOpenSSH, keyLabel: key.label)
+                        .opacity(effectiveHovered ? 1 : 0)
+                        .offset(x: effectiveHovered ? 0 : 6)
+                        .allowsHitTesting(effectiveHovered)
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: effectiveHovered)
+                }
+            }
+            .frame(minWidth: 48, alignment: .trailing)
+            .fixedSize(horizontal: true, vertical: false)
+            .layoutPriority(1)
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 10)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(effectiveHovered ? Color.primary.opacity(0.085) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = suppressHover ? false : hovering
+        }
+        .onChange(of: suppressHover) { _, suppressed in
+            if suppressed {
+                isHovered = false
+            }
+        }
+        .help(key.label)
+        .contextMenu {
+            if hasPublicKey {
+                Button(ClavisUIStrings.MenuBar.copyPublicKey) {
+                    copyToPasteboard(key.publicKeyOpenSSH)
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(key.label), \(presentation.typeTitle), \(policyTitle)")
+        .accessibilityAction(named: ClavisUIStrings.MenuBar.copyPublicKey) {
+            if hasPublicKey {
+                copyToPasteboard(key.publicKeyOpenSSH)
+            }
+        }
+    }
+}
+
+private struct InactiveDisclosureButton: View {
+    let count: Int
+    let isExpanded: Bool
+    let isPulsing: Bool
+    let reduceMotion: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: "lock")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(isPulsing ? .primary : .secondary)
+                    .frame(width: 16)
+                Text(ClavisUIStrings.MenuBar.inactiveKeysCount(count))
+                    .font(.system(size: 12))
+                    .foregroundStyle(isPulsing ? .primary : .secondary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(DesignTokens.textTertiary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: isExpanded)
+            }
+            .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(
+                        isPulsing
+                            ? Color.primary.opacity(0.11)
+                            : (isHovered ? Color.primary.opacity(0.085) : Color.clear)
+                    )
             )
+            .scaleEffect(isPulsing ? 1.012 : 1.0)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .help("\(keyName) · \(result.title) · \(timeText)")
-        .accessibilityLabel("\(keyName), \(result.title), \(timeText)")
+        .accessibilityLabel(ClavisUIStrings.MenuBar.inactiveKeysCount(count))
+        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
     }
 }
+
+private struct MenuBarCopyButton: View {
+    let publicKey: String
+    let keyLabel: String
+
+    @State private var isCopied = false
+    @State private var resetTask: Task<Void, Never>?
+
+    var body: some View {
+        MenuBarMiniIconButton(
+            icon: isCopied ? "checkmark" : "doc.on.doc",
+            foregroundColor: isCopied ? DesignTokens.accentGreen : .primary,
+            help: ClavisUIStrings.MenuBar.copyPublicKey,
+            accessibilityLabel: "\(ClavisUIStrings.MenuBar.copyPublicKey) (\(keyLabel))"
+        ) {
+            copyToPasteboard(publicKey)
+            isCopied = true
+            resetTask?.cancel()
+            resetTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                guard !Task.isCancelled else { return }
+                isCopied = false
+            }
+        }
+        .onDisappear {
+            resetTask?.cancel()
+            resetTask = nil
+        }
+    }
+}
+
+private struct MenuBarMiniIconButton: View {
+    let icon: String
+    var foregroundColor: Color = .primary
+    let help: String
+    var accessibilityLabel: String? = nil
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(foregroundColor)
+                .frame(width: 22, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isHovered ? Color.primary.opacity(0.16) : Color.primary.opacity(0.09))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.5)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(help)
+        .accessibilityLabel(accessibilityLabel ?? help)
+    }
+}
+
+private func copyToPasteboard(_ value: String) {
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(value, forType: .string)
+}
+
+// MARK: - Action Item & Shell Chrome
 
 struct MenuBarActionItem: View {
     let title: String
@@ -394,10 +805,10 @@ struct MenuBarActionItem: View {
             HStack(spacing: 9) {
                 Image(systemName: icon)
                     .font(.system(size: 12))
-                    .foregroundColor(isDestructive ? .red : .secondary)
+                    .foregroundColor(isDestructive ? .red : (isHovered ? .primary : .secondary))
                     .frame(width: 16)
                 Text(title)
-                    .font(.system(size: 12, weight: .regular))
+                    .font(.system(size: 12.5, weight: .regular))
                     .foregroundColor(isDestructive ? .red : .primary)
                 Spacer()
                 if !shortcut.isEmpty {
@@ -406,11 +817,11 @@ struct MenuBarActionItem: View {
                         .foregroundColor(.secondary)
                 }
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isHovered ? (isDestructive ? Color.red.opacity(0.12) : Color.primary.opacity(0.08)) : Color.clear)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isHovered ? (isDestructive ? Color.red.opacity(0.12) : Color.primary.opacity(0.085)) : Color.clear)
             )
             .contentShape(Rectangle())
         }
@@ -427,20 +838,32 @@ struct MenuBarActionItem: View {
 }
 
 private struct MenuBarBackgroundModifier: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    @ViewBuilder
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
             content
-                .glassEffect(
-                    .regular,
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-                )
         } else {
-            content
-                .background(
-                    VisualEffectView(material: .menu, blendingMode: .behindWindow)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .ignoresSafeArea()
-                )
+            let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+            if reduceTransparency {
+                content
+                    .background(
+                        shape
+                            .fill(Color(nsColor: .windowBackgroundColor))
+                    )
+                    .overlay(
+                        shape
+                            .strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.5)
+                    )
+            } else {
+                content
+                    .background(
+                        VisualEffectView(material: .menu, blendingMode: .behindWindow)
+                            .clipShape(shape)
+                            .ignoresSafeArea()
+                    )
+            }
         }
     }
 }
