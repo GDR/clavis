@@ -125,6 +125,17 @@ public class AgentSessionViewModel {
         }
     }
 
+    public func revokeAllAgentSessionsAsync() {
+        let lifecycle = self.agentLifecycle
+        Task.detached { [weak self] in
+            _ = lifecycle.revokeAllAgentSessions()
+            let sessions = lifecycle.listAgentSessions()
+            await MainActor.run { [weak self] in
+                self?.agentSessions = sessions
+            }
+        }
+    }
+
     @discardableResult
     public nonisolated func revokeAllAgentSessions() -> Int {
         let count = agentLifecycle.revokeAllAgentSessions()

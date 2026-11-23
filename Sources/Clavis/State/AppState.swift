@@ -22,6 +22,8 @@ public struct ActiveGitGraceInfo: Equatable, Identifiable, Sendable {
     public let remainingSeconds: Int
     public let remainingOperations: Int
     public let expiresAt: Date
+    public let endsAtLock: Bool
+    public let callerName: String?
 
     public var formattedRemainingTime: String {
         let mins = remainingSeconds / 60
@@ -29,10 +31,19 @@ public struct ActiveGitGraceInfo: Equatable, Identifiable, Sendable {
         return String(format: "%d:%02d", mins, secs)
     }
 
-    public init(keyLabel: String, remainingSeconds: Int, remainingOperations: Int, observedAt: Date = Date()) {
+    public init(
+        keyLabel: String,
+        remainingSeconds: Int,
+        remainingOperations: Int,
+        observedAt: Date = Date(),
+        endsAtLock: Bool = false,
+        callerName: String? = nil
+    ) {
         self.keyLabel = keyLabel
         self.remainingSeconds = remainingSeconds
         self.remainingOperations = remainingOperations
+        self.endsAtLock = endsAtLock
+        self.callerName = callerName
         self.expiresAt = observedAt.addingTimeInterval(TimeInterval(max(0, remainingSeconds)))
     }
 }
@@ -219,6 +230,10 @@ public class AppState {
     @discardableResult
     public nonisolated func revokeAllAgentSessions() -> Int {
         agentSessionViewModel.revokeAllAgentSessions()
+    }
+
+    public func revokeAllAgentSessionsAsync() {
+        agentSessionViewModel.revokeAllAgentSessionsAsync()
     }
 
     @discardableResult

@@ -81,34 +81,30 @@ public class SettingsViewModel {
     @MainActor
     public func updateGitGraceState() {
         if isDaemonMode || sshAgentServer.isSocketActive {
-            let gitGrants = GitSigningGraceManager.shared.allActiveGrants().map {
+            self.activeGitGraces = GitSigningGraceManager.shared.allActiveGrantSnapshots().map {
                 ActiveGitGraceInfo(
                     keyLabel: $0.keyLabel,
                     remainingSeconds: $0.remainingSeconds,
-                    remainingOperations: $0.remainingOperations
+                    remainingOperations: $0.remainingOperations,
+                    endsAtLock: $0.endsAtLock,
+                    callerName: $0.callerName
                 )
             }
-            let personalGrants = GitSigningGraceManager.shared.allActivePersonalGrants().map {
-                ActiveGitGraceInfo(
-                    keyLabel: $0.keyLabel,
-                    remainingSeconds: $0.remainingSeconds,
-                    remainingOperations: $0.remainingOperations
-                )
-            }
-            self.activeGitGraces = gitGrants + personalGrants
             self.activeGitGrace = self.activeGitGraces.first
             return
         }
         let lifecycle = self.agentLifecycle
         Task.detached { [weak self] in
-            let remotes = lifecycle.queryAllAgentGitGraces()
+            let remotes = lifecycle.queryAllActiveGrants()
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
                 self.activeGitGraces = remotes.map {
                     ActiveGitGraceInfo(
                         keyLabel: $0.keyLabel,
                         remainingSeconds: $0.remainingSeconds,
-                        remainingOperations: $0.remainingOperations
+                        remainingOperations: $0.remainingOperations,
+                        endsAtLock: $0.endsAtLock,
+                        callerName: $0.callerName
                     )
                 }
                 self.activeGitGrace = self.activeGitGraces.first
