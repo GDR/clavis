@@ -1,27 +1,27 @@
 .beads/
 .build/
+.claude/settings.local.json
 .direnv/
 .DS_Store
 .planning/
 .plans/
 .ux/
+*.md
+!BENCHMARK_REPORT.md
+!docs/halo-lock-screen-validation.md
+!docs/personal-bot-routing.md
+!docs/redesign/assessment.md
+!docs/redesign/authentication-validation.md
+!docs/redesign/authorization-contract.md
+!docs/redesign/user-stories.md
+!README.md
+!SECURITY.md
+!ui/redesign/directions/NAVIGATION.md
+clavis-macos-*.dmg
+clavis-macos-*.dmg.sha256
 clavis-macos-*.tar.gz
 clavis-macos-*.tar.gz.sha256
 result
-clavis-macos-*.dmg
-clavis-macos-*.dmg.sha256
-*.md
-!README.md
-!docs/personal-bot-routing.md
-!docs/halo-lock-screen-validation.md
-!docs/redesign/assessment.md
-!docs/redesign/authorization-contract.md
-!docs/redesign/user-stories.md
-!docs/redesign/authentication-validation.md
-!ui/redesign/directions/NAVIGATION.md
-!SECURITY.md
-!BENCHMARK_REPORT.md
-.claude/settings.local.json
 
 
 # Beads / Dolt files (added by bd init)
