@@ -6,6 +6,7 @@
 .planning/
 .plans/
 .ux/
+.vscode/
 *.md
 !BENCHMARK_REPORT.md
 !docs/halo-lock-screen-validation.md
