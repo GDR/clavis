@@ -18,10 +18,54 @@ struct MenuBarSession: Identifiable, Equatable {
     let expiresAt: Date
     let endsAtLock: Bool
     let callerName: String?
+    let scopeLabel: String?
+    let isBroadScope: Bool
+
+    init(
+        target: Target,
+        keyLabel: String,
+        keyFingerprint: String?,
+        publicKeyOpenSSH: String?,
+        purpose: KeyPurpose,
+        accessProfile: KeyAccessProfile,
+        expiresAt: Date,
+        endsAtLock: Bool,
+        callerName: String?,
+        scopeLabel: String? = nil,
+        isBroadScope: Bool = false
+    ) {
+        self.target = target
+        self.keyLabel = keyLabel
+        self.keyFingerprint = keyFingerprint
+        self.publicKeyOpenSSH = publicKeyOpenSSH
+        self.purpose = purpose
+        self.accessProfile = accessProfile
+        self.expiresAt = expiresAt
+        self.endsAtLock = endsAtLock
+        self.callerName = callerName
+        self.scopeLabel = scopeLabel
+        self.isBroadScope = isBroadScope
+    }
 
     var toolName: String? { callerName }
     var isAgentKey: Bool { accessProfile.type == .bot }
     var iconSystemName: String { isAgentKey ? "cpu" : "person.fill" }
+    var callerDisplayName: String {
+        if let callerName = callerName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !callerName.isEmpty {
+            return callerName
+        }
+        return isAgentKey ? "Agent" : "Terminal"
+    }
+    var effectiveScopeLabel: String {
+        if let scopeLabel, !scopeLabel.isEmpty {
+            return scopeLabel
+        }
+        if purpose == .gitSigningOnly {
+            return "Git signing"
+        }
+        return isAgentKey ? "SSH" : "Git signing"
+    }
 
     var subtitle: String {
         if let callerName = callerName?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -63,7 +107,8 @@ struct MenuBarSession: Identifiable, Equatable {
         gitGraces: [ActiveGitGraceInfo],
         agentSessions: [AgentSessionSummary],
         keys: [SSHKeyInfo],
-        at date: Date
+        at date: Date,
+        shareAcrossSSHHosts: (SSHKeyInfo?) -> Bool = { _ in false }
     ) -> [Self] {
         var groupedGit: [String: [ActiveGitGraceInfo]] = [:]
         for grace in gitGraces where grace.expiresAt > date && grace.remainingOperations > 0 {
@@ -78,6 +123,8 @@ struct MenuBarSession: Identifiable, Equatable {
             let caller = grants
                 .compactMap { $0.callerName?.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .first { !$0.isEmpty }
+            let broad = accessProfile.capabilities.ssh && shareAcrossSSHHosts(key)
+            let scope = broad ? ClavisUIStrings.MenuBar.anyHost : "Git signing"
             return Self(
                 target: .git(keyLabel: label),
                 keyLabel: label,
@@ -87,7 +134,9 @@ struct MenuBarSession: Identifiable, Equatable {
                 accessProfile: accessProfile,
                 expiresAt: maxExpiresAt,
                 endsAtLock: grants.contains(where: \.endsAtLock),
-                callerName: caller
+                callerName: caller,
+                scopeLabel: scope,
+                isBroadScope: broad
             )
         }
 
@@ -98,6 +147,15 @@ struct MenuBarSession: Identifiable, Equatable {
             let purpose = key?.purpose ?? .agent
             let accessProfile = key?.effectiveAccessProfile ?? KeyAccessProfile(legacyPurpose: purpose)
             let trimmedTool = session.toolName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let broad = shareAcrossSSHHosts(key)
+            let scope: String
+            if broad {
+                scope = accessProfile.capabilities.signature
+                    ? ClavisUIStrings.MenuBar.anyHostAndGit
+                    : ClavisUIStrings.MenuBar.anyHost
+            } else {
+                scope = accessProfile.capabilities.ssh ? "SSH" : "Git signing"
+            }
             return Self(
                 target: .agent(sessionID: session.id),
                 keyLabel: session.keyLabel,
@@ -107,7 +165,9 @@ struct MenuBarSession: Identifiable, Equatable {
                 accessProfile: accessProfile,
                 expiresAt: session.expiresAt,
                 endsAtLock: false,
-                callerName: trimmedTool.isEmpty ? nil : trimmedTool
+                callerName: trimmedTool.isEmpty ? nil : trimmedTool,
+                scopeLabel: scope,
+                isBroadScope: broad
             )
         }
 
@@ -116,6 +176,34 @@ struct MenuBarSession: Identifiable, Equatable {
             if order != .orderedSame { return order == .orderedAscending }
             if $0.expiresAt != $1.expiresAt { return $0.expiresAt < $1.expiresAt }
             return String(describing: $0.target) < String(describing: $1.target)
+        }
+    }
+
+    static func groupedByKey(_ sessions: [Self]) -> [MenuBarKeyGroup] {
+        var order: [String] = []
+        var buckets: [String: [Self]] = [:]
+        for session in sessions {
+            let groupID: String
+            if let fp = session.keyFingerprint, !fp.isEmpty {
+                groupID = "fp:\(fp)"
+            } else {
+                groupID = "lbl:\(session.keyLabel)"
+            }
+            if buckets[groupID] == nil {
+                order.append(groupID)
+            }
+            buckets[groupID, default: []].append(session)
+        }
+        return order.compactMap { groupID in
+            guard let items = buckets[groupID], let first = items.first else { return nil }
+            return MenuBarKeyGroup(
+                id: groupID,
+                keyLabel: first.keyLabel,
+                keyFingerprint: first.keyFingerprint,
+                publicKeyOpenSSH: first.publicKeyOpenSSH,
+                accessProfile: first.accessProfile,
+                sessions: items
+            )
         }
     }
 
@@ -133,5 +221,21 @@ struct MenuBarSession: Identifiable, Equatable {
             .sorted {
                 $0.label.localizedStandardCompare($1.label) == .orderedAscending
             }
+    }
+}
+
+/// Groups active `MenuBarSession` entries by key for V1 Inline Sub-Rows display.
+struct MenuBarKeyGroup: Identifiable, Equatable {
+    let id: String
+    let keyLabel: String
+    let keyFingerprint: String?
+    let publicKeyOpenSSH: String?
+    let accessProfile: KeyAccessProfile
+    let sessions: [MenuBarSession]
+
+    var isAgentKey: Bool { accessProfile.type == .bot }
+    var iconSystemName: String { isAgentKey ? "cpu" : "person.fill" }
+    var purposeSummary: String {
+        LibraryKeyPresentation(profile: accessProfile).purposeSummary
     }
 }

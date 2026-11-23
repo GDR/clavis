@@ -146,4 +146,73 @@ struct MenuBarSessionTests {
         let inactive = MenuBarSession.inactiveKeys(from: allKeys, active: active)
         #expect(inactive.map(\.label) == ["Beta", "Zeta"])
     }
+
+    @Test func groupedByKeyGroupsMultiSessionAgentAndPersonalKeys() {
+        let keys = [
+            key("GitHub", purpose: .general, fingerprint: "fp-gh"),
+            key("Agent Deploy", purpose: .agent, fingerprint: "fp-ag")
+        ]
+        let rows = MenuBarSession.active(
+            gitGraces: [
+                ActiveGitGraceInfo(keyLabel: "GitHub", remainingSeconds: 180, remainingOperations: 5, observedAt: now, callerName: "Terminal")
+            ],
+            agentSessions: [
+                AgentSessionSummary(id: "s1", keyLabel: "Agent Deploy", keyFingerprint: "fp-ag", toolName: "Claude Code", rootPid: 11, startedAt: now, expiresAt: now.addingTimeInterval(600)),
+                AgentSessionSummary(id: "s2", keyLabel: "Agent Deploy", keyFingerprint: "fp-ag", toolName: "Cursor", rootPid: 12, startedAt: now, expiresAt: now.addingTimeInterval(900))
+            ],
+            keys: keys,
+            at: now,
+            shareAcrossSSHHosts: { $0?.label == "Agent Deploy" }
+        )
+
+        let groups = MenuBarSession.groupedByKey(rows)
+        #expect(groups.count == 2)
+
+        let agentGroup = groups.first { $0.keyLabel == "Agent Deploy" }
+        #expect(agentGroup?.sessions.count == 2)
+        #expect(agentGroup?.isAgentKey == true)
+        #expect(agentGroup?.sessions.allSatisfy(\.isBroadScope) == true)
+        #expect(agentGroup?.sessions.allSatisfy { $0.effectiveScopeLabel == ClavisUIStrings.MenuBar.anyHost } == true)
+
+        let personalGroup = groups.first { $0.keyLabel == "GitHub" }
+        #expect(personalGroup?.sessions.count == 1)
+        #expect(personalGroup?.sessions.first?.isBroadScope == false)
+        #expect(personalGroup?.sessions.first?.effectiveScopeLabel == "Git signing")
+    }
+
+    @Test func broadScopeAppliesToPersonalSSHAndDualCapabilityAgentKeys() {
+        let sshOnlyKey = SSHKeyInfo(
+            label: "Bastion",
+            publicKeyOpenSSH: "ssh-ed25519 AAAAC3 Bastion",
+            publicKeyBlob: Data(),
+            fingerprint: "fp-bastion",
+            accessProfile: KeyAccessProfile(type: .personal, capabilities: .init(ssh: true, signature: false))
+        )
+        let dualAgentKey = SSHKeyInfo(
+            label: "Dual Agent",
+            publicKeyOpenSSH: "ssh-ed25519 AAAAC3 DualAgent",
+            publicKeyBlob: Data(),
+            fingerprint: "fp-dual",
+            accessProfile: KeyAccessProfile(type: .bot, capabilities: .init(ssh: true, signature: true))
+        )
+        let sessions = MenuBarSession.active(
+            gitGraces: [
+                ActiveGitGraceInfo(keyLabel: "Bastion", remainingSeconds: 300, remainingOperations: 5, observedAt: now, callerName: "iTerm2")
+            ],
+            agentSessions: [
+                AgentSessionSummary(id: "d1", keyLabel: "Dual Agent", keyFingerprint: "fp-dual", toolName: "Claude Code", rootPid: 21, startedAt: now, expiresAt: now.addingTimeInterval(900))
+            ],
+            keys: [sshOnlyKey, dualAgentKey],
+            at: now,
+            shareAcrossSSHHosts: { _ in true }
+        )
+
+        let bastion = sessions.first { $0.keyLabel == "Bastion" }
+        #expect(bastion?.isBroadScope == true)
+        #expect(bastion?.effectiveScopeLabel == "Any host")
+
+        let dual = sessions.first { $0.keyLabel == "Dual Agent" }
+        #expect(dual?.isBroadScope == true)
+        #expect(dual?.effectiveScopeLabel == "Any host & Git")
+    }
 }

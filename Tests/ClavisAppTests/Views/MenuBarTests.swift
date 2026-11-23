@@ -285,13 +285,44 @@ final class MenuBarTests {
         ]
         appState.agentSessions = [
             AgentSessionSummary(
-                id: "s-agent",
+                id: "s-agent-1",
                 keyLabel: agentKey.label,
                 keyFingerprint: agentKey.fingerprint,
                 toolName: "Claude Code",
                 rootPid: 4242,
                 startedAt: Date(),
                 expiresAt: Date().addingTimeInterval(3580)
+            ),
+            AgentSessionSummary(
+                id: "s-agent-2",
+                keyLabel: agentKey.label,
+                keyFingerprint: agentKey.fingerprint,
+                toolName: "Cursor",
+                rootPid: 4243,
+                startedAt: Date(),
+                expiresAt: Date().addingTimeInterval(840)
+            )
+        ]
+        appState.setShareAcrossSSHHosts(true, for: agentKey)
+        // Re-seed sessions after toggling shareAcrossSSHHosts (which revokes active sessions on policy change).
+        appState.agentSessions = [
+            AgentSessionSummary(
+                id: "s-agent-1",
+                keyLabel: agentKey.label,
+                keyFingerprint: agentKey.fingerprint,
+                toolName: "Claude Code",
+                rootPid: 4242,
+                startedAt: Date(),
+                expiresAt: Date().addingTimeInterval(3580)
+            ),
+            AgentSessionSummary(
+                id: "s-agent-2",
+                keyLabel: agentKey.label,
+                keyFingerprint: agentKey.fingerprint,
+                toolName: "Cursor",
+                rootPid: 4243,
+                startedAt: Date(),
+                expiresAt: Date().addingTimeInterval(840)
             )
         ]
 

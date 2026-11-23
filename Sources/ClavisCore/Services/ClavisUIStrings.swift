@@ -155,6 +155,19 @@ public enum ClavisUIStrings {
         public static var lockNow: String { localized("menubar.lock_now", "Lock Now") }
         public static var lockAgentKeys: String { localized("menubar.lock_agent_keys", "Lock Agent Keys") }
         public static var copyPublicKey: String { localized("menubar.copy_public_key", "Copy public key") }
+        public static func activeKeysAndSessions(keys: Int, sessions: Int) -> String {
+            let keyWord = keys == 1 ? "key" : "keys"
+            let sessionWord = sessions == 1 ? "session" : "sessions"
+            return "\(keys) \(keyWord) · \(sessions) \(sessionWord)"
+        }
+        public static func activeSubCount(_ count: Int) -> String {
+            "\(count) active"
+        }
+        public static var anyHost: String { localized("menubar.any_host", "Any host") }
+        public static var anyHostAndGit: String { localized("menubar.any_host_and_git", "Any host & Git") }
+        public static func lockAllKeySessions(_ label: String) -> String {
+            localizedFormat("menubar.lock_all_key_sessions", "Lock all sessions for %@", label)
+        }
     }
 
     public enum KeyList {
