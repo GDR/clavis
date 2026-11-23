@@ -245,6 +245,22 @@ public enum KeyGracePeriod: String, CaseIterable, Identifiable, Codable, Equatab
         }
     }
 
+    public var shortMenuTitle: String {
+        switch self {
+        case .always: return "Once"
+        case .session: return "8h"
+        case .oneMinute: return "1m"
+        case .twoMinutes: return "2m"
+        case .fiveMinutes: return "5m"
+        case .tenMinutes: return "10m"
+        case .fifteenMinutes: return "15m"
+        case .oneHour: return "1h"
+        case .twoHours: return "2h"
+        case .untilLock: return "Until Lock"
+        case .oneDay: return "1d"
+        }
+    }
+
     /// D-40 / INV-21: sessions with this flag survive lock until they expire.
     public var endsAtLock: Bool { self == .untilLock }
 

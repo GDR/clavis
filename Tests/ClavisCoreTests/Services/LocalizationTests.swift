@@ -171,6 +171,15 @@ import Testing
         #expect(ClavisUIStrings.MenuBar.identitiesReady(count: 5) == "5 identities ready")
         #expect(ClavisUIStrings.MenuBar.gitSessionTitle(label: "deploy") == "Git Session: deploy")
         #expect(ClavisUIStrings.MenuBar.gitSessionDetails(timeRemaining: "4:32", opsLeft: 3) == "4:32 remaining • 3 ops left")
+        #expect(ClavisUIStrings.MenuBar.unlockedCount(2) == "2 unlocked")
+        #expect(ClavisUIStrings.MenuBar.allLocked == "All locked")
+        #expect(ClavisUIStrings.MenuBar.quietAllLocked == "Quiet · all keys locked")
+        #expect(ClavisUIStrings.MenuBar.endsOnLock == "Ends on lock")
+        #expect(ClavisUIStrings.MenuBar.inactiveKeysCount(1) == "1 inactive key")
+        #expect(ClavisUIStrings.MenuBar.inactiveKeysCount(3) == "3 inactive keys")
+        #expect(ClavisUIStrings.MenuBar.lockNow == "Lock Now")
+        #expect(ClavisUIStrings.MenuBar.lockAgentKeys == "Lock Agent Keys")
+        #expect(ClavisUIStrings.MenuBar.copyPublicKey == "Copy public key")
     }
 
     @Test func testAppSettingsAndAuth() {

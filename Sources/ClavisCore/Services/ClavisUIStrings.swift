@@ -139,6 +139,22 @@ public enum ClavisUIStrings {
         public static var quitConfirmationDetailsSimple: String {
             localized("menubar.quit_confirmation_details_simple", "Clavis will stop and active caches will be cleared.")
         }
+        public static func unlockedCount(_ count: Int) -> String {
+            localizedFormat("menubar.unlocked_count", "%d unlocked", count)
+        }
+        public static var allLocked: String { localized("menubar.all_locked", "All locked") }
+        public static var quietAllLocked: String { localized("menubar.quiet_all_locked", "Quiet · all keys locked") }
+        public static var endsOnLock: String { localized("menubar.ends_on_lock", "Ends on lock") }
+        public static func inactiveKeysCount(_ count: Int) -> String {
+            if count == 1 {
+                return localizedFormat("menubar.inactive_keys_singular", "%d inactive key", count)
+            } else {
+                return localizedFormat("menubar.inactive_keys_plural", "%d inactive keys", count)
+            }
+        }
+        public static var lockNow: String { localized("menubar.lock_now", "Lock Now") }
+        public static var lockAgentKeys: String { localized("menubar.lock_agent_keys", "Lock Agent Keys") }
+        public static var copyPublicKey: String { localized("menubar.copy_public_key", "Copy public key") }
     }
 
     public enum KeyList {
