@@ -175,15 +175,19 @@ public struct KeyDetailInspectorView: View {
     @State private var showingDeleteAlert: Bool = false
     @State private var showingRotateInfoAlert: Bool = false
     @State private var showingPolicyGuidance: Bool = false
+    @State private var showingRotateForPasswordAlert: Bool = false
     @State private var changePurposeError: String? = nil
     @State private var showingChangePurposeError: Bool = false
     @State private var lastActivityDate: Date? = nil
     @State private var lastActivityCaller: String? = nil
+    @State private var recentEvents: [RecentEventItem] = []
+    @State private var isRecentEventsExpanded: Bool = false
 
     @State private var copiedPublicKey: Bool = false
     @State private var copiedFingerprint: Bool = false
     @State private var copiedFilePath: Bool = false
 
+    @State private var expandedSessionIds: Set<String> = []
     @State private var expandedAppIds: Set<UUID> = []
     @State private var isRemoveMode: Bool = false
     @State private var selectedForRemoval: Set<UUID> = []
@@ -333,23 +337,20 @@ public struct KeyDetailInspectorView: View {
     public var body: some View {
         ScrollViewReader { scrollProxy in
         ScrollView {
-            // Prototype rhythm: 28pt side inset, 15pt below the header band, 23pt between groups.
-            VStack(alignment: .leading, spacing: 23) {
-                if !isKeyEnabled {
-                    disabledKeyCallout
-                }
+            // Finalized V05 System Settings column: centered 600pt max width, 22pt between sections.
+            VStack(alignment: .leading, spacing: 22) {
+                allowSigningCard
 
                 publicKeySection
                 confirmationSection
-                accessSection
-                recentActivitySection
-                keyLifecycleSection
+                sessionsAndAccessSection
+                activityAndLifecycleSection
             }
             .id("inspectorTop")
             .padding(.horizontal, 28)
-            .padding(.top, 15)
+            .padding(.top, 16)
             .padding(.bottom, 36)
-            .frame(maxWidth: 720, alignment: .leading)
+            .frame(maxWidth: 600, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
         // A newly selected key always opens at its top, not at the previous key's scroll offset.
@@ -372,8 +373,10 @@ public struct KeyDetailInspectorView: View {
         .onChange(of: key.id) {
             isRenaming = false
             isRemoveMode = false
+            expandedSessionIds.removeAll()
             expandedAppIds.removeAll()
             selectedForRemoval.removeAll()
+            isRecentEventsExpanded = false
             refreshLastActivity()
         }
         .alert(Self.deleteConfirmationTitle(label: key.label), isPresented: $showingDeleteAlert) {
@@ -391,6 +394,14 @@ public struct KeyDetailInspectorView: View {
             Button(ClavisUIStrings.Common.ok, role: .cancel) {}
         } message: {
             Text("Key rotation will generate a replacement Secure Enclave keypair and keep existing policy grants.")
+        }
+        .alert("Rotate Key to Use Password?", isPresented: $showingRotateForPasswordAlert) {
+            Button("Rotate Key…") {
+                rotateKey()
+            }
+            Button(ClavisUIStrings.Common.cancel, role: .cancel) {}
+        } message: {
+            Text("“\(key.label)” is bound to biometrics at creation and cannot downgrade in place (INV-08). Rotating creates a replacement key configured for Mac login password while carrying over grants and settings.")
         }
         .alert("Change confirmation policy", isPresented: $showingPolicyGuidance) {
             Button(ClavisUIStrings.Common.ok, role: .cancel) {}
@@ -569,25 +580,77 @@ public struct KeyDetailInspectorView: View {
         }
     }
 
-    /// Latest signing event for the subtitle: time plus requesting app when it can be read.
+    /// Latest signing event for the subtitle plus up to 5 recent events for the disclosure drawer.
     private func refreshLastActivity() {
         lastActivityDate = appState.lastActivityDate(for: key)
         lastActivityCaller = nil
+        recentEvents = []
         var query = AuditQuery()
         query.keyFingerprint = key.fingerprint
-        query.limit = 1
-        guard let unlockContext = PanelLockController.shared.unlockContext,
-              let store = try? AuditStore(),
-              let record = (try? store.query(query))?.first else { return }
-        let unsealer = AuditUnsealer(
-            keyring: HistoryViewModel.makeDefaultKeyring(),
-            store: store,
-            context: unlockContext
-        )
-        if case .plaintext(let sens) = unsealer.open(record),
-           let caller = sens.callerName, !caller.isEmpty {
-            lastActivityCaller = caller
+        query.limit = 5
+        guard let store = try? AuditStore(),
+              let records = try? store.query(query), !records.isEmpty else { return }
+        let unlockContext = PanelLockController.shared.unlockContext
+        let unsealer = unlockContext.map {
+            AuditUnsealer(keyring: HistoryViewModel.makeDefaultKeyring(), store: store, context: $0)
         }
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateStyle = .none
+        timeFormatter.timeStyle = .short
+        let calendar = Calendar.current
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateStyle = .medium
+        dateFormatter.timeStyle = .none
+
+        var mapped: [RecentEventItem] = []
+        for (idx, record) in records.enumerated() {
+            var caller = "Clavis"
+            var detail = record.event.type.rawValue.replacingOccurrences(of: "_", with: " ")
+            if let unsealer, case .plaintext(let sens) = unsealer.open(record) {
+                if let c = sens.callerName, !c.isEmpty {
+                    caller = c
+                }
+                if idx == 0, let c = sens.callerName, !c.isEmpty {
+                    lastActivityCaller = c
+                }
+                if let host = sens.host, !host.isEmpty {
+                    detail = host
+                } else if let op = sens.requestOperation {
+                    detail = op == .signature ? "Git signing" : "SSH"
+                }
+            }
+            let eventDate = record.event.time
+            let timeStr: String
+            if calendar.isDateInToday(eventDate) {
+                timeStr = "Today at \(timeFormatter.string(from: eventDate))"
+            } else if calendar.isDateInYesterday(eventDate) {
+                timeStr = "Yesterday \(timeFormatter.string(from: eventDate))"
+            } else {
+                timeStr = dateFormatter.string(from: eventDate)
+            }
+            let opTitle: String
+            switch (record.event.type, record.event.result) {
+            case (.signature, .allowed):
+                opTitle = "Signing allowed"
+            case (.signature, _):
+                opTitle = "Signing refused"
+            case (.sessionStart, _):
+                opTitle = "Session unlocked"
+            case (.sessionRevoke, _), (.sessionEnd, _):
+                opTitle = "Session ended"
+            default:
+                opTitle = record.event.type.rawValue.replacingOccurrences(of: "_", with: " ").capitalized
+            }
+            mapped.append(RecentEventItem(
+                id: record.event.id,
+                isAllowed: record.event.result == .allowed || record.event.result == .info,
+                app: caller,
+                operation: opTitle,
+                detail: detail,
+                time: timeStr
+            ))
+        }
+        recentEvents = mapped
     }
 
     private func keyTile(size: CGFloat, cornerRadius: CGFloat, iconSize: CGFloat) -> some View {
@@ -614,21 +677,33 @@ public struct KeyDetailInspectorView: View {
         .shadow(color: Color.black.opacity(0.18), radius: 2, x: 0, y: 1)
     }
 
-    private var disabledKeyCallout: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "pause.circle.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(DesignTokens.accentOrange)
-            Text("This key is disabled. Nothing can sign with it.")
-                .font(.system(size: 12.5))
-                .foregroundStyle(.primary)
-            Spacer()
-            settingsActionButton("Enable") {
-                changeProfile(capabilities: KeyCapabilities(ssh: true, signature: true))
+    private var allowSigningCard: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Allow signing with this key")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.primary)
+                Text(isKeyEnabled
+                     ? "Accepting SSH & Git signing requests."
+                     : "Disabled — signing requests are refused while grants and settings stay intact.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(DesignTokens.textSecondary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Toggle("", isOn: Binding(
+                get: { isKeyEnabled },
+                set: { enabled in
+                    guard enabled != isKeyEnabled else { return }
+                    toggleKeyEnabled()
+                }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .accessibilityLabel("Allow signing with this key")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
         .modifier(SettingsGroupCardModifier())
     }
 
@@ -659,7 +734,10 @@ public struct KeyDetailInspectorView: View {
 
     private var publicKeySection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionHeaderTitle("Public Key")
+            sectionHeader(
+                title: "Public Key",
+                subtitle: "Stored in Secure Enclave (\(key.algorithm)). Private key never leaves this Mac (INV-01)."
+            )
 
             VStack(spacing: 0) {
                 // Row 1: OpenSSH Public Key
@@ -688,7 +766,7 @@ public struct KeyDetailInspectorView: View {
                     .help(Self.publicKeyCopyButtonTitle(for: key))
                     .accessibilityLabel(Self.publicKeyCopyButtonTitle(for: key))
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 14)
                 .frame(minHeight: 38)
 
                 insetDivider
@@ -718,7 +796,7 @@ public struct KeyDetailInspectorView: View {
                     .help(ClavisUIStrings.Inspector.copyFingerprintHelp)
                     .accessibilityLabel(ClavisUIStrings.Accessibility.copyFingerprint)
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 14)
                 .frame(minHeight: 38)
 
                 insetDivider
@@ -748,16 +826,28 @@ public struct KeyDetailInspectorView: View {
                     .help("Copy public key file path")
                     .accessibilityLabel("Copy public key file path")
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 14)
+                .frame(minHeight: 38)
+
+                insetDivider
+
+                // Row 4: Connect & Test…
+                HStack(spacing: 12) {
+                    Text("SSH & Git setup")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.primary)
+
+                    Spacer(minLength: 12)
+
+                    settingsActionButton("Connect & Test…") {
+                        appState.connectTarget = key
+                        appState.activeSheet = .connect
+                    }
+                }
+                .padding(.horizontal, 14)
                 .frame(minHeight: 38)
             }
             .modifier(SettingsGroupCardModifier())
-
-            // S03.public-key.footnote: storage guarantee lives here, not in the toolbar subtitle.
-            Text(Self.publicKeyStorageFootnote)
-                .font(.system(size: 11.5))
-                .foregroundStyle(DesignTokens.textSecondary)
-                .padding(.horizontal, 2)
         }
     }
 
@@ -766,14 +856,20 @@ public struct KeyDetailInspectorView: View {
     private var confirmationSection: some View {
         let policy = key.effectiveBiometricPolicy
         let period = appState.gracePeriod(for: key)
+        let allowDurationChange = appState.allowPromptDurationChange(for: key)
+        let shareAcrossHosts = appState.shareAcrossSSHHosts(for: key)
+
         return VStack(alignment: .leading, spacing: 8) {
-            sectionHeaderTitle("Confirmation")
+            sectionHeader(
+                title: "Confirmation",
+                subtitle: "Every signing policy always supports Mac login password fallback (D-40)."
+            )
 
             VStack(spacing: 0) {
-                // Row 1: Confirmation policy (D-40: how you prove presence)
+                // Row 1: Confirmation policy
                 confirmationRow(
                     label: "Confirmation policy",
-                    sublabel: "How you prove presence when a prompt fires"
+                    sublabel: policy.subtitle
                 ) {
                     Menu {
                         ForEach(Self.confirmationPolicies, id: \.self) { option in
@@ -786,11 +882,8 @@ public struct KeyDetailInspectorView: View {
                                     Text(option.title)
                                 }
                             }
-                            // INV-08: biometric-bound keys can never become password-only.
-                            .disabled(option == .devicePasscode && Self.isBiometricBound(policy))
                         }
                         Divider()
-                        // Legacy policy is read-only; moving off it requires a new key.
                         Button {} label: {
                             Text("\(BiometricPolicy.biometryCurrentSet.title) — Requires new key → Rotate")
                         }
@@ -802,16 +895,18 @@ public struct KeyDetailInspectorView: View {
                     .buttonStyle(.plain)
                     .menuIndicator(.hidden)
                     .fixedSize()
-                    .help("The confirmation policy is fixed at creation; changing it requires Rotate.")
+                    .help("Changing confirmation policy requires Rotate.")
                     .accessibilityLabel("Confirmation policy")
                 }
 
                 insetDivider
 
-                // Row 2: Unlocked timeout (D-40: how long one confirmation is reused)
+                // Row 2: Unlocked timeout
                 confirmationRow(
                     label: "Unlocked timeout",
-                    sublabel: "How long one confirmation is reused (key + requesting app)"
+                    sublabel: allowDurationChange
+                        ? "Default duration in the prompt; you can pick another per request."
+                        : "Locked to this duration — cannot be changed in the prompt."
                 ) {
                     Menu {
                         ForEach(KeyGracePeriod.allCases, id: \.self) { option in
@@ -835,14 +930,50 @@ public struct KeyDetailInspectorView: View {
                     .disabled(appState.policyMutations.isPending)
                     .accessibilityLabel("Unlocked timeout")
                 }
+
+                insetDivider
+
+                // Row 3: Allow changing timeout in prompt
+                confirmationRow(
+                    label: "Allow changing timeout in prompt",
+                    sublabel: "When off, the signing prompt locks to this key’s unlocked timeout."
+                ) {
+                    Toggle("", isOn: Binding(
+                        get: { allowDurationChange },
+                        set: { allowed in
+                            appState.setAllowPromptDurationChange(allowed, for: key)
+                            onShowToast?(allowed
+                                         ? "Prompt allows changing timeout"
+                                         : "Prompt locks to \(period.title)")
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .accessibilityLabel("Allow changing timeout in prompt")
+                }
+
+                insetDivider
+
+                // Row 4: Share session across SSH hosts
+                confirmationRow(
+                    label: "Share session across SSH hosts",
+                    sublabel: "Off restricts SSH reuse to each verified host key. Git commits stay scoped to the app."
+                ) {
+                    Toggle("", isOn: Binding(
+                        get: { shareAcrossHosts },
+                        set: { shared in
+                            appState.setShareAcrossSSHHosts(shared, for: key)
+                            onShowToast?(shared
+                                         ? "SSH sessions shared across verified hosts"
+                                         : "SSH sessions isolated per verified host")
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .accessibilityLabel("Share session across SSH hosts")
+                }
             }
             .modifier(SettingsGroupCardModifier())
-
-            // S03.confirmation.footnote: session semantics + hardware minimum when applicable.
-            Text(Self.confirmationFootnote(for: key, period: period))
-                .font(.system(size: 11.5))
-                .foregroundStyle(DesignTokens.textSecondary)
-                .padding(.horizontal, 2)
         }
     }
 
@@ -853,7 +984,7 @@ public struct KeyDetailInspectorView: View {
         @ViewBuilder control: () -> Control
     ) -> some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(label)
                     .font(.system(size: 13))
                     .foregroundStyle(.primary)
@@ -861,256 +992,485 @@ public struct KeyDetailInspectorView: View {
                     .font(.system(size: 11.5))
                     .foregroundStyle(DesignTokens.textSecondary)
             }
-
-            Spacer(minLength: 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             control()
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .frame(minHeight: 38)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .frame(minHeight: 40)
     }
 
-    /// No in-place policy mutation exists (hardware minimum is fixed at creation), so choosing a
-    /// different policy points at Rotate instead of silently changing nothing.
+    /// No in-place policy mutation exists (hardware minimum is fixed at creation); choosing Password on
+    /// a biometric-bound key offers the dedicated Rotate-for-Password dialog.
     private func selectConfirmationPolicy(_ option: BiometricPolicy) {
-        guard option != key.effectiveBiometricPolicy else { return }
-        showingPolicyGuidance = true
+        let current = key.effectiveBiometricPolicy
+        guard option != current else { return }
+        if Self.requiresRotateForPassword(currentPolicy: current, targetPolicy: option) {
+            showingRotateForPasswordAlert = true
+        } else {
+            showingPolicyGuidance = true
+        }
     }
 
-    // MARK: - Section 3: Access / Never Allow (Expandable NSOutlineView Variant 3)
+    // MARK: - Section 3: Sessions & Access (Unified Expanded List Cards)
 
-    private var accessSection: some View {
+    private var activeSessionRows: [InspectorActiveSession] {
+        guard !appState.requestPolicy.isPaused else { return [] }
+        let shareHosts = appState.shareAcrossSSHHosts(for: key)
+        var rows: [InspectorActiveSession] = []
+        var matchedGrace = false
+
+        for grace in appState.activeGitGraces where grace.keyLabel == key.label {
+            matchedGrace = true
+            let caller = grace.callerName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayCaller = (caller?.isEmpty == false) ? caller! : "Git"
+            let isBroad = key.effectiveAccessProfile.capabilities.ssh && shareHosts
+            rows.append(InspectorActiveSession(
+                id: "git:\(grace.id)",
+                caller: displayCaller,
+                isAgent: false,
+                operation: isBroad ? "SSH authentication" : "Git commit signing",
+                destination: isBroad ? "All verified hosts" : "App-scoped (\(grace.remainingOperations) ops)",
+                expires: grace.endsAtLock ? "Until Lock" : "\(grace.formattedRemainingTime) left",
+                scopeNote: "\(displayCaller) · \(grace.remainingOperations) ops",
+                target: .git(keyLabel: grace.keyLabel)
+            ))
+        }
+        if !matchedGrace, let grace = activeGitGraceSession {
+            rows.append(InspectorActiveSession(
+                id: "git:single:\(key.label)",
+                caller: "Git",
+                isAgent: false,
+                operation: "Git commit signing",
+                destination: "App-scoped (\(grace.remainingOperations) ops)",
+                expires: "\(grace.formattedTime) left",
+                scopeNote: "Git signing · \(grace.remainingOperations) ops",
+                target: .git(keyLabel: key.label)
+            ))
+        }
+        for session in appState.agentSessions where session.keyFingerprint == key.fingerprint {
+            let expiresText = session.expiresAt.formatted(date: .omitted, time: .shortened)
+            rows.append(InspectorActiveSession(
+                id: "agent:\(session.id)",
+                caller: session.toolName,
+                isAgent: true,
+                operation: "SSH & Git signing",
+                destination: shareHosts ? "All verified hosts" : "Per verified host",
+                expires: "Until \(expiresText)",
+                scopeNote: "PID \(session.rootPid) · expires \(expiresText)",
+                target: .agent(sessionID: session.id)
+            ))
+        }
+        return rows
+    }
+
+    private var sessionsAndAccessSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader(
+                title: "Sessions & Access",
+                subtitle: "Unlocked sessions are always bound to the requesting app (D-28)."
+            )
+
+            activeSessionsCard
+            accessCard
+        }
+    }
+
+    private var activeSessionsCard: some View {
+        let rows = activeSessionRows
+        return VStack(spacing: 0) {
+            listCardHeader(
+                title: "Active Sessions",
+                subtitle: "Current unlocked sessions for this key.",
+                countText: rows.isEmpty ? "None" : "\(rows.count) active",
+                trailingButtonTitle: rows.count > 1 ? "Revoke All" : nil,
+                trailingAction: rows.count > 1 ? { revokeAllActiveSessions(rows) } : nil
+            )
+
+            if rows.isEmpty {
+                HStack {
+                    Text("No active sessions — next request will prompt per policy.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .frame(minHeight: 38)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, item in
+                        let isExpanded = expandedSessionIds.contains(item.id)
+                        VStack(spacing: 0) {
+                            HStack(spacing: 9) {
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .foregroundStyle(isExpanded ? Color.primary : DesignTokens.textTertiary)
+                                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                                    .frame(width: 14, height: 14)
+
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(item.isAgent
+                                              ? Color.accentColor.opacity(0.20)
+                                              : Color.primary.opacity(0.08))
+                                    Image(systemName: item.isAgent ? "cpu" : "terminal")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundStyle(item.isAgent ? Color.accentColor : Color.primary)
+                                }
+                                .frame(width: 24, height: 24)
+                                .accessibilityHidden(true)
+
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(item.caller)
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    Text("\(item.operation) · \(item.destination) · \(item.expires)")
+                                        .font(.system(size: 11.5))
+                                        .foregroundStyle(DesignTokens.textSecondary)
+                                        .lineLimit(1)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+
+                                settingsActionButton("Revoke") {
+                                    revokeActiveSession(item)
+                                }
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(isExpanded ? Color.primary.opacity(0.03) : Color.clear)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                    if expandedSessionIds.contains(item.id) {
+                                        expandedSessionIds.remove(item.id)
+                                    } else {
+                                        expandedSessionIds.insert(item.id)
+                                    }
+                                }
+                            }
+
+                            if isExpanded {
+                                expandedSessionDrawer(for: item)
+                                    .transition(.opacity.combined(with: .move(edge: .top)))
+                            }
+
+                            if index < rows.count - 1 {
+                                insetDivider
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .modifier(SettingsGroupCardModifier())
+    }
+
+    private func expandedSessionDrawer(for item: InspectorActiveSession) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 4) {
+                GridRow {
+                    Text("Operation")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                    Text(item.operation)
+                        .font(.system(size: 11.5))
+                }
+                GridRow {
+                    Text("Destination")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                    Text(item.destination)
+                        .font(.system(size: 11.5))
+                }
+                GridRow {
+                    Text("Expires")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                    Text(item.expires)
+                        .font(.system(size: 11.5))
+                }
+                GridRow {
+                    Text("Details")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                    Text(item.scopeNote)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.leading, 48)
+        .padding(.trailing, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.02))
+    }
+
+    private func revokeActiveSession(_ item: InspectorActiveSession) {
+        expandedSessionIds.remove(item.id)
+        switch item.target {
+        case .git(let label):
+            appState.revokeGitGrace(keyLabel: label)
+        case .agent(let sessionID):
+            appState.endAgentSession(id: sessionID)
+        }
+        onShowToast?("Session revoked. Open SSH connections stay alive (INV-11).")
+    }
+
+    private func revokeAllActiveSessions(_ items: [InspectorActiveSession]) {
+        expandedSessionIds.removeAll()
+        for item in items {
+            switch item.target {
+            case .git(let label):
+                appState.revokeGitGrace(keyLabel: label)
+            case .agent(let sessionID):
+                appState.endAgentSession(id: sessionID)
+            }
+        }
+        onShowToast?("All sessions revoked. Open SSH connections stay alive (INV-11).")
+    }
+
+    private var accessCard: some View {
         let apps = displayedApplications
         let candidateAppsForPlus: [RegisteredApplication] = isAgentKey
             ? applicationsModel.applications.filter { $0.classification != .bot }
             : applicationsModel.applications.filter { $0.classification != .block }
+        let summaryCount = apps.isEmpty
+            ? "None"
+            : (isAgentKey ? "\(apps.count) \(apps.count == 1 ? "app" : "apps")" : "\(apps.count) blocked")
 
-        return VStack(alignment: .leading, spacing: 8) {
-            sectionHeaderTitle(isAgentKey ? "Access" : "Never Allow")
+        return VStack(spacing: 0) {
+            listCardHeader(
+                title: isAgentKey ? "Access" : "Never Allow",
+                subtitle: isAgentKey
+                    ? "Allows configured AI tools to use this Agent key on the agent socket."
+                    : "Blocked apps are refused quietly without showing Touch ID.",
+                countText: summaryCount
+            )
 
-            VStack(spacing: 0) {
-                if apps.isEmpty {
-                    HStack {
-                        Text(
-                            isAgentKey
-                                ? "No applications configured — unlisted apps ask on first use."
-                                : "No blocked applications — any personal app can request Touch ID."
-                        )
-                        .font(.system(size: 13))
-                        .foregroundStyle(DesignTokens.textSecondary)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(minHeight: 40)
-                } else {
-                    VStack(spacing: 0) {
-                        ForEach(Array(apps.enumerated()), id: \.element.id) { index, app in
-                            let isExpanded = !isRemoveMode && expandedAppIds.contains(app.id)
-                            let isSelected = isRemoveMode && selectedForRemoval.contains(app.id)
+            if apps.isEmpty {
+                HStack {
+                    Text(
+                        isAgentKey
+                            ? "No configured applications — unlisted apps ask on first use."
+                            : "No blocked applications — any personal app can request Touch ID."
+                    )
+                    .font(.system(size: 13))
+                    .foregroundStyle(DesignTokens.textSecondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .frame(minHeight: 38)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(apps.enumerated()), id: \.element.id) { index, app in
+                        let isExpanded = !isRemoveMode && expandedAppIds.contains(app.id)
+                        let isSelected = isRemoveMode && selectedForRemoval.contains(app.id)
 
-                            VStack(spacing: 0) {
-                                HStack(spacing: 9) {
-                                    // Disclosure chevron / Remove checkbox slot
-                                    ZStack {
-                                        if isRemoveMode {
-                                            Image(systemName: isSelected ? "checkmark.square.fill" : "square")
-                                                .font(.system(size: 13, weight: .medium))
-                                                .foregroundStyle(isSelected ? DesignTokens.accentBlue : DesignTokens.textSecondary)
-                                        } else {
-                                            Image(systemName: "chevron.right")
-                                                .font(.system(size: 9.5, weight: .semibold))
-                                                .foregroundStyle(isExpanded ? Color.primary : DesignTokens.textTertiary)
-                                                .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                                        }
+                        VStack(spacing: 0) {
+                            HStack(spacing: 9) {
+                                ZStack {
+                                    if isRemoveMode {
+                                        Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                                            .font(.system(size: 13, weight: .medium))
+                                            .foregroundStyle(isSelected ? DesignTokens.accentBlue : DesignTokens.textSecondary)
+                                    } else {
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 9.5, weight: .semibold))
+                                            .foregroundStyle(isExpanded ? Color.primary : DesignTokens.textTertiary)
+                                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
                                     }
-                                    .frame(width: 14, height: 14)
+                                }
+                                .frame(width: 14, height: 14)
 
-                                    Image(nsImage: NSWorkspace.shared.icon(forFile: app.path))
-                                        .resizable()
-                                        .frame(width: 20, height: 20)
-                                        .accessibilityHidden(true)
+                                Image(nsImage: NSWorkspace.shared.icon(forFile: app.path))
+                                    .resizable()
+                                    .frame(width: 24, height: 24)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                    .accessibilityHidden(true)
 
-                                    Text(app.name)
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(1)
+                                Text(app.name)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
 
-                                    Spacer(minLength: 8)
+                                Spacer(minLength: 8)
 
-                                    if isAgentKey {
-                                        Menu {
-                                            ForEach(ApplicationClassification.allCases, id: \.self) { classification in
-                                                Button {
-                                                    Task { await applicationsModel.classify(app, as: classification) }
-                                                } label: {
-                                                    if app.classification == classification {
-                                                        Label(classification.title, systemImage: "checkmark")
-                                                    } else {
-                                                        Text(classification.title)
-                                                    }
+                                if isAgentKey {
+                                    Menu {
+                                        ForEach(ApplicationClassification.allCases, id: \.self) { classification in
+                                            Button {
+                                                Task { await applicationsModel.classify(app, as: classification) }
+                                            } label: {
+                                                if app.classification == classification {
+                                                    Label(classification.title, systemImage: "checkmark")
+                                                } else {
+                                                    Text(classification.title)
                                                 }
                                             }
-                                        } label: {
-                                            settingsPopupLabel(app.classification.title)
                                         }
-                                        .menuStyle(.button)
-                                        .buttonStyle(.plain)
-                                        .menuIndicator(.hidden)
-                                        .fixedSize()
-                                        .disabled(isRemoveMode || applicationsModel.isBusy)
-                                        .accessibilityLabel("Access for \(app.name)")
-                                    } else {
-                                        Text("Blocked")
-                                            .font(.system(size: 13))
-                                            .foregroundStyle(DesignTokens.textSecondary)
+                                    } label: {
+                                        settingsPopupLabel(app.classification.title)
                                     }
+                                    .menuStyle(.button)
+                                    .buttonStyle(.plain)
+                                    .menuIndicator(.hidden)
+                                    .fixedSize()
+                                    .disabled(isRemoveMode || applicationsModel.isBusy)
+                                    .accessibilityLabel("Access for \(app.name)")
+                                } else {
+                                    Text("Blocked")
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(DesignTokens.textSecondary)
                                 }
-                                .padding(.horizontal, 12)
-                                .frame(minHeight: 38)
-                                .background(
-                                    isSelected
-                                        ? DesignTokens.accentBlue.opacity(0.14)
-                                        : (isExpanded ? Color.primary.opacity(0.03) : Color.clear)
-                                )
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                                        if isRemoveMode {
-                                            if selectedForRemoval.contains(app.id) {
-                                                selectedForRemoval.remove(app.id)
-                                            } else {
-                                                selectedForRemoval.insert(app.id)
-                                            }
+                            }
+                            .padding(.horizontal, 14)
+                            .frame(minHeight: 40)
+                            .background(
+                                isSelected
+                                    ? DesignTokens.accentBlue.opacity(0.14)
+                                    : (isExpanded ? Color.primary.opacity(0.03) : Color.clear)
+                            )
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                    if isRemoveMode {
+                                        if selectedForRemoval.contains(app.id) {
+                                            selectedForRemoval.remove(app.id)
                                         } else {
-                                            if expandedAppIds.contains(app.id) {
-                                                expandedAppIds.remove(app.id)
-                                            } else {
-                                                expandedAppIds.insert(app.id)
-                                            }
+                                            selectedForRemoval.insert(app.id)
+                                        }
+                                    } else {
+                                        if expandedAppIds.contains(app.id) {
+                                            expandedAppIds.remove(app.id)
+                                        } else {
+                                            expandedAppIds.insert(app.id)
                                         }
                                     }
                                 }
+                            }
 
-                                if isExpanded {
-                                    expandedAccessDrawer(for: app)
-                                        .transition(.opacity.combined(with: .move(edge: .top)))
-                                }
+                            if isExpanded {
+                                expandedAccessDrawer(for: app)
+                                    .transition(.opacity.combined(with: .move(edge: .top)))
+                            }
 
-                                if index < apps.count - 1 {
-                                    insetDivider
-                                }
+                            if index < apps.count - 1 {
+                                insetDivider
                             }
                         }
                     }
                 }
-
-                Divider()
-                    .overlay(DesignTokens.settingsRowDivider)
-
-                // Bottom [+ | −] / [Delete | Cancel] Action Bar
-                HStack(spacing: 2) {
-                    if isRemoveMode {
-                        Button(role: .destructive) {
-                            let ids = selectedForRemoval
-                            withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
-                                isRemoveMode = false
-                                selectedForRemoval.removeAll()
-                            }
-                            Task {
-                                await applicationsModel.remove(ids: ids)
-                            }
-                        } label: {
-                            Text(selectedForRemoval.isEmpty ? "Delete" : "Delete (\(selectedForRemoval.count))")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(selectedForRemoval.isEmpty ? DesignTokens.textSecondary : Color.red)
-                                .padding(.horizontal, 8)
-                                .frame(height: 24)
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(selectedForRemoval.isEmpty || applicationsModel.isBusy)
-
-                        Divider().frame(height: 14)
-
-                        Button {
-                            withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
-                                isRemoveMode = false
-                                selectedForRemoval.removeAll()
-                            }
-                        } label: {
-                            Text("Cancel")
-                                .font(.system(size: 12))
-                                .padding(.horizontal, 8)
-                                .frame(height: 24)
-                        }
-                        .buttonStyle(.borderless)
-
-                        Spacer()
-                    } else {
-                        Menu {
-                            if !candidateAppsForPlus.isEmpty {
-                                Section("Registered Applications") {
-                                    ForEach(candidateAppsForPlus) { app in
-                                        Button {
-                                            Task {
-                                                await applicationsModel.classify(
-                                                    app,
-                                                    as: isAgentKey ? .bot : .block
-                                                )
-                                            }
-                                        } label: {
-                                            Text("\(app.name) (\(app.path))")
-                                        }
-                                    }
-                                }
-                                Divider()
-                            }
-                            Button("Choose from File System…") {
-                                chooseApplicationFromFileSystem()
-                            }
-                        } label: {
-                            Image(systemName: "plus")
-                                .font(.system(size: 11.5, weight: .medium))
-                                .foregroundStyle(DesignTokens.textSecondary)
-                                .frame(width: 24, height: 22)
-                        }
-                        .menuStyle(.borderlessButton)
-                        .menuIndicator(.hidden)
-                        .fixedSize()
-                        .help("Add application from Registered Applications or File System")
-                        .accessibilityLabel("Add application")
-
-                        Divider().frame(height: 12)
-
-                        Button {
-                            withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
-                                isRemoveMode = true
-                                expandedAppIds.removeAll()
-                                selectedForRemoval.removeAll()
-                            }
-                        } label: {
-                            Image(systemName: "minus")
-                                .font(.system(size: 11.5, weight: .medium))
-                                .foregroundStyle(apps.isEmpty ? DesignTokens.textTertiary : DesignTokens.textSecondary)
-                                .frame(width: 24, height: 22)
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(apps.isEmpty || applicationsModel.isBusy)
-                        .help("Select applications to remove")
-                        .accessibilityLabel("Remove applications")
-
-                        Spacer()
-
-                        if applicationsModel.isBusy {
-                            ProgressView().controlSize(.small).padding(.trailing, 6)
-                        }
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
             }
-            .modifier(SettingsGroupCardModifier())
+
+            Divider()
+                .overlay(DesignTokens.settingsRowDivider)
+
+            // Bottom [+ | −] / [Delete | Cancel] Action Bar
+            HStack(spacing: 2) {
+                if isRemoveMode {
+                    Button(role: .destructive) {
+                        let ids = selectedForRemoval
+                        withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                            isRemoveMode = false
+                            selectedForRemoval.removeAll()
+                        }
+                        Task {
+                            await applicationsModel.remove(ids: ids)
+                        }
+                    } label: {
+                        Text(selectedForRemoval.isEmpty ? "Delete" : "Delete (\(selectedForRemoval.count))")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(selectedForRemoval.isEmpty ? DesignTokens.textSecondary : Color.red)
+                            .padding(.horizontal, 8)
+                            .frame(height: 24)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(selectedForRemoval.isEmpty || applicationsModel.isBusy)
+
+                    Divider().frame(height: 14)
+
+                    Button {
+                        withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                            isRemoveMode = false
+                            selectedForRemoval.removeAll()
+                        }
+                    } label: {
+                        Text("Cancel")
+                            .font(.system(size: 12))
+                            .padding(.horizontal, 8)
+                            .frame(height: 24)
+                    }
+                    .buttonStyle(.borderless)
+
+                    Spacer()
+                } else {
+                    Menu {
+                        if !candidateAppsForPlus.isEmpty {
+                            Section("Registered Applications") {
+                                ForEach(candidateAppsForPlus) { app in
+                                    Button {
+                                        Task {
+                                            await applicationsModel.classify(
+                                                app,
+                                                as: isAgentKey ? .bot : .block
+                                            )
+                                        }
+                                    } label: {
+                                        Text("\(app.name) (\(app.path))")
+                                    }
+                                }
+                            }
+                            Divider()
+                        }
+                        Button("Choose from File System…") {
+                            chooseApplicationFromFileSystem()
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(DesignTokens.textSecondary)
+                            .frame(width: 24, height: 22)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Add application from Registered Applications or File System")
+                    .accessibilityLabel("Add application")
+
+                    Divider().frame(height: 12)
+
+                    Button {
+                        withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                            isRemoveMode = true
+                            expandedAppIds.removeAll()
+                            selectedForRemoval.removeAll()
+                        }
+                    } label: {
+                        Image(systemName: "minus")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(apps.isEmpty ? DesignTokens.textTertiary : DesignTokens.textSecondary)
+                            .frame(width: 24, height: 22)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(apps.isEmpty || applicationsModel.isBusy)
+                    .help("Select applications to remove")
+                    .accessibilityLabel("Remove applications")
+
+                    Spacer()
+
+                    if applicationsModel.isBusy {
+                        ProgressView().controlSize(.small).padding(.trailing, 6)
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
         }
+        .modifier(SettingsGroupCardModifier())
     }
 
     private func expandedAccessDrawer(for app: RegisteredApplication) -> some View {
@@ -1184,15 +1544,12 @@ public struct KeyDetailInspectorView: View {
         }
     }
 
-    // MARK: - Section 4: Recent Activity
+    // MARK: - Section 4: Activity & Lifecycle (calm neutral cards, never a red "Danger Zone")
 
-    private var recentActivitySection: some View {
-        let paused = appState.requestPolicy.isPaused
-        let sessions = paused ? [] : appState.agentSessions.filter { $0.keyFingerprint == key.fingerprint }
-
-        return VStack(alignment: .leading, spacing: 8) {
+    private var activityAndLifecycleSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
-                sectionHeaderTitle("Recent Activity")
+                sectionHeader(title: "Activity & Lifecycle")
                 Spacer()
                 Button {
                     appState.openHistoryPane(forKeyFingerprint: key.fingerprint)
@@ -1214,7 +1571,7 @@ public struct KeyDetailInspectorView: View {
                         .font(.system(size: 13))
                         .foregroundStyle(DesignTokens.textSecondary)
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 14)
                 .frame(minHeight: 38)
 
                 insetDivider
@@ -1228,73 +1585,79 @@ public struct KeyDetailInspectorView: View {
                         .font(.system(size: 13))
                         .foregroundStyle(DesignTokens.textSecondary)
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 14)
                 .frame(minHeight: 38)
-
-                if !paused, let grace = activeGitGraceSession {
-                    insetDivider
-                    HStack(spacing: 12) {
-                        Text("Git signing session")
-                            .font(.system(size: 13))
-                        Spacer()
-                        Text(grace.formattedTime)
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(DesignTokens.textSecondary)
-                        settingsActionButton("Revoke") {
-                            appState.revokeGitGrace(keyLabel: key.label)
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(minHeight: 38)
-                }
-
-                ForEach(sessions, id: \.id) { session in
-                    insetDivider
-                    HStack(spacing: 12) {
-                        Text(session.toolName)
-                            .font(.system(size: 13))
-                            .lineLimit(1)
-                        Spacer()
-                        Text("SSH · expires \(session.expiresAt.formatted(date: .omitted, time: .shortened))")
-                            .font(.system(size: 12))
-                            .foregroundStyle(DesignTokens.textSecondary)
-                        settingsActionButton("Revoke") {
-                            appState.endAgentSession(id: session.id)
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(minHeight: 38)
-                }
-            }
-            .modifier(SettingsGroupCardModifier())
-        }
-    }
-
-    // MARK: - Section 5: Key Lifecycle (calm neutral card, never a red "Danger Zone")
-
-    private var keyLifecycleSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeaderTitle("Key Lifecycle")
-
-            VStack(spacing: 0) {
-                // Disable this key / Enable this key
-                lifecycleRow(
-                    label: isKeyEnabled ? "Disable this key" : "Enable this key",
-                    sublabel: isKeyEnabled
-                        ? "Temporarily refuse all signing requests while keeping grants and settings intact."
-                        : "This key is currently disabled. Re-enable it to allow signing again."
-                ) {
-                    settingsActionButton(isKeyEnabled ? "Disable Key" : "Enable Key") {
-                        toggleKeyEnabled()
-                    }
-                }
 
                 insetDivider
 
+                HStack(spacing: 12) {
+                    Text("Recent signing events")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Text("\(recentEvents.count) \(recentEvents.count == 1 ? "event" : "events")")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(DesignTokens.textTertiary)
+                        .rotationEffect(.degrees(isRecentEventsExpanded ? 90 : 0))
+                }
+                .padding(.horizontal, 14)
+                .frame(minHeight: 38)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                        isRecentEventsExpanded.toggle()
+                    }
+                }
+
+                if isRecentEventsExpanded {
+                    if recentEvents.isEmpty {
+                        insetDivider
+                        HStack {
+                            Text("No recent signing events recorded.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(DesignTokens.textSecondary)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(minHeight: 34)
+                    } else {
+                        ForEach(recentEvents) { ev in
+                            insetDivider
+                            HStack(spacing: 10) {
+                                Text(ev.isAllowed ? "✓" : "✕")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(ev.isAllowed ? DesignTokens.accentGreen : DesignTokens.accentOrange)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text("\(ev.app) — \(ev.operation)")
+                                        .font(.system(size: 12.5))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    Text(ev.detail)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(DesignTokens.textSecondary)
+                                        .lineLimit(1)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                Text(ev.time)
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(DesignTokens.textSecondary)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 6)
+                        }
+                    }
+                }
+            }
+            .modifier(SettingsGroupCardModifier())
+
+            VStack(spacing: 0) {
                 // Rotate key
                 lifecycleRow(
                     label: "Rotate key",
-                    sublabel: "Create a replacement key with the same settings."
+                    sublabel: "Create a replacement Secure Enclave keypair with the same settings (INV-08)."
                 ) {
                     settingsActionButton("Rotate Key…") {
                         rotateKey()
@@ -1306,7 +1669,7 @@ public struct KeyDetailInspectorView: View {
                 // Delete this key (red label, neutral card)
                 lifecycleRow(
                     label: "Delete this key",
-                    sublabel: "Permanently destroy the private key on this Mac. Issued signatures cannot be revoked (INV-01)."
+                    sublabel: "Permanently destroy the private key on this Mac. Issued signatures stay valid (INV-12)."
                 ) {
                     Button {
                         showingDeleteAlert = true
@@ -1331,7 +1694,7 @@ public struct KeyDetailInspectorView: View {
         @ViewBuilder control: () -> Control
     ) -> some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(label)
                     .font(.system(size: 13))
                     .foregroundStyle(.primary)
@@ -1343,11 +1706,79 @@ public struct KeyDetailInspectorView: View {
 
             control()
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 14)
         .padding(.vertical, 9)
     }
 
     // MARK: - Shared UI Helpers & Actions
+
+    private struct RecentEventItem: Identifiable {
+        let id: UUID
+        let isAllowed: Bool
+        let app: String
+        let operation: String
+        let detail: String
+        let time: String
+    }
+
+    private struct InspectorActiveSession: Identifiable {
+        let id: String
+        let caller: String
+        let isAgent: Bool
+        let operation: String
+        let destination: String
+        let expires: String
+        let scopeNote: String
+        let target: MenuBarSession.Target
+    }
+
+    private func sectionHeader(title: String, subtitle: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            sectionHeaderTitle(title)
+            if let subtitle {
+                Text(subtitle)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(DesignTokens.textSecondary)
+            }
+        }
+        .padding(.horizontal, 2)
+    }
+
+    private func listCardHeader(
+        title: String,
+        subtitle: String,
+        countText: String,
+        trailingButtonTitle: String? = nil,
+        trailingAction: (() -> Void)? = nil
+    ) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 8) {
+                    Text(countText)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                    if let trailingButtonTitle, let trailingAction {
+                        settingsActionButton(trailingButtonTitle, action: trailingAction)
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+
+            Divider()
+                .overlay(DesignTokens.settingsRowDivider)
+        }
+    }
 
     private var insetDivider: some View {
         Rectangle()
@@ -1624,6 +2055,11 @@ public extension KeyDetailInspectorView {
     /// Biometric-bound keys carry a hardware minimum that can never be lowered to password-only.
     static func isBiometricBound(_ policy: BiometricPolicy) -> Bool {
         policy == .biometryCurrentSet || policy == .biometryOrPasscode
+    }
+
+    /// Selecting Mac login password on a biometric-bound key triggers the Rotate-for-Password dialog (INV-08).
+    static func requiresRotateForPassword(currentPolicy: BiometricPolicy, targetPolicy: BiometricPolicy) -> Bool {
+        targetPolicy == .devicePasscode && isBiometricBound(currentPolicy)
     }
 
     /// S03.confirmation.footnote: "Confirm with <policy subtitle>. One confirmation is reused for

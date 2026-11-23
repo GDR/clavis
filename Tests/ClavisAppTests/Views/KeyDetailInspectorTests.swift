@@ -340,6 +340,68 @@ struct KeyDetailInspectorTests {
         #expect(KeyDetailInspectorView.isBiometricBound(.biometryOrPasscode))
         #expect(!KeyDetailInspectorView.isBiometricBound(.userPresence))
         #expect(!KeyDetailInspectorView.isBiometricBound(.devicePasscode))
+
+        #expect(KeyDetailInspectorView.requiresRotateForPassword(currentPolicy: .biometryOrPasscode, targetPolicy: .devicePasscode))
+        #expect(KeyDetailInspectorView.requiresRotateForPassword(currentPolicy: .biometryCurrentSet, targetPolicy: .devicePasscode))
+        #expect(!KeyDetailInspectorView.requiresRotateForPassword(currentPolicy: .userPresence, targetPolicy: .devicePasscode))
+        #expect(!KeyDetailInspectorView.requiresRotateForPassword(currentPolicy: .biometryOrPasscode, targetPolicy: .userPresence))
+    }
+
+    @Test
+    @MainActor
+    func testPerKeySessionPolicyTogglesPersistAndShareToggleRevokesSessions() async throws {
+        let suite = "com.clavis.tests.session-policy.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let key = makeTestKey(label: "policy-toggle-key", fingerprint: "SHA256:policy-toggle-fp")
+        let session = AgentSessionSummary(
+            id: "sess-1",
+            keyLabel: key.label,
+            keyFingerprint: key.fingerprint,
+            toolName: "Claude Code",
+            rootPid: 101,
+            startedAt: Date(),
+            expiresAt: Date().addingTimeInterval(600)
+        )
+        let mockAgent = MockAgentController(sessions: [session])
+        let keyVM = KeyManagementViewModel(agentLifecycle: mockAgent, defaults: defaults)
+        let settingsVM = SettingsViewModel(agentLifecycle: mockAgent)
+        let sessionVM = AgentSessionViewModel(agentLifecycle: mockAgent)
+        let appState = AppState(
+            agentLifecycle: mockAgent,
+            keyManagementViewModel: keyVM,
+            agentSessionViewModel: sessionVM,
+            settingsViewModel: settingsVM
+        )
+        for _ in 0..<50 {
+            if !appState.agentSessions.isEmpty { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        appState.activeGitGraces = [
+            ActiveGitGraceInfo(keyLabel: key.label, remainingSeconds: 300, remainingOperations: 5, callerName: "Terminal")
+        ]
+
+        // Defaults: prompt duration change allowed (true), cross-host SSH sharing off (false)
+        #expect(appState.allowPromptDurationChange(for: key) == true)
+        #expect(appState.shareAcrossSSHHosts(for: key) == false)
+
+        appState.setAllowPromptDurationChange(false, for: key)
+        #expect(appState.allowPromptDurationChange(for: key) == false)
+        // Toggling prompt duration allowance does not revoke active sessions
+        #expect(appState.activeGitGraces.count == 1)
+        #expect(appState.agentSessions.count == 1)
+
+        appState.setShareAcrossSSHHosts(true, for: key)
+        #expect(appState.shareAcrossSSHHosts(for: key) == true)
+        // Changing SSH host sharing revokes existing sessions so stale scope grants cannot persist
+        #expect(appState.activeGitGraces.isEmpty)
+        #expect(appState.agentSessions.isEmpty)
+        for _ in 0..<50 {
+            if mockAgent.recordedEndSessionIDs == ["sess-1"] { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(mockAgent.recordedEndSessionIDs == ["sess-1"])
     }
 
     @Test
