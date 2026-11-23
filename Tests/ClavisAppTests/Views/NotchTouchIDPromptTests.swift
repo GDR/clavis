@@ -127,14 +127,51 @@ struct NotchTouchIDPromptTests {
     }
 
     @Test
-    func changingScopeCancelsContextAndClearsPassword() {
+    func changingScopeCancelsContextAndClearsPassword() async {
+        var now: TimeInterval = 10.0
         let request = NotchPromptRequest(callerName: "Terminal", processChain: "git", keyLabel: "Test", keyType: .personal, operation: "Sign")
-        let model = NotchPromptViewModel(request: request, initialPhase: .awaitingAuthentication)
-        model.injectEmbeddedAuthContextForTesting(LAContext())
+        var capturedResult: NotchPromptResult?
+        let model = NotchPromptViewModel(
+            request: request,
+            initialPhase: .awaitingAuthentication,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false,
+            onComplete: { result in
+                capturedResult = result
+            },
+            uptimeProvider: { now }
+        )
+
+        let embeddedCtx = TrackingContext()
+        let evaluatedCtx = TrackingContext()
+        model.injectEmbeddedAuthContextForTesting(embeddedCtx)
+        model.injectAuthenticatedContextForTesting(evaluatedCtx)
+
         model.selectScope(.oneDay)
         #expect(model.selectedScope == .oneDay)
-        #expect(model.embeddedAuthContext == nil)
+        // Unevaluated embedded sensor stays mounted across scope selection to avoid fingerprint flicker and Picker interruption.
+        #expect(model.embeddedAuthContext === embeddedCtx)
+        #expect(!embeddedCtx.isInvalidated)
+        // Any previously evaluated context is still invalidated immediately.
+        #expect(evaluatedCtx.isInvalidated)
+        #expect(model.takeAuthenticatedContext() == nil)
         #expect(model.phase == .awaitingAuthentication)
+
+        // Biometric completion within the 400 ms post-change settle window fails closed (TOCTOU guard).
+        now = 10.20
+        let racingCtx = TrackingContext()
+        let racingAccepted = await model.handleEmbeddedBiometricCompletion(
+            context: racingCtx,
+            succeeded: true,
+            generation: model.currentAttemptGenerationForTesting
+        )
+        #expect(!racingAccepted)
+        #expect(racingCtx.isInvalidated)
+        #expect(model.phase == .awaitingAuthentication)
+        #expect(capturedResult == nil)
+        #expect(model.biometricFailure == .unavailable("Duration changed — confirm again with Touch ID"))
+
         model.openPasswordDrawer()
         model.passwordText = "discard-me"
         model.selectScope(.once)
@@ -143,6 +180,33 @@ struct NotchTouchIDPromptTests {
         model.phase = .verifying
         model.selectScope(.oneDay)
         #expect(model.selectedScope == .once)
+
+        // After the 400 ms settle window elapses, biometric completion approves with the latest scope.
+        var settleNow: TimeInterval = 20.0
+        var settledResult: NotchPromptResult?
+        let settleModel = NotchPromptViewModel(
+            request: request,
+            initialPhase: .awaitingAuthentication,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false,
+            onComplete: { result in
+                settledResult = result
+            },
+            uptimeProvider: { settleNow }
+        )
+        settleModel.selectScope(.oneDay)
+        settleNow = 20.45
+        let validCtx = TrackingContext()
+        let settledAccepted = await settleModel.handleEmbeddedBiometricCompletion(
+            context: validCtx,
+            succeeded: true,
+            generation: settleModel.currentAttemptGenerationForTesting
+        )
+        #expect(settledAccepted)
+        #expect(!validCtx.isInvalidated)
+        #expect(settleModel.phase == .approved)
+        #expect(settledResult == .approved(scope: .oneDay, method: .biometrics))
     }
 
     @Test
@@ -382,43 +446,43 @@ struct NotchTouchIDPromptTests {
         )
         let view = NotchTouchIDPromptView(viewModel: vm)
 
-        // Focused in .reviewing: 540 x 214
+        // Focused in .reviewing: 540 x 198 (unified recessed auth bar)
         #expect(vm.isPromptFocused)
         #expect(view.islandWidth == 540)
-        #expect(view.islandHeight == 214)
+        #expect(view.islandHeight == 198)
 
-        // Unfocused in .reviewing: collapses controls, height shrinks to 112, scope preserved
+        // Unfocused in .reviewing (.passwordOnly note collapses controls): height shrinks to 126, scope preserved
         vm.setPromptFocused(false)
         #expect(!vm.isPromptFocused)
         #expect(vm.phase == .reviewing)
         #expect(vm.selectedScope == .untilLock)
-        #expect(view.islandHeight == 112)
+        #expect(view.islandHeight == 126)
         #expect(capturedResult == nil)
 
-        // Restoring focus restores height 214
+        // Restoring focus restores height 198
         vm.setPromptFocused(true)
         #expect(vm.isPromptFocused)
-        #expect(view.islandHeight == 214)
+        #expect(view.islandHeight == 198)
 
-        // Continue -> awaitingAuthentication (540 x 214) -> open password drawer (540 x 278)
+        // Continue -> awaitingAuthentication (540 x 198) -> open passwordEntry (same 540 x 198 unified auth bar)
         vm.continueToAuthentication()
+        #expect(view.islandHeight == 198)
         #expect(vm.phase == .awaitingAuthentication)
-        #expect(view.islandHeight == 214)
 
         vm.openPasswordDrawer()
         vm.passwordText = "secret"
         #expect(vm.phase == .passwordEntry)
-        #expect(view.islandHeight == 278)
+        #expect(view.islandHeight == 198)
 
-        // Losing focus while password drawer is open hides drawer, clears password, and shrinks to 166
+        // Losing focus while password entry is active hides controls, clears password, and shrinks to 152 (armed biometrics)
         vm.setPromptFocused(false)
         #expect(!vm.isPromptFocused)
         #expect(vm.phase == .awaitingAuthentication)
         #expect(vm.passwordText.isEmpty)
-        #expect(view.islandHeight == 166)
+        #expect(view.islandHeight == 152)
         #expect(capturedResult == nil)
 
-        // Agent warning request adds 64pt height (214 -> 278, unfocused 112 -> 176 and 166 -> 230, password 278 -> 342)
+        // Agent warning request (signing + warning) adds 64pt height (198 -> 262, unfocused 126 -> 190 and 152 -> 216)
         let warningRequest = NotchPromptRequest(
             callerName: "Claude Code",
             processChain: "zsh → claude → git → ssh-keygen",
@@ -433,15 +497,15 @@ struct NotchTouchIDPromptTests {
         )
         let warnVM = NotchPromptViewModel(request: warningRequest, initialPhase: .reviewing)
         let warnView = NotchTouchIDPromptView(viewModel: warnVM)
-        #expect(warnView.islandHeight == 278)
+        #expect(warnView.islandHeight == 262)
         warnVM.setPromptFocused(false)
-        #expect(warnView.islandHeight == 176)
+        #expect(warnView.islandHeight == 190)
         warnVM.setPromptFocused(true)
         warnVM.continueToAuthentication()
         warnVM.openPasswordDrawer()
-        #expect(warnView.islandHeight == 342)
+        #expect(warnView.islandHeight == 262)
         warnVM.setPromptFocused(false)
-        #expect(warnView.islandHeight == 230)
+        #expect(warnView.islandHeight == 216)
     }
 
     @Test
@@ -555,6 +619,7 @@ struct NotchTouchIDPromptTests {
             defer: false
         )
         window.appearance = NSAppearance(named: .darkAqua)
+        window.ignoresMouseEvents = true
         window.contentView = hostingView
         window.orderFront(nil)
         defer { window.orderOut(nil) }
@@ -600,11 +665,32 @@ struct NotchTouchIDPromptTests {
         #expect(unfocusedGlassLuma > unfocusedTopLuma + (isLightDesktop ? 0.12 : 0.015))
 
         if ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW"] == "1" {
-            let directory = URL(fileURLWithPath: "/private/tmp/clavis-notch-review")
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let desktopTag = isLightDesktop ? "light-desktop" : "dark-desktop"
-            try focusedPng.write(to: directory.appendingPathComponent("notch-focused-\(desktopTag).png"))
-            try unfocusedPng.write(to: directory.appendingPathComponent("notch-unfocused-glass-\(desktopTag).png"))
+            try Self.writeRenderReviewPNG(focusedPng, filename: "notch-focused-\(desktopTag).png")
+            try Self.writeRenderReviewPNG(unfocusedPng, filename: "notch-unfocused-glass-\(desktopTag).png")
+        }
+    }
+
+    private static var renderReviewDirectory: URL {
+        let path = ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW_DIR"] ?? "/private/tmp/clavis-notch-review"
+        return URL(fileURLWithPath: path)
+    }
+
+    private static func writeRenderReviewPNG(_ pngData: Data, filename: String) throws {
+        let directory = renderReviewDirectory
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try pngData.write(to: directory.appendingPathComponent(filename))
+    }
+
+    private static func captureAndSaveRenderReview(hostingView: NSHostingView<some View>, filename: String) async throws {
+        hostingView.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        hostingView.layoutSubtreeIfNeeded()
+        if let bitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) {
+            hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+            if let png = bitmap.representation(using: .png, properties: [:]) {
+                try writeRenderReviewPNG(png, filename: filename)
+            }
         }
     }
 
@@ -991,6 +1077,7 @@ struct NotchTouchIDPromptTests {
             defer: false
         )
         window.appearance = NSAppearance(named: .darkAqua)
+        window.ignoresMouseEvents = true
         window.contentView = hostingView
         window.orderFront(nil)
         defer { window.orderOut(nil) }
@@ -1005,34 +1092,20 @@ struct NotchTouchIDPromptTests {
         #expect(png.count > 2_000)
 
         if ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW"] == "1" {
-            let directory = URL(fileURLWithPath: "/private/tmp/clavis-notch-review")
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let prefix = hasAgentWarning ? "agent-warning" : "personal"
-            try png.write(to: directory.appendingPathComponent("\(prefix)-\(phase.rawValue).png"))
+            try Self.writeRenderReviewPNG(png, filename: "\(prefix)-\(phase.rawValue).png")
 
             if !hasAgentWarning && phase == .awaitingAuthentication {
+                viewModel.isHoveringCloseButton = true
+                try await Self.captureAndSaveRenderReview(hostingView: hostingView, filename: "personal-hover-close.png")
+                viewModel.isHoveringCloseButton = false
+
                 viewModel.setPromptFocused(false)
-                hostingView.layoutSubtreeIfNeeded()
-                try await Task.sleep(nanoseconds: 50_000_000)
-                hostingView.layoutSubtreeIfNeeded()
-                if let unfocusBitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) {
-                    hostingView.cacheDisplay(in: hostingView.bounds, to: unfocusBitmap)
-                    if let unfocusPng = unfocusBitmap.representation(using: .png, properties: [:]) {
-                        try unfocusPng.write(to: directory.appendingPathComponent("personal-unfocused-armed.png"))
-                    }
-                }
+                try await Self.captureAndSaveRenderReview(hostingView: hostingView, filename: "personal-unfocused-armed.png")
 
                 viewModel.setPromptFocused(true)
                 viewModel.recordBiometricFailure(.notRecognized)
-                hostingView.layoutSubtreeIfNeeded()
-                try await Task.sleep(nanoseconds: 50_000_000)
-                hostingView.layoutSubtreeIfNeeded()
-                if let failBitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) {
-                    hostingView.cacheDisplay(in: hostingView.bounds, to: failBitmap)
-                    if let failPng = failBitmap.representation(using: .png, properties: [:]) {
-                        try failPng.write(to: directory.appendingPathComponent("personal-failedBiometrics.png"))
-                    }
-                }
+                try await Self.captureAndSaveRenderReview(hostingView: hostingView, filename: "personal-failedBiometrics.png")
             }
         }
     }
@@ -1075,16 +1148,17 @@ struct NotchTouchIDPromptTests {
             onComplete: { capturedResult = $0 }
         )
         let view = NotchTouchIDPromptView(viewModel: viewModel)
-        // Info strip adds 80pt to the 214pt base; no scope picker is shown.
-        #expect(view.openHeight == 294)
-        #expect(view.islandHeight == 294)
+        // Stage 1: base (100) + alert (64) + decision capsule (50) = 214pt; no scope picker.
+        #expect(view.openHeight == 214)
+        #expect(view.islandHeight == 214)
 
-        // Always Allow… arms the Touch ID step with the permanent-grant sub-copy.
+        // Always Allow… arms Stage 2 in place below the decision capsule (+52pt = 266pt).
         viewModel.armAuthentication(mode: .always)
         #expect(viewModel.phase == .awaitingAuthentication)
         #expect(viewModel.allowMode == .always)
         #expect(viewModel.authTitleText == "Touch ID to Always Allow")
         #expect(viewModel.authSubtitleText == "Permanent grant · Codex and everything it launches")
+        #expect(view.islandHeight == 266)
 
         await viewModel.approveWithBiometrics()
         #expect(viewModel.approvalDecision == .alwaysAllow(method: .biometrics))
@@ -1111,11 +1185,11 @@ struct NotchTouchIDPromptTests {
     @Test
     func broadAppFirstUseShowsWarningAndAlwaysDenyLinkNeverAllows() {
         let request = Self.makeFirstUseRequest(isBroad: true)
-        #expect(request.effectiveWarning?.title == "Codex is a Broad app.")
-        #expect(request.effectiveWarning?.detail == "Allow the agent itself instead.")
+        #expect(request.effectiveWarning == nil)
+        #expect(request.alertTone == .info)
         let view = NotchTouchIDPromptView(viewModel: NotchPromptViewModel(request: request, initialPhase: .reviewing))
-        // Info strip (80) + Broad warning (64) on top of the 214pt base.
-        #expect(view.openHeight == 358)
+        #expect(view.openHeight == 214)
+        #expect(view.islandHeight == 214)
 
         let viewModel = NotchPromptViewModel(request: request, initialPhase: .reviewing)
         viewModel.neverAllow()
@@ -1266,17 +1340,19 @@ struct NotchTouchIDPromptTests {
     func approvalVariantFocusCollapseKeepsInfoStripVisible() {
         let viewModel = NotchPromptViewModel(request: Self.makeFirstUseRequest(), initialPhase: .reviewing)
         let view = NotchTouchIDPromptView(viewModel: viewModel)
-        #expect(view.islandHeight == 294)
+        #expect(view.islandHeight == 214)
         viewModel.setPromptFocused(false)
-        // Identity + info strip stay visible; controls fold away (112 + 80).
-        #expect(view.islandHeight == 192)
+        // Identity + alert notice + unfocused action note (100 + 64 + 26 = 190).
+        #expect(view.islandHeight == 190)
         viewModel.setPromptFocused(true)
         viewModel.armAuthentication(mode: .once)
+        #expect(view.islandHeight == 266)
         viewModel.setPromptFocused(false)
-        #expect(view.islandHeight == 246)
+        // Stage 2 unfocused keeps identity + alert notice + armed biometric auth bar (100 + 64 + 52 = 216).
+        #expect(view.islandHeight == 216)
         viewModel.setPromptFocused(true)
         viewModel.openPasswordDrawer()
-        #expect(view.islandHeight == 358)
+        #expect(view.islandHeight == 266)
     }
 
     @Test
@@ -1440,15 +1516,16 @@ struct NotchTouchIDPromptTests {
         )
         let rootView = NotchTouchIDPromptView(viewModel: viewModel)
             .environment(\.colorScheme, .dark)
-            .frame(width: 640, height: 480, alignment: .top)
+            .frame(width: 640, height: 520, alignment: .top)
             .background(Color(red: 0.14, green: 0.22, blue: 0.34))
         let hostingView = NSHostingView(rootView: rootView)
-        hostingView.frame = NSRect(x: 0, y: 0, width: 640, height: 480)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 640, height: 520)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
             styleMask: [.borderless], backing: .buffered, defer: false
         )
         window.appearance = NSAppearance(named: .darkAqua)
+        window.ignoresMouseEvents = true
         window.contentView = hostingView
         window.orderFront(nil)
         defer { window.orderOut(nil) }
@@ -1463,10 +1540,24 @@ struct NotchTouchIDPromptTests {
         #expect(png.count > 2_000)
 
         if ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW"] == "1" {
-            let path = ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW_DIR"] ?? "/private/tmp/clavis-notch-review"
-            let directory = URL(fileURLWithPath: path)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try png.write(to: directory.appendingPathComponent("approval-\(kind.rawValue).png"))
+            try Self.writeRenderReviewPNG(png, filename: "approval-\(kind.rawValue).png")
+
+            switch kind {
+            case .agentOnPersonal:
+                viewModel.toggleStage2Authentication()
+                try await Self.captureAndSaveRenderReview(hostingView: hostingView, filename: "approval-agentOnPersonal-stage2.png")
+            case .agentFirstUse:
+                viewModel.selectFirstUseAllow(mode: .always)
+                try await Self.captureAndSaveRenderReview(hostingView: hostingView, filename: "approval-agentFirstUse-stage2-always.png")
+            case .keepAccess:
+                viewModel.toggleIdentityDetails()
+                try await Self.captureAndSaveRenderReview(hostingView: hostingView, filename: "approval-keepAccess-details.png")
+                viewModel.toggleIdentityDetails()
+                viewModel.toggleStage2Authentication()
+                try await Self.captureAndSaveRenderReview(hostingView: hostingView, filename: "approval-keepAccess-stage2.png")
+            case .signatureChanged, .signing:
+                break
+            }
         }
     }
 
@@ -1482,8 +1573,8 @@ struct NotchTouchIDPromptTests {
         #expect(NotchConfirmationMode(biometricPolicy: .biometryCurrentSet) == .touchIDOrPassword)
         #expect(!NotchConfirmationMode.allowsPasswordFallback(for: .biometryCurrentSet))
 
-        // Password-only expands straight to .passwordEntry, keeps 214pt focused height,
-        // and clears + collapses to 112pt when unfocused without reverting to .awaitingAuthentication.
+        // Password-only expands straight to .passwordEntry (198pt unified bar focused height),
+        // and clears + collapses to 126pt when unfocused without reverting to .awaitingAuthentication.
         let pwRequest = NotchPromptRequest(
             callerName: "Terminal",
             processChain: "git → ssh",
@@ -1506,23 +1597,23 @@ struct NotchTouchIDPromptTests {
         pwVM.expand()
         #expect(pwVM.phase == .passwordEntry)
         #expect(pwVM.authTitleText == "Mac login password")
-        #expect(pwView.islandHeight == 214)
+        #expect(pwView.islandHeight == 198)
 
         pwVM.passwordText = "partial"
         pwVM.setPromptFocused(false)
         #expect(pwVM.phase == .passwordEntry)
         #expect(pwVM.passwordText.isEmpty)
-        #expect(pwView.islandHeight == 112)
+        #expect(pwView.islandHeight == 126)
 
         pwVM.setPromptFocused(true)
         #expect(pwVM.phase == .passwordEntry)
-        #expect(pwView.islandHeight == 214)
+        #expect(pwView.islandHeight == 198)
 
-        // Wrong password shows password-only error copy & expands height by 20pt.
+        // Wrong password shows error subline below auth bar & expands height by 22pt.
         pwVM.passwordText = "bad"
         #expect(await pwVM.submitPassword() == false)
         #expect(pwVM.passwordError == "Incorrect password. Try again.")
-        #expect(pwView.islandHeight == 234)
+        #expect(pwView.islandHeight == 220)
 
         pwVM.passwordText = "secret"
         #expect(await pwVM.submitPassword() == true)
@@ -1576,6 +1667,7 @@ struct NotchTouchIDPromptTests {
             styleMask: [.borderless], backing: .buffered, defer: false
         )
         window.appearance = NSAppearance(named: .darkAqua)
+        window.ignoresMouseEvents = true
         window.contentView = hostingView
         window.orderFront(nil)
         defer { window.orderOut(nil) }
@@ -1590,22 +1682,57 @@ struct NotchTouchIDPromptTests {
         #expect(png.count > 2_000)
 
         if ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW"] == "1" {
-            let path = ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW_DIR"] ?? "/private/tmp/clavis-notch-review"
-            let directory = URL(fileURLWithPath: path)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let name = mode == .touchIDOrPassword ? "notch-strict" : (mode == .presenceOrPassword ? "notch-presence" : "notch-password")
-            try png.write(to: directory.appendingPathComponent("\(name).png"))
-            if mode == .passwordOnly {
+            try Self.writeRenderReviewPNG(png, filename: "\(name).png")
+            if mode == .touchIDOrPassword {
+                let bioRequest = NotchPromptRequest(
+                    callerName: "Ghostty",
+                    processChain: "zsh → git → ssh",
+                    keyLabel: "Github.com",
+                    keyType: .personal,
+                    destination: "git@github.com",
+                    operation: "Authenticate with SSH",
+                    initialScope: .untilLock,
+                    allowsPasswordFallback: false,
+                    confirmationMode: .touchIDOrPassword
+                )
+                let bioViewModel = NotchPromptViewModel(
+                    request: bioRequest,
+                    initialPhase: bioRequest.initialExpandedPhase,
+                    verifyingDelayNanoseconds: 0,
+                    signedDisplayNanoseconds: 0,
+                    autoCollapseAfterSigned: false
+                )
+                let bioHost = NSHostingView(
+                    rootView: NotchTouchIDPromptView(viewModel: bioViewModel)
+                        .environment(\.colorScheme, .dark)
+                        .frame(width: 640, height: 320, alignment: .top)
+                        .background(Color(red: 0.14, green: 0.22, blue: 0.34))
+                )
+                bioHost.frame = NSRect(x: 0, y: 0, width: 640, height: 320)
+                window.contentView = bioHost
+                try await Self.captureAndSaveRenderReview(hostingView: bioHost, filename: "personal-biometric-only.png")
+
+                let sysPwdViewModel = NotchPromptViewModel(
+                    request: request,
+                    initialPhase: request.initialExpandedPhase,
+                    verifyingDelayNanoseconds: 0,
+                    signedDisplayNanoseconds: 0,
+                    autoCollapseAfterSigned: false,
+                    hardwarePasswordAuthenticator: { nil }
+                )
+                let sysPwdHost = NSHostingView(
+                    rootView: NotchTouchIDPromptView(viewModel: sysPwdViewModel)
+                        .environment(\.colorScheme, .dark)
+                        .frame(width: 640, height: 320, alignment: .top)
+                        .background(Color(red: 0.14, green: 0.22, blue: 0.34))
+                )
+                sysPwdHost.frame = NSRect(x: 0, y: 0, width: 640, height: 320)
+                window.contentView = sysPwdHost
+                try await Self.captureAndSaveRenderReview(hostingView: sysPwdHost, filename: "personal-system-password-button.png")
+            } else if mode == .passwordOnly {
                 viewModel.setPromptFocused(false)
-                hostingView.layoutSubtreeIfNeeded()
-                try await Task.sleep(nanoseconds: 50_000_000)
-                hostingView.layoutSubtreeIfNeeded()
-                if let ufBitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) {
-                    hostingView.cacheDisplay(in: hostingView.bounds, to: ufBitmap)
-                    if let ufPng = ufBitmap.representation(using: .png, properties: [:]) {
-                        try ufPng.write(to: directory.appendingPathComponent("notch-password-unfocused.png"))
-                    }
-                }
+                try await Self.captureAndSaveRenderReview(hostingView: hostingView, filename: "notch-password-unfocused.png")
             }
         }
     }
@@ -1708,12 +1835,12 @@ struct NotchTouchIDPromptTests {
         )
         let vm = NotchPromptViewModel(request: compactRequest, initialPhase: .idle)
         let view = NotchTouchIDPromptView(viewModel: vm)
-        #expect(view.openHeight == 166)
+        #expect(view.openHeight == 152)
         vm.expand()
         #expect(vm.phase == .awaitingAuthentication)
-        #expect(view.islandHeight == 166)
+        #expect(view.islandHeight == 152)
         vm.setPromptFocused(false)
-        #expect(view.islandHeight == 166)
+        #expect(view.islandHeight == 152)
 
         let warnRequest = NotchPromptRequest(
             callerName: "ssh",
@@ -1728,8 +1855,8 @@ struct NotchTouchIDPromptTests {
             kind: .signing
         )
         let warnView = NotchTouchIDPromptView(viewModel: NotchPromptViewModel(request: warnRequest, initialPhase: .awaitingAuthentication))
-        #expect(warnView.openHeight == 230)
-        #expect(warnView.islandHeight == 230)
+        #expect(warnView.openHeight == 216)
+        #expect(warnView.islandHeight == 216)
 
         // Ownership transfer returns context once without invalidating; deny() invalidates unconsumed context.
         let takenCtx = TrackingContext()
@@ -1854,8 +1981,8 @@ struct NotchTouchIDPromptTests {
             operation: "Authenticate with SSH"
         )
         #expect(distinct.normalizedDestination == "git@github.com")
-        #expect(distinct.trailingPrimaryText == "git@github.com")
-        #expect(distinct.trailingSecondaryText == "Personal MacBook")
+        #expect(distinct.trailingPrimaryText == "Personal MacBook")
+        #expect(distinct.trailingSecondaryText == "git@github.com")
 
         let duplicate = NotchPromptRequest(
             callerName: "Ghostty",
@@ -1865,8 +1992,8 @@ struct NotchTouchIDPromptTests {
             destination: "github.com",
             operation: "Authenticate with SSH"
         )
-        #expect(duplicate.trailingPrimaryText == "github.com")
-        #expect(duplicate.trailingSecondaryText == "Personal key")
+        #expect(duplicate.trailingPrimaryText == "Github.com")
+        #expect(duplicate.trailingSecondaryText == "SSH auth")
 
         let blank = NotchPromptRequest(
             callerName: "Terminal",
@@ -1878,12 +2005,12 @@ struct NotchTouchIDPromptTests {
         )
         #expect(blank.normalizedDestination == nil)
         #expect(blank.trailingPrimaryText == "Work Key")
-        #expect(blank.trailingSecondaryText == "Agent key")
+        #expect(blank.trailingSecondaryText == "Git signing")
 
         let queued = distinct.withQueue(position: 2, count: 3)
         #expect(queued.destination == "git@github.com")
-        #expect(queued.trailingPrimaryText == "git@github.com")
-        #expect(queued.trailingSecondaryText == "Personal MacBook")
+        #expect(queued.trailingPrimaryText == "Personal MacBook")
+        #expect(queued.trailingSecondaryText == "git@github.com")
 
         let converted = distinct.convertedToFirstUse(via: "zsh → ssh")
         #expect(converted.destination == "git@github.com")
@@ -1911,7 +2038,236 @@ struct NotchTouchIDPromptTests {
         )
         let mapped = NotchSigningPromptAuthenticator.makeNotchRequest(from: authRequest)
         #expect(mapped.destination == "git@github.com")
-        #expect(mapped.trailingPrimaryText == "git@github.com")
-        #expect(mapped.trailingSecondaryText == "Personal MacBook")
+        #expect(mapped.trailingPrimaryText == "Personal MacBook")
+        #expect(mapped.trailingSecondaryText == "git@github.com")
+    }
+
+    @Test
+    func twoStageAlertDecisionCapsuleTogglingAndModeSwitching() async {
+        // 1. agentOnPersonal toggles between Stage 1 (214pt) and Stage 2 (312pt).
+        let personalReq = NotchPromptRequest(
+            callerName: "Claude Code",
+            processChain: "claude → git → ssh",
+            keyLabel: "Git Signing",
+            keyType: .personal,
+            operation: "Sign a Git commit",
+            agentWarning: .agentOnPersonal(),
+            initialScope: .fifteenMinutes,
+            kind: .agentOnPersonal
+        )
+        let personalVM = NotchPromptViewModel(request: personalReq, initialPhase: .reviewing)
+        let personalView = NotchTouchIDPromptView(viewModel: personalVM)
+        #expect(personalView.islandHeight == 214)
+
+        // Return must never bypass Stage 1 decision gate.
+        personalVM.handleReturnKey()
+        #expect(personalVM.phase == .reviewing)
+
+        personalVM.toggleStage2Authentication()
+        #expect(personalVM.phase == .awaitingAuthentication)
+        #expect(personalView.islandHeight == 312)
+
+        personalVM.toggleStage2Authentication()
+        #expect(personalVM.phase == .reviewing)
+        #expect(personalView.islandHeight == 214)
+
+        // 2. agentFirstUse supports Stage 1 -> Allow -> in-place switch to Always Allow -> re-click collapses.
+        let firstUseVM = NotchPromptViewModel(
+            request: Self.makeFirstUseRequest(),
+            initialPhase: .reviewing,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false,
+            biometricAuthenticator: { true }
+        )
+        let firstUseView = NotchTouchIDPromptView(viewModel: firstUseVM)
+        #expect(firstUseView.islandHeight == 214)
+
+        firstUseVM.selectFirstUseAllow(mode: .once)
+        #expect(firstUseVM.phase == .awaitingAuthentication)
+        #expect(firstUseVM.allowMode == .once)
+        #expect(firstUseView.islandHeight == 266)
+
+        firstUseVM.injectEmbeddedAuthContextForTesting(TrackingContext())
+        firstUseVM.passwordText = "transient"
+        firstUseVM.selectFirstUseAllow(mode: .always)
+        #expect(firstUseVM.phase == .awaitingAuthentication)
+        #expect(firstUseVM.allowMode == .always)
+        #expect(firstUseVM.embeddedAuthContext == nil)
+        #expect(firstUseVM.passwordText.isEmpty)
+        #expect(firstUseView.islandHeight == 266)
+
+        firstUseVM.selectFirstUseAllow(mode: .always)
+        #expect(firstUseVM.phase == .reviewing)
+        #expect(firstUseView.islandHeight == 214)
+
+        // 3. keepAccess: Review… toggles details drawer in place; Keep Access opens Stage 2 and completes.
+        let keepReq = NotchPromptRequest(
+            callerName: "Claude Code",
+            callerPath: "/nix/store/claude/bin/claude",
+            processChain: "claude → git → ssh",
+            keyLabel: "Agent SSH",
+            keyType: .bot,
+            operation: "updated 2.1.302 → 2.1.303",
+            kind: .keepAccess,
+            keepAccessInfo: NotchKeepAccessInfo(
+                affectedKeys: ["Agent SSH", "Agent Signing"],
+                lineage: "claude-code (Nix)",
+                fromVersion: "2.1.302",
+                toVersion: "2.1.303"
+            )
+        )
+        let keepVM = NotchPromptViewModel(
+            request: keepReq,
+            initialPhase: .reviewing,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false,
+            biometricAuthenticator: { true }
+        )
+        let keepView = NotchTouchIDPromptView(viewModel: keepVM)
+        keepVM.toggleIdentityDetails()
+        #expect(keepVM.isIdentityDetailsExpanded)
+        #expect(keepView.islandHeight == 352)
+        keepVM.toggleStage2Authentication()
+        #expect(keepVM.phase == .awaitingAuthentication)
+        await keepVM.approveWithBiometrics()
+        #expect(keepVM.approvalDecision == .keepAccess(method: .biometrics))
+    }
+
+    @Test
+    func identityDetailsDrawerPreservesPasswordAndBiometricState() {
+        let request = NotchPromptRequest(
+            callerName: "Claude Code",
+            callerPath: "/nix/store/claude/bin/claude",
+            processChain: "claude → git → ssh",
+            keyLabel: "Git Signing",
+            keyType: .personal,
+            operation: "Sign a Git commit",
+            agentWarning: .agentOnPersonal(),
+            initialScope: .fifteenMinutes,
+            trustIdentity: "ad-hoc · Nix · claude-code 2.1.303",
+            detectedBy: "Agent marker, Process chain"
+        )
+        #expect(request.identityDetailRows.map(\.label) == ["Trust ID", "Path", "Lineage", "Detected by"])
+        #expect(request.identityDetailRows[0].value == "ad-hoc · Nix · claude-code 2.1.303")
+        #expect(request.identityDetailRows[1].isMonospaced)
+        #expect(request.identityDetailRows[3].value == "Agent marker, Process chain")
+
+        let vm = NotchPromptViewModel(request: request, initialPhase: .awaitingAuthentication)
+        let view = NotchTouchIDPromptView(viewModel: vm)
+        let baselineHeight = view.islandHeight
+        vm.selectScope(.untilLock)
+        let ctx = LAContext()
+        vm.injectEmbeddedAuthContextForTesting(ctx)
+        vm.passwordText = "typed-secret"
+
+        vm.toggleIdentityDetails()
+        #expect(vm.isIdentityDetailsExpanded)
+        #expect(view.islandHeight == baselineHeight + 8 + 4 * 26)
+        #expect(vm.passwordText == "typed-secret")
+        #expect(vm.embeddedAuthContext === ctx)
+        #expect(vm.selectedScope == .untilLock)
+        #expect(vm.phase == .awaitingAuthentication)
+
+        // Losing focus hides the details drawer height without losing the expanded toggle, restoring on refocus.
+        vm.setPromptFocused(false)
+        #expect(view.islandHeight == 216)
+        vm.setPromptFocused(true)
+        #expect(vm.isIdentityDetailsExpanded)
+        #expect(view.islandHeight == baselineHeight + 8 + 4 * 26)
+    }
+
+    @Test
+    func unifiedAuthBarInlinePasswordSubmissionAndErrorDrawer() async {
+        let request = NotchPromptRequest(
+            callerName: "Terminal",
+            processChain: "Terminal › zsh › ssh",
+            keyLabel: "GitHub SSH",
+            keyType: .personal,
+            destination: "git@github.com",
+            operation: "Authenticate with SSH",
+            initialScope: .fifteenMinutes,
+            allowsPasswordFallback: true,
+            confirmationMode: .touchIDOrPassword
+        )
+        let vm = NotchPromptViewModel(
+            request: request,
+            initialPhase: .awaitingAuthentication,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false,
+            passwordVerifier: { $0 == "clavis" }
+        )
+        let view = NotchTouchIDPromptView(viewModel: vm)
+
+        // Idle state has no subline below the auth bar.
+        #expect(vm.activeErrorMessage == nil)
+        #expect(view.islandHeight == 198)
+
+        // Wrong inline password directly from .awaitingAuthentication keeps .awaitingAuthentication and reveals 22pt error subline.
+        vm.passwordText = "wrong"
+        vm.isPasswordVisible = true
+        let badOK = await vm.submitPassword()
+        #expect(!badOK)
+        #expect(vm.phase == .awaitingAuthentication)
+        #expect(!vm.isPasswordVisible)
+        #expect(vm.passwordText.isEmpty)
+        #expect(vm.activeErrorMessage == "Incorrect password. Try again or use Touch ID.")
+        #expect(vm.failureShakeTrigger == 1)
+        #expect(view.islandHeight == 220)
+
+        // Correct password approves cleanly.
+        vm.passwordText = "clavis"
+        let goodOK = await vm.submitPassword()
+        #expect(goodOK)
+        #expect(vm.phase == .approved)
+        #expect(vm.activeErrorMessage == nil)
+        #expect(!vm.isPasswordVisible)
+    }
+
+    @Test
+    func ambientGlowToneAndStageSoftening() {
+        let normalReq = NotchPromptRequest(
+            callerName: "Terminal",
+            processChain: "ssh",
+            keyLabel: "GitHub SSH",
+            keyType: .personal,
+            operation: "Authenticate with SSH"
+        )
+        #expect(normalReq.alertTone == .none)
+        let normalView = NotchTouchIDPromptView(
+            viewModel: NotchPromptViewModel(request: normalReq, initialPhase: .awaitingAuthentication)
+        )
+        #expect(normalView.ambientGlowOpacity == 0.0)
+
+        let warnSigningReq = NotchPromptRequest(
+            callerName: "ssh",
+            processChain: "ssh",
+            keyLabel: "GitHub SSH",
+            keyType: .personal,
+            operation: "Authenticate with SSH",
+            warningText: "Forwarded SSH agent\nRemote host requested a signature"
+        )
+        #expect(warnSigningReq.alertTone == .warning)
+        let warnSigningView = NotchTouchIDPromptView(
+            viewModel: NotchPromptViewModel(request: warnSigningReq, initialPhase: .awaitingAuthentication)
+        )
+        #expect(warnSigningView.ambientGlowOpacity == 1.0)
+
+        let firstUseReq = Self.makeFirstUseRequest()
+        #expect(firstUseReq.alertTone == .info)
+        let firstUseVM = NotchPromptViewModel(request: firstUseReq, initialPhase: .reviewing)
+        let firstUseView = NotchTouchIDPromptView(viewModel: firstUseVM)
+        #expect(firstUseView.ambientGlowOpacity == 1.0)
+
+        firstUseVM.selectFirstUseAllow(mode: .always)
+        #expect(abs(firstUseView.ambientGlowOpacity - 0.72) < 1e-6)
+
+        firstUseVM.phase = .approved
+        #expect(firstUseView.ambientGlowOpacity == 0.0)
+
+        firstUseVM.phase = .idle
+        #expect(firstUseView.ambientGlowOpacity == 0.0)
     }
 }

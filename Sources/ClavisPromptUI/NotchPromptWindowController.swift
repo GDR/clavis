@@ -80,9 +80,11 @@ public final class NotchOverlayPanel: NSPanel {
     public override var canBecomeMain: Bool { false }
 
     var onUserInteractionInside: (() -> Void)?
+    var shouldSuppressFocusOnMouseDown: (() -> Bool)?
     var onEscapeKey: (() -> Void)?
     var onReturnKey: (() -> Void)?
     var onHorizontalArrowKey: ((Int) -> Void)?
+    var onInfoToggleKey: (() -> Void)?
 
     public override func orderFront(_ sender: Any?) {
         super.orderFront(sender)
@@ -109,7 +111,9 @@ public final class NotchOverlayPanel: NSPanel {
     public override func sendEvent(_ event: NSEvent) {
         switch event.type {
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
-            onUserInteractionInside?()
+            if event.type != .leftMouseDown || shouldSuppressFocusOnMouseDown?() != true {
+                onUserInteractionInside?()
+            }
         case .keyDown:
             onUserInteractionInside?()
             if handleKeyEventIfNeeded(event) {
@@ -142,6 +146,13 @@ public final class NotchOverlayPanel: NSPanel {
         case 124: // Right arrow
             if !isEditingText {
                 onHorizontalArrowKey?(1)
+                return true
+            }
+            return false
+        case 34: // I
+            let disallowed: NSEvent.ModifierFlags = [.command, .control, .option]
+            if !isEditingText && event.modifierFlags.intersection(disallowed).isEmpty {
+                onInfoToggleKey?()
                 return true
             }
             return false
@@ -255,20 +266,23 @@ public final class NotchPromptWindowController: NSObject {
         )
     }
 
-    /// Computes the required canvas size for the panel window, expanding if a custom notch, warning,
-    /// or D-36 approval info strip requires extra height/width (including the password drawer).
+    /// Computes the required canvas size for the panel window, expanding if a custom notch, Stage 2
+    /// approval flows, expanded caller details drawer, or error line require extra height/width.
     private func requiredPanelCanvasSize(for geometry: NotchScreenGeometry, request: NotchPromptRequest? = nil) -> NSSize {
         let extraTop = max(0, geometry.effectiveTopClearance - 32.0)
         let width = max(Self.defaultPanelSize.width, geometry.cutoutWidth + 320.0)
         var height = Self.defaultPanelSize.height + extraTop
         if let request = request ?? activeViewModel?.request {
-            let contentHeight: CGFloat = 214
-                + (request.effectiveWarning != nil ? 64 : 0)
-                + (request.hasInfoStrip ? 80 : 0)
-                + 64 // password drawer
-                + 20 // password error line
+            let detailRows = CGFloat(request.identityDetailRows.count)
+            let maxContentHeight: CGFloat = 100
+                + (request.alertNotice != nil ? 64 : 0)
+                + (request.hasDecisionStage ? 50 : 0)
+                + (request.showsScopeSelector ? 46 : 0)
+                + 52 // unified auth bar
+                + 22 // error subline
+                + 8 + detailRows * 26 // expanded (i) details drawer
                 + extraTop
-            height = max(height, contentHeight + 24)
+            height = max(height, maxContentHeight + 36)
         }
         return NSSize(width: width, height: height)
     }
@@ -408,6 +422,9 @@ public final class NotchPromptWindowController: NSObject {
                 self.panel?.makeKey()
             }
         }
+        overlayPanel.shouldSuppressFocusOnMouseDown = { [weak viewModel] in
+            viewModel?.isHoveringCloseButton == true
+        }
         overlayPanel.onEscapeKey = { [weak self, weak viewModel] in
             guard let self, let viewModel, self.activeRequestID == viewModel.requestID else { return }
             viewModel.deny()
@@ -419,6 +436,10 @@ public final class NotchPromptWindowController: NSObject {
         overlayPanel.onHorizontalArrowKey = { [weak self, weak viewModel] direction in
             guard let self, let viewModel, self.activeRequestID == viewModel.requestID else { return }
             viewModel.selectAdjacentScope(direction: direction)
+        }
+        overlayPanel.onInfoToggleKey = { [weak self, weak viewModel] in
+            guard let self, let viewModel, self.activeRequestID == viewModel.requestID else { return }
+            viewModel.toggleIdentityDetails()
         }
 
         if hostedViewModel !== viewModel || overlayPanel.contentView == nil {
