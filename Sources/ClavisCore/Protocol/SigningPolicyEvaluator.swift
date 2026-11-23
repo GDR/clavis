@@ -237,7 +237,9 @@ public final class SigningPolicyEvaluator {
                                         approvalIdentity: sharedIdentity,
                                         duration: duration,
                                         operation: operation,
-                                        existingContext: outcome.context
+                                        existingContext: outcome.context,
+                                        endsAtLock: outcome.selectedScope.endsAtLock,
+                                        callerName: nil
                                     )
                                 } catch {
                                     outcome.context.invalidate()
@@ -628,7 +630,9 @@ public final class SigningPolicyEvaluator {
 
                     func performGrantAndSign(
                         duration: TimeInterval,
-                        existingContext: LAContext?
+                        existingContext: LAContext?,
+                        endsAtLock: Bool = false,
+                        grantCallerName: String? = nil
                     ) throws -> Data? {
                         guard let anchor = gitAnchor else {
                             existingContext?.invalidate()
@@ -650,7 +654,9 @@ public final class SigningPolicyEvaluator {
                                     duration: grantDuration,
                                     maxOperations: 200,
                                     approvedProcess: anchor,
-                                    existingContext: existingContext
+                                    existingContext: existingContext,
+                                    endsAtLock: endsAtLock,
+                                    callerName: grantCallerName
                                 )
                             } catch {
                                 existingContext.invalidate()
@@ -664,7 +670,9 @@ public final class SigningPolicyEvaluator {
                                     clientIdentity: clientIdentity,
                                     duration: grantDuration,
                                     maxOperations: 200,
-                                    approvedProcess: anchor
+                                    approvedProcess: anchor,
+                                    endsAtLock: endsAtLock,
+                                    callerName: grantCallerName
                                 )
                             }
                         }
@@ -732,7 +740,9 @@ public final class SigningPolicyEvaluator {
                         } else {
                             guard let grantedSignature = try performGrantAndSign(
                                 duration: outcome.selectedScope.grantDurationSeconds ?? 300.0,
-                                existingContext: outcome.context
+                                existingContext: outcome.context,
+                                endsAtLock: outcome.selectedScope.endsAtLock,
+                                grantCallerName: callerName
                             ) else {
                                 return .denied
                             }
@@ -753,7 +763,9 @@ public final class SigningPolicyEvaluator {
                         case .grantFiveMinutes, .grantSession:
                             guard let grantedSignature = try performGrantAndSign(
                                 duration: choice.grantDurationSeconds ?? 300.0,
-                                existingContext: nil
+                                existingContext: nil,
+                                endsAtLock: false,
+                                grantCallerName: callerName
                             ) else {
                                 return .denied
                             }
@@ -867,7 +879,9 @@ public final class SigningPolicyEvaluator {
                                     prompt: "",
                                     approvalIdentity: approvalIdentity,
                                     duration: duration,
-                                    existingContext: outcome.context
+                                    existingContext: outcome.context,
+                                    endsAtLock: outcome.selectedScope.endsAtLock,
+                                    callerName: callerName
                                 )
                             } catch {
                                 outcome.context.invalidate()

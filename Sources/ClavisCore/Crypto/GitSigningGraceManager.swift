@@ -22,11 +22,35 @@ public enum GitSigningPromptChoice: Equatable, Sendable {
     }
 }
 
+public struct AgentActiveGrantSnapshot: Equatable, Sendable {
+    public let keyLabel: String
+    public let remainingSeconds: Int
+    public let remainingOperations: Int
+    public let endsAtLock: Bool
+    public let callerName: String?
+
+    public init(
+        keyLabel: String,
+        remainingSeconds: Int,
+        remainingOperations: Int,
+        endsAtLock: Bool = false,
+        callerName: String? = nil
+    ) {
+        self.keyLabel = keyLabel
+        self.remainingSeconds = remainingSeconds
+        self.remainingOperations = remainingOperations
+        self.endsAtLock = endsAtLock
+        self.callerName = callerName
+    }
+}
+
 public final class GitSigningGrant: @unchecked Sendable {
     public let keyLabel: String
     public let grantedAt: Date
     public let expiresAt: Date
     public let deadline: DispatchTime
+    public let endsAtLock: Bool
+    public let callerName: String?
     private let lock = NSLock()
     private var _remainingOperations: Int
     private var authorizedContext: LAContext?
@@ -41,12 +65,16 @@ public final class GitSigningGrant: @unchecked Sendable {
         duration: TimeInterval = 300.0,
         maxOperations: Int = 200,
         clientIdentity: String = "test-client",
-        approvedProcess: GitApprovedProcess? = nil
+        approvedProcess: GitApprovedProcess? = nil,
+        endsAtLock: Bool = false,
+        callerName: String? = nil
     ) {
         self.keyLabel = keyLabel
         self.grantedAt = Date()
         self.expiresAt = Date().addingTimeInterval(duration)
         self.deadline = DispatchTime.now() + duration
+        self.endsAtLock = endsAtLock
+        self.callerName = callerName
         self._remainingOperations = maxOperations
         self.authorizedContext = nil
         self.clientIdentity = clientIdentity
@@ -61,12 +89,16 @@ public final class GitSigningGrant: @unchecked Sendable {
         clientIdentity: String,
         authorizedContext: LAContext?,
         approvedProcess: GitApprovedProcess? = nil,
-        hardwareSigner: (@Sendable (Data) throws -> Data)? = nil
+        hardwareSigner: (@Sendable (Data) throws -> Data)? = nil,
+        endsAtLock: Bool = false,
+        callerName: String? = nil
     ) {
         self.keyLabel = keyLabel
         self.grantedAt = Date()
         self.expiresAt = Date().addingTimeInterval(duration)
         self.deadline = DispatchTime.now() + duration
+        self.endsAtLock = endsAtLock
+        self.callerName = callerName
         self._remainingOperations = maxOperations
         self.clientIdentity = clientIdentity
         self.authorizedContext = authorizedContext
@@ -206,6 +238,8 @@ public final class PersonalUnlockGrant: @unchecked Sendable {
     public let expiresAt: Date
     public let deadline: DispatchTime
     public let allowedCapabilities: KeyCapabilities
+    public let endsAtLock: Bool
+    public let callerName: String?
     private let lock = NSLock()
     private var _remainingOperations: Int
     private var authorizedContext: LAContext?
@@ -218,15 +252,19 @@ public final class PersonalUnlockGrant: @unchecked Sendable {
         maxOperations: Int = 200,
         allowedCapabilities: KeyCapabilities = KeyCapabilities(ssh: true, signature: false),
         authorizedContext: LAContext?,
-        hardwareSigner: (@Sendable (Data) throws -> Data)? = nil
+        hardwareSigner: (@Sendable (Data) throws -> Data)? = nil,
+        endsAtLock: Bool = false,
+        callerName: String? = nil
     ) {
         self.keyLabel = keyLabel
         self.approvalIdentity = approvalIdentity
         self.grantedAt = Date()
         self.expiresAt = Date().addingTimeInterval(duration)
         self.deadline = DispatchTime.now() + duration
-        self._remainingOperations = maxOperations
         self.allowedCapabilities = allowedCapabilities
+        self.endsAtLock = endsAtLock
+        self.callerName = callerName
+        self._remainingOperations = maxOperations
         self.authorizedContext = authorizedContext
         self.hardwareSigner = hardwareSigner
     }
@@ -615,6 +653,32 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         allActiveGrants().map { ($0.keyLabel, $0.remainingSeconds, $0.remainingOperations) }
     }
 
+    public func allActiveGrantSnapshots() -> [AgentActiveGrantSnapshot] {
+        let git = allActiveGrants().map {
+            AgentActiveGrantSnapshot(
+                keyLabel: $0.keyLabel,
+                remainingSeconds: $0.remainingSeconds,
+                remainingOperations: $0.remainingOperations,
+                endsAtLock: $0.endsAtLock,
+                callerName: $0.callerName
+            )
+        }
+        let personal = allActivePersonalGrants().map {
+            AgentActiveGrantSnapshot(
+                keyLabel: $0.keyLabel,
+                remainingSeconds: $0.remainingSeconds,
+                remainingOperations: $0.remainingOperations,
+                endsAtLock: $0.endsAtLock,
+                callerName: $0.callerName
+            )
+        }
+        return (git + personal).sorted {
+            let order = $0.keyLabel.localizedStandardCompare($1.keyLabel)
+            if order != .orderedSame { return order == .orderedAscending }
+            return $0.remainingSeconds > $1.remainingSeconds
+        }
+    }
+
     @objc private func handleScreenLocked() {
         invalidateAll(broadcast: true)
     }
@@ -695,7 +759,9 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         maxOperations: Int = 200,
         context: LAContext,
         approvedProcess: GitApprovedProcess? = nil,
-        hardwareSigner: (@Sendable (Data) throws -> Data)? = nil
+        hardwareSigner: (@Sendable (Data) throws -> Data)? = nil,
+        endsAtLock: Bool = false,
+        callerName: String? = nil
     ) -> GitSigningGrant {
         lock.lock()
         defer { lock.unlock() }
@@ -708,7 +774,9 @@ public final class GitSigningGraceManager: @unchecked Sendable {
             clientIdentity: clientIdentity,
             authorizedContext: context,
             approvedProcess: approvedProcess,
-            hardwareSigner: hardwareSigner
+            hardwareSigner: hardwareSigner,
+            endsAtLock: endsAtLock,
+            callerName: callerName
         )
         activeGrants[keyLabel] = grant
         scheduleNextExpirationTimerLocked()
@@ -724,7 +792,9 @@ public final class GitSigningGraceManager: @unchecked Sendable {
         maxOperations: Int = 200,
         allowedCapabilities: KeyCapabilities = KeyCapabilities(ssh: true, signature: false),
         context: LAContext,
-        hardwareSigner: (@Sendable (Data) throws -> Data)? = nil
+        hardwareSigner: (@Sendable (Data) throws -> Data)? = nil,
+        endsAtLock: Bool = false,
+        callerName: String? = nil
     ) -> PersonalUnlockGrant {
         lock.lock()
         let compoundKey = personalGrantKey(label: keyLabel, approvalIdentity: approvalIdentity)
@@ -736,7 +806,9 @@ public final class GitSigningGraceManager: @unchecked Sendable {
             maxOperations: maxOperations,
             allowedCapabilities: allowedCapabilities,
             authorizedContext: context,
-            hardwareSigner: hardwareSigner
+            hardwareSigner: hardwareSigner,
+            endsAtLock: endsAtLock,
+            callerName: callerName
         )
         personalGrants[compoundKey] = grant
         scheduleNextExpirationTimerLocked()

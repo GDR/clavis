@@ -40,6 +40,7 @@ internal struct AgentControlDispatcher {
     static func isControlOpcode(_ msgType: UInt8) -> Bool {
         msgType == SSHAgentServer.applicationRegistryRequest
             || msgType == SSHAgentServer.applicationPolicyChangeRequest
+            || msgType == SSHAgentServer.queryAllActiveGrantsRequest
             || msgType == SSHAgentServer.invalidateKeyRequest
             || msgType == SSHAgentServer.queryGitGraceRequest
             || msgType == SSHAgentServer.lockAllRequest
@@ -65,6 +66,8 @@ internal struct AgentControlDispatcher {
             return handleApplicationRegistry(payload: payload)
         case SSHAgentServer.applicationPolicyChangeRequest:
             return handleApplicationPolicyChange(payload: Data(payload.dropFirst()), clientPid: clientPid, clientExecutablePath: clientExecutablePath, clientStartTime: clientStartTime, clientSocket: clientSocket)
+        case SSHAgentServer.queryAllActiveGrantsRequest:
+            return handleQueryAllActiveGrants(payload: payload)
         case SSHAgentServer.invalidateKeyRequest:
             return handleInvalidateKey(payload: Data(payload.dropFirst()))
         case SSHAgentServer.queryGitGraceRequest:
@@ -131,6 +134,21 @@ internal struct AgentControlDispatcher {
             response.appendWireString("")
             response.appendWireUInt32(0)
             response.appendWireUInt32(0)
+        }
+        return response
+    }
+
+    func handleQueryAllActiveGrants(payload: Data) -> Data {
+        guard payload.count == 1 else { return Data([5]) }
+        let snapshots = gitSigningGraceManager.allActiveGrantSnapshots()
+        var response = Data([6])
+        response.appendWireUInt32(UInt32(snapshots.count))
+        for snapshot in snapshots {
+            response.appendWireString(snapshot.keyLabel)
+            response.appendWireUInt32(UInt32(max(0, snapshot.remainingSeconds)))
+            response.appendWireUInt32(UInt32(max(0, snapshot.remainingOperations)))
+            response.append(snapshot.endsAtLock ? 1 : 0)
+            response.appendWireString(snapshot.callerName ?? "")
         }
         return response
     }

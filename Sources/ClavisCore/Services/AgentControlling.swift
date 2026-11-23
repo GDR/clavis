@@ -14,6 +14,7 @@ public protocol AgentControlling: Sendable {
     func sendLockAllToAgent() throws
     func queryAgentGitGrace() -> (keyLabel: String, remainingSeconds: Int, remainingOperations: Int)?
     func queryAllAgentGitGraces() -> [(keyLabel: String, remainingSeconds: Int, remainingOperations: Int)]
+    func queryAllActiveGrants() -> [AgentActiveGrantSnapshot]
     func invalidateAgentGrant(label: String) throws
 
     func listAgentSessions() -> [AgentSessionSummary]
@@ -39,6 +40,16 @@ public extension AgentControlling {
             return [single]
         }
         return []
+    }
+
+    func queryAllActiveGrants() -> [AgentActiveGrantSnapshot] {
+        queryAllAgentGitGraces().map {
+            AgentActiveGrantSnapshot(
+                keyLabel: $0.keyLabel,
+                remainingSeconds: $0.remainingSeconds,
+                remainingOperations: $0.remainingOperations
+            )
+        }
     }
 
     func invalidateAgentGrant(label: String) throws {}

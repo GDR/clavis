@@ -60,6 +60,7 @@ public class SSHAgentServer {
     internal static let getAgentPolicyRequest: UInt8 = 249
     internal static let applicationRegistryRequest: UInt8 = 250
     internal static let applicationPolicyChangeRequest: UInt8 = 251
+    internal static let queryAllActiveGrantsRequest: UInt8 = 252
     public static let defaultSocketPath = NSString(string: "~/.ssh/clavis.sock").expandingTildeInPath
     public static let defaultAgentSocketPath = NSString(string: "~/.ssh/clavis-agent.sock").expandingTildeInPath
     public static let shared = SSHAgentServer(promptGate: .shared)

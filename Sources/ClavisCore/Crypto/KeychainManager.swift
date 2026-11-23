@@ -746,7 +746,9 @@ public class KeychainManager {
         duration: TimeInterval = 300.0,
         maxOperations: Int = 200,
         approvedProcess: GitApprovedProcess? = nil,
-        existingContext: LAContext? = nil
+        existingContext: LAContext? = nil,
+        endsAtLock: Bool = false,
+        callerName: String? = nil
     ) throws -> GitSigningGrant {
         guard key.effectiveAccessProfile.capabilities.signature else {
             if key.purpose == .agent { throw KeyPurposeError.notAllowedOnThisPath(.agent) }
@@ -781,7 +783,9 @@ public class KeychainManager {
                 maxOperations: maxOperations,
                 context: context,
                 approvedProcess: approvedProcess,
-                hardwareSigner: hardwareSigner
+                hardwareSigner: hardwareSigner,
+                endsAtLock: endsAtLock,
+                callerName: callerName
             )
         }
     }
@@ -795,7 +799,9 @@ public class KeychainManager {
         duration: TimeInterval,
         maxOperations: Int = 200,
         operation: KeyOperation = .ssh,
-        existingContext: LAContext? = nil
+        existingContext: LAContext? = nil,
+        endsAtLock: Bool = false,
+        callerName: String? = nil
     ) throws -> PersonalUnlockGrant {
         guard key.effectiveAccessProfile.capabilities.permits(operation) else {
             throw KeyAccessError.operationDisabled(operation)
@@ -829,7 +835,9 @@ public class KeychainManager {
                 maxOperations: maxOperations,
                 allowedCapabilities: record.accessProfile.capabilities,
                 context: context,
-                hardwareSigner: hardwareSigner
+                hardwareSigner: hardwareSigner,
+                endsAtLock: endsAtLock,
+                callerName: callerName
             )
         }
     }

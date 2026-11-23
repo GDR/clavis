@@ -1803,6 +1803,48 @@ final class GitSigningGraceTests {
         #expect(manager.getValidGrant(for: keyC) == nil)
     }
 
+    @Test func testAllActiveGrantSnapshotsCombineGitAndPersonalWithEndsAtLockAndCaller() throws {
+        let manager = GitSigningGraceManager(observeSystemEvents: false)
+        let myPid = getpid()
+        let mySnap = try #require(ProcessInspector.processParentSnapshot(pid: myPid))
+        let approved = GitApprovedProcess(pid: myPid, startTime: mySnap.startTime, path: "/usr/bin/git")
+
+        _ = manager.recordGrant(
+            keyLabel: "alpha-git",
+            clientIdentity: "/usr/bin/git",
+            duration: 86_400,
+            maxOperations: 20,
+            context: LAContext(),
+            approvedProcess: approved,
+            endsAtLock: true,
+            callerName: "Terminal"
+        )
+        _ = manager.recordPersonalSSHGrant(
+            keyLabel: "beta-ssh",
+            approvalIdentity: "app:/Applications/iTerm.app",
+            duration: 300,
+            maxOperations: 10,
+            context: LAContext(),
+            endsAtLock: false,
+            callerName: "iTerm2"
+        )
+
+        let snapshots = manager.allActiveGrantSnapshots()
+        #expect(snapshots.count == 2)
+        let gitSnap = try #require(snapshots.first { $0.keyLabel == "alpha-git" })
+        #expect(gitSnap.endsAtLock == true)
+        #expect(gitSnap.callerName == "Terminal")
+        #expect(gitSnap.remainingSeconds > 0)
+
+        let sshSnap = try #require(snapshots.first { $0.keyLabel == "beta-ssh" })
+        #expect(sshSnap.endsAtLock == false)
+        #expect(sshSnap.callerName == "iTerm2")
+        #expect(sshSnap.remainingSeconds > 0)
+
+        manager.invalidateAll(broadcast: false)
+        #expect(manager.allActiveGrantSnapshots().isEmpty)
+    }
+
     // MARK: - Adversarial Concurrency & Stress Tests
 
     @Test func testAdversarialConcurrentMultiKeyGrantsAndPerKeyRevocation() async throws {

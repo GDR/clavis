@@ -376,6 +376,50 @@ public final class AgentLifecycleManager: @unchecked Sendable {
         return (label, Int(seconds), Int(operations))
     }
 
+    /// Queries the running agent daemon for all active Git and Personal SSH grants over the control socket.
+    /// Falls back to opcode 241 when communicating with an older daemon that rejects opcode 252.
+    public func queryAllActiveGrants() -> [AgentActiveGrantSnapshot] {
+        guard FileManager.default.fileExists(atPath: socketPath) else { return [] }
+
+        let payload = Data([SSHAgentServer.queryAllActiveGrantsRequest])
+        if let response = try? sendControlRequest(payload), response.first == 6 {
+            var reader = DataReader(data: Data(response.dropFirst()))
+            guard let count = reader.readUInt32() else { return [] }
+            var snapshots: [AgentActiveGrantSnapshot] = []
+            for _ in 0..<count {
+                guard let label = reader.readWireString(),
+                      let seconds = reader.readUInt32(),
+                      let operations = reader.readUInt32(),
+                      let endsAtLock = reader.readBool(),
+                      let caller = reader.readWireString() else {
+                    return snapshots
+                }
+                guard !label.isEmpty else { continue }
+                snapshots.append(
+                    AgentActiveGrantSnapshot(
+                        keyLabel: label,
+                        remainingSeconds: Int(seconds),
+                        remainingOperations: Int(operations),
+                        endsAtLock: endsAtLock,
+                        callerName: caller.isEmpty ? nil : caller
+                    )
+                )
+            }
+            return snapshots
+        }
+
+        if let single = queryAgentGitGrace() {
+            return [
+                AgentActiveGrantSnapshot(
+                    keyLabel: single.keyLabel,
+                    remainingSeconds: single.remainingSeconds,
+                    remainingOperations: single.remainingOperations
+                )
+            ]
+        }
+        return []
+    }
+
     /// Instructs the running agent daemon to purge all cached session secrets and Git grace periods over the secure socket.
     public func sendLockAllToAgent() throws {
         guard FileManager.default.fileExists(atPath: socketPath) else {
