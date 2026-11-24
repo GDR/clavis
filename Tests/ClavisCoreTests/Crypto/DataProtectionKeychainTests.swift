@@ -613,6 +613,7 @@ struct DataProtectionKeychainTests {
 
         let write1Entered = DispatchSemaphore(value: 0)
         let allowWrite1Continue = DispatchSemaphore(value: 0)
+        let writer2Started = DispatchSemaphore(value: 0)
         let writer2Done = DispatchSemaphore(value: 0)
         nonisolated(unsafe) var ringRef: KeychainAuditKeyring?
 
@@ -627,7 +628,7 @@ struct DataProtectionKeychainTests {
                    let val = attrDict[kSecValueData as String] as? Data,
                    String(data: val, encoding: .utf8) == "key-1" {
                     write1Entered.signal()
-                    _ = allowWrite1Continue.wait(timeout: .now() + 2.0)
+                    _ = allowWrite1Continue.wait(timeout: .now() + 30.0)
                 }
                 return status
             },
@@ -636,22 +637,25 @@ struct DataProtectionKeychainTests {
         ringRef = keyring
 
         let writer1Done = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             try? ringRef?.setCurrent(keyID: "key-1")
             writer1Done.signal()
         }
+        defer { allowWrite1Continue.signal() }
 
-        #expect(write1Entered.wait(timeout: .now() + 2.0) == .success)
-        DispatchQueue.global().async {
+        #expect(write1Entered.wait(timeout: .now() + 30.0) == .success)
+        Thread.detachNewThread {
+            writer2Started.signal()
             try? ringRef?.setCurrent(keyID: "key-2")
             writer2Done.signal()
         }
+        #expect(writer2Started.wait(timeout: .now() + 30.0) == .success)
         // Release writer 1 after writer 2 has started waiting on `lock`.
         usleep(20_000)
         allowWrite1Continue.signal()
 
-        #expect(writer1Done.wait(timeout: .now() + 2.0) == .success)
-        #expect(writer2Done.wait(timeout: .now() + 2.0) == .success)
+        #expect(writer1Done.wait(timeout: .now() + 30.0) == .success)
+        #expect(writer2Done.wait(timeout: .now() + 30.0) == .success)
 
         let storedID = backend.storedData(service: service, account: "current", scope: Self.dpScope).flatMap {
             String(data: $0, encoding: .utf8)
