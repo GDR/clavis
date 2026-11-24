@@ -32,7 +32,7 @@ import Testing
         #expect(ClavisUIStrings.Inspector.changeKeyPurpose == "Change Key Purpose…")
         #expect(ClavisUIStrings.Inspector.revokeGitSession == "Revoke Session")
         #expect(ClavisUIStrings.Inspector.gitSessionOperationsLeft(5) == "5 operations remaining")
-        #expect(ClavisUIStrings.Inspector.deleteAlertMessage(label: "test", fingerprint: "SHA256:abc") == "Are you sure you want to delete 'test' (SHA256:abc)? This action cannot be undone.")
+        #expect(ClavisUIStrings.Inspector.deleteAlertMessage(label: "test", fingerprint: "SHA256:abc") == "Are you sure you want to delete 'test' (SHA256:abc)? This action cannot be undone. Public keys registered elsewhere (GitHub, servers) stay valid there — remove them manually. Signatures already issued cannot be revoked.")
     }
 
     @Test func testInspectorNewLocalizationStrings() {
@@ -149,7 +149,9 @@ import Testing
 
     @Test func testBiometricPolicyAndKeyPurpose() {
         #expect(BiometricPolicy.userPresence.title == "User Presence")
-        #expect(BiometricPolicy.biometryCurrentSet.title == "Strict Biometrics")
+        #expect(BiometricPolicy.biometryCurrentSet.title == "Strict Biometrics (legacy)")
+        #expect(BiometricPolicy.biometryOrPasscode.title == "Strict Biometrics")
+        #expect(BiometricPolicy.devicePasscode.title == "Password")
         #expect(KeyPurpose.general.title == "General (SSH & Git)")
         #expect(KeyPurpose.gitSigningOnly.title == "Git Signing Only")
         #expect(KeyPurpose.agent.title == "Agent")

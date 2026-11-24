@@ -742,7 +742,7 @@ struct KeyDetailInspectorTests {
             shortFingerprint: key.shortFingerprint
         )
 
-        #expect(message == "Are you sure you want to delete 'production-deploy' (SHA256:uD734VbKz)? This action cannot be undone.")
+        #expect(message == "Are you sure you want to delete 'production-deploy' (SHA256:uD734VbKz)? This action cannot be undone. Public keys registered elsewhere (GitHub, servers) stay valid there — remove them manually. Signatures already issued cannot be revoked.")
     }
 
     @Test

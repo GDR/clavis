@@ -2574,13 +2574,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Are you sure you want to delete '%@'? This action cannot be undone."
+            "value": "Are you sure you want to delete '%@'? This action cannot be undone. Public keys registered elsewhere (GitHub, servers) stay valid there — remove them manually. Signatures already issued cannot be revoked."
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Вы уверены, что хотите удалить '%@'? Это действие нельзя отменить."
+            "value": "Вы уверены, что хотите удалить '%@'? Это действие нельзя отменить. Публичные ключи на внешних сервисах (GitHub, серверы) останутся там — удалите их вручную. Уже выданные подписи нельзя отозвать."
           }
         }
       }
@@ -3237,18 +3237,52 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Touch ID, Apple Watch, or device password fallback"
+            "value": "Touch ID, Apple Watch, or password"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Touch ID, Apple Watch или ввод пароля устройства"
+            "value": "Touch ID, Apple Watch или пароль"
           }
         }
       }
     },
     "biometric_policy.current_set_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Strict Biometrics (legacy)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Строгая биометрия (устаревшая)"
+          }
+        }
+      }
+    },
+    "biometric_policy.current_set_subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Touch ID only, no password fallback. Invalidated if fingerprints change. Created before the password-fallback policy; Rotate to change."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Только Touch ID без пароля. Аннулируется при изменении отпечатков. Создан до политики с паролем; используйте ротацию для изменения."
+          }
+        }
+      }
+    },
+    "biometric_policy.biometry_or_passcode_title": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -3265,19 +3299,53 @@
         }
       }
     },
-    "biometric_policy.current_set_subtitle": {
+    "biometric_policy.biometry_or_passcode_subtitle": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Touch ID only. Invalidated if system fingerprints change"
+            "value": "Touch ID only, password fallback. Invalidated if fingerprints change."
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Только Touch ID. Аннулируется при изменении отпечатков пальцев"
+            "value": "Только Touch ID, с резервным паролем. Аннулируется при изменении отпечатков."
+          }
+        }
+      }
+    },
+    "biometric_policy.device_passcode_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Password"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Пароль"
+          }
+        }
+      }
+    },
+    "biometric_policy.device_passcode_subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac login password only. No biometrics."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Только пароль входа Mac. Без биометрии."
           }
         }
       }
@@ -5277,13 +5345,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Are you sure you want to delete '%1$@' (%2$@)? This action cannot be undone."
+            "value": "Are you sure you want to delete '%1$@' (%2$@)? This action cannot be undone. Public keys registered elsewhere (GitHub, servers) stay valid there — remove them manually. Signatures already issued cannot be revoked."
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Вы уверены, что хотите удалить «%1$@» (%2$@)? Это действие нельзя отменить."
+            "value": "Вы уверены, что хотите удалить «%1$@» (%2$@)? Это действие нельзя отменить. Публичные ключи на внешних сервисах (GitHub, серверы) останутся там — удалите их вручную. Уже выданные подписи нельзя отозвать."
           }
         }
       }
