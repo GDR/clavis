@@ -1609,11 +1609,11 @@ struct NotchTouchIDPromptTests {
         #expect(pwVM.phase == .passwordEntry)
         #expect(pwView.islandHeight == 198)
 
-        // Wrong password shows error subline below auth bar & expands height by 22pt.
+        // Wrong password shows error subline below auth bar & expands height by 32pt.
         pwVM.passwordText = "bad"
         #expect(await pwVM.submitPassword() == false)
         #expect(pwVM.passwordError == "Incorrect password. Try again.")
-        #expect(pwView.islandHeight == 220)
+        #expect(pwView.islandHeight == 230)
 
         pwVM.passwordText = "secret"
         #expect(await pwVM.submitPassword() == true)
@@ -2205,7 +2205,7 @@ struct NotchTouchIDPromptTests {
         #expect(vm.activeErrorMessage == nil)
         #expect(view.islandHeight == 198)
 
-        // Wrong inline password directly from .awaitingAuthentication keeps .awaitingAuthentication and reveals 22pt error subline.
+        // Wrong inline password directly from .awaitingAuthentication keeps .awaitingAuthentication and reveals 32pt error subline.
         vm.passwordText = "wrong"
         vm.isPasswordVisible = true
         let badOK = await vm.submitPassword()
@@ -2215,7 +2215,7 @@ struct NotchTouchIDPromptTests {
         #expect(vm.passwordText.isEmpty)
         #expect(vm.activeErrorMessage == "Incorrect password. Try again or use Touch ID.")
         #expect(vm.failureShakeTrigger == 1)
-        #expect(view.islandHeight == 220)
+        #expect(view.islandHeight == 230)
 
         // Correct password approves cleanly.
         vm.passwordText = "clavis"
@@ -2269,5 +2269,186 @@ struct NotchTouchIDPromptTests {
 
         firstUseVM.phase = .idle
         #expect(firstUseView.ambientGlowOpacity == 0.0)
+    }
+
+    @Test
+    func threeBiometricFailuresTriggerLockoutAndPreserveLockoutAcrossActions() async {
+        // 1. Touch ID + password fallback allowed
+        let reqWithFallback = NotchPromptRequest(
+            callerName: "Ghostty",
+            processChain: "zsh → git → ssh",
+            keyLabel: "Github.com",
+            keyType: .personal,
+            operation: "Authenticate with SSH",
+            allowsPasswordFallback: true,
+            confirmationMode: .touchIDOrPassword
+        )
+        var bioCalls = 0
+        let vm = NotchPromptViewModel(
+            request: reqWithFallback,
+            initialPhase: .awaitingAuthentication,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false,
+            biometricAuthenticator: {
+                bioCalls += 1
+                return false
+            },
+            passwordVerifier: { $0 == "clavis" }
+        )
+        let view = NotchTouchIDPromptView(viewModel: vm)
+        #expect(view.islandHeight == 198)
+        #expect(!vm.isBiometricLocked)
+
+        await vm.approveWithBiometrics()
+        #expect(vm.biometricFailedAttempts == 1)
+        #expect(vm.remainingBiometricAttempts == 2)
+        #expect(!vm.isBiometricLocked)
+        #expect(vm.biometricFailure == .notRecognized)
+        #expect(vm.activeErrorMessage == "Fingerprint not recognized. Try again (2 attempts left) or enter Mac password.")
+        #expect(view.islandHeight == 230)
+
+        await vm.approveWithBiometrics()
+        #expect(vm.biometricFailedAttempts == 2)
+        #expect(vm.remainingBiometricAttempts == 1)
+        #expect(!vm.isBiometricLocked)
+        #expect(vm.activeErrorMessage == "Fingerprint not recognized. Try again (1 attempt left) or enter Mac password.")
+
+        await vm.approveWithBiometrics()
+        #expect(bioCalls == 3)
+        #expect(vm.biometricFailedAttempts == 3)
+        #expect(vm.remainingBiometricAttempts == 0)
+        #expect(vm.isBiometricLocked)
+        #expect(vm.biometricFailure == .lockout)
+        #expect(vm.activeErrorMessage == "Your password is required to continue.")
+        #expect(view.islandHeight == 230)
+
+        // Subsequent biometric attempts and scope changes keep Touch ID locked.
+        await vm.approveWithBiometrics()
+        vm.retryBiometrics()
+        vm.selectScope(.untilLock)
+        #expect(bioCalls == 3)
+        #expect(vm.isBiometricLocked)
+        #expect(vm.biometricFailure == .lockout)
+
+        // Password fallback still works after biometric lockout.
+        vm.passwordText = "clavis"
+        let unlocked = await vm.submitPassword()
+        #expect(unlocked)
+        #expect(vm.phase == .approved)
+
+        // 2. Touch ID only (password disabled by key policy)
+        let bioOnlyReq = NotchPromptRequest(
+            callerName: "Ghostty",
+            processChain: "zsh → git → ssh",
+            keyLabel: "Github.com",
+            keyType: .personal,
+            operation: "Authenticate with SSH",
+            allowsPasswordFallback: false,
+            confirmationMode: .touchIDOrPassword
+        )
+        let bioOnlyVM = NotchPromptViewModel(
+            request: bioOnlyReq,
+            initialPhase: .awaitingAuthentication,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false,
+            biometricAuthenticator: { false }
+        )
+        await bioOnlyVM.approveWithBiometrics()
+        #expect(bioOnlyVM.activeErrorMessage == "Fingerprint not recognized. Touch sensor to try again (2 attempts left).")
+        await bioOnlyVM.approveWithBiometrics()
+        #expect(bioOnlyVM.activeErrorMessage == "Fingerprint not recognized. Touch sensor to try again (1 attempt left).")
+        await bioOnlyVM.approveWithBiometrics()
+        #expect(bioOnlyVM.isBiometricLocked)
+        #expect(bioOnlyVM.activeErrorMessage == "Unlock your Mac to reset Touch ID, then try again.")
+    }
+
+    @Test
+    func preExistingSystemLockoutSurfacesOnOpenRecoversWithoutBypassingTouchIDOnlyPolicy() async {
+        // 1. Pre-existing LAError.biometryLockout surfaces on both password-fallback and Touch-ID-only keys.
+        var availabilityError: LAError.Code? = .biometryLockout
+        var resetCalls = 0
+        var resetSucceeded = false
+
+        let bioOnlyReq = NotchPromptRequest(
+            callerName: "Ghostty",
+            processChain: "zsh → git → ssh",
+            keyLabel: "Github.com",
+            keyType: .personal,
+            operation: "Authenticate with SSH",
+            allowsPasswordFallback: false,
+            confirmationMode: .touchIDOrPassword
+        )
+        let bioOnlyVM = NotchPromptViewModel(
+            request: bioOnlyReq,
+            initialPhase: .awaitingAuthentication,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false,
+            biometricAvailabilityProvider: { _ in availabilityError },
+            biometricLockoutResetAuthenticator: {
+                resetCalls += 1
+                return resetSucceeded
+            }
+        )
+        let bioOnlyView = NotchTouchIDPromptView(viewModel: bioOnlyVM)
+        #expect(bioOnlyVM.isBiometricLocked)
+        #expect(bioOnlyVM.isSystemBiometricLockout)
+        #expect(bioOnlyVM.activeErrorMessage == "Locked by macOS. Re-enable with Mac password.")
+        #expect(bioOnlyView.islandHeight == 230)
+
+        bioOnlyVM.toggleLockoutHelp()
+        #expect(bioOnlyVM.isLockoutHelpExpanded)
+        #expect(bioOnlyView.islandHeight == 334)
+
+        // Failed / cancelled macOS password check keeps lockout intact.
+        #expect(!(await bioOnlyVM.reEnableBiometricsWithSystemPassword()))
+        #expect(resetCalls == 1)
+        #expect(bioOnlyVM.isSystemBiometricLockout)
+
+        // Successful macOS password check clears lockout and re-arms without approving signing (INV-06).
+        resetSucceeded = true
+        availabilityError = nil
+        #expect(await bioOnlyVM.reEnableBiometricsWithSystemPassword())
+        #expect(resetCalls == 2)
+        #expect(!bioOnlyVM.isBiometricLocked)
+        #expect(!bioOnlyVM.isLockoutHelpExpanded)
+        #expect(bioOnlyVM.phase == .awaitingAuthentication)
+        #expect(bioOnlyVM.authenticatedContext == nil)
+        #expect(bioOnlyVM.biometricRecoveryMessage == "Touch ID re-enabled. Rest your finger on the sensor to sign.")
+        #expect(bioOnlyView.islandHeight == 230)
+
+        // 2. Password-fallback key detects external unlock (^⌘Q) on focus return.
+        var fallbackAvail: LAError.Code? = .biometryLockout
+        let fallbackReq = NotchPromptRequest(
+            callerName: "Ghostty",
+            processChain: "zsh → git → ssh",
+            keyLabel: "Github.com",
+            keyType: .personal,
+            operation: "Authenticate with SSH",
+            allowsPasswordFallback: true,
+            confirmationMode: .touchIDOrPassword
+        )
+        let fallbackVM = NotchPromptViewModel(
+            request: fallbackReq,
+            initialPhase: .awaitingAuthentication,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false,
+            biometricAvailabilityProvider: { _ in fallbackAvail }
+        )
+        let fallbackView = NotchTouchIDPromptView(viewModel: fallbackVM)
+        #expect(fallbackVM.isSystemBiometricLockout)
+        #expect(fallbackVM.activeErrorMessage == "Locked by macOS. Enter password to sign.")
+        fallbackVM.toggleLockoutHelp()
+        #expect(fallbackView.islandHeight == 312)
+
+        fallbackVM.setPromptFocused(false)
+        #expect(!fallbackVM.isLockoutHelpExpanded)
+        fallbackAvail = nil
+        fallbackVM.setPromptFocused(true)
+        #expect(!fallbackVM.isBiometricLocked)
+        #expect(fallbackVM.biometricRecoveryMessage == "Touch ID re-enabled. Rest your finger on the sensor to sign.")
     }
 }

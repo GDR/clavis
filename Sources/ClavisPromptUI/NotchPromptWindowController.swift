@@ -279,7 +279,8 @@ public final class NotchPromptWindowController: NSObject {
                 + (request.hasDecisionStage ? 50 : 0)
                 + (request.showsScopeSelector ? 46 : 0)
                 + 52 // unified auth bar
-                + 22 // error subline
+                + 32 // error or recovery subline
+                + 104 // expandable macOS lockout help drawer
                 + 8 + detailRows * 26 // expanded (i) details drawer
                 + extraTop
             height = max(height, maxContentHeight + 36)
@@ -785,7 +786,18 @@ public final class NotchPromptWindowController: NSObject {
             }
         }
 
-        windowObservers = [becomeKey, resignKey, appResign]
+        let appDidBecomeActive = center.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.activeRequestID == requestID else { return }
+                self.activeViewModel?.refreshSystemBiometricLockoutIfCleared()
+            }
+        }
+
+        windowObservers = [becomeKey, resignKey, appResign, appDidBecomeActive]
 
         if !ClavisEnvironment.isTesting {
             localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in

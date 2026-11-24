@@ -646,9 +646,13 @@ struct NotchUnifiedAuthBar: View {
     }
 
     var body: some View {
+        let isLocked = viewModel.isBiometricLocked
+        let isQuietLockNote = isLocked && viewModel.passwordError == nil
+        let isSystemLockout = isQuietLockNote && viewModel.isSystemBiometricLockout
         let isFocused = viewModel.isPromptFocused
         let errorText = viewModel.activeErrorMessage
-        let hasVisibleError = isFocused && (errorText != nil)
+        let recoveryText = (viewModel.passwordError == nil && !isLocked) ? viewModel.biometricRecoveryMessage : nil
+        let hasVisibleSubbar = isFocused && (errorText != nil || recoveryText != nil)
         let hasError = (errorText != nil)
         let isArmed = viewModel.phase.isAuthenticationArmed
 
@@ -659,22 +663,116 @@ struct NotchUnifiedAuthBar: View {
                 .frame(height: 40)
                 .modifier(NotchRecessedTrackModifier())
 
-            if let error = errorText {
-                Text(error)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(NotchPromptPalette.errorTextRed)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .padding(.top, 6)
-                    .padding(.horizontal, 8)
-                    .frame(height: 22, alignment: .topLeading)
-                    .frame(height: hasVisibleError ? 22 : 0, alignment: .topLeading)
-                    .clipped()
-                    .opacity(hasVisibleError ? 1.0 : 0.0)
-                    .accessibilityHidden(!hasVisibleError)
+            if let recoveryText {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .accessibilityHidden(true)
+
+                    Text(recoveryText)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .foregroundStyle(NotchPromptPalette.green)
+                .padding(.top, 7)
+                .padding(.horizontal, 12)
+                .frame(height: 32, alignment: .topLeading)
+                .frame(height: hasVisibleSubbar ? 32 : 0, alignment: .topLeading)
+                .clipped()
+                .opacity(hasVisibleSubbar ? 1.0 : 0.0)
+                .accessibilityHidden(!hasVisibleSubbar)
+            } else if let error = errorText {
+                HStack(spacing: 6) {
+                    if !isQuietLockNote {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .accessibilityHidden(true)
+                    }
+
+                    Text(error)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    if isSystemLockout {
+                        Spacer(minLength: 4)
+
+                        Button {
+                            Task { @MainActor in
+                                await viewModel.reEnableBiometricsWithSystemPassword()
+                            }
+                        } label: {
+                            Text("Re-enable Touch ID…")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(NotchPromptPalette.accentText)
+                                .padding(.horizontal, 8)
+                                .frame(height: 21)
+                                .background(Capsule().fill(Color.white.opacity(0.11)))
+                                .overlay(Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
+                        .fixedSize()
+                        .disabled(viewModel.isReEnablingBiometrics)
+                        .accessibilityIdentifier("prompt.reenableTouchID")
+
+                        Button {
+                            viewModel.toggleLockoutHelp()
+                        } label: {
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(viewModel.isLockoutHelpExpanded ? NotchPromptPalette.accentText : NotchPromptPalette.t2)
+                                .frame(width: 18, height: 18)
+                                .background(Circle().fill(Color.white.opacity(viewModel.isLockoutHelpExpanded ? 0.16 : 0.08)))
+                                .overlay(
+                                    Circle().strokeBorder(
+                                        viewModel.isLockoutHelpExpanded ? NotchPromptPalette.accent.opacity(0.45) : Color.white.opacity(0.14),
+                                        lineWidth: 0.5
+                                    )
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("How to unlock Touch ID")
+                        .accessibilityIdentifier("prompt.lockoutHelpButton")
+                    }
+                }
+                .foregroundStyle(isQuietLockNote ? NotchPromptPalette.t2 : NotchPromptPalette.errorTextRed)
+                .padding(.top, isQuietLockNote ? 7 : 8)
+                .padding(.horizontal, isQuietLockNote ? 12 : 10)
+                .frame(height: 32, alignment: .topLeading)
+                .frame(height: hasVisibleSubbar ? 32 : 0, alignment: .topLeading)
+                .clipped()
+                .opacity(hasVisibleSubbar ? 1.0 : 0.0)
+                .accessibilityHidden(!hasVisibleSubbar)
+
+                if isSystemLockout && viewModel.isLockoutHelpExpanded && isFocused {
+                    lockoutHelpDrawer
+                        .padding(.top, 6)
+                        .transition(.opacity)
+                }
             }
         }
         .padding(.top, 12)
+    }
+
+    private var lockoutHelpDrawer: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("macOS turned off Touch ID after 5 failed scans across the system.")
+                .fontWeight(.semibold)
+                .foregroundStyle(NotchPromptPalette.t1)
+            Text("Choose Re-enable Touch ID… for a macOS password check, or press ⌃⌘Q and unlock your Mac with your login password.")
+                .foregroundStyle(NotchPromptPalette.t2)
+            if !viewModel.request.allowsPasswordFallback {
+                Text("Your password only re-enables Touch ID. Signing with this key still requires your fingerprint.")
+                    .foregroundStyle(NotchPromptPalette.t2)
+            }
+        }
+        .font(.system(size: 11))
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .modifier(NotchRecessedTrackModifier(cornerRadius: 12))
     }
 
     private func authBarRowContent(isFocused: Bool, hasError: Bool, isArmed: Bool) -> some View {
@@ -702,7 +800,7 @@ struct NotchUnifiedAuthBar: View {
                 .accessibilityHidden(!isFocused)
 
                 HStack(spacing: 0) {
-                    Text("Biometrics armed · Click to focus")
+                    Text(viewModel.isBiometricLocked ? "Touch ID locked · Click to focus" : "Biometrics armed · Click to focus")
                         .font(.system(size: 11, weight: .regular))
                         .foregroundStyle(NotchPromptPalette.t2)
                         .lineLimit(1)
@@ -798,9 +896,9 @@ struct NotchUnifiedAuthBar: View {
         case .touchIDOrPassword:
             HStack(spacing: 7) {
                 touchIDSensorControl(isArmed: isArmed, hasBiometricFailure: hasBiometricFailure)
-                Text("Touch ID")
+                Text(viewModel.isBiometricLocked ? "Touch ID locked" : "Touch ID")
                     .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(NotchPromptPalette.t1)
+                    .foregroundStyle(viewModel.isBiometricLocked ? NotchPromptPalette.t2 : NotchPromptPalette.t1)
                     .lineLimit(1)
                     .padding(.trailing, 2)
                     .opacity(foregroundContentOpacity)
@@ -833,54 +931,88 @@ struct NotchUnifiedAuthBar: View {
     /// while `isArmed == true` so macOS `NSOcclusionDetectionView` never fires `LAError.systemCancel`.
     @ViewBuilder
     private func touchIDSensorControl(isArmed: Bool, hasBiometricFailure: Bool) -> some View {
-        let usesEmbeddedContext = (isArmed && viewModel.embeddedAuthContext != nil)
+        let isLocked = viewModel.isBiometricLocked
+        let usesEmbeddedContext = (!isLocked && isArmed && viewModel.embeddedAuthContext != nil)
         let ringColor = hasBiometricFailure ? NotchPromptPalette.danger : NotchPromptPalette.touchIDPink
 
-        Button {
-            viewModel.retryBiometrics()
-        } label: {
-            ZStack {
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [ringColor.opacity(0.24), .clear],
-                            center: .center,
-                            startRadius: 2,
-                            endRadius: 16
+        if isLocked {
+            ZStack(alignment: .bottomTrailing) {
+                ZStack {
+                    Circle()
+                        .fill(Color.white.opacity(0.06))
+                        .frame(width: 32, height: 32)
+                        .overlay(
+                            Circle().strokeBorder(Color.white.opacity(0.12), lineWidth: 1.5)
                         )
-                    )
-                    .frame(width: 32, height: 32)
-                    .overlay(
-                        Circle().strokeBorder(
-                            ringColor.opacity(hasBiometricFailure ? 0.72 : 0.36),
-                            lineWidth: 1.5
-                        )
-                    )
-                    .opacity(usesEmbeddedContext ? 1.0 : foregroundContentOpacity)
 
-                if let authContext = viewModel.embeddedAuthContext, isArmed {
-                    NotchEmbeddedTouchIDView(context: authContext, iconSize: 30)
-                        .id(ObjectIdentifier(authContext))
-                        .frame(width: 30, height: 30)
-                        .clipShape(Circle())
-                } else {
-                    Image(systemName: viewModel.phase == .verifying ? "checkmark" : "touchid")
+                    Image(systemName: "touchid")
                         .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(hasBiometricFailure ? NotchPromptPalette.errorTextRed : NotchPromptPalette.touchIDPink)
-                        .opacity(foregroundContentOpacity)
-                        .modifier(
-                            NotchHorizontalShakeEffect(
-                                animatableData: (reduceMotion || usesEmbeddedContext) ? 0 : CGFloat(viewModel.failureShakeTrigger)
-                            )
-                        )
+                        .foregroundStyle(NotchPromptPalette.t3.opacity(0.72))
                 }
+                .frame(width: 32, height: 32)
+
+                Circle()
+                    .fill(Color(white: 0.16))
+                    .frame(width: 14, height: 14)
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.75))
+                    .overlay(
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(NotchPromptPalette.t2)
+                    )
+                    .offset(x: 2, y: 2)
             }
             .frame(width: 32, height: 32)
+            .opacity(foregroundContentOpacity)
+            .help("Touch ID locked after 3 failed attempts")
+            .accessibilityLabel("Touch ID locked")
+        } else {
+            Button {
+                viewModel.retryBiometrics()
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(
+                            RadialGradient(
+                                colors: [ringColor.opacity(0.24), .clear],
+                                center: .center,
+                                startRadius: 2,
+                                endRadius: 16
+                            )
+                        )
+                        .frame(width: 32, height: 32)
+                        .overlay(
+                            Circle().strokeBorder(
+                                ringColor.opacity(hasBiometricFailure ? 0.72 : 0.36),
+                                lineWidth: 1.5
+                            )
+                        )
+                        .opacity(usesEmbeddedContext ? 1.0 : foregroundContentOpacity)
+
+                    if let authContext = viewModel.embeddedAuthContext, isArmed {
+                        NotchEmbeddedTouchIDView(context: authContext, iconSize: 30)
+                            .id(ObjectIdentifier(authContext))
+                            .frame(width: 30, height: 30)
+                            .clipShape(Circle())
+                    } else {
+                        Image(systemName: viewModel.phase == .verifying ? "checkmark" : "touchid")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(hasBiometricFailure ? NotchPromptPalette.errorTextRed : NotchPromptPalette.touchIDPink)
+                            .opacity(foregroundContentOpacity)
+                            .modifier(
+                                NotchHorizontalShakeEffect(
+                                    animatableData: (reduceMotion || usesEmbeddedContext) ? 0 : CGFloat(viewModel.failureShakeTrigger)
+                                )
+                            )
+                    }
+                }
+                .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .help("Touch ID sensor — click to retry")
+            .accessibilityLabel(viewModel.authTitleText)
         }
-        .buttonStyle(.plain)
-        .focusable(false)
-        .help("Touch ID sensor — click to retry")
-        .accessibilityLabel(viewModel.authTitleText)
     }
 
     private var watchSensorControl: some View {

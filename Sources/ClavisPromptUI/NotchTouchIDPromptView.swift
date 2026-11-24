@@ -1016,6 +1016,12 @@ public enum NotchPromptPhase: String, Equatable, Sendable {
     }
 }
 
+/// Distinguishes Clavis-local 3-scan pause from system-wide macOS Secure Enclave lockout.
+public enum NotchBiometricLockoutKind: Equatable, Sendable {
+    case prompt
+    case system
+}
+
 /// Distinguishes recoverable biometric failures from cancellation, lockout, and unavailable hardware.
 public enum NotchBiometricFailure: Equatable, Sendable {
     case notRecognized
@@ -1044,8 +1050,8 @@ public enum NotchBiometricFailure: Equatable, Sendable {
                 : "Touch sensor to try again"
         case .lockout:
             return allowsPasswordFallback
-                ? "Use your Mac password to continue"
-                : "Unlock Touch ID in macOS to continue"
+                ? "Your password is required to continue."
+                : "Unlock your Mac to reset Touch ID, then try again."
         case .unavailable(let detail):
             if allowsPasswordFallback {
                 return "Use your Mac password to continue"
@@ -1127,7 +1133,22 @@ public final class NotchPromptViewModel {
     /// Full D-36 decision once the prompt finishes; `NotchPromptResult` remains the legacy signing channel.
     @ObservationIgnored public private(set) var approvalDecision: NotchApprovalDecision?
     public var isScopeLocked: Bool { phase == .verifying || phase == .approved || isCompleted }
+    public static let maxBiometricAttempts = 3
     public private(set) var biometricFailure: NotchBiometricFailure? = nil
+    public private(set) var biometricFailedAttempts: Int = 0
+    public private(set) var biometricLockoutKind: NotchBiometricLockoutKind? = nil
+    public private(set) var biometricRecoveryMessage: String? = nil
+    public private(set) var isLockoutHelpExpanded: Bool = false
+    public private(set) var isReEnablingBiometrics: Bool = false
+    public var isBiometricLocked: Bool {
+        biometricFailure == .lockout || biometricFailedAttempts >= Self.maxBiometricAttempts
+    }
+    public var isSystemBiometricLockout: Bool {
+        isBiometricLocked && biometricLockoutKind == .system
+    }
+    public var remainingBiometricAttempts: Int {
+        max(0, Self.maxBiometricAttempts - biometricFailedAttempts)
+    }
     public private(set) var failureShakeTrigger: Int = 0
     public var passwordText: String = ""
     public var passwordError: String? = nil
@@ -1143,10 +1164,32 @@ public final class NotchPromptViewModel {
         if let passwordError {
             return passwordError
         }
-        if let biometricFailure, biometricFailure != .cancelled {
+        guard let biometricFailure, biometricFailure != .cancelled else {
+            return nil
+        }
+        switch biometricFailure {
+        case .lockout:
+            if biometricLockoutKind == .system {
+                return request.allowsPasswordFallback
+                    ? "Locked by macOS. Enter password to sign."
+                    : "Locked by macOS. Re-enable with Mac password."
+            }
+            return biometricFailure.subtitle(
+                allowsPasswordFallback: request.allowsPasswordFallback,
+                scope: selectedScope
+            )
+        case .notRecognized:
+            if biometricFailedAttempts > 0 {
+                let left = remainingBiometricAttempts
+                let tries = left == 1 ? "1 attempt left" : "\(left) attempts left"
+                return request.allowsPasswordFallback
+                    ? "Fingerprint not recognized. Try again (\(tries)) or enter Mac password."
+                    : "Fingerprint not recognized. Touch sensor to try again (\(tries))."
+            }
+            return "\(biometricFailure.title). \(biometricFailure.subtitle(allowsPasswordFallback: request.allowsPasswordFallback, scope: selectedScope))"
+        case .unavailable, .cancelled:
             return "\(biometricFailure.title). \(biometricFailure.subtitle(allowsPasswordFallback: request.allowsPasswordFallback, scope: selectedScope))"
         }
-        return nil
     }
 
     /// Live `LAContext` driving the embedded `LAAuthenticationView` glyph after `Continue` is pressed.
@@ -1163,6 +1206,8 @@ public final class NotchPromptViewModel {
     private let biometricAuthenticator: @MainActor () async -> Bool
     private let passwordVerifier: @MainActor (String) async -> Bool
     private let hardwarePasswordAuthenticator: (@MainActor () async -> LAContext?)?
+    private let biometricAvailabilityProvider: @MainActor (Bool) -> LAError.Code?
+    private let biometricLockoutResetAuthenticator: (@MainActor () async -> Bool)?
     private let onApprovalReady: (@MainActor (NotchSessionScope, NotchApprovalMethod, LAContext?) -> Void)?
     @ObservationIgnored private var onComplete: (@MainActor (NotchPromptResult) -> Void)?
     private var isCompleted: Bool = false
@@ -1184,21 +1229,53 @@ public final class NotchPromptViewModel {
     public static var suppressEmbeddedBiometricsForDebugHarness: Bool = false
     #endif
 
-    /// Returns true when the current machine can render a live Touch ID / companion sensor inside `LAAuthenticationView`.
-    public static func isEmbeddedBiometricAvailable(allowsCompanion: Bool) -> Bool {
+    /// Probes `LAContext.canEvaluatePolicy` and returns `nil` when Touch ID / companion is armed,
+    /// or the blocking `LAError.Code` (such as `.biometryLockout` or `.biometryNotAvailable`).
+    public static func defaultBiometricAvailabilityError(allowsCompanion: Bool) -> LAError.Code? {
+        #if DEBUG
+        if ClavisEnvironment.isTesting {
+            return .biometryNotAvailable
+        }
+        #endif
+        let context = LAContext()
+        var error: NSError?
+        if allowsCompanion, context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometricsOrCompanion, error: &error) {
+            return nil
+        }
+        if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) {
+            return nil
+        }
+        if let nsError = error, nsError.domain == LAErrorDomain, let code = LAError.Code(rawValue: nsError.code) {
+            return code
+        }
+        return .biometryNotAvailable
+    }
+
+    /// Runs `.deviceOwnerAuthentication` solely to reset macOS Secure Enclave `biometryLockout`,
+    /// immediately invalidating the context so password entry never authorizes signing on its own.
+    public static func defaultBiometricLockoutResetAuthenticator() async -> Bool {
         #if DEBUG
         if ClavisEnvironment.isTesting {
             return false
         }
         #endif
-        let context = LAContext()
-        var error: NSError?
-        if allowsCompanion {
-            if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometricsOrCompanion, error: &error) {
-                return true
+        return await Task.detached(priority: .userInitiated) {
+            let context = LAContext()
+            defer { context.invalidate() }
+            do {
+                return try await context.evaluatePolicy(
+                    .deviceOwnerAuthentication,
+                    localizedReason: "re-enable Touch ID in Clavis"
+                )
+            } catch {
+                return false
             }
-        }
-        return context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+        }.value
+    }
+
+    /// Returns true when the current machine can render a live Touch ID / companion sensor inside `LAAuthenticationView`.
+    public static func isEmbeddedBiometricAvailable(allowsCompanion: Bool) -> Bool {
+        defaultBiometricAvailabilityError(allowsCompanion: allowsCompanion) == nil
     }
 
     /// Returns true when the current machine can render a live Touch ID sensor inside `LAAuthenticationView`.
@@ -1218,7 +1295,9 @@ public final class NotchPromptViewModel {
         hardwarePasswordAuthenticator: (@MainActor () async -> LAContext?)? = nil,
         onApprovalReady: (@MainActor (NotchSessionScope, NotchApprovalMethod, LAContext?) -> Void)? = nil,
         onComplete: (@MainActor (NotchPromptResult) -> Void)? = nil,
-        uptimeProvider: @escaping @MainActor () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        uptimeProvider: @escaping @MainActor () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        biometricAvailabilityProvider: @escaping @MainActor (Bool) -> LAError.Code? = NotchPromptViewModel.defaultBiometricAvailabilityError,
+        biometricLockoutResetAuthenticator: (@MainActor () async -> Bool)? = nil
     ) {
         self.request = request
         self.screenGeometry = screenGeometry
@@ -1234,6 +1313,8 @@ public final class NotchPromptViewModel {
         self.onApprovalReady = onApprovalReady
         self.onComplete = onComplete
         self.uptimeProvider = uptimeProvider
+        self.biometricAvailabilityProvider = biometricAvailabilityProvider
+        self.biometricLockoutResetAuthenticator = biometricLockoutResetAuthenticator
 
         if initialPhase == .awaitingAuthentication && request.confirmationMode.allowsBiometrics {
             startEmbeddedBiometricListeningIfNeeded()
@@ -1320,10 +1401,10 @@ public final class NotchPromptViewModel {
         invalidateAuthenticatedContext()
         if !passwordText.isEmpty { passwordText = "" }
         if passwordError != nil { passwordError = nil }
-        if biometricFailure != nil { biometricFailure = nil }
+        if biometricFailure != nil && biometricFailure != .lockout { biometricFailure = nil }
         if isPasswordVisible { isPasswordVisible = false }
         selectedScope = scope
-        if phase == .awaitingAuthentication && embeddedAuthContext == nil && embeddedBiometricTask == nil {
+        if phase == .awaitingAuthentication && !isBiometricLocked && embeddedAuthContext == nil && embeddedBiometricTask == nil {
             startEmbeddedBiometricListeningIfNeeded()
         }
     }
@@ -1454,6 +1535,9 @@ public final class NotchPromptViewModel {
             passwordText = ""
             passwordError = nil
             biometricFailure = nil
+            biometricLockoutKind = nil
+            biometricRecoveryMessage = nil
+            isLockoutHelpExpanded = false
             isPasswordVisible = false
             isHoveringCloseButton = false
             showsApprovedLayoutWhileCollapsed = false
@@ -1477,10 +1561,14 @@ public final class NotchPromptViewModel {
                 passwordText = ""
                 passwordError = nil
                 isPasswordVisible = false
+                isLockoutHelpExpanded = false
                 if phase == .passwordEntry && !usesSystemPasswordSheet && request.confirmationMode.allowsBiometrics {
                     phase = .awaitingAuthentication
                 }
             }
+        }
+        if focused {
+            refreshSystemBiometricLockoutIfCleared()
         }
     }
 
@@ -1560,23 +1648,105 @@ public final class NotchPromptViewModel {
     }
 
     /// Records a biometric failure (such as `.notRecognized`, `.lockout`, or `.unavailable`) while keeping the panel open.
-    public func recordBiometricFailure(_ failure: NotchBiometricFailure) {
+    /// Three unrecognized attempts transition Touch ID into `.lockout` and stop biometric evaluation.
+    public func recordBiometricFailure(_ failure: NotchBiometricFailure, lockoutKind: NotchBiometricLockoutKind? = nil) {
         guard !isCompleted else { return }
         guard phase == .awaitingAuthentication || phase == .passwordEntry else { return }
         if failure == .cancelled {
             return
         }
-        withAnimation(Self.runtimeTransitionAnimation) {
-            biometricFailure = failure
-            if failure == .notRecognized {
-                failureShakeTrigger += 1
+        biometricRecoveryMessage = nil
+        switch failure {
+        case .notRecognized:
+            biometricFailedAttempts = min(Self.maxBiometricAttempts, biometricFailedAttempts + 1)
+            if biometricFailedAttempts >= Self.maxBiometricAttempts {
+                cancelEmbeddedBiometricListening()
+                withAnimation(Self.runtimeTransitionAnimation) {
+                    biometricLockoutKind = lockoutKind ?? .prompt
+                    biometricFailure = .lockout
+                    isLockoutHelpExpanded = false
+                }
+            } else {
+                withAnimation(Self.runtimeTransitionAnimation) {
+                    biometricFailure = .notRecognized
+                    failureShakeTrigger += 1
+                }
             }
+        case .lockout:
+            biometricFailedAttempts = Self.maxBiometricAttempts
+            cancelEmbeddedBiometricListening()
+            withAnimation(Self.runtimeTransitionAnimation) {
+                biometricLockoutKind = lockoutKind ?? .system
+                biometricFailure = .lockout
+            }
+        case .unavailable:
+            withAnimation(Self.runtimeTransitionAnimation) {
+                biometricFailure = failure
+            }
+        case .cancelled:
+            break
         }
     }
 
-    /// Clears a recoverable biometric failure state and re-arms biometric evaluation.
+    public func toggleLockoutHelp() {
+        guard !isCompleted, isSystemBiometricLockout else { return }
+        withAnimation(Self.runtimeTransitionAnimation) {
+            isLockoutHelpExpanded.toggle()
+        }
+    }
+
+    /// Runs macOS `.deviceOwnerAuthentication` solely to clear system-wide `biometryLockout`,
+    /// then re-arms the live Touch ID sensor with recovery confirmation without approving the request.
+    @discardableResult
+    public func reEnableBiometricsWithSystemPassword() async -> Bool {
+        guard !isCompleted, isSystemBiometricLockout, !isReEnablingBiometrics else { return false }
+        let generation = attemptGeneration
+        isReEnablingBiometrics = true
+        defer { isReEnablingBiometrics = false }
+
+        let resetter = biometricLockoutResetAuthenticator ?? Self.defaultBiometricLockoutResetAuthenticator
+        let succeeded = await resetter()
+        guard !isCompleted, attemptGeneration == generation, succeeded else {
+            return false
+        }
+
+        withAnimation(Self.runtimeTransitionAnimation) {
+            biometricFailure = nil
+            biometricFailedAttempts = 0
+            biometricLockoutKind = nil
+            isLockoutHelpExpanded = false
+            biometricRecoveryMessage = "Touch ID re-enabled. Rest your finger on the sensor to sign."
+        }
+        startEmbeddedBiometricListeningIfNeeded()
+        return true
+    }
+
+    /// Re-checks biometric availability when returning focus after macOS unlock (`⌃⌘Q`) and re-arms Touch ID if cleared.
+    @discardableResult
+    public func refreshSystemBiometricLockoutIfCleared() -> Bool {
+        guard !isCompleted,
+              phase == .awaitingAuthentication,
+              isSystemBiometricLockout,
+              !isReEnablingBiometrics else {
+            return false
+        }
+        guard biometricAvailabilityProvider(request.confirmationMode.allowsCompanionWatch) == nil else {
+            return false
+        }
+        withAnimation(Self.runtimeTransitionAnimation) {
+            biometricFailure = nil
+            biometricFailedAttempts = 0
+            biometricLockoutKind = nil
+            isLockoutHelpExpanded = false
+            biometricRecoveryMessage = "Touch ID re-enabled. Rest your finger on the sensor to sign."
+        }
+        startEmbeddedBiometricListeningIfNeeded()
+        return true
+    }
+
+    /// Clears a recoverable biometric failure state and re-arms biometric evaluation unless locked out.
     public func retryBiometrics() {
-        guard !isCompleted else { return }
+        guard !isCompleted, !isBiometricLocked else { return }
         if phase == .passwordEntry {
             closePasswordDrawer()
             return
@@ -1586,7 +1756,7 @@ public final class NotchPromptViewModel {
             isPromptFocused = true
             biometricFailure = nil
         }
-        if Self.isEmbeddedBiometricAvailable(allowsCompanion: request.confirmationMode.allowsCompanionWatch) {
+        if biometricAvailabilityProvider(request.confirmationMode.allowsCompanionWatch) == nil {
             startEmbeddedBiometricListeningIfNeeded()
         } else {
             Task { @MainActor in
@@ -1603,13 +1773,15 @@ public final class NotchPromptViewModel {
     /// Arms a live `LAContext` and evaluates biometrics in the background so the user can sign
     /// immediately once presented.
     public func startEmbeddedBiometricListeningIfNeeded(deferContextMountNanoseconds: UInt64 = 0) {
-        guard !isCompleted, phase == .awaitingAuthentication, request.confirmationMode.allowsBiometrics else { return }
+        guard !isCompleted, !isBiometricLocked, phase == .awaitingAuthentication, request.confirmationMode.allowsBiometrics else { return }
         #if DEBUG
         if Self.suppressEmbeddedBiometricsForDebugHarness { return }
         #endif
         let allowsCompanion = request.confirmationMode.allowsCompanionWatch
-        guard Self.isEmbeddedBiometricAvailable(allowsCompanion: allowsCompanion) else {
-            if !ClavisEnvironment.isTesting && request.allowsPasswordFallback {
+        if let availabilityError = biometricAvailabilityProvider(allowsCompanion) {
+            if availabilityError == .biometryLockout {
+                recordBiometricFailure(.lockout, lockoutKind: .system)
+            } else if !ClavisEnvironment.isTesting && request.allowsPasswordFallback {
                 recordBiometricFailure(.unavailable("Touch ID unavailable"))
             }
             return
@@ -1697,9 +1869,19 @@ public final class NotchPromptViewModel {
                     if Self.isSystemCancelError(error) {
                         self.recordBiometricFailure(.unavailable("Click Touch ID to try again"))
                     } else {
-                        let mapped = NotchBiometricFailure.from(error: error)
-                        if mapped != .cancelled {
-                            self.recordBiometricFailure(mapped)
+                        let nsError = error as NSError
+                        let laCode = nsError.domain == LAErrorDomain ? LAError.Code(rawValue: nsError.code) : nil
+                        switch laCode {
+                        case .biometryLockout:
+                            self.recordBiometricFailure(.lockout, lockoutKind: .system)
+                        case .authenticationFailed:
+                            // `evaluatePolicy` via `LAAuthenticationView` absorbs up to 3 finger scans internally before failing.
+                            self.recordBiometricFailure(.lockout, lockoutKind: .prompt)
+                        default:
+                            let mapped = NotchBiometricFailure.from(error: error)
+                            if mapped != .cancelled {
+                                self.recordBiometricFailure(mapped)
+                            }
                         }
                     }
                     return
@@ -1751,7 +1933,7 @@ public final class NotchPromptViewModel {
 
     /// Evaluates biometric authentication and transitions to `.approved` on success or records a recoverable failure.
     public func approveWithBiometrics() async {
-        guard !isCompleted else { return }
+        guard !isCompleted, !isBiometricLocked else { return }
         guard phase == .awaitingAuthentication || phase == .reviewing else { return }
         if phase == .reviewing {
             phase = .awaitingAuthentication
@@ -1773,11 +1955,8 @@ public final class NotchPromptViewModel {
         guard !isCompleted, attemptGeneration == generation else { return }
 
         guard authenticated else {
-            withAnimation(Self.runtimeTransitionAnimation) {
-                phase = .awaitingAuthentication
-                biometricFailure = .notRecognized
-                failureShakeTrigger += 1
-            }
+            phase = .awaitingAuthentication
+            recordBiometricFailure(.notRecognized)
             return
         }
 
@@ -1805,9 +1984,12 @@ public final class NotchPromptViewModel {
         }
 
         let generation = attemptGeneration
+        let wasLockedOut = isBiometricLocked
         cancelEmbeddedBiometricListening()
         withAnimation(Self.runtimeTransitionAnimation) {
-            biometricFailure = nil
+            if !wasLockedOut {
+                biometricFailure = nil
+            }
             passwordError = nil
             phase = .verifying
         }
@@ -1824,12 +2006,12 @@ public final class NotchPromptViewModel {
                 passwordText = ""
                 isPasswordVisible = false
                 phase = priorPhase
-                passwordError = request.confirmationMode == .passwordOnly
+                passwordError = (request.confirmationMode == .passwordOnly || wasLockedOut)
                     ? "Incorrect password. Try again."
                     : "Incorrect password. Try again or use Touch ID."
                 failureShakeTrigger += 1
             }
-            if priorPhase == .awaitingAuthentication {
+            if priorPhase == .awaitingAuthentication && !wasLockedOut && !isBiometricLocked {
                 startEmbeddedBiometricListeningIfNeeded()
             }
             return false
@@ -1852,6 +2034,9 @@ public final class NotchPromptViewModel {
             passwordText = ""
             passwordError = nil
             biometricFailure = nil
+            biometricLockoutKind = nil
+            biometricRecoveryMessage = nil
+            isLockoutHelpExpanded = false
             isPasswordVisible = false
             isHoveringCloseButton = false
             showsApprovedLayoutWhileCollapsed = false
@@ -1869,6 +2054,8 @@ public final class NotchPromptViewModel {
         invalidateAuthenticatedContext()
         passwordText = ""
         passwordError = nil
+        biometricRecoveryMessage = nil
+        isLockoutHelpExpanded = false
         isPasswordVisible = false
         isHoveringCloseButton = false
         approvalDecision = .denied
@@ -1993,6 +2180,9 @@ public final class NotchPromptViewModel {
             passwordText = ""
             passwordError = nil
             biometricFailure = nil
+            biometricLockoutKind = nil
+            biometricRecoveryMessage = nil
+            isLockoutHelpExpanded = false
             isPasswordVisible = false
             isHoveringCloseButton = false
             showsApprovedLayoutWhileCollapsed = true
@@ -2347,7 +2537,16 @@ public struct NotchTouchIDPromptView: View {
         (!viewModel.isPromptFocused && !showsAuthBar) ? 26 : 0
     }
     private var errorBlockHeight: CGFloat {
-        (viewModel.isPromptFocused && showsAuthBar && viewModel.activeErrorMessage != nil) ? 22 : 0
+        (viewModel.isPromptFocused && showsAuthBar && (viewModel.activeErrorMessage != nil || viewModel.biometricRecoveryMessage != nil)) ? 32 : 0
+    }
+    private var lockoutHelpBlockHeight: CGFloat {
+        guard viewModel.isPromptFocused,
+              showsAuthBar,
+              viewModel.isSystemBiometricLockout,
+              viewModel.isLockoutHelpExpanded else {
+            return 0
+        }
+        return viewModel.request.allowsPasswordFallback ? 82 : 104
     }
 
     /// Focused base open height for the current stage (`198pt` signing, `152pt` compact 1-shot,
@@ -2403,6 +2602,7 @@ public struct NotchTouchIDPromptView: View {
                 + authBlockHeight
                 + unfocusNoteHeight
                 + errorBlockHeight
+                + lockoutHelpBlockHeight
         }
     }
 
@@ -2591,8 +2791,20 @@ public struct NotchTouchIDPromptView: View {
         .animation(effectiveAnimation, value: viewModel.isPromptFocused)
         .animation(effectiveAnimation, value: viewModel.passwordError)
         .animation(effectiveAnimation, value: viewModel.biometricFailure)
+        .animation(effectiveAnimation, value: viewModel.activeErrorMessage)
+        .animation(effectiveAnimation, value: viewModel.isBiometricLocked)
+        .animation(effectiveAnimation, value: viewModel.isLockoutHelpExpanded)
+        .animation(effectiveAnimation, value: viewModel.biometricRecoveryMessage)
         .animation(effectiveAnimation, value: viewModel.isIdentityDetailsExpanded)
         .animation(effectiveAnimation, value: viewModel.allowMode)
+        .onChange(of: viewModel.isBiometricLocked) { _, isLocked in
+            if isLocked && viewModel.request.allowsPasswordFallback && viewModel.isPromptFocused && !ClavisEnvironment.isTesting {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    NotchPromptWindowController.shared.panel?.makeKey()
+                    isPasswordFieldFocused = true
+                }
+            }
+        }
         .onAppear {
             if isCollapsedState {
                 lastOpenSize = CGSize(width: openStageWidth, height: openHeight)
