@@ -62,7 +62,14 @@ public final class PanelLockController {
     @ObservationIgnored private var mountedEmbeddedContext: LAContext?
     public private(set) var isVerifyingPassword = false
     public enum BiometricStatus: Equatable { case ready, unavailable, locked }
+    public enum BiometricLockoutScope: Equatable {
+        case prompt
+        case system
+    }
     public private(set) var biometricStatus: BiometricStatus = .ready
+    public private(set) var biometricLockoutScope: BiometricLockoutScope? = nil
+    public private(set) var biometricRecoveryMessage: String? = nil
+    public private(set) var isReEnablingBiometrics: Bool = false
     @ObservationIgnored public private(set) var lastLockReason: PanelLockReason?
     private var modeRevision: Int = 0
 
@@ -253,17 +260,94 @@ public final class PanelLockController {
     func handleEmbeddedAuthenticationError(_ error: Error) {
         guard let error = error as? LAError else { return }
         switch error.code {
-        case .biometryLockout, .authenticationFailed:
+        case .biometryLockout:
             biometricStatus = .locked
+            biometricLockoutScope = .system
+            biometricRecoveryMessage = nil
+            embeddedUnlockError = "Too many failed attempts across your Mac."
+        case .authenticationFailed:
+            biometricStatus = .locked
+            biometricLockoutScope = .prompt
+            biometricRecoveryMessage = nil
             embeddedUnlockError = "Use your Mac login password."
         case .biometryNotAvailable, .biometryNotEnrolled, .passcodeNotSet:
             biometricStatus = .unavailable
+            biometricLockoutScope = nil
+            biometricRecoveryMessage = nil
             embeddedUnlockError = "Enter your Mac login password."
         case .appCancel, .userCancel, .systemCancel:
             break
         default:
             biometricStatus = .unavailable
+            biometricLockoutScope = nil
+            biometricRecoveryMessage = nil
             embeddedUnlockError = "Enter your Mac login password."
+        }
+    }
+
+    /// Checks whether macOS Secure Enclave `biometryLockout` was cleared outside the app (for example
+    /// via `⌃⌘Q` + login password) and re-arms Touch ID with a visible recovery confirmation.
+    @discardableResult
+    public func refreshSystemBiometricLockoutIfCleared() -> Bool {
+        guard isEffectivelyLocked,
+              biometricStatus == .locked,
+              biometricLockoutScope == .system,
+              !isReEnablingBiometrics else {
+            return false
+        }
+        guard embeddedContextFactory != nil || (authenticator is LAPanelAuthenticator && !ClavisEnvironment.isTesting) else {
+            return false
+        }
+        let probe = embeddedContextFactory?() ?? LAContext()
+        defer { probe.invalidate() }
+        var availabilityError: NSError?
+        guard probe.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &availabilityError) else {
+            return false
+        }
+        biometricStatus = .ready
+        biometricLockoutScope = nil
+        embeddedUnlockError = nil
+        biometricRecoveryMessage = "Touch ID re-enabled by macOS. Rest your finger on the sensor."
+        promptLifecycle.cancelPendingAttempt(rearmAutomaticAttempt: true)
+        return true
+    }
+
+    /// Runs a macOS `.deviceOwnerAuthentication` password check solely to clear system Touch ID lockout,
+    /// invalidating the resulting `LAContext` without bypassing Clavis's lock gate.
+    @discardableResult
+    public func reEnableBiometricsWithSystemPassword() async -> Bool {
+        guard isEffectivelyLocked,
+              !currentMode.requiresPIN,
+              biometricStatus == .locked,
+              biometricLockoutScope == .system,
+              !isReEnablingBiometrics,
+              !isVerifyingPassword else {
+            return false
+        }
+        cancelEmbeddedUnlock()
+        let generation = promptLifecycle.beganManualAttempt()
+        isReEnablingBiometrics = true
+        defer { isReEnablingBiometrics = false }
+
+        do {
+            let context = try await authenticator.authenticate(reason: "re-enable Touch ID in Clavis")
+            context.invalidate()
+            guard promptLifecycle.acceptsCompletion(from: generation), isEffectivelyLocked else {
+                return false
+            }
+            biometricStatus = .ready
+            biometricLockoutScope = nil
+            embeddedUnlockError = nil
+            biometricRecoveryMessage = "Touch ID re-enabled by macOS. Rest your finger on the sensor."
+            promptLifecycle.cancelPendingAttempt(rearmAutomaticAttempt: true)
+            if embeddedContextFactory != nil || (authenticator is LAPanelAuthenticator && !ClavisEnvironment.isTesting) {
+                if canStartEmbeddedAuthentication {
+                    await unlock()
+                }
+            }
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -449,6 +533,8 @@ public final class PanelLockController {
     public func applyUnlock(context: LAContext?) {
         cancelEmbeddedUnlock()
         biometricStatus = .ready
+        biometricLockoutScope = nil
+        biometricRecoveryMessage = nil
         embeddedUnlockError = nil
         self.unlockContext = context
         let currentTime = now()
@@ -476,6 +562,7 @@ public final class PanelLockController {
     public func lock(reason: PanelLockReason) {
         promptLifecycle.didLock(wasAlreadyLocked: isLocked, suppressAutomaticAttempt: currentMode.requiresPIN && (reason == .lockNow || reason == .idle))
         lastLockReason = reason
+        biometricRecoveryMessage = nil
         cancelEmbeddedUnlock()
         unlockContext?.invalidate()
         unlockContext = nil

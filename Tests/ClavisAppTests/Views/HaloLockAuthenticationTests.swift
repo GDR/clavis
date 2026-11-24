@@ -210,6 +210,51 @@ struct HaloLockAuthenticationTests {
         #expect(!lock.isUnlocking)
     }
 
+    @Test func systemLockoutDistinguishesScopeAndRecoversViaSystemPasswordOrMacUnlock() async {
+        // 1. Distinguish .authenticationFailed (.prompt) vs .biometryLockout (.system)
+        let promptAuth = FakePanelAuthenticator()
+        promptAuth.shouldFail = true
+        promptAuth.failureError = LAError(.authenticationFailed)
+        let (promptLock, cleanupPrompt) = makeController(auth: promptAuth)
+        defer { cleanupPrompt() }
+        await promptLock.unlock()
+        #expect(promptLock.biometricStatus == .locked)
+        #expect(promptLock.biometricLockoutScope == .prompt)
+
+        // 2. Re-enable with system password clears .system lockout without unlocking panel
+        let recoveryContext = MockLAContext()
+        let sysAuth = HaloReturningContextAuthenticator(context: recoveryContext)
+        let (sysLock, cleanupSys) = makeController(auth: sysAuth)
+        defer { cleanupSys() }
+        sysLock.handleEmbeddedAuthenticationError(LAError(.biometryLockout))
+        #expect(sysLock.biometricStatus == .locked)
+        #expect(sysLock.biometricLockoutScope == .system)
+
+        let reEnabled = await sysLock.reEnableBiometricsWithSystemPassword()
+        #expect(reEnabled)
+        #expect(recoveryContext.didInvalidate)
+        #expect(sysLock.isLocked)
+        #expect(sysLock.biometricStatus == .ready)
+        #expect(sysLock.biometricLockoutScope == nil)
+        #expect(sysLock.biometricRecoveryMessage == "Touch ID re-enabled by macOS. Rest your finger on the sensor.")
+
+        // 3. Clearing macOS lockout externally (e.g. ^⌘Q Mac unlock) re-arms on probe refresh
+        let probeContext = HaloTestLAContext()
+        probeContext.availabilityError = .biometryLockout
+        let (macLock, cleanupMac) = makeController(auth: LAPanelAuthenticator(), context: probeContext)
+        defer { cleanupMac() }
+        await macLock.unlock()
+        #expect(macLock.biometricStatus == .locked)
+        #expect(macLock.biometricLockoutScope == .system)
+        #expect(!macLock.refreshSystemBiometricLockoutIfCleared())
+        probeContext.availabilityError = nil
+        #expect(macLock.refreshSystemBiometricLockoutIfCleared())
+        #expect(probeContext.didInvalidate)
+        #expect(macLock.biometricStatus == .ready)
+        #expect(macLock.biometricLockoutScope == nil)
+        #expect(macLock.biometricRecoveryMessage == "Touch ID re-enabled by macOS. Rest your finger on the sensor.")
+    }
+
     @Test func haloUsesOnlyCompositorAnimationsAndStopsThem() {
         let view = HaloReflectionNSView(frame: NSRect(x: 0, y: 0, width: 600, height: 420))
         view.layoutSubtreeIfNeeded()
@@ -250,6 +295,12 @@ private final class HaloSuspendedAuthenticator: PanelAuthenticating {
     func authenticate(reason: String) async throws -> LAContext {
         try await withCheckedThrowingContinuation { reply = $0 }
     }
+}
+
+private final class HaloReturningContextAuthenticator: PanelAuthenticating {
+    let context: LAContext
+    init(context: LAContext) { self.context = context }
+    func authenticate(reason: String) async throws -> LAContext { context }
 }
 
 private final class HaloBlockingVerifier: @unchecked Sendable {

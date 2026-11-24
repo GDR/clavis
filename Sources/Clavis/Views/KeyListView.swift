@@ -15,7 +15,20 @@ struct KeyListView: View {
     @State private var keyPendingDeletion: SSHKeyInfo? = nil
     @FocusState private var isSearchFieldFocused: Bool
     @State private var headerCenterOffset: CGFloat = 0
+    @State private var hasUnfoldedSidebar: Bool = false
+    @State private var hasUnfoldedDetail: Bool = false
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.shouldAnimateSplitPaneUnfold) private var shouldAnimateUnfold
+    @Environment(\.hasWindowGlassBackdrop) private var hasWindowGlassBackdrop
+
+    private var isSidebarUnfolded: Bool {
+        !shouldAnimateUnfold || reduceMotion || hasUnfoldedSidebar
+    }
+
+    private var isDetailUnfolded: Bool {
+        !shouldAnimateUnfold || reduceMotion || hasUnfoldedDetail
+    }
 
     public static let sidebarWidth: CGFloat = 260
     /// First level shared by both panes: the 36pt controls/tile centered on the native traffic-light line
@@ -147,11 +160,20 @@ struct KeyListView: View {
 
     private var rootSplitView: some View {
         ZStack(alignment: .bottom) {
-            WindowGlassBackground()
+            if !hasWindowGlassBackdrop {
+                WindowGlassBackground()
+            }
 
             HStack(spacing: 0) {
                 sidebarPane
+                    .offset(x: isSidebarUnfolded ? 0 : UnlockTransitionSpec.sidebarInitialOffsetX)
+                    .opacity(isSidebarUnfolded ? 1 : 0)
                 mainContentPane
+                    .offset(
+                        x: isDetailUnfolded ? 0 : UnlockTransitionSpec.detailInitialOffsetX,
+                        y: isDetailUnfolded ? 0 : UnlockTransitionSpec.detailInitialOffsetY
+                    )
+                    .opacity(isDetailUnfolded ? 1 : 0)
             }
             .environment(\.headerCenterOffset, headerCenterOffset)
             // While an authenticated request is pending, nothing underneath (settings, sidebar
@@ -268,6 +290,24 @@ struct KeyListView: View {
                     selectedKeyId = firstKey.id
                 }
                 if isHistoryActive { openHistoryFromRequest() }
+            }
+            .task(id: shouldAnimateUnfold) {
+                if !shouldAnimateUnfold || reduceMotion {
+                    hasUnfoldedSidebar = true
+                    hasUnfoldedDetail = true
+                    return
+                }
+                if hasUnfoldedSidebar && hasUnfoldedDetail {
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 16_000_000)
+                guard !Task.isCancelled else { return }
+                withAnimation(UnlockTransitionSpec.sidebarAnimation) {
+                    hasUnfoldedSidebar = true
+                }
+                withAnimation(UnlockTransitionSpec.detailAnimation) {
+                    hasUnfoldedDetail = true
+                }
             }
             .onDisappear { appState.policyMutations.cancel() }
             .onChange(of: appState.keys) { _, newKeys in

@@ -2,9 +2,85 @@ import SwiftUI
 import AppKit
 import ClavisCore
 
+/// U04 · Split-Pane Unfold transition parameters matching the `.ux/ux/unlock_transition` study.
+public enum UnlockTransitionSpec {
+    public static let lockExitDuration: Double = 0.26
+    public static let lockExitScale: CGFloat = 0.965
+    public static let sidebarDuration: Double = 0.38
+    public static let sidebarDelay: Double = 0.04
+    public static let sidebarInitialOffsetX: CGFloat = -28
+    public static let detailDuration: Double = 0.40
+    public static let detailDelay: Double = 0.07
+    public static let detailInitialOffsetX: CGFloat = 18
+    public static let detailInitialOffsetY: CGFloat = 6
+    public static let reduceMotionDuration: Double = 0.16
+
+    public static var lockExitAnimation: Animation {
+        .easeOut(duration: lockExitDuration)
+    }
+
+    public static var reduceMotionAnimation: Animation {
+        .easeOut(duration: reduceMotionDuration)
+    }
+
+    public static var sidebarAnimation: Animation {
+        .timingCurve(0.16, 1.0, 0.3, 1.0, duration: sidebarDuration)
+            .delay(max(0, sidebarDelay - 0.016))
+    }
+
+    public static var detailAnimation: Animation {
+        .timingCurve(0.16, 1.0, 0.3, 1.0, duration: detailDuration)
+            .delay(max(0, detailDelay - 0.016))
+    }
+}
+
+private struct ShouldAnimateSplitPaneUnfoldKey: EnvironmentKey {
+    static let defaultValue: Bool = false
+}
+
+private struct HasWindowGlassBackdropKey: EnvironmentKey {
+    static let defaultValue: Bool = false
+}
+
+extension EnvironmentValues {
+    var shouldAnimateSplitPaneUnfold: Bool {
+        get { self[ShouldAnimateSplitPaneUnfoldKey.self] }
+        set { self[ShouldAnimateSplitPaneUnfoldKey.self] = newValue }
+    }
+
+    var hasWindowGlassBackdrop: Bool {
+        get { self[HasWindowGlassBackdropKey.self] }
+        set { self[HasWindowGlassBackdropKey.self] = newValue }
+    }
+}
+
+struct LockedWindowBackdropView: View {
+    var isLocked: Bool = true
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        Group {
+            if reduceTransparency {
+                Color(nsColor: .windowBackgroundColor)
+            } else {
+                // Keep a single opaque behind-window VisualEffectView mounted across
+                // lock/unlock; fading an NSVisualEffectView drops behind-window blur.
+                VisualEffectView(
+                    material: (isLocked && contrast != .increased) ? .sidebar : .underWindowBackground,
+                    blendingMode: .behindWindow,
+                    state: .followsWindowActiveState
+                )
+            }
+        }
+        .ignoresSafeArea()
+    }
+}
+
 @MainActor
 public struct LockedPlaceholderView: View {
     var lock: PanelLockController
+    private let showsBackdrop: Bool
     private var appState: AppState = .shared
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -13,6 +89,7 @@ public struct LockedPlaceholderView: View {
     @State private var password = ""
     @State private var revealsPassword = false
     @State private var passwordError: String?
+    @State private var showsLockoutHelpPopover = false
     @State private var windowIsActive = false
     @State private var presentationID = UUID()
     @FocusState private var isPasswordFocused: Bool
@@ -28,14 +105,19 @@ public struct LockedPlaceholderView: View {
     public static let passwordFieldLabel = "Mac login password"
     public static let passwordFieldPlaceholder = "Mac login password"
     public static let incorrectPasswordText = "Incorrect password. Try again."
+    public static let inactiveBiometricSymbolName = "touchid"
 
     public static func loadAppIcon() -> NSImage? {
         Bundle.clavisCore.url(forResource: "AppIcon", withExtension: "png")
             .flatMap(NSImage.init(contentsOf:)) ?? NSApp?.applicationIconImage
     }
 
-    public init() { self.init(lock: .shared) }
-    public init(lock: PanelLockController) { self.lock = lock }
+    public init() { self.init(lock: .shared, showsBackdrop: true) }
+    public init(lock: PanelLockController) { self.init(lock: lock, showsBackdrop: true) }
+    init(lock: PanelLockController, showsBackdrop: Bool) {
+        self.lock = lock
+        self.showsBackdrop = showsBackdrop
+    }
 
     public var body: some View {
         GeometryReader { geometry in
@@ -75,31 +157,27 @@ public struct LockedPlaceholderView: View {
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .background {
-            Group {
-                if reduceTransparency {
-                    Color(nsColor: .windowBackgroundColor)
-                } else {
-                    // Keep the backdrop view fully opaque: applying SwiftUI
-                    // opacity can flatten the effect and lose behind-window blur.
-                    VisualEffectView(material: contrast == .increased ? .underWindowBackground : .sidebar,
-                                     blendingMode: .behindWindow, state: .followsWindowActiveState)
-                }
-            }.ignoresSafeArea()
+            if showsBackdrop {
+                LockedWindowBackdropView()
+            }
         }
         .toolbarBackground(.hidden, for: .windowToolbar)
         .background(LockWindowActivityObserver { active in
             guard windowIsActive != active else { return }
             windowIsActive = active
             if active {
+                lock.refreshSystemBiometricLockoutIfCleared()
                 Task { await lock.unlockIfNeededOnWindowFocus(isWindowFocusEvent: true) }
                 Task { await appState.requestPolicy.refresh() }
             } else {
+                showsLockoutHelpPopover = false
                 clearSecrets()
                 lock.lockedWindowDidDeactivate()
             }
         })
         .onDisappear {
             windowIsActive = false
+            showsLockoutHelpPopover = false
             clearSecrets()
             lock.cancelEmbeddedUnlock()
         }
@@ -150,12 +228,105 @@ public struct LockedPlaceholderView: View {
         .frame(maxWidth: compact ? 340 : 590)
         .modifier(LockAuthenticationBarMaterial())
         .overlay(alignment: .bottom) {
-            Text(passwordError ?? " ")
+            authenticationFooter(compact: compact)
+                .frame(maxWidth: compact ? 340 : 590)
+                .alignmentGuide(.bottom) { dimensions in
+                    dimensions[.top] - 12
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func authenticationFooter(compact: Bool) -> some View {
+        if let passwordError {
+            Text(passwordError)
                 .font(.system(size: 11))
                 .foregroundStyle(.red)
-                .accessibilityLabel(passwordError ?? "")
-                .offset(y: 25)
+                .accessibilityLabel(passwordError)
+        } else if let recoveryMessage = lock.biometricRecoveryMessage {
+            HStack(spacing: 5) {
+                Image(systemName: "checkmark.circle")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .accessibilityHidden(true)
+                Text(recoveryMessage)
+                    .font(.system(size: 11.5, weight: .medium))
+            }
+            .foregroundStyle(Color(nsColor: .systemGreen))
+            .accessibilityLabel(recoveryMessage)
+        } else if lock.biometricStatus == .locked && lock.biometricLockoutScope == .system {
+            let promptText = Text("macOS requires a system password check to turn Touch ID back on.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(contrast == .increased ? .primary : .secondary)
+            let controls = HStack(spacing: 6) {
+                Button {
+                    Task { await lock.reEnableBiometricsWithSystemPassword() }
+                } label: {
+                    Text("Re-enable Touch ID…")
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 3)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .clipShape(Capsule())
+                .disabled(lock.isReEnablingBiometrics)
+                .accessibilityIdentifier("lock.reenableTouchID")
+
+                Button {
+                    showsLockoutHelpPopover.toggle()
+                } label: {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(showsLockoutHelpPopover ? Color.accentColor : Color.secondary)
+                        .frame(width: 20, height: 20)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Why Touch ID is locked")
+                .popover(isPresented: $showsLockoutHelpPopover, arrowEdge: .bottom) {
+                    lockoutHelpPopoverContent
+                }
+            }
+
+            if compact {
+                VStack(spacing: 6) {
+                    promptText.multilineTextAlignment(.center)
+                    controls
+                }
+            } else {
+                HStack(spacing: 8) {
+                    promptText
+                    controls
+                }
+            }
+        } else if lock.biometricStatus == .locked && lock.biometricLockoutScope == .prompt {
+            Text("Touch ID paused for this attempt after 3 failed scans.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(contrast == .increased ? .primary : .secondary)
+        } else {
+            Text(" ")
+                .font(.system(size: 11))
         }
+    }
+
+    private var lockoutHelpPopoverContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Why Touch ID is locked")
+                .font(.system(size: 12.5, weight: .semibold))
+            Text("macOS turns off Touch ID after 5 failed scans. Entering your password in Clavis unlocks this window, while Secure Enclave keeps Touch ID off until macOS verifies your login password.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("1. Use Re-enable Touch ID… to run a macOS password check here.")
+                Text("2. Or lock your Mac (⌃⌘Q) and unlock with your login password.")
+            }
+            .font(.system(size: 11.5))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(width: 340, alignment: .leading)
     }
 
     private var biometricLabel: some View {
@@ -165,10 +336,38 @@ public struct LockedPlaceholderView: View {
                     NotchEmbeddedTouchIDView(context: context, iconSize: 38)
                         .id(ObjectIdentifier(context))
                         .onAppear { lock.embeddedUnlockViewDidMount(context) }
+                } else if lock.biometricStatus == .locked {
+                    ZStack(alignment: .bottomTrailing) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.primary.opacity(colorScheme == .dark ? 0.07 : 0.05))
+                                .frame(width: 38, height: 38)
+                                .overlay(
+                                    Circle().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1.5)
+                                )
+                            Image(systemName: Self.inactiveBiometricSymbolName)
+                                .font(.system(size: 20, weight: .light))
+                                .foregroundStyle(Color.secondary.opacity(inactiveBiometricOpacity))
+                        }
+                        .frame(width: 38, height: 38)
+
+                        Circle()
+                            .fill(Color(nsColor: .windowBackgroundColor))
+                            .frame(width: 14, height: 14)
+                            .overlay(Circle().strokeBorder(Color.primary.opacity(0.16), lineWidth: 0.75))
+                            .overlay(
+                                Image(systemName: "lock.fill")
+                                    .font(.system(size: 8, weight: .semibold))
+                                    .foregroundStyle(Color.secondary)
+                            )
+                            .offset(x: 2, y: 2)
+                    }
                 } else {
-                    // No substitute fingerprint: only the system-owned embedded view
-                    // may show Touch ID. Keep its space stable when unavailable.
-                    Color.clear
+                    // Only `NotchEmbeddedTouchIDView` displays the live active biometric
+                    // sensor; use a muted gray symbol for unfocused or unavailable states.
+                    Image(systemName: Self.inactiveBiometricSymbolName)
+                        .font(.system(size: 28, weight: .light))
+                        .foregroundStyle(Color.secondary.opacity(inactiveBiometricOpacity))
                 }
             }
             .frame(width: 38, height: 38)
@@ -188,17 +387,34 @@ public struct LockedPlaceholderView: View {
 
     private var biometricTitle: String {
         switch lock.biometricStatus {
-        case .ready: return "Unlock with Touch ID"
-        case .locked: return "Touch ID locked"
-        case .unavailable: return "Touch ID unavailable"
+        case .ready:
+            return lock.biometricRecoveryMessage != nil ? "Touch ID is ready" : "Unlock with Touch ID"
+        case .locked:
+            return lock.biometricLockoutScope == .system ? "Touch ID locked by macOS" : "Touch ID locked"
+        case .unavailable:
+            return "Touch ID unavailable"
         }
     }
 
     private var biometricDetail: String {
         switch lock.biometricStatus {
-        case .ready: return "Rest your finger on the sensor."
-        case .locked: return "Use your Mac login password."
-        case .unavailable: return "Enter your Mac login password."
+        case .ready:
+            return "Rest your finger on the sensor."
+        case .locked:
+            return lock.biometricLockoutScope == .system
+                ? "Too many failed attempts across your Mac."
+                : "Use your Mac login password."
+        case .unavailable:
+            return "Enter your Mac login password."
+        }
+    }
+
+    private var inactiveBiometricOpacity: Double {
+        switch lock.biometricStatus {
+        case .ready:
+            return contrast == .increased ? 0.85 : 0.60
+        case .locked, .unavailable:
+            return contrast == .increased ? 0.60 : 0.32
         }
     }
 
@@ -471,7 +687,9 @@ public struct PanelLockGate<Content: View>: View {
     private var appState: AppState = .shared
     var showsEmptyState: Bool
     private let content: () -> Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dismissedEmptyState: Bool = false
+    @State private var wasLocked: Bool
 
     public init(
         showsEmptyState: Bool = true,
@@ -488,18 +706,52 @@ public struct PanelLockGate<Content: View>: View {
         self.lock = lock
         self.showsEmptyState = showsEmptyState
         self.content = content
+        self._wasLocked = State(initialValue: lock.isEffectivelyLocked)
+    }
+
+    private var lockForegroundTransition: AnyTransition {
+        reduceMotion
+            ? .opacity
+            : .asymmetric(
+                insertion: .opacity,
+                removal: .scale(scale: UnlockTransitionSpec.lockExitScale).combined(with: .opacity)
+            )
     }
 
     public var body: some View {
-        if lock.isEffectivelyLocked {
-            LockedPlaceholderView(lock: lock)
-        } else if lock.shouldBypassLock && showsEmptyState && !dismissedEmptyState && appState.activeSheet == nil {
-            EmptyVaultOnboardingView(
-                lock: lock,
-                onDismiss: { dismissedEmptyState = true }
-            )
-        } else {
-            content()
+        ZStack {
+            // Persistent full-opacity behind-window glass layer; never transitioned or faded.
+            LockedWindowBackdropView(isLocked: lock.isEffectivelyLocked)
+                .animation(nil, value: lock.isEffectivelyLocked)
+                .zIndex(0)
+
+            if lock.isEffectivelyLocked {
+                LockedPlaceholderView(lock: lock, showsBackdrop: false)
+                    .zIndex(2)
+                    .transition(lockForegroundTransition)
+            } else if lock.shouldBypassLock && showsEmptyState && !dismissedEmptyState && appState.activeSheet == nil {
+                EmptyVaultOnboardingView(
+                    lock: lock,
+                    onDismiss: { dismissedEmptyState = true }
+                )
+                .zIndex(1)
+                .transition(.opacity)
+            } else {
+                content()
+                    .environment(\.shouldAnimateSplitPaneUnfold, wasLocked)
+                    .environment(\.hasWindowGlassBackdrop, true)
+                    .zIndex(1)
+                    .transition(.identity)
+            }
+        }
+        .animation(
+            reduceMotion ? UnlockTransitionSpec.reduceMotionAnimation : UnlockTransitionSpec.lockExitAnimation,
+            value: lock.isEffectivelyLocked
+        )
+        .onChange(of: lock.isEffectivelyLocked) { _, isLocked in
+            if isLocked {
+                wasLocked = true
+            }
         }
     }
 }

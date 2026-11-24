@@ -415,4 +415,77 @@ final class PanelLockTests {
         hosting.layout()
         #expect(hosting.bounds.size == NSSize(width: 958, height: 724))
     }
+
+    // MARK: - U04 · Split-Pane Unfold Transition
+
+    @Test func test_unlockTransitionSpec_u04SplitPaneUnfoldConstants() {
+        #expect(UnlockTransitionSpec.lockExitDuration == 0.26)
+        #expect(UnlockTransitionSpec.lockExitScale < 1.0)
+        #expect(UnlockTransitionSpec.sidebarDuration == 0.38)
+        #expect(UnlockTransitionSpec.sidebarInitialOffsetX < 0)
+        #expect(UnlockTransitionSpec.detailDuration == 0.40)
+        #expect(UnlockTransitionSpec.detailInitialOffsetX > 0)
+        #expect(UnlockTransitionSpec.detailInitialOffsetY > 0)
+        #expect(UnlockTransitionSpec.sidebarDelay < UnlockTransitionSpec.detailDelay)
+        #expect(UnlockTransitionSpec.reduceMotionDuration == 0.16)
+    }
+
+    @Test func test_panelLockGate_unlockTransition_mountsProtectedContentOnlyAfterUnlock() async {
+        let fakeAuth = FakePanelAuthenticator()
+        let controller = PanelLockController(
+            defaults: testDefaults,
+            authenticator: fakeAuth,
+            vaultKeyCount: { 1 }
+        )
+
+        #expect(controller.isEffectivelyLocked)
+
+        var buildCount = 0
+        let gate = PanelLockGate(lock: controller, showsEmptyState: false) {
+            buildCount += 1
+            return Text("Protected Split Content")
+        }
+        let hosting = NSHostingView(rootView: gate)
+        hosting.frame = NSRect(x: 0, y: 0, width: 958, height: 724)
+        hosting.layout()
+
+        #expect(buildCount == 0, "Protected content must stay unmounted while locked")
+
+        await controller.unlock()
+        #expect(!controller.isEffectivelyLocked)
+
+        hosting.layout()
+        #expect(buildCount >= 1, "Protected content must mount once unlocked")
+    }
+
+    @Test func test_lockedWindowBackdropView_switchesMaterialWithoutReplacingBackdrop() {
+        #expect(!EnvironmentValues().hasWindowGlassBackdrop)
+
+        let lockedHosting = NSHostingView(rootView: LockedWindowBackdropView(isLocked: true))
+        lockedHosting.frame = NSRect(x: 0, y: 0, width: 958, height: 724)
+        lockedHosting.layout()
+        #expect(lockedHosting.bounds.size == NSSize(width: 958, height: 724))
+
+        let unlockedHosting = NSHostingView(rootView: LockedWindowBackdropView(isLocked: false))
+        unlockedHosting.frame = NSRect(x: 0, y: 0, width: 958, height: 724)
+        unlockedHosting.layout()
+        #expect(unlockedHosting.bounds.size == NSSize(width: 958, height: 724))
+    }
+
+    @Test func test_lockedPlaceholderView_unfocusedBiometricUsesMutedTouchIDSymbol() {
+        #expect(LockedPlaceholderView.inactiveBiometricSymbolName == "touchid")
+
+        let controller = PanelLockController(
+            defaults: testDefaults,
+            authenticator: FakePanelAuthenticator(),
+            vaultKeyCount: { 1 }
+        )
+        #expect(controller.embeddedUnlockContext == nil)
+        #expect(controller.biometricStatus == .ready)
+
+        let hosting = NSHostingView(rootView: LockedPlaceholderView(lock: controller))
+        hosting.frame = NSRect(x: 0, y: 0, width: 958, height: 724)
+        hosting.layout()
+        #expect(hosting.bounds.size == NSSize(width: 958, height: 724))
+    }
 }
