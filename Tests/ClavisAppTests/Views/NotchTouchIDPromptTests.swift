@@ -646,11 +646,11 @@ struct NotchTouchIDPromptTests {
         let unfocusedPng = try #require(unfocusedBitmap.representation(using: .png, properties: [:]))
         #expect(unfocusedPng.count > 2_000)
 
-        // Sample center-x (x = 320) inside the physical notch cutout (y = 14) and in the Liquid Glass body (y = 146).
+        // Sample center-x (x = 320) inside the physical notch cutout (y = 14) and on the bare panel body (y = 90).
         let scale = Double(unfocusedBitmap.pixelsHigh) / 320.0
         let sampleX = Int(320.0 * scale)
         let topNotchY = Int(14.0 * scale)
-        let lowerGlassY = Int(146.0 * scale)
+        let lowerGlassY = Int(90.0 * scale)
 
         let focusedTopLuma = Self.pixelLuminance(in: focusedBitmap, x: sampleX, y: topNotchY)
         let focusedGlassLuma = Self.pixelLuminance(in: focusedBitmap, x: sampleX, y: lowerGlassY)
@@ -660,9 +660,15 @@ struct NotchTouchIDPromptTests {
         // Physical notch cutout stays near-black (< 0.06 luminance) in both focused and unfocused states
         #expect(focusedTopLuma < 0.06)
         #expect(unfocusedTopLuma < 0.06)
-        // Panel body outside the 15px notch halo is translucent Liquid Glass in both focused and unfocused states
-        #expect(focusedGlassLuma > focusedTopLuma + (isLightDesktop ? 0.12 : 0.015))
-        #expect(unfocusedGlassLuma > unfocusedTopLuma + (isLightDesktop ? 0.12 : 0.015))
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
+            // Reduce Transparency forces the opaque panelBlack fallback in both focused and unfocused states
+            #expect(focusedGlassLuma < 0.06)
+            #expect(unfocusedGlassLuma < 0.06)
+        } else {
+            // Panel body outside the 15px notch halo is translucent Liquid Glass in both focused and unfocused states
+            #expect(focusedGlassLuma > focusedTopLuma + (isLightDesktop ? 0.12 : 0.015))
+            #expect(unfocusedGlassLuma > unfocusedTopLuma + (isLightDesktop ? 0.12 : 0.015))
+        }
 
         if ProcessInfo.processInfo.environment["CLAVIS_RENDER_REVIEW"] == "1" {
             let desktopTag = isLightDesktop ? "light-desktop" : "dark-desktop"
