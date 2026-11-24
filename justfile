@@ -721,6 +721,18 @@ test-app *args:
     mkdir -p .build && touch .build/.metadata_never_index
     SDKROOT="${sdkroot:-}" swift test --filter ClavisAppTests --parallel --enable-swift-testing --disable-xctest {{ args }}
 
+# Run on-demand live macOS UI tests (opens real windows/panels on screen)
+test-ui *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sdkroot="$(env -u SDKROOT /usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+    mkdir -p .build && touch .build/.metadata_never_index
+    if [ -z "{{ args }}" ]; then
+        CLAVIS_RUN_UI_TESTS=1 SDKROOT="${sdkroot:-}" swift test --filter ClavisAppTests --parallel --enable-swift-testing --disable-xctest
+    else
+        CLAVIS_RUN_UI_TESTS=1 SDKROOT="${sdkroot:-}" swift test --parallel --enable-swift-testing --disable-xctest {{ args }}
+    fi
+
 # Run tests without recompilation (fast re-run on warm binaries)
 test-fast *args:
     #!/usr/bin/env bash

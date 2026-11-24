@@ -43,6 +43,8 @@ jobs:
             spm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift_hash }}-
 
       - name: Run Tests
+        env:
+          CLAVIS_RUN_UI_TESTS: "1"
         run: just test
 
       - name: Verify app bundle assembly and signing script

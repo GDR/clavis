@@ -906,7 +906,7 @@ struct KeyDetailInspectorTests {
         #expect(commitCount == 1)
     }
 
-    @Test
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason))
     @MainActor
     func testSettingsSheetModalAndOutsideClickDismissal() {
         #expect(KeyManagerSheet.settings.id == "settings")
@@ -944,7 +944,7 @@ struct KeyDetailInspectorTests {
         #expect(dismissCount == 1)
     }
 
-    @Test
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason))
     @MainActor
     func testCircularGlassIconButtonDoesNotTakeSheetInitialFocus() {
         let parentWindow = NSWindow(
@@ -984,7 +984,7 @@ struct KeyDetailInspectorTests {
         #expect(sheetWindow.firstResponder === sheetWindow)
     }
 
-    @Test
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason))
     @MainActor
     func testSidebarAndMainPaneUseFullHeightScrollViewsWithTopGlassBars() throws {
         let appState = AppState()
@@ -1097,7 +1097,7 @@ struct KeyDetailInspectorTests {
         }
     }
 
-    @Test
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason))
     @MainActor
     func testSidebarTrafficLightsAlignWithGlassButtonsAndSearchIcon() throws {
         let wm = WindowManager()

@@ -5,7 +5,7 @@ import Testing
 @testable import ClavisCore
 @testable import ClavisTestSupport
 
-@Suite @MainActor struct CreateKeyRenderingTests {
+@Suite(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason)) @MainActor struct CreateKeyRenderingTests {
     /// Compact FormStyle.grouped sheet (S-04, revised D-39): 460pt wide, plain title,
     /// three grouped cards with single-line footnotes, single "?" reference trigger, capsule footer.
     @Test(arguments: [0, 1])

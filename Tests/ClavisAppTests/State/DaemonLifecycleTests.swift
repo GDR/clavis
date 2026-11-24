@@ -552,7 +552,8 @@ final class DaemonLifecycleTests {
         #expect(shutdownCalled)
     }
 
-    @Test @MainActor
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason))
+    @MainActor
     func testWindowManagerHasActiveWindowsTracking() {
         let wm = WindowManager()
         #expect(!wm.hasActiveWindows)
@@ -586,7 +587,8 @@ final class DaemonLifecycleTests {
         #expect(!wm.hasActiveWindows)
     }
 
-    @Test @MainActor
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason))
+    @MainActor
     func testWindowManagerCloseActiveWindow() {
         let wm = WindowManager()
         let testWindow = NSWindow(

@@ -579,7 +579,7 @@ struct NotchTouchIDPromptTests {
         #expect(view.bottomElementRadialOffset(isLeading: false, rowTop: 160, reduceMotion: false) == CGSize.zero)
     }
 
-    @Test(arguments: [false, true])
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason), arguments: [false, true])
     func rendersFocusedAndUnfocusedLiquidGlassAgainstLightAndDarkDesktops(isLightDesktop: Bool) async throws {
         let request = NotchPromptRequest(
             callerName: "Terminal",
@@ -777,7 +777,7 @@ struct NotchTouchIDPromptTests {
         #expect(agentOnAgentKey.effectiveWarning == nil)
     }
 
-    @Test
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason))
     func windowControllerPositioningAndPresentationLifecycle() async {
         let screenFrame = NSRect(x: 0, y: 0, width: 1512, height: 982)
         let panelSize = NotchPromptWindowController.defaultPanelSize
@@ -890,7 +890,7 @@ struct NotchTouchIDPromptTests {
         #expect(fallbackPlacement.screenGeometry.menuBarHeight == 25)
     }
 
-    @Test
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason))
     func targetDisplayRetentionAcrossFocusSpaceChangesScalingAndMonitorRemoval() async {
         let builtInNotched = NotchDisplayDescriptor(
             displayID: 101,
@@ -1041,6 +1041,7 @@ struct NotchTouchIDPromptTests {
     }
 
     @Test(
+        .enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason),
         arguments: [false, true],
         [NotchPromptPhase.reviewing, NotchPromptPhase.awaitingAuthentication, NotchPromptPhase.passwordEntry, NotchPromptPhase.approved]
     )
@@ -1361,7 +1362,7 @@ struct NotchTouchIDPromptTests {
         #expect(view.islandHeight == 266)
     }
 
-    @Test
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason))
     func windowControllerQueueOpensNextRequestAfterDecision() async {
         let controller = NotchPromptWindowController()
         var presentedRequests: [NotchPromptRequest] = []
@@ -1427,7 +1428,7 @@ struct NotchTouchIDPromptTests {
         #expect(controller.pendingApprovalCount == 0)
     }
 
-    @Test
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason))
     func presentApprovalDeliversVariantDecisionAndDismissDenies() async {
         let controller = NotchPromptWindowController()
         let request = NotchPromptRequest(
@@ -1464,7 +1465,7 @@ struct NotchTouchIDPromptTests {
         #expect(controller.pendingApprovalCount == 0)
     }
 
-    @Test(arguments: [NotchPromptKind.agentFirstUse, .keepAccess, .signatureChanged, .agentOnPersonal])
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason), arguments: [NotchPromptKind.agentFirstUse, .keepAccess, .signatureChanged, .agentOnPersonal])
     func rendersApprovalVariantsInNotchWindow(kind: NotchPromptKind) async throws {
         let request: NotchPromptRequest
         switch kind {
@@ -1642,7 +1643,7 @@ struct NotchTouchIDPromptTests {
         #expect(strictVM.authTitleText == "Touch ID to sign")
     }
 
-    @Test(arguments: NotchConfirmationMode.allCases)
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason), arguments: NotchConfirmationMode.allCases)
     func rendersAllThreeConfirmationModesInVariant01(mode: NotchConfirmationMode) async throws {
         let request = NotchPromptRequest(
             callerName: "Terminal",

@@ -5,7 +5,7 @@ import Testing
 @testable import ClavisCore
 @testable import ClavisTestSupport
 
-@Suite @MainActor struct SettingsRenderingTests {
+@Suite(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason)) @MainActor struct SettingsRenderingTests {
     /// D-37: Settings is a single scrollable pane (no tab bar). Render it across
     /// appearances with a populated unified Applications & Agents outline.
     @Test(arguments: [0, 1, 2, 3])

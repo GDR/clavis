@@ -5,7 +5,7 @@ import Testing
 @testable import ClavisCore
 @testable import ClavisTestSupport
 
-@Suite @MainActor struct KeyInspectorRenderingTests {
+@Suite(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason)) @MainActor struct KeyInspectorRenderingTests {
     @Test(arguments: KeyType.allCases, [false, true])
     func inspectorRendersLongNamesAndIndependentCapabilities(type: KeyType, dark: Bool) async throws {
         let fixture = try ClavisTestFixture()

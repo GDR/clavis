@@ -298,7 +298,8 @@ import AppKit
     }
 
     @MainActor
-    @Test func test_009_nativeSearchFocusAndTableActionShowValueSuggestions() async throws {
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason))
+    func test_009_nativeSearchFocusAndTableActionShowValueSuggestions() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("audit-\(UUID().uuidString).db")
         defer { try? FileManager.default.removeItem(at: url) }
         let store = try AuditStore(url: url)
@@ -470,7 +471,7 @@ extension HistoryFilterTests {
 
 extension HistoryFilterTests {
     @MainActor
-    @Test(arguments: [false, true])
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason), arguments: [false, true])
     func nativeCompletionPanelAnchoringMaterialsAndOutsideClick(preferLegacy: Bool) async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("history-panel-\(UUID()).db")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -604,7 +605,8 @@ extension HistoryFilterTests {
     }
 
     @MainActor
-    @Test func nativeSearchFocusKeepsZeroCaretAndUserSelection() async throws {
+    @Test(.enabled(if: LiveUITestGate.isEnabled, LiveUITestGate.reason))
+    func nativeSearchFocusKeepsZeroCaretAndUserSelection() async throws {
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 500, height: 120),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
