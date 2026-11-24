@@ -9,6 +9,7 @@
 .vscode/
 *.md
 !BENCHMARK_REPORT.md
+!docs/BUILDING.md
 !docs/halo-lock-screen-validation.md
 !docs/personal-bot-routing.md
 !docs/redesign/assessment.md
