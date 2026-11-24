@@ -129,19 +129,24 @@ import Testing
     @Test func concurrentChangesCannotStartDuplicateControlRequests() async throws {
         let agent = MockAgentController()
         agent.stubbedApplicationRegistry = .init()
-        let entered = DispatchSemaphore(value: 0)
+        let (enteredStream, enteredContinuation) = AsyncStream<Void>.makeStream()
         let release = DispatchSemaphore(value: 0)
         agent.applicationPolicyHandler = { _ in
-            entered.signal()
-            _ = release.wait(timeout: .now() + 5)
+            enteredContinuation.yield()
+            enteredContinuation.finish()
+            _ = release.wait(timeout: .now() + 30)
             agent.stubbedApplicationRegistry = .init(requestsPaused: true)
             return true
         }
         let model = RequestPauseModel(agent: agent)
         await model.refresh()
-        let first = Task { await model.setPaused(true) }
-        let didEnter = await Task.detached { entered.wait(timeout: .now() + 5) == .success }.value
+        let first = Task {
+            defer { enteredContinuation.finish() }
+            return await model.setPaused(true)
+        }
         defer { release.signal() }
+        var enteredIterator = enteredStream.makeAsyncIterator()
+        let didEnter = await enteredIterator.next() != nil
         #expect(didEnter)
         #expect(model.isBusy)
         #expect(!(await model.setPaused(false)))
