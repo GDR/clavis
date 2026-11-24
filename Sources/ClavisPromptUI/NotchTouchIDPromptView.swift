@@ -3412,11 +3412,15 @@ private struct NotchSessionScopePickerView: View {
 
     @ViewBuilder
     var body: some View {
+        #if compiler(>=6.4)
         if #available(macOS 27.0, *) {
             picker.pickerStyle(.tabs)
         } else {
             picker.pickerStyle(.segmented)
         }
+        #else
+        picker.pickerStyle(.segmented)
+        #endif
     }
 
     private var picker: some View {
