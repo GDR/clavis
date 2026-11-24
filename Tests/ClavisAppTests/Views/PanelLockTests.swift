@@ -2,8 +2,10 @@
 import Testing
 import SwiftUI
 import AppKit
+import LocalAuthentication
 @testable import Clavis
 @testable import ClavisCore
+import ClavisPromptUI
 
 @Suite @MainActor
 final class PanelLockTests {
@@ -487,5 +489,84 @@ final class PanelLockTests {
         hosting.frame = NSRect(x: 0, y: 0, width: 958, height: 724)
         hosting.layout()
         #expect(hosting.bounds.size == NSSize(width: 958, height: 724))
+    }
+
+    @Test func test_touchIDSensorBadgeView_rendersAllStatesAcrossSurfaces() throws {
+        let context = LAContext()
+        let states: [TouchIDSensorState] = [
+            .active(),
+            .active(isFailure: true),
+            .inactive(),
+            .inactive(isFailure: true),
+            .verifying,
+            .locked,
+            .unavailable
+        ]
+        for surface in [TouchIDSensorSurface.notch, .adaptive] {
+            for state in states {
+                let badge = TouchIDSensorBadgeView(
+                    state: state,
+                    context: state == .active() || state == .active(isFailure: true) ? context : nil,
+                    size: surface == .notch ? 32 : 38,
+                    surface: surface
+                )
+                let hosting = NSHostingView(rootView: badge)
+                hosting.frame = NSRect(x: 0, y: 0, width: 48, height: 48)
+                hosting.layout()
+                #expect(hosting.bounds.size == NSSize(width: 48, height: 48))
+            }
+        }
+
+        let inactiveHost = NSHostingView(
+            rootView: TouchIDSensorBadgeView(state: .inactive(), size: 38, surface: .adaptive)
+                .environment(\.colorScheme, .dark)
+        )
+        inactiveHost.appearance = NSAppearance(named: .darkAqua)
+        inactiveHost.frame = NSRect(x: 0, y: 0, width: 48, height: 48)
+        inactiveHost.layoutSubtreeIfNeeded()
+
+        let inactiveBitmap = try #require(inactiveHost.bitmapImageRepForCachingDisplay(in: inactiveHost.bounds))
+        inactiveHost.cacheDisplay(in: inactiveHost.bounds, to: inactiveBitmap)
+
+        var inactiveDrawnPixels = 0
+        var hasRedRingPixel = false
+        for y in 0..<inactiveBitmap.pixelsHigh {
+            for x in 0..<inactiveBitmap.pixelsWide {
+                guard let color = inactiveBitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                if color.alphaComponent > 0.05 {
+                    inactiveDrawnPixels += 1
+                    if color.redComponent > color.greenComponent + 0.1 && color.redComponent > color.blueComponent {
+                        hasRedRingPixel = true
+                    }
+                }
+            }
+        }
+        #expect(inactiveDrawnPixels > 0)
+        #expect(hasRedRingPixel)
+
+        let unavailableHost = NSHostingView(
+            rootView: TouchIDSensorBadgeView(state: .unavailable, size: 38, surface: .adaptive)
+                .environment(\.colorScheme, .dark)
+        )
+        unavailableHost.appearance = NSAppearance(named: .darkAqua)
+        unavailableHost.frame = NSRect(x: 0, y: 0, width: 48, height: 48)
+        unavailableHost.layoutSubtreeIfNeeded()
+
+        let unavailableBitmap = try #require(unavailableHost.bitmapImageRepForCachingDisplay(in: unavailableHost.bounds))
+        unavailableHost.cacheDisplay(in: unavailableHost.bounds, to: unavailableBitmap)
+
+        var unavailableDrawnPixels = 0
+        for y in 0..<unavailableBitmap.pixelsHigh {
+            for x in 0..<unavailableBitmap.pixelsWide {
+                guard let color = unavailableBitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                if color.alphaComponent > 0.05 {
+                    unavailableDrawnPixels += 1
+                    let chroma = max(color.redComponent, color.greenComponent, color.blueComponent)
+                        - min(color.redComponent, color.greenComponent, color.blueComponent)
+                    #expect(chroma < 0.05)
+                }
+            }
+        }
+        #expect(unavailableDrawnPixels > 0)
     }
 }

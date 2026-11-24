@@ -105,7 +105,7 @@ public struct LockedPlaceholderView: View {
     public static let passwordFieldLabel = "Mac login password"
     public static let passwordFieldPlaceholder = "Mac login password"
     public static let incorrectPasswordText = "Incorrect password. Try again."
-    public static let inactiveBiometricSymbolName = "touchid"
+    public static let inactiveBiometricSymbolName = TouchIDSensorBadgeView.symbolName
 
     public static func loadAppIcon() -> NSImage? {
         Bundle.clavisCore.url(forResource: "AppIcon", withExtension: "png")
@@ -330,47 +330,23 @@ public struct LockedPlaceholderView: View {
     }
 
     private var biometricLabel: some View {
-        HStack(spacing: 12) {
-            Group {
-                if let context = lock.embeddedUnlockContext {
-                    NotchEmbeddedTouchIDView(context: context, iconSize: 38)
-                        .id(ObjectIdentifier(context))
-                        .onAppear { lock.embeddedUnlockViewDidMount(context) }
-                } else if lock.biometricStatus == .locked {
-                    ZStack(alignment: .bottomTrailing) {
-                        ZStack {
-                            Circle()
-                                .fill(Color.primary.opacity(colorScheme == .dark ? 0.07 : 0.05))
-                                .frame(width: 38, height: 38)
-                                .overlay(
-                                    Circle().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1.5)
-                                )
-                            Image(systemName: Self.inactiveBiometricSymbolName)
-                                .font(.system(size: 20, weight: .light))
-                                .foregroundStyle(Color.secondary.opacity(inactiveBiometricOpacity))
-                        }
-                        .frame(width: 38, height: 38)
-
-                        Circle()
-                            .fill(Color(nsColor: .windowBackgroundColor))
-                            .frame(width: 14, height: 14)
-                            .overlay(Circle().strokeBorder(Color.primary.opacity(0.16), lineWidth: 0.75))
-                            .overlay(
-                                Image(systemName: "lock.fill")
-                                    .font(.system(size: 8, weight: .semibold))
-                                    .foregroundStyle(Color.secondary)
-                            )
-                            .offset(x: 2, y: 2)
-                    }
-                } else {
-                    // Only `NotchEmbeddedTouchIDView` displays the live active biometric
-                    // sensor; use a muted gray symbol for unfocused or unavailable states.
-                    Image(systemName: Self.inactiveBiometricSymbolName)
-                        .font(.system(size: 28, weight: .light))
-                        .foregroundStyle(Color.secondary.opacity(inactiveBiometricOpacity))
-                }
+        let sensorState: TouchIDSensorState = {
+            if lock.embeddedUnlockContext != nil { return .active() }
+            switch lock.biometricStatus {
+            case .ready: return .inactive()
+            case .locked: return .locked
+            case .unavailable: return .unavailable
             }
-            .frame(width: 38, height: 38)
+        }()
+
+        return HStack(spacing: 12) {
+            TouchIDSensorBadgeView(
+                state: sensorState,
+                context: lock.embeddedUnlockContext,
+                size: 38,
+                surface: .adaptive,
+                onEmbeddedMount: { lock.embeddedUnlockViewDidMount($0) }
+            )
             .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text(biometricTitle)
@@ -406,15 +382,6 @@ public struct LockedPlaceholderView: View {
                 : "Use your Mac login password."
         case .unavailable:
             return "Enter your Mac login password."
-        }
-    }
-
-    private var inactiveBiometricOpacity: Double {
-        switch lock.biometricStatus {
-        case .ready:
-            return contrast == .increased ? 0.85 : 0.60
-        case .locked, .unavailable:
-            return contrast == .increased ? 0.60 : 0.32
         }
     }
 

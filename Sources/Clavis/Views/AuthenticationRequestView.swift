@@ -1,6 +1,6 @@
 import AppKit
+import ClavisPromptUI
 import LocalAuthentication
-import LocalAuthenticationEmbeddedUI
 import SwiftUI
 
 /// Variant 07 from ui/settings-lab. Presentation only: the host owns authentication,
@@ -119,14 +119,21 @@ struct AuthenticationRequestView: View {
                 .font(.system(size: 40, weight: .light))
                 .foregroundStyle(.green)
                 .accessibilityHidden(true)
-        } else if let authenticationContext, phase == .waiting || phase == .failed {
-            RequestTouchIDSymbol(context: authenticationContext)
-                .id(ObjectIdentifier(authenticationContext))
         } else {
-            Image(systemName: "touchid")
-                .font(.system(size: 44, weight: .light))
-                .foregroundStyle(phase == .waiting ? Color.pink : Color.secondary)
-                .accessibilityHidden(true)
+            let activeContext = (phase == .waiting || phase == .failed) ? authenticationContext : nil
+            let sensorState: TouchIDSensorState = switch phase {
+            case .unavailable: .unavailable
+            case .failed: activeContext != nil ? .active(isFailure: true) : .inactive(isFailure: true)
+            default: activeContext != nil ? .active() : .inactive()
+            }
+            TouchIDSensorBadgeView(
+                state: sensorState,
+                context: activeContext,
+                size: 44,
+                surface: .adaptive,
+                inactiveOpacity: phase == .waiting ? 1.0 : 0.60
+            )
+            .accessibilityHidden(true)
         }
     }
 
@@ -145,17 +152,6 @@ struct AuthenticationRequestView: View {
         }
         .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
     }
-}
-
-/// Context identity changes recreate the system view, avoiding stale sensor bindings.
-private struct RequestTouchIDSymbol: NSViewRepresentable {
-    let context: LAContext
-
-    func makeNSView(context: Context) -> LAAuthenticationView {
-        LAAuthenticationView(context: self.context, controlSize: .small)
-    }
-
-    func updateNSView(_ nsView: LAAuthenticationView, context: Context) {}
 }
 
 #if DEBUG

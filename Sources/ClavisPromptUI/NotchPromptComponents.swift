@@ -927,86 +927,42 @@ struct NotchUnifiedAuthBar: View {
         }
     }
 
-    /// IMPORTANT: Keep ancestor opacity at `1.0` and transform at identity on `NotchEmbeddedTouchIDView`
-    /// while `isArmed == true` so macOS `NSOcclusionDetectionView` never fires `LAError.systemCancel`.
     @ViewBuilder
     private func touchIDSensorControl(isArmed: Bool, hasBiometricFailure: Bool) -> some View {
         let isLocked = viewModel.isBiometricLocked
-        let usesEmbeddedContext = (!isLocked && isArmed && viewModel.embeddedAuthContext != nil)
-        let ringColor = hasBiometricFailure ? NotchPromptPalette.danger : NotchPromptPalette.touchIDPink
 
         if isLocked {
-            ZStack(alignment: .bottomTrailing) {
-                ZStack {
-                    Circle()
-                        .fill(Color.white.opacity(0.06))
-                        .frame(width: 32, height: 32)
-                        .overlay(
-                            Circle().strokeBorder(Color.white.opacity(0.12), lineWidth: 1.5)
-                        )
-
-                    Image(systemName: "touchid")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(NotchPromptPalette.t3.opacity(0.72))
-                }
-                .frame(width: 32, height: 32)
-
-                Circle()
-                    .fill(Color(white: 0.16))
-                    .frame(width: 14, height: 14)
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.75))
-                    .overlay(
-                        Image(systemName: "lock.fill")
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(NotchPromptPalette.t2)
-                    )
-                    .offset(x: 2, y: 2)
-            }
-            .frame(width: 32, height: 32)
-            .opacity(foregroundContentOpacity)
+            TouchIDSensorBadgeView(
+                state: .locked,
+                size: 32,
+                surface: .notch,
+                inactiveOpacity: foregroundContentOpacity
+            )
             .help("Touch ID locked after 3 failed attempts")
             .accessibilityLabel("Touch ID locked")
         } else {
+            let sensorState: TouchIDSensorState = {
+                if viewModel.phase == .verifying {
+                    return .verifying
+                }
+                if isArmed && viewModel.isPromptFocused && viewModel.embeddedAuthContext != nil {
+                    return .active(isFailure: hasBiometricFailure)
+                }
+                return .inactive(isFailure: hasBiometricFailure)
+            }()
+
             Button {
                 viewModel.retryBiometrics()
             } label: {
-                ZStack {
-                    Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [ringColor.opacity(0.24), .clear],
-                                center: .center,
-                                startRadius: 2,
-                                endRadius: 16
-                            )
-                        )
-                        .frame(width: 32, height: 32)
-                        .overlay(
-                            Circle().strokeBorder(
-                                ringColor.opacity(hasBiometricFailure ? 0.72 : 0.36),
-                                lineWidth: 1.5
-                            )
-                        )
-                        .opacity(usesEmbeddedContext ? 1.0 : foregroundContentOpacity)
-
-                    if let authContext = viewModel.embeddedAuthContext, isArmed {
-                        NotchEmbeddedTouchIDView(context: authContext, iconSize: 30)
-                            .id(ObjectIdentifier(authContext))
-                            .frame(width: 30, height: 30)
-                            .clipShape(Circle())
-                    } else {
-                        Image(systemName: viewModel.phase == .verifying ? "checkmark" : "touchid")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(hasBiometricFailure ? NotchPromptPalette.errorTextRed : NotchPromptPalette.touchIDPink)
-                            .opacity(foregroundContentOpacity)
-                            .modifier(
-                                NotchHorizontalShakeEffect(
-                                    animatableData: (reduceMotion || usesEmbeddedContext) ? 0 : CGFloat(viewModel.failureShakeTrigger)
-                                )
-                            )
-                    }
-                }
-                .frame(width: 32, height: 32)
+                TouchIDSensorBadgeView(
+                    state: sensorState,
+                    context: (isArmed && viewModel.isPromptFocused) ? viewModel.embeddedAuthContext : nil,
+                    size: 32,
+                    surface: .notch,
+                    inactiveOpacity: foregroundContentOpacity,
+                    shakeTrigger: viewModel.failureShakeTrigger,
+                    reduceMotion: reduceMotion
+                )
             }
             .buttonStyle(.plain)
             .focusable(false)
