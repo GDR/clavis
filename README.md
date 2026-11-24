@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="Sources/ClavisCore/Resources/AppIcon.png" width="72" height="72" alt="Clavis app icon">
+  <img src="docs/assets/app-icon.png" width="72" height="72" alt="Clavis app icon">
   <h1>Clavis</h1>
   <p><strong>Agent-safe Secure Enclave SSH key manager for macOS.</strong></p>
   <p>
@@ -12,7 +12,9 @@
   </p>
 </div>
 
-<!-- TODO: Add hero screenshot (16:9) -->
+<p align="center">
+  <img src="docs/assets/key-manager.png" width="840" alt="Clavis Key Manager on macOS showing a Secure Enclave SSH and Git signing key">
+</p>
 
 ## Why Clavis
 
