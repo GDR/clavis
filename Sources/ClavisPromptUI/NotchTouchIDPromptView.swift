@@ -2881,6 +2881,7 @@ public struct NotchTouchIDPromptView: View {
                         .overlay(
                             shape.fill(NotchPromptPalette.panelBlack.opacity(backgroundDarkOverlayOpacity))
                         )
+                        .environment(\.controlActiveState, .active)
                 } else {
                     VisualEffectView(
                         material: .hudWindow,
