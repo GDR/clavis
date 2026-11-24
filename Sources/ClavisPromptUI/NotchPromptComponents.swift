@@ -800,7 +800,7 @@ struct NotchUnifiedAuthBar: View {
                 .accessibilityHidden(!isFocused)
 
                 HStack(spacing: 0) {
-                    Text(viewModel.isBiometricLocked ? "Touch ID locked · Click to focus" : "Biometrics armed · Click to focus")
+                    Text(viewModel.isBiometricLocked ? "Touch ID locked · Click to focus" : "Click to focus")
                         .font(.system(size: 11, weight: .regular))
                         .foregroundStyle(NotchPromptPalette.t2)
                         .lineLimit(1)

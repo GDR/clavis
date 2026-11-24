@@ -81,6 +81,7 @@ public final class NotchOverlayPanel: NSPanel {
 
     var onUserInteractionInside: (() -> Void)?
     var shouldSuppressFocusOnMouseDown: (() -> Bool)?
+    var shouldConsumeMouseDownForFocus: (() -> Bool)?
     var onEscapeKey: (() -> Void)?
     var onReturnKey: (() -> Void)?
     var onHorizontalArrowKey: ((Int) -> Void)?
@@ -112,7 +113,11 @@ public final class NotchOverlayPanel: NSPanel {
         switch event.type {
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
             if event.type != .leftMouseDown || shouldSuppressFocusOnMouseDown?() != true {
+                let consumeForFocus = (event.type == .leftMouseDown && shouldConsumeMouseDownForFocus?() == true)
                 onUserInteractionInside?()
+                if consumeForFocus {
+                    return
+                }
             }
         case .keyDown:
             onUserInteractionInside?()
@@ -425,6 +430,10 @@ public final class NotchPromptWindowController: NSObject {
         }
         overlayPanel.shouldSuppressFocusOnMouseDown = { [weak viewModel] in
             viewModel?.isHoveringCloseButton == true
+        }
+        overlayPanel.shouldConsumeMouseDownForFocus = { [weak viewModel] in
+            guard let viewModel else { return false }
+            return !viewModel.isPromptFocused && !viewModel.isHoveringCloseButton
         }
         overlayPanel.onEscapeKey = { [weak self, weak viewModel] in
             guard let self, let viewModel, self.activeRequestID == viewModel.requestID else { return }

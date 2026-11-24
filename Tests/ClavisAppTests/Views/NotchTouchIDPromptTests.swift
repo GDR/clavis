@@ -2458,4 +2458,56 @@ struct NotchTouchIDPromptTests {
         #expect(!fallbackVM.isBiometricLocked)
         #expect(fallbackVM.biometricRecoveryMessage == "Touch ID re-enabled. Rest your finger on the sensor to sign.")
     }
+
+    @Test
+    func repeatedFocusUnfocusDisarmsClearsStaleUnavailableAndRearms() async {
+        let request = NotchPromptRequest(
+            callerName: "Terminal",
+            processChain: "git → ssh-keygen",
+            keyLabel: "Personal MacBook",
+            keyType: .personal,
+            operation: "Sign a Git commit",
+            initialScope: .untilLock,
+            allowsPasswordFallback: false,
+            confirmationMode: .touchIDOrPassword
+        )
+        let vm = NotchPromptViewModel(
+            request: request,
+            initialPhase: .awaitingAuthentication,
+            verifyingDelayNanoseconds: 0,
+            signedDisplayNanoseconds: 0,
+            autoCollapseAfterSigned: false,
+            biometricAvailabilityProvider: { _ in nil }
+        )
+        defer { vm.cancelEmbeddedBiometricListening() }
+
+        // Immediately unfocusing before the init biometric Task runs must cancel it and keep embeddedAuthContext nil after yielding.
+        vm.setPromptFocused(false)
+        await Task.yield()
+        #expect(vm.embeddedAuthContext == nil)
+
+        vm.setPromptFocused(true)
+        let initialContext = TrackingContext()
+        vm.injectEmbeddedAuthContextForTesting(initialContext)
+        #expect(vm.embeddedAuthContext === initialContext)
+
+        // Losing focus disarms and invalidates the live Touch ID context while preserving phase and scope.
+        vm.setPromptFocused(false)
+        await Task.yield()
+        #expect(initialContext.isInvalidated)
+        #expect(vm.embeddedAuthContext == nil)
+        #expect(vm.phase == .awaitingAuthentication)
+        #expect(vm.selectedScope == .untilLock)
+
+        // Repeated focus/unfocus cycles clear transient `.unavailable` errors and re-arm without stalling.
+        for _ in 0..<5 {
+            vm.recordBiometricFailure(.unavailable("Click Touch ID to try again"))
+            vm.setPromptFocused(true)
+            #expect(vm.biometricFailure == nil)
+            #expect(vm.activeErrorMessage == nil)
+            #expect(vm.embeddedAuthContext != nil)
+            vm.setPromptFocused(false)
+            #expect(vm.embeddedAuthContext == nil)
+        }
+    }
 }

@@ -1361,7 +1361,7 @@ public final class NotchPromptViewModel {
         }
         if targetPhase == .awaitingAuthentication {
             startEmbeddedBiometricListeningIfNeeded(
-                deferContextMountNanoseconds: Self.animationSettleNanoseconds(0.28)
+                deferContextMountNanoseconds: Self.animationSettleNanoseconds(0.38)
             )
         }
     }
@@ -1554,6 +1554,10 @@ public final class NotchPromptViewModel {
         guard phase != .idle && phase != .approved && phase != .denied else { return }
         guard isPromptFocused != focused else { return }
 
+        if !focused {
+            cancelEmbeddedBiometricListening()
+        }
+
         withAnimation(Self.runtimeTransitionAnimation) {
             isPromptFocused = focused
             if !focused {
@@ -1565,10 +1569,19 @@ public final class NotchPromptViewModel {
                 if phase == .passwordEntry && !usesSystemPasswordSheet && request.confirmationMode.allowsBiometrics {
                     phase = .awaitingAuthentication
                 }
+            } else if case .unavailable = biometricFailure {
+                biometricFailure = nil
             }
         }
         if focused {
-            refreshSystemBiometricLockoutIfCleared()
+            if !refreshSystemBiometricLockoutIfCleared(),
+               phase == .awaitingAuthentication,
+               !isBiometricLocked,
+               request.confirmationMode.allowsBiometrics {
+                startEmbeddedBiometricListeningIfNeeded(
+                    deferContextMountNanoseconds: Self.animationSettleNanoseconds(0.38)
+                )
+            }
         }
     }
 
@@ -1752,12 +1765,15 @@ public final class NotchPromptViewModel {
             return
         }
         guard phase == .awaitingAuthentication else { return }
+        let wasFocused = isPromptFocused
         withAnimation(Self.runtimeTransitionAnimation) {
             isPromptFocused = true
             biometricFailure = nil
         }
         if biometricAvailabilityProvider(request.confirmationMode.allowsCompanionWatch) == nil {
-            startEmbeddedBiometricListeningIfNeeded()
+            startEmbeddedBiometricListeningIfNeeded(
+                deferContextMountNanoseconds: wasFocused ? 0 : Self.animationSettleNanoseconds(0.38)
+            )
         } else {
             Task { @MainActor in
                 await approveWithBiometrics()
@@ -1803,9 +1819,24 @@ public final class NotchPromptViewModel {
         }
 
         embeddedBiometricTask = Task { @MainActor [weak self] in
+            guard let initialSelf = self,
+                  !Task.isCancelled,
+                  !initialSelf.isCompleted,
+                  initialSelf.attemptGeneration == generation,
+                  initialSelf.phase == .awaitingAuthentication,
+                  initialSelf.isPromptFocused else {
+                immediateContext?.invalidate()
+                return
+            }
+
             if deferContextMountNanoseconds > 0 {
                 try? await Task.sleep(nanoseconds: deferContextMountNanoseconds)
-                guard let self, !Task.isCancelled, !self.isCompleted, self.attemptGeneration == generation, self.phase == .awaitingAuthentication else {
+                guard let self,
+                      !Task.isCancelled,
+                      !self.isCompleted,
+                      self.attemptGeneration == generation,
+                      self.phase == .awaitingAuthentication,
+                      self.isPromptFocused else {
                     return
                 }
             }
@@ -1816,18 +1847,32 @@ public final class NotchPromptViewModel {
                 ctx.localizedCancelTitle = "Cancel"
                 return ctx
             }()
-            if self?.embeddedAuthContext == nil {
-                self?.embeddedAuthContext = initialContext
+            guard let currentSelf = self,
+                  !Task.isCancelled,
+                  !currentSelf.isCompleted,
+                  currentSelf.attemptGeneration == generation,
+                  currentSelf.phase == .awaitingAuthentication,
+                  currentSelf.isPromptFocused else {
+                initialContext.invalidate()
+                return
+            }
+            if currentSelf.embeddedAuthContext == nil {
+                currentSelf.embeddedAuthContext = initialContext
             }
 
             var context = initialContext
             for attempt in 0..<2 {
                 // Allow `LAAuthenticationView(context:)` to mount in the view hierarchy before starting sensor evaluation.
                 let mountDelay: UInt64 = attempt == 0
-                    ? (deferContextMountNanoseconds > 0 ? 60_000_000 : 120_000_000)
+                    ? (deferContextMountNanoseconds > 0 ? 20_000_000 : 120_000_000)
                     : 250_000_000
                 try? await Task.sleep(nanoseconds: mountDelay)
-                guard let self, !Task.isCancelled, !self.isCompleted, self.attemptGeneration == generation, self.phase == .awaitingAuthentication else {
+                guard let self,
+                      !Task.isCancelled,
+                      !self.isCompleted,
+                      self.attemptGeneration == generation,
+                      self.phase == .awaitingAuthentication,
+                      self.isPromptFocused else {
                     context.invalidate()
                     return
                 }
